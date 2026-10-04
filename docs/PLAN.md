@@ -443,8 +443,8 @@ flowchart TB
   API --> base
   data --> dom
   data --> db & dsx & net & feeds & art & ya
-  pi --> pa & dom & da & ya & art & data
-  di --> da & dom & ya & art & data
+  pi --> pa & dom & da & ya & art & db & dsx
+  di --> da & dom & ya & art & db & dsx & net
   yi --> ya & net
   ys --> ya & net
   art --> db & net
@@ -456,7 +456,7 @@ Rules enforced by the module-graph assertion (details in [01 Dependency rules](d
 1. `:app` is the only composition root; nothing depends on it. Only `:app` has product flavors; `foss`/`play` DI bindings live in `:app/src/foss` and `:app/src/play`.
 2. Features depend on `:core:{domain, model, common, designsystem, ui, navigation}` and `:*:api` only — never on another feature, `:core:data`, `:core:database`, `:core:datastore`, `:core:network`, `:core:artwork` or any implementation module. Cross-feature navigation uses Nav3 keys in `:core:navigation`.
 3. `:core:domain`, `:core:model`, `:core:common`, `:feeds` and `:*:api` are pure JVM and unit-test without Robolectric.
-4. Implementation modules never depend on features or on each other's implementation modules; they meet through `:*:api` and `:core:domain` interfaces.
+4. Implementation modules (`:core:data`, `:core:artwork`, `*:impl`, `:youtube:streams`) never depend on features or on each other — `*:impl` modules use `:core:database`/`:core:datastore`/`:core:network` directly and meet `:core:data` only through `:core:domain` interfaces bound by Hilt. The one exception is `:core:artwork`, an infrastructure service that `:core:data` and `*:impl` may use.
 5. `:youtube:streams` is referenced only by `fossImplementation` in `:app`; CI fails if it appears in any `play` classpath.
 
 Layering per screen: Compose screen → ViewModel (`StateFlow<UiState>`) → `:core:domain` interfaces/use cases → implementations (`:core:data`, `*:impl`) → Room / DataStore / OkHttp / Media3 / WorkManager / JobScheduler.
@@ -502,7 +502,7 @@ sequenceDiagram
     R-->>X: googlevideo URL, cache key yt:{videoId}:{itag}
   end
   X-->>S: transitions, positions
-  S->>Q: episode_position every 5 s + on events; mark played near end
+  S->>Q: episode_position every 5 s and on events, mark played near end
 ```
 
 The `play` build never enqueues YouTube items, so the YouTube branch is unreachable there; its `YouTubeStreamResolver` binding returns `Unsupported`.
@@ -527,11 +527,11 @@ sequenceDiagram
   participant E as ExternalImportActivity / picker
   participant I as ImportRepository
   participant DB as Room
-  participant W as ImportFetchWorker (import-<sessionId>)
+  participant W as ImportFetchWorker (import-{sessionId})
   participant R as FeedRefresher
   U->>E: share / open .opml (or pick file)
   E->>I: copy stream to cache immediately (URI grant dies with the activity)
-  I->>I: sniff format; OpmlReader strict → relaxed → salvage
+  I->>I: sniff format, then OpmlReader strict → relaxed → salvage
   I->>DB: import_session + import_item rows (PREVIEW)
   U->>I: confirm preview (selection, group mapping, options)
   I->>DB: one transaction: PENDING_FIRST_FETCH podcasts (initialFetch), aliases, groups, memberships
@@ -612,7 +612,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 
 ### 7.3 Milestones
 
-### M0: Scaffold and CI
+#### M0: Scaffold and CI
 
 - **Goal:** a correctly structured, empty app that lints, tests and assembles both flavors on CI, so every later milestone lands on a green build.
 - **Deliverables:**
@@ -634,7 +634,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [01](design/01-foundation.md), [09 CI pipelines](design/09-quality-and-release.md#ci-pipelines), [08 Navigation](design/08-ui-ux.md#navigation).
 - **Advances:** N7, N8, N10, N11.
 
-### M1: Subscribe and ingest RSS
+#### M1: Subscribe and ingest RSS
 
 - **Goal:** a tester can add RSS feeds by URL, browse them as a cover grid with episode lists and show notes, and receive new episodes from background refresh.
 - **Deliverables:**
@@ -653,7 +653,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [02](design/02-data-model.md), [03 Parser](design/03-feeds-and-discovery.md#parser) through [03 Refresh scheduling](design/03-feeds-and-discovery.md#refresh-scheduling), [03 Show notes](design/03-feeds-and-discovery.md#show-notes), [08 Screens](design/08-ui-ux.md#screens).
 - **Advances:** R5.1, R5.2, R5.4, N1, N2, N6, N9.
 
-### M2: Groups and group feeds
+#### M2: Groups and group feeds
 
 - **Goal:** users organise podcasts into many-to-many groups and read each group as its own paged episode feed.
 - **Deliverables:**
@@ -678,7 +678,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [05 Group model and lifecycle](design/05-groups-opml-backup.md#group-model-and-lifecycle), [05 Group feeds](design/05-groups-opml-backup.md#group-feeds), [05 Effective settings resolution](design/05-groups-opml-backup.md#effective-settings-resolution), [02 Key queries](design/02-data-model.md#key-queries), [02 Invalidation hygiene](design/02-data-model.md#invalidation-hygiene), [03 New-episode notifications](design/03-feeds-and-discovery.md#new-episode-notifications), [08 Group feed pager](design/08-ui-ux.md#group-feed-pager).
 - **Advances:** R2.1–R2.5, R2.6 (refresh, mark played), R2.7 (refresh, notifications), R2.8, R2.9, R5.6, N4, N5.
 
-### M3: Import, export and backup
+#### M3: Import, export and backup
 
 - **Goal:** users move their subscriptions, with groups, in and out of Neutrodyne and never lose their library.
 - **Deliverables:**
@@ -700,7 +700,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [05 OPML export](design/05-groups-opml-backup.md#opml-export), [05 OPML import](design/05-groups-opml-backup.md#opml-import), [05 Receiving files](design/05-groups-opml-backup.md#receiving-files), [05 Full backup and restore](design/05-groups-opml-backup.md#full-backup-and-restore), [05 Auto Backup](design/05-groups-opml-backup.md#auto-backup), [08 Screens](design/08-ui-ux.md#screens).
 - **Advances:** R1.1–R1.5, R1.7–R1.9, R2.6 (share group), N1, N9.
 
-### M4: Playback core
+#### M4: Playback core
 
 - **Goal:** stream any RSS episode with a reliable background player, a database-owned queue and a cover-first player UI.
 - **Deliverables:**
@@ -722,7 +722,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [06](design/06-playback.md) (service, player, media items, cache, queue, positions, settings, notification, background restrictions, UI boundary), [08 Player sheet](design/08-ui-ux.md#player-sheet), [08 Artwork pipeline](design/08-ui-ux.md#artwork-pipeline), [05 Playing a group](design/05-groups-opml-backup.md#playing-a-group).
 - **Advances:** R4.1, R4.7, R4.8 (queue, positions, played, speed, skip silence), R2.6 (play group), R2.7 (playback defaults), R5.2, R5.3, N2, N6.
 
-### M5: Playback features and system surfaces
+#### M5: Playback features and system surfaces
 
 - **Goal:** complete the table-stakes listening features and system integrations.
 - **Deliverables:**
@@ -744,7 +744,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [06 Sleep timer](design/06-playback.md#sleep-timer), [06 Chapters](design/06-playback.md#chapters), [06 System surfaces](design/06-playback.md#system-surfaces), [06 Video](design/06-playback.md#video), [03 Show notes](design/03-feeds-and-discovery.md#show-notes).
 - **Advances:** R4.7, R4.8 (sleep timer, chapters), N2.
 
-### M6: Downloads
+#### M6: Downloads
 
 - **Goal:** reliable manual and automatic downloads that play offline transparently.
 - **Deliverables:**
@@ -764,7 +764,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [07](design/07-downloads.md), [06 Media items and URI resolution](design/06-playback.md#media-items-and-uri-resolution), [05 Effective settings resolution](design/05-groups-opml-backup.md#effective-settings-resolution), [08 Live row state](design/08-ui-ux.md#live-row-state).
 - **Advances:** R4.2–R4.6, R1.8, R2.6 (download all), R2.7 (auto-download), R5.3, N1, N2, N6.
 
-### M7: Discovery
+#### M7: Discovery
 
 - **Goal:** find and add podcasts without knowing a feed URL.
 - **Deliverables:**
@@ -783,7 +783,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [03 Add podcast flow](design/03-feeds-and-discovery.md#add-podcast-flow), [03 Search and discovery](design/03-feeds-and-discovery.md#search-and-discovery), [03 Deep links and share targets](design/03-feeds-and-discovery.md#deep-links-and-share-targets), [08 Screens](design/08-ui-ux.md#screens).
 - **Advances:** onboarding for R1/R2/R5, N3.
 
-### M8: YouTube subscriptions in all builds
+#### M8: YouTube subscriptions in all builds
 
 - **Goal:** YouTube channels become podcasts in every build (layer A).
 - **Deliverables:**
@@ -804,7 +804,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [04 Flavor matrix](design/04-youtube.md#flavor-matrix), [04 Channel resolution](design/04-youtube.md#channel-resolution), [04 Atom feed ingestion](design/04-youtube.md#atom-feed-ingestion), [04 Artwork and thumbnails](design/04-youtube.md#artwork-and-thumbnails), [04 Content flags and filtering](design/04-youtube.md#content-flags-and-filtering), [04 Import and export formats](design/04-youtube.md#import-and-export-formats), [08 Flavor differences in UI](design/08-ui-ux.md#flavor-differences-in-ui).
 - **Advances:** R3.1 (links), R3.2, R3.3, R3.4, R3.7, R1.6, R5.8.
 
-### M9: YouTube playback and downloads in foss
+#### M9: YouTube playback and downloads in foss
 
 - **Goal:** in the `foss` build, YouTube episodes play and download as audio exactly like podcasts (layer B).
 - **Deliverables:**
@@ -824,7 +824,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [04 Stream resolution](design/04-youtube.md#stream-resolution), [04 Playback integration](design/04-youtube.md#playback-integration), [04 Download integration](design/04-youtube.md#download-integration), [04 Error handling and circuit breaker](design/04-youtube.md#error-handling-and-circuit-breaker), [04 Licensing and legal](design/04-youtube.md#licensing-and-legal), [07 YouTube transfers](design/07-downloads.md#youtube-transfers).
 - **Advances:** R3.1 (search), R3.5, R3.6, R3.8, N8.
 
-### M10: Covers, theming, adaptive layouts and accessibility
+#### M10: Covers, theming, adaptive layouts and accessibility
 
 - **Goal:** bring R5 to release quality: artwork-driven colour, flicker-free transitions, tablets and foldables, full accessibility.
 - **Deliverables:**
@@ -846,7 +846,7 @@ M7 (Discovery) and M3 (Import) can run in parallel with the playback track if tw
 - **Design refs:** [08 Theming and colour](design/08-ui-ux.md#theming-and-colour), [08 Artwork pipeline](design/08-ui-ux.md#artwork-pipeline), [08 Adaptive layouts](design/08-ui-ux.md#adaptive-layouts), [08 Accessibility](design/08-ui-ux.md#accessibility), [08 Onboarding and empty states](design/08-ui-ux.md#onboarding-and-empty-states).
 - **Advances:** R5.1–R5.8, N4, N5, N10.
 
-### M11: Release hardening and v1.0
+#### M11: Release hardening and v1.0
 
 - **Goal:** ship v1.0 through the chosen channels with reproducible, signed, privacy-clean builds.
 - **Deliverables:**
