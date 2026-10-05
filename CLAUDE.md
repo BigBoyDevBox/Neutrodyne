@@ -4,9 +4,15 @@ Status: planning only; no code yet. [docs/PLAN.md](docs/PLAN.md) is the source o
 
 Standing owner conventions — apply them without asking:
 
-- **Package and ID prefix:** always `ch.lkmc`. Application ID and Kotlin base package `ch.lkmc.neutrodyne` (no `.debug` suffix).
-- **Distribution:** GitHub Releases only. No Google Play, F-Droid or other stores, no product flavors for stores, no mirror and no beta channel.
-- **Debug builds only:** every published APK is a per-ABI debug build signed with the debug keystore committed to the repository. There is no release key or key ceremony.
-- **Updates:** the app only checks GitHub and notifies, linking to the release page and the APK for the device. It never downloads or installs APKs itself. YouTube engine (yt-dlp) updates are automatic, limited to versions approved by our own canary.
-- **No Google developer verification registration.** Install and update guidance covers the advanced flow instead.
-- **Licensing:** the repository is Unlicense. Never add GPL or AGPL code or dependencies, neither Gradle nor Python. LGPL is allowed (owner decision 2026-10-05) when dynamically linked with its notices met; the plan still records which components use it. YouTube extraction uses yt-dlp (Unlicense) embedded via Chaquopy, never NewPipe Extractor.
+- **Scope of v1.0:** the Android app, the desktop app (Windows, macOS on Apple Silicon, Linux) and an optional self-hosted sync server, all shipped together in v1.0. The server syncs subscriptions and listening state, never audio or feed contents.
+- **Stack:** Kotlin Multiplatform with Compose Multiplatform (targets `android` and `jvm("desktop")`; no iOS), and a Kotlin + Ktor sync server that shares code with the clients. The Android-specific parts stay native: Media3, WorkManager / user-initiated jobs, Android Auto, and Chaquopy for yt-dlp.
+- **Package and ID prefix:** always `ch.lkmc`. The application ID and Kotlin base package are `ch.lkmc.neutrodyne`.
+- **Distribution:** GitHub Releases only (container images on GHCR count as GitHub). No Google Play, F-Droid, winget, Homebrew, Flathub or other stores, no mirror and no beta channel. Desktop builds are unsigned.
+- **Android builds:** published APKs are optimised, non-debuggable release builds signed with the keystore committed to the repository. There is no key management or key ceremony.
+- **No platform developer registration:** neither Google's Android developer verification nor Apple's Developer ID. Install and update guidance covers the workarounds.
+- **Updates:** apps only check GitHub and notify, linking to the release page and the right download. They never download or install app updates themselves. YouTube engine (yt-dlp) updates are automatic, limited to versions approved by our own canary.
+- **Licensing:** the repository is Unlicense.
+  - Never add GPL or AGPL code or dependencies (Gradle, Python or native). There is one exception: the unmodified OpenJDK runtime bundled with desktop installers and the server image, with its source attached to each release.
+  - LGPL is allowed when dynamically linked with its notices met (for example the LGPL FFmpeg build used for desktop playback). MPL-2.0 is allowed for unmodified files and data.
+  - YouTube extraction uses yt-dlp (Unlicense), never NewPipe Extractor.
+- **Brand:** the app icon source is `media-sources/icon.png` (a vacuum-tube "N", amber on navy).
