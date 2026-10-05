@@ -1,6 +1,6 @@
 # 02 — Data model
 
-> Status: Draft v1, 2026-10-04; revised 2026-10-05 for the owner decisions (YouTube engine and external mode, in-app updater) · Implements: R1.3, R1.7, R1.8, R2.3, R2.5, R2.8, R2.9, R3.4, R3.7 (query side), R4.2, R4.4, R4.5, R4.8 / N1, N5, N6, N9 · Milestones: M1, M2, M3, M4, M5, M6, M9a, M11b · Honours: D9, D15, D16, D17, D18, D19, D20, D21, D22, D23, D24, D29, D30, D33, D38, D41, D50, D73, D77, D78 · Owns: the Room 3 schema (every entity, column, index and key SQL statement), identity-key storage, invalidation rules, retention, migrations and schema tests
+> Status: Draft v1, 2026-10-04; revised 2026-10-05 for the owner decisions (YouTube engine and external mode, app update check); revised 2026-10-05 for PO-31–PO-35 (notify-only update check, published debug builds) · Implements: R1.3, R1.7, R1.8, R2.3, R2.5, R2.8, R2.9, R3.4, R3.7 (query side), R4.2, R4.4, R4.5, R4.8 / N1, N5, N6, N9 · Milestones: M1, M2, M3, M4, M5, M6, M9a, M11b · Honours: D2, D9, D15, D16, D17, D18, D19, D20, D21, D22, D23, D24, D29, D30, D33, D38, D41, D50, D63, D73, D77, D78 · Owns: the Room 3 schema (every entity, column, index and key SQL statement), identity-key storage, invalidation rules, retention, migrations and schema tests
 
 Contents: [Scope](#scope) · [Conventions](#conventions) · [Entity relationship diagram](#entity-relationship-diagram) · [Tables](#tables) · [Identity keys](#identity-keys) · [Indices](#indices) · [Key queries](#key-queries) · [Invalidation hygiene](#invalidation-hygiene) · [Retention and maintenance](#retention-and-maintenance) · [Migrations and schema testing](#migrations-and-schema-testing) · [Error handling and recovery](#error-handling-and-recovery) · [Testing](#testing) · [Delivery by milestone](#delivery-by-milestone) · [Open questions](#open-questions) · [Sources](#sources)
 
@@ -22,7 +22,7 @@ Room is the single source of truth ([D14](../PLAN.md#3-key-decisions)). This doc
 | Retention (D23) and the `db-maintenance` worker | Backup archive format and merge rules — [05 Full backup and restore](05-groups-opml-backup.md#full-backup-and-restore) |
 | Room 3 usage conventions, migration policy, schema tests | Hilt bindings and start-up order — [01 Dependency injection](01-foundation.md#dependency-injection); CI wiring — [09 CI pipelines](09-quality-and-release.md#ci-pipelines) |
 
-Never in Room ([D73](../PLAN.md#3-key-decisions), [D76](../PLAN.md#3-key-decisions), [D78](../PLAN.md#3-key-decisions)): the YouTube engine's state (`noBackupFilesDir/ytdlp/` with `active.json`, installed versions and staging; yt-dlp's player-JS cache in `cacheDir/yt-dlp/`; [04 Engine updates](04-youtube.md#engine-updates)), the in-app updater's downloaded APKs (`noBackupFilesDir/updates/`; [09 In-app updater](09-quality-and-release.md#in-app-updater)) and their settings (`youtube.engine_*`, `youtube.breaker_engine_version`, `updates.*` in the DataStore files `settings` and `device_settings`). The `:ytx` process never opens the database (01's `YtxProcessStartTest`); engine results reach Room only through main-process writers (04's enrichment, channel metadata and `YouTubeAvailabilityRecorder`). The updater writes no `download` rows: its APK transfer is not an episode download and does not use 07's engine.
+Never in Room ([D73](../PLAN.md#3-key-decisions), [D76](../PLAN.md#3-key-decisions), [D78](../PLAN.md#3-key-decisions)): the YouTube engine's state (`noBackupFilesDir/ytdlp/` with `active.json`, installed versions and staging; yt-dlp's player-JS cache in `cacheDir/yt-dlp/`; [04 Engine updates](04-youtube.md#engine-updates)), the update check's cache file (`noBackupFilesDir/updates/last-check.json`; [09 Update check](09-quality-and-release.md#update-check)) and their settings (`youtube.engine_*`, `youtube.breaker_engine_version`, `updates.*` in the DataStore files `settings` and `device_settings`). The `:ytx` process never opens the database (01's `YtxProcessStartTest`); engine results reach Room only through main-process writers (04's enrichment, channel metadata and `YouTubeAvailabilityRecorder`). The update check writes no rows: it only reads the release's update manifest and never downloads an APK ([D78](../PLAN.md#3-key-decisions)).
 
 ### Module placement
 
@@ -32,7 +32,7 @@ Never in Room ([D73](../PLAN.md#3-key-decisions), [D76](../PLAN.md#3-key-decisio
 | `:core:database` (Android, `neutrodyne.room`) | `NeutrodyneDatabase`, all entities (`<Table>Entity`), DAOs, DAO projections, `FeedQueryBuilder`, `NeutrodyneConverters`, `EpisodeDescriptionCodec`, `DatabaseOpener`, migrations, `core/database/schemas/` |
 | `:core:data` (Android) | `DbMaintenanceWorker`; entity ↔ `:core:model` mappers; JSON-column codecs (kotlinx.serialization) |
 
-Only `:core:data`, `:core:artwork`, `:playback:impl` and `:download:impl` depend on `:core:database` ([PLAN 5.1](../PLAN.md#51-module-graph) rules 2 and 4); `:youtube:ytdlp` and `:update:impl` do not ([D13](../PLAN.md#3-key-decisions)). Features never see entities or DAOs; they receive `:core:model` types through `:core:domain` interfaces ([D12](../PLAN.md#3-key-decisions)).
+Only `:core:data`, `:core:artwork`, `:playback:impl` and `:download:impl` depend on `:core:database` ([PLAN 5.1](../PLAN.md#51-module-graph) rules 2 and 4); `:youtube:ytdlp` does not ([D13](../PLAN.md#3-key-decisions)). The update check lives in `:core:data` but touches no table. Features never see entities or DAOs; they receive `:core:model` types through `:core:domain` interfaces ([D12](../PLAN.md#3-key-decisions)).
 
 ### Table write ownership
 
@@ -49,7 +49,7 @@ Only `:core:data`, `:core:artwork`, `:playback:impl` and `:download:impl` depend
 | `episode_state` | low | 06 (started, played, measured duration); 03/08 via `EpisodeRepository` (favourite, bulk played); 07 (tombstone); 05 (import "treat as played", restore) | lists, 05, 06, 07 |
 | `episode_position` | **high** (every 5 s while playing) | 06 `PositionTracker`; 05 restore | `EpisodeLiveStateSource` (08), 06 |
 | `queue_entry`, `play_session` | medium (every transition) | 06; 05 restore | 06 |
-| `download` | low (transitions only, [D17](../PLAN.md#3-key-decisions)) | 07 (episode downloads only; never the in-app updater, [D78](../PLAN.md#3-key-decisions)) | lists, 06 `LocalMediaIndex` (via 07), 07 |
+| `download` | low (transitions only, [D17](../PLAN.md#3-key-decisions)) | 07 (episode downloads only) | lists, 06 `LocalMediaIndex` (via 07), 07 |
 | `artwork` | low (batched) | 08 `ArtworkSyncWorker`, `ArtworkStore` | lists, 08 |
 | `import_session`, `import_item` | medium during an import | 05 | 05 |
 
@@ -1591,7 +1591,7 @@ Serves N1, N11 ([D22](../PLAN.md#3-key-decisions)). Harness delivered in M1; eve
 ### Schema export and versioning
 
 - `exportSchema = true`; the `neutrodyne.room` plugin sets `room3 { schemaDirectory("$projectDir/schemas") }`, producing `core/database/schemas/ch.lkmc.neutrodyne.core.database.NeutrodyneDatabase/<version>.json`. The files are committed and reviewed like code.
-- Version 1 is the complete M1 schema. **A version is frozen once any tagged build (`vX.Y.Z-beta.N` or release) contains it**; afterwards its JSON never changes. Between tags, the next version number may be regenerated freely.
+- Version 1 is the complete M1 schema. **A version is frozen once any tagged release (`vX.Y.Z`, tester builds included, [D63](../PLAN.md#3-key-decisions)) contains it**; afterwards its JSON never changes. Between tags, the next version number may be regenerated freely.
 - Any change to an entity, index, `@Database` entity list or FTS/view definition bumps `VERSION` by one and adds a migration and its test in the same change.
 - CI (09) runs KSP and fails on an uncommitted change under `schemas/` (drift check) and on any modification of a frozen version's JSON compared with the last tag.
 - `fallbackToDestructiveMigration*` is never used, in any build type.
@@ -1648,7 +1648,7 @@ Manual migration rules:
 - `MigrateAllTest`: create version 1 from `testFixtures/resources/db/v1-fixture.sql` (rows in **every** table, including edge values: null optionals, max lengths, emoji, a position of 1 ms), migrate to the current version, validate, compare invariants, then open with `NeutrodyneDatabase.build` and call one read function of every DAO.
 - `RebuildProcedureTest` (M1, before any real rebuild exists): the shared `TableRebuild.run(connection, table, newDdl, columnMap)` helper that every manual migration uses is applied to `podcast` and `episode` of the v1 fixture inside a `BEGIN EXCLUSIVE` transaction on a raw driver connection; asserts every child table keeps its row count and `sqlite_sequence` is unchanged, and that the helper refuses to run when `foreign_keys = 1`. Whether Room's own migration transaction runs with foreign keys off is spike S3's assertion.
 - Drivers: JVM/Robolectric with `AndroidSQLiteDriver`; instrumented (GMD API 26 and API 36) with both `BundledSQLiteDriver` and `AndroidSQLiteDriver`.
-- M11 acceptance criterion 9: migrate the frozen schema of the first tester build to the 1.0 schema with `MigrateAllTest`, and upgrade a device from the last beta through the in-app updater keeping all data (the updater replaces only the APK; the database, `noBackupFilesDir` and DataStore files stay in place).
+- M11 acceptance criterion 9: migrate the frozen schema of the first tester build to the 1.0 schema with `MigrateAllTest`, and upgrade a device from the previous release by installing the downloaded APK over it, keeping all data (Android's installer replaces only the APK; the database, `noBackupFilesDir` and DataStore files stay in place).
 
 ---
 
@@ -1659,7 +1659,7 @@ Serves N1. Delivered in M1.
 `DatabaseOpener` (in `:core:database`) owns opening and recovery. Initializer 100 of the start-up sequence calls `awaitOpen()` on IO, and 01's `StartupGate` renders instead of the app UI until it completes, so no ViewModel or repository exists before the database is open ([01 Application start-up](01-foundation.md#application-start-up)). The Hilt provider of `NeutrodyneDatabase` returns `requireDatabase()`, which blocks a background caller (a worker, a binder thread) until the open finishes and throws on the main thread if called before; framework components and initializers therefore hold database-backed dependencies lazily (01's rule).
 
 ```kotlin
-class DatabaseOpener @Inject constructor(/* context, driver, @Dispatcher(IO) io, clock, files */) {
+class DatabaseOpener @Inject constructor(/* context, driver, @Dispatcher(IO) io, clock, files, buildInfo (devTools) */) {
     suspend fun awaitOpen(): OpenResult            // idempotent; first call opens, later calls return the result;
                                                    // throws DatabaseOpenException if even a fresh database cannot be created
     fun requireDatabase(): NeutrodyneDatabase      // see above
@@ -1693,13 +1693,13 @@ flowchart TD
 - Quarantine keeps only the newest quarantined copy, for 14 days, for the diagnostics export; it is never backed up.
 - Mid-session corruption (`SQLITE_CORRUPT` from any statement): log redacted, write the quarantine marker only if `PRAGMA quick_check` also fails; the next start recovers.
 - `DatabaseOpenException` (for example `SQLITE_FULL` while creating the fresh database after a quarantine) maps to 01's `StartupState.database = Failed`: 08 shows "Not enough storage to open your library" with "Manage storage" and "Retry"; nothing is deleted. Retrying calls `awaitOpen()` again (a failed result is not cached).
-- A migration failure is quarantined only in release builds; debug and test builds rethrow, so a broken migration is never hidden during development.
+- A migration failure is quarantined in every published build — which is a debug build ([D2](../PLAN.md#3-key-decisions)) — and in `benchmark`; only dev-tools builds (`BuildInfo.devTools`, [01 Dev-tools switch](01-foundation.md#dev-tools-switch)) rethrow, so a broken migration is never hidden during development. Tests do not depend on the switch: `MigrationNToMTest` and `MigrateAllTest` run the migrations through `MigrationTestHelper` and fail on any migration error ([Tests](#tests)). The rule never keys to `BuildConfig.DEBUG`, which is true in every published APK.
 - Unverified: how `androidx.sqlite.SQLiteException` exposes SQLite result codes with each driver (spike S2 records it; detection falls back to message parsing confirmed by `PRAGMA quick_check`).
 
 | Failure | Detection | Behaviour |
 |---|---|---|
 | Unique violation on `feedKey`, `nameKey`, `uuid`, `(podcastId, identityKey)` | `SQLITE_CONSTRAINT_UNIQUE` | Repositories map `feedKey` → "already subscribed" (03), `nameKey` → `GroupError.NameTaken` (05); identity-key violations abort the feed transaction (03 records `IDENTITY_CONFLICT`). Others are bugs: rolled back, logged, `Outcome.Failure` |
-| FK violation | `SQLITE_CONSTRAINT_FOREIGNKEY` | Bug; transaction rolled back; crash in debug builds |
+| FK violation | `SQLITE_CONSTRAINT_FOREIGNKEY` | Bug; transaction rolled back; crash in dev-tools builds (`BuildInfo.devTools`), logged and `Outcome.Failure` in published builds |
 | Disk full | `SQLITE_FULL` | Write fails; refresh run ends with a storage error; a position save is retried on the next tick (at most 5 s lost, N1); 07 pauses lanes |
 | Long writer transaction | — | Avoided by the batch sizes in [Transactions and threading](#transactions-and-threading); no network or file I/O inside transactions |
 | Cancellation (worker stopped, quota) | `CancellationException` | Room rolls back the open transaction; per-feed and per-chunk transactions bound the lost work |
@@ -1762,7 +1762,7 @@ Fixtures (`core/database/src/testFixtures/`, consumed with `testImplementation(t
 | [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | No schema change: YouTube columns exist since version 1; `PodcastDao.applyYouTubeChannelMetadata`, the YouTube variant of `applyFeedMetadata`; the `VISIBLE` fragment and the `youtubePlayable` parameter become meaningful (`youtubePlayable = 0` on every APK until M9a) |
 | [M9](../PLAN.md#m9-youtube-playback-and-downloads-via-the-embedded-yt-dlp-engine) | M9a: no schema change ([D50](../PLAN.md#3-key-decisions)): YouTube download rows use `sourceKind = 'YOUTUBE'`, `formatPref`, `resolvedItag`; `IngestDao.applyYouTubeFacts`, `EpisodeDao.youtubeEnrichmentCandidates`, `EpisodeDao.setAvailability`; `WaitReason.YOUTUBE_ENGINE_OFF` appended (`TEXT`, no migration) with `markYouTubeEngineWaits`/`clearYouTubeEngineWaits` and `failYouTubeRowsWithoutEngine` for 07's engine-absent rules; context-tail callers re-query when capabilities change. M9b: nothing in Room — engine updates live in `noBackupFilesDir/ytdlp/` and DataStore ([Scope](#scope)) |
 | [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) | No schema change: `artwork.seedArgb`/`avgArgb` are populated |
-| [M11](../PLAN.md#m11-release-hardening-and-v10) | M11a: no schema change — the in-app updater keeps its state in DataStore and `noBackupFilesDir/updates/` and writes no `download` rows ([D78](../PLAN.md#3-key-decisions)). M11b: `DbMaintenanceWorker` (retention, orphan sweeps incl. credentials, import cleanup taken over from 05, optimize, quick_check, vacuum, stats), diagnostics export scrub, `RetentionTest`, size measurement against the budget (PB14), migration test from the first tester schema to 1.0 including an upgrade through the in-app updater (M11 acceptance 9) |
+| [M11](../PLAN.md#m11-release-hardening-and-v10) | M11a: no schema change — the update check keeps its state in DataStore and `noBackupFilesDir/updates/last-check.json` and writes no rows ([D78](../PLAN.md#3-key-decisions)). M11b: `DbMaintenanceWorker` (retention, orphan sweeps incl. credentials, import cleanup taken over from 05, optimize, quick_check, vacuum, stats), diagnostics export scrub, `RetentionTest`, size measurement against the budget (PB14), migration test from the first tester schema to 1.0, including an upgrade by a manual install of the downloaded APK (M11 acceptance 9) |
 | M12–M15 | Migrations for `episode_fts` (M15), `sponsor_segment` (M14), boost/intro/outro columns already reserved (M12) |
 
 ---
