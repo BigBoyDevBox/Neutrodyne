@@ -37,10 +37,10 @@ Packages follow `ch.lkmc.neutrodyne` + module path; `:desktopApp` uses `ch.lkmc.
 | Module | Kind | Contents owned here | Depends on (project) |
 |---|---|---|---|
 | `:desktopApp` | `neutrodyne.desktop.application` (kotlin("jvm"), Compose application, Metro) | `MainKt`, `DesktopAppGraph`, `DesktopYouTubeBindingsModule`, `NeutrodyneWindow`, `DesktopMenuBar`, `SingleInstanceLock`, `InstanceHandshake`, `DesktopOpenHandler`, `UrlSchemeRegistrar`, `DesktopCrashReporter`, `ShutdownCoordinator`, `SmokeMode`, `BuildInfo`, `nativeDistributions` configuration, AOT training | features, shared implementations, the desktop-only modules (composition root, [PLAN 5.1](../PLAN.md#51-module-graph) rule 1) |
-| `:playback:engine` | `neutrodyne.desktop.library` (JVM, `jvmTarget` 25) | `AudioEngine`, `FfAudioEngine`, `EngineItem`, `EngineState`, `EngineEvent`, `DesktopSourceResolver`, `ResolvedSource`, `ByteSource`, `FileByteSource`, `HttpByteSource`, `SpanCache`, `AvioBridge`, `DemuxerFactory`, `FfDemuxer`, `DecoderFactory`, `FfDecoder`, `FfmpegLibrary`, `SilenceSkipper`, `Sonic`, `GainStage`, `TimelineClock`, `LookAheadLoader`; `MpvAudioEngine` only if MD0 chooses the fallback | `:playback:native`, `:core:network:okhttp`, `:core:{model, common}`, `:playback:api` |
+| `:playback:engine` | `neutrodyne.desktop.library` (JVM, `jvmTarget` 25) | `AudioEngine`, `FfAudioEngine`, `EngineItem`, `EngineState`, `EngineEvent`, `DesktopSourceResolver`, `ResolvedSource`, `ByteSource`, `FileByteSource`, `HttpByteSource`, `SpanCache`, `AvioBridge`, `DemuxerFactory`, `FfDemuxer`, `DecoderFactory`, `FfDecoder`, `FfmpegLibrary`, `SilenceSkipper`, `Sonic`, `GainStage`, `TimelineClock`, `LookAheadLoader`, `EngineWindowDiff`; `MpvAudioEngine` only if MD0 chooses the fallback | `:playback:native`, `:core:network:okhttp`, `:core:{model, common}` |
 | `:playback:native` | `neutrodyne.desktop.library` + `neutrodyne.desktop.native` | `ndmedia` C/C++/Objective-C sources and CMake project, `NdmediaLibrary`, `NdOutput`, the OS-shim bindings, `playback/native/ffmpeg/build.sh`, `ffoffsets.c`, `native-components.lock` | — |
-| `:playback:desktop` | `neutrodyne.desktop.library` | `DesktopPlaybackController`, `DesktopQueueProjector`, `DesktopPlaybackModule` | `:playback:core`, `:playback:engine`, `:desktop:system`, `:download:api`, `:youtube:api`, `:core:artwork`, `:core:database`, `:core:datastore` |
-| `:desktop:system` | `neutrodyne.desktop.library` | `SystemMediaSession`, `WindowsSmtcSession`, `MacNowPlayingSession`, `LinuxMprisSession`, `PowerMonitor`, `IdleSleepInhibitor`, `AudioRouteMonitor`, `TrayController`, `LoginItemRegistrar` (`WindowsRunKeyRegistrar`, `MacLoginItemRegistrar`, `XdgAutostartRegistrar`), `DesktopNotifier` | `:playback:native` (shims), `:core:{model, common}` |
+| `:playback:desktop` | `neutrodyne.desktop.library` | `DesktopPlaybackController`, `DesktopQueueProjector`, `DesktopEpisodeSourceResolver` (implements `DesktopSourceResolver`), `DesktopChapterExtractor`, `DesktopPlaybackModule` | `:playback:core`, `:playback:engine`, `:desktop:system`, `:download:api`, `:youtube:api`, `:core:artwork`, `:core:database`, `:core:datastore` |
+| `:desktop:system` | `neutrodyne.desktop.library` | `SystemMediaSession`, `WindowsSmtcSession`, `MacNowPlayingSession`, `LinuxMprisSession`, `PowerMonitor`, `IdleSleepInhibitor`, `AudioRouteMonitor`, `TrayController`, `LoginItemRegistrar` (`WindowsRunKeyRegistrar`, `MacLoginItemRegistrar`, `XdgAutostartRegistrar`), `DesktopNotifier` | `:playback:native` (shims), `:playback:api` (state types), `:core:{model, common}` |
 | `:youtube:ytdlp-desktop` | `neutrodyne.desktop.library` | `YtxProcess`, `StdioYtxTransport`, `PythonRuntimeLocator`, `DesktopEngineStorePaths`, `DesktopEngineUpdateLane`, `QuickJsBridge` (only with the JS provider); PBS bundling; `python-components.lock` | `:youtube:engine`, `:youtube:api`, `:core:datastore` |
 
 Desktop code that lives in other owners' modules and follows this document's rules: `AppDirs` and `JobLane` (`:core:common` `desktopMain`); `DesktopJobRunner`, `DesktopRefreshLane`, `DesktopUpdateCheckLane`, `DesktopUpdateNotifier`, `DesktopSecretStore`, `DesktopMaintenanceLane` (`:core:data` `desktopMain`); `DesktopDownloadLane`, `DesktopMoveLane` (`:download:impl` `desktopMain`, 07); `DesktopArtworkLane` (`:core:artwork`, 08); `DesktopSyncLane` (`:sync:impl`, 10); `DesktopNetworkMonitor` (`:core:network`, 01); the `PlatformActions` implementations (`:core:ui` `desktopMain`, 08). Only `:youtube:ytdlp-desktop` may start a process; only `:playback:native` and `:desktop:system` make FFM downcalls into our own native code; `:playback:engine` makes FFM downcalls into FFmpeg only ([PLAN 5.1](../PLAN.md#51-module-graph) rule 6; `checkBannedApis`, [01 Dependency rules](01-foundation.md#dependency-rules)).
@@ -145,7 +145,7 @@ R8.1 requires every difference to be listed here. Everything not in this table b
 
 ## Desktop shell
 
-Serves R8.2, R8.3, R8.11, R1.1 (desktop file opening), N7. Delivered in M0b (window, menu bar, tray stub, single instance, `AppDirs`, crash files, smoke mode), M1a (database and screens), MD2 (URL schemes, file associations, close behaviour, start at login), MD4 (menus and shortcuts), MD5 (final installer integration). Honours [D85](../PLAN.md#3-key-decisions), [D61](../PLAN.md#3-key-decisions), [D62](../PLAN.md#3-key-decisions), [PO-44](../PLAN.md#48-further-product-owner-decisions).
+Serves R8.2, R8.3, R8.11, R1.1 (desktop file opening), N7. Delivered in M0b (window, menu bar, tray stub, single instance, `AppDirs`, crash files, smoke mode), M1a (database and screens), MD2 (URL schemes, file associations, close behaviour, start at login), MD4 (menus and shortcuts), MD5 (final installer integration). Honours [D85](../PLAN.md#3-key-decisions), [D61](../PLAN.md#3-key-decisions), [D62](../PLAN.md#3-key-decisions), [PO-44](../PLAN.md#48-further-product-owner-decisions). The window's menus are specified in [Menus](#menus), the crash files in [Crash files and the email dialog](#crash-files-and-the-email-dialog).
 
 ### Start-up sequence
 
@@ -168,12 +168,12 @@ sequenceDiagram
     H-->>M: ok
     M->>M: exit 0 without creating a window
   else lock acquired
+    M->>H: serve on 127.0.0.1, write instance.port and instance.token (hand-offs queue until the UI is ready)
     M->>M: create directories 0700, start file logging, install DesktopCrashReporter, write session.json (cleanExit false)
     M->>M: Windows only, SetCurrentProcessExplicitAppUserModelID
     M->>G: start the database open on IO, build the graph, run initializer bands 0 to 199
     M->>W: application, restore window bounds, install DesktopOpenHandler, show (iconified with --background)
     W-->>M: first frame
-    M->>H: serve on 127.0.0.1, write instance.port and instance.token
     G->>R: band 200 starts the lanes after the database is open
     M->>W: route queued links and files, publish the restored session (paused)
   end
@@ -183,11 +183,11 @@ Steps in detail:
 
 1. **`main(args)`** records `System.nanoTime()` for PB24, reads `-Dneutrodyne.smoke` ([Smoke mode](#smoke-mode)) and splits the arguments into `--background` (start at login) and inputs (links and paths). Unknown flags are ignored and logged.
 2. **`AppDirs.resolve()`** computes every path from the environment without touching the disk ([AppDirs](#appdirs)); only `state` is created before the lock.
-3. **Lock** ([Single instance and handshake](#single-instance-and-handshake)). A second launch hands its inputs to the first instance and exits before AWT is initialised, so no window or Dock icon appears.
+3. **Lock and hand-off server** ([Single instance and handshake](#single-instance-and-handshake)). A second launch hands its inputs to the first instance and exits before AWT is initialised, so no window or Dock icon appears; the instance that takes the lock starts its hand-off server at once.
 4. **Process set-up** in the instance that holds the lock: create the other directories with mode `0700` on macOS and Linux; open the rolling log ([Logs and rotation](#logs-and-rotation)); install `DesktopCrashReporter` and read the previous `session.json` ([Crash files and the email dialog](#crash-files-and-the-email-dialog)); on Windows call `SetCurrentProcessExplicitAppUserModelID("ch.lkmc.neutrodyne")` through `ndmedia` before any window exists, because the media flyout and toasts attribute the process by that ID ([AppUserModelIDs](https://learn.microsoft.com/en-us/windows/win32/shell/appids), [SetCurrentProcessExplicitAppUserModelID](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-setcurrentprocessexplicitappusermodelid)); apply `desktop.language` with `Locale.setDefault` ([D83](../PLAN.md#3-key-decisions)).
 5. **Database and graph.** `DesktopDatabaseFactory` opens `<data>/neutrodyne.db` with `BundledSQLiteDriver` on `Dispatchers.IO` while `DesktopAppGraph` is built; band 100 awaits the open as on Android, so the window never blocks on migrations ([02 Error handling and recovery](02-data-model.md#error-handling-and-recovery) for a damaged database). The desktop contributes its own initializers: band 0–99 `UrlSchemeRegistrar` (Windows, [Links and files from the OS](#links-and-files-from-the-os)), `WindowsShortcutIdentity` (MSI installs, [Windows MSI and ZIP](#windows-msi-and-zip)); band 100–199 `DesktopSecretStore` load and the `LocalMediaIndex` load; band 200 `DesktopJobRunner.start()` in place of WorkManager scheduling; band 300 `DesktopPlaybackController` session restore and `SystemMediaSession` start.
 6. **Window.** `application { NeutrodyneWindow(…) }` on the EDT restores `desktop.window_bounds` ([Window and tray behaviour](#window-and-tray-behaviour)), installs `DesktopOpenHandler` (macOS `Desktop.setOpenURIHandler` and `setOpenFileHandler` must be installed before the first event is delivered) and renders the shared navigation suite ([08 Navigation](08-ui-ux.md#navigation)). With `--background` the window starts iconified.
-7. **After the first frame:** start the hand-off server, process the queued inputs through `IntentRouter`, publish the restored session (paused) to the OS media session so media keys work at once, and show the tray icon only if the state requires it.
+7. **After the first frame:** process the queued inputs (first-launch arguments and hand-offs received meanwhile) through `IntentRouter`, publish the restored session (paused) to the OS media session so media keys work at once, and show the tray icon only if the state requires it.
 
 ### DesktopAppGraph
 
@@ -230,9 +230,9 @@ sealed interface HandoffOutcome { data object Delivered : HandoffOutcome; data o
 | Step | Rule |
 |---|---|
 | Lock | `FileChannel.open(<state>/instance.lock, CREATE, WRITE).tryLock()`. The OS releases the lock when the process ends, also after a crash, so a stale file never blocks a start. The owner writes `{pid, startedAt, versionName}` into the file for diagnostics; the content is never trusted for decisions. `AppDirs` are local paths, so network-filesystem lock semantics do not apply (a home directory on NFS is unsupported, Unverified behaviour) |
-| Server | After the first frame the owner binds `ServerSocketChannel` to `InetAddress.getLoopbackAddress()` port 0, then writes `instance.port` (decimal) and `instance.token` (32 bytes from `SecureRandom`, base64url) atomically (temp file + rename), mode `0600` on macOS and Linux; on Windows the files inherit the user-only ACL of `%LOCALAPPDATA%`. Each connection: read one JSON line ≤ 64 KiB within 2 s, compare the token in constant time, reply `HandoffResponse`, close. Wrong token, oversize or timeout → close without a reply, logged at WARN |
+| Server | Right after acquiring the lock, before the graph and AWT start, the owner binds `ServerSocketChannel` to `InetAddress.getLoopbackAddress()` port 0, then writes `instance.port` (decimal) and `instance.token` (32 bytes from `SecureRandom`, base64url) atomically (temp file + rename), mode `0600` on macOS and Linux; on Windows the files inherit the user-only ACL of `%LOCALAPPDATA%`. Each connection: read one JSON line ≤ 64 KiB within 2 s, compare the token in constant time, reply `HandoffResponse`, close; requests that arrive before the first frame are queued and applied after it. Wrong token, oversize or timeout → close without a reply, logged at WARN |
 | Client | The second launch reads port and token, connects with a 1-s timeout, sends one line and waits ≤ 3 s. On Windows it first calls `AllowSetForegroundWindow(ownerPid)` through JNA, because only the foreground process may bring another window to the front (Unverified that the first instance's `toFront()` then succeeds; MD2 checks) |
-| Retry | Lock held but no port file, a refused connection or no answer: retry 5 × 200 ms (the owner may still be starting; the server binds after the first frame). Still nothing: a small AWT dialog "Neutrodyne is already running but is not responding. Wait a moment and try again, or end it in Task Manager / Activity Monitor / your system monitor." and exit code 2. The lock is never broken |
+| Retry | Lock held but no port file, a refused connection or no answer: retry 10 × 200 ms (the owner binds within milliseconds of taking the lock, but may be busy starting). Still nothing: a small AWT dialog "Neutrodyne is already running but is not responding. Wait a moment and try again, or end it in Task Manager / Activity Monitor / your system monitor." and exit code 2. The lock is never broken |
 | Hand-off | The owner resolves relative paths against `cwd`, passes the inputs to `DesktopOpenHandler`, and, with `activate`, shows the window (from the tray if hidden), de-iconifies it and calls `toFront()` |
 | macOS | LaunchServices activates a running app instead of starting a second one and delivers links and files through the `java.awt.Desktop` handlers; the lock still guards `open -n` and direct launches of the binary |
 
@@ -263,7 +263,7 @@ Rules:
 - **Windows:** `%LOCALAPPDATA%` from the environment; if it is unset or relative, `SHGetKnownFolderPath(FOLDERID_LocalAppData)` through JNA ([KNOWNFOLDERID](https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid)). Never `%APPDATA%` (roaming profiles would copy a large database between machines).
 - **Linux:** an `XDG_*` variable is used only when it is an absolute path; otherwise the default applies ([XDG Base Directory](https://specifications.freedesktop.org/basedir/latest/)).
 - **macOS:** fixed paths under `user.home`; the data directory is named by the frozen bundle ID.
-- **Ownership:** the app creates the directories; it never writes outside them except to the user's chosen download folder ([Desktop downloads and storage](#desktop-downloads-and-storage)), the per-user OS registrations of [Links and files from the OS](#links-and-files-from-the-os) and [Start at login](#start-at-login), and the OS caches of the toolkit (Skiko may unpack natives, [Native libraries](#native-libraries-and-native-access)).
+- **Ownership:** the app creates the directories; it never writes outside them except to the user's chosen download folder ([Desktop downloads and storage](#desktop-downloads-and-storage)), the per-user OS registrations of [Links and files from the OS](#links-and-files-from-the-os) and [Start at login](#start-at-login), and the native-library extraction directories of third-party loaders that cannot be pointed at the image ([Native libraries and native access](#native-libraries-and-native-access)).
 - **Uninstall** never touches these directories ([Uninstall and data retention](#uninstall-and-data-retention)).
 - **Tests** create `AppDirs` under a temporary directory through the test graph; packaged images have no directory override other than smoke mode's.
 
@@ -275,7 +275,8 @@ Rules:
 |---|---|---|
 | File | `<data>/secrets.bin` | `<data>/secrets.json` |
 | Protection | `CryptProtectData` for the current user with `CRYPTPROTECT_UI_FORBIDDEN` and the constant entropy `ch.lkmc.neutrodyne/secrets/v1`, through JNA under its Apache-2.0 option ([CryptProtectData](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata), [JNA licence](https://github.com/java-native-access/jna/blob/master/LICENSE)) | File mode `0600` set at creation (`PosixFilePermissions`), directory `0700`; no encryption (anything running as the user can read it; disclosed in the help) |
-| Content (plaintext form) | `{"v":1,"entries":{"https://feeds.example.com":{"user":"…","secret":"…"},"sync:sync.example.net":{"secret":"nds_…"}}}` | same |
+| Content (plaintext form) | `{"v":1,"entries":{"https://feeds.example.com":{"user":"…","secret":"…"},"sync:sync.example.net":{"secret":"nds_…","fp":"<sha256>"}}}` | same |
+| Installation fingerprint | `fp` on `sync:` entries = SHA-256 of host name, OS user name and the data-directory path; a mismatch (a data directory copied to another computer) makes 10's `SyncTokenStore` ignore the token and show "Reconnect" ([10 Client sync engine](10-sync.md#client-sync-engine)) | same |
 | Writes | Whole file, atomically: temp file in the same directory with the same protection, then `ATOMIC_MOVE`; serialised by a mutex | same |
 | Never | In logs, crash files, diagnostics (counts only), backups or sync payloads (except opted-in passwords per R1.9 and R7.3) | same |
 
@@ -339,7 +340,7 @@ Caps: ≤ 20 inputs per hand-off, each ≤ 4 KiB; files must be regular files �
 
 ### Shutdown
 
-`ShutdownCoordinator` runs on "Quit" (menu, tray, Cmd+Q), on the idle quit of [Window and tray behaviour](#window-and-tray-behaviour), on an OS logout or shutdown (AWT `QuitHandler` on macOS, `WM_QUERYENDSESSION` through the window on Windows, the JVM shutdown hook on Linux) and on a hand-off failure that ends the process. Budget 5 s; a watchdog calls `Runtime.halt(0)` after 10 s.
+`ShutdownCoordinator` runs on "Quit" (menu, tray, Cmd+Q), on the idle quit of [Window and tray behaviour](#window-and-tray-behaviour), after a crash dialog, and on an OS logout or shutdown (AWT `QuitHandler` on macOS, `WM_QUERYENDSESSION` through the shim window on Windows, the JVM shutdown hook on Linux). Budget 5 s; a watchdog calls `Runtime.halt(0)` after 10 s.
 
 1. Pause playback and flush `PositionSaver` (≤ 1 s, N1).
 2. `DesktopJobRunner.stop(grace = 3 s)`: lanes are cancelled; transfers keep their `.part` files and rows ([07 Desktop runners](07-downloads.md#desktop-runners)).
@@ -402,7 +403,7 @@ stateDiagram-v2
 | Second instance cannot reach the first | Retry, then the dialog of [Single instance and handshake](#single-instance-and-handshake); the lock is never broken |
 | FFmpeg or `ndmedia` fails to load (missing, wrong major, blocked by security software) | The app runs; playback reports `PLAYER_ERROR` with "Audio engine unavailable — see Diagnostics"; diagnostics show the loader error ([Desktop diagnostics and crash files](#desktop-diagnostics-and-crash-files)) |
 | Skiko cannot create a GPU context | Skiko falls back to software rendering; first frame and scrolling are slower (recorded in diagnostics) |
-| Uncaught exception on the EDT or a lane | Crash file and the next-start dialog for the EDT and the main thread; lanes catch, log and continue ([Background work](#background-work)) |
+| Uncaught exception on the EDT or the main thread | Crash file, an immediate "has to close" dialog and a quit through `ShutdownCoordinator`; the email offer follows at the next start ([Crash files and the email dialog](#crash-files-and-the-email-dialog)). Lanes catch, log and continue ([Background work](#background-work)) |
 | JVM out of memory | `-XX:+ExitOnOutOfMemoryError`, then the unclean-exit path of [Crash files and the email dialog](#crash-files-and-the-email-dialog) |
 
 ### Security rules for the desktop process
@@ -479,7 +480,7 @@ data class LaneStatus(val running: Boolean, val lastStartAt: Instant?, val lastE
 R8.7 requires overdue work to start within 2 min after a wake or restart.
 
 - **Restart:** the first tick runs ≤ 5 s after the database opens and every lane finds its overdue work from persisted state.
-- **Wake:** `PowerMonitor.Resumed` ([Power](#power-suspend-wake-and-idle-sleep)), or a tick that sees the wall clock advance more than 90 s beyond the monotonic clock (a missed or late suspend notice), marks a wake: evict the OkHttp connection pools (sockets do not survive sleep), wait until `NetworkMonitor` reports online or 60 s pass, then poke every lane. Lanes then work through backlogs at their normal limits.
+- **Wake:** `PowerMonitor.Resumed` ([Power](#power-suspend-wake-and-idle-sleep)), or a tick that sees the wall clock advance more than 90 s beyond the monotonic clock (a missed or late suspend notice; on Windows the monotonic clock may count sleep time, so there the notice is the signal, Unverified), marks a wake: evict the OkHttp connection pools (sockets do not survive sleep), wait until `NetworkMonitor` reports online or 60 s pass, then poke every lane. Lanes then work through backlogs at their normal limits.
 - **Suspend:** nothing is cancelled; the OS freezes the process. Transfers that fail on resume retry with 07's backoff from their `.part` files; refreshes in flight fail and are retried at their next due time.
 - **Clock changes:** due times are wall-clock instants; a manual clock change behaves like a wake (catch-up) or a delay (work waits for its time).
 
@@ -552,7 +553,7 @@ Commands are coalesced on `nd-playback`; seeks are rate-limited to 10 per second
 
 ### macOS Now Playing
 
-- `MPNowPlayingInfoCenter.default().nowPlayingInfo` ([docs](https://developer.apple.com/documentation/mediaplayer/mpnowplayinginfocenter)) with title, artist, album title, `PlaybackDuration`, `ElapsedPlaybackTime`, `PlaybackRate` (0 while paused), `DefaultPlaybackRate` (the effective speed), media type audio and `MPMediaItemArtwork` whose request handler loads the artwork file at the requested size. `playbackState` is set every time playback begins or halts, as Apple requires on macOS.
+- `MPNowPlayingInfoCenter.default().nowPlayingInfo` ([docs](https://developer.apple.com/documentation/mediaplayer/mpnowplayinginfocenter)) with title, artist, album title, `PlaybackDuration`, `ElapsedPlaybackTime`, `PlaybackRate` (the effective speed while playing, 0 while paused; the system extrapolates the elapsed time from it), `DefaultPlaybackRate` 1.0, media type audio and `MPMediaItemArtwork` whose request handler loads the artwork file at the requested size. `playbackState` is set every time playback begins or halts, as Apple requires on macOS.
 - `MPRemoteCommandCenter` ([docs](https://developer.apple.com/documentation/mediaplayer/mpremotecommandcenter)): the commands of the table; seek-forward and seek-backward (continuous scrubbing), like, dislike and bookmark are disabled.
 - **Threading:** handlers are registered on the main thread by the Objective-C shim; each calls one C function pointer (the FFM upcall), which only enqueues, and returns success.
 - Unverified: that macOS routes media keys to a JVM app whose audio goes through miniaudio's Core Audio back-end (MD0 AC4).
@@ -687,7 +688,7 @@ interface AudioEngine : AutoCloseable {
     val state: StateFlow<EngineState>
     val events: SharedFlow<EngineEvent>
     fun setWindow(items: List<EngineItem>, currentIndex: Int, startPositionMs: Long?)
-    fun updateWindow(diff: WindowDiff)          // :playback:core's diff; the current item is never re-prepared
+    fun updateWindow(diff: EngineWindowDiff)    // insert, remove, move, replace of non-current items; the current item is never re-prepared
     fun play(); fun pause(); fun seekTo(positionMs: Long)
     fun setSpeed(speed: Float)                  // 0.5..3.0, Sonic, pitch kept
     fun setSkipSilence(enabled: Boolean)
@@ -742,15 +743,15 @@ fun interface DecoderFactory { fun create(track: AudioTrackInfo): Decoder }
 
 | Concern | Desktop behaviour |
 |---|---|
-| Starting playback | `PlayStarter` writes `play_session` and returns the `PlayResult` exactly as on Android; with sync linked, UI-started plays first run "pull before play" with a 1.5-s budget ([10 Client sync engine](10-sync.md#client-sync-engine)). There is no metered gate (`NeedsMeteredConsent` never occurs) and no `ServiceUnavailable` (the engine lives in the process) |
-| Window | `DesktopQueueProjector` feeds `QueueWindowPlanner`'s window (current + Up next + 20 context items) and its `WindowDiff`s to `setWindow` / `updateWindow`; external-mode YouTube items are never projected ([04 Capability matrix](04-youtube.md#capability-matrix)) |
+| Starting playback | `PlayStarter` writes `play_session` and returns the `PlayResult` exactly as on Android; with sync linked, UI-started plays first run "pull before play" (`PrePlaySync`, ≤ 1.5 s, [10 Client sync engine](10-sync.md#client-sync-engine)). There is no metered gate (`NeedsMeteredConsent` never occurs) and no `ServiceUnavailable` (the engine lives in the process) |
+| Window | `DesktopQueueProjector` feeds `QueueWindowPlanner`'s window (current + Up next + 20 context items) to `setWindow` and translates its `WindowDiff`s into `EngineWindowDiff`s for `updateWindow` (so `:playback:engine` needs no `:playback:core` types); external-mode YouTube items are never projected ([04 Capability matrix](04-youtube.md#capability-matrix)) |
 | Positions | `PositionSaver`: every 5 s while advancing and on pause, seek, transition (outgoing item first), quit, `Suspending` and device loss; a stored non-zero position is never replaced by 0 except by reset or mark-played (N1, [06 Positions and played state](06-playback.md#positions-and-played-state)) |
 | Played and measured duration | `PlayedRule` on transitions and near the end; the demuxer's duration is written as measured duration by 06's rule |
 | Effective settings | Speed and skip silence from `EffectivePlaybackSettings` (podcast → group → global, [D45](../PLAN.md#3-key-decisions)); applied before the first output of an item and at transitions |
 | Sleep timer | `SleepTimerCore` counts only while playing; its 10-s fade drives `setFade` in 20 steps; end-of-episode pauses at the end and marks played ([06 Sleep timer](06-playback.md#sleep-timer)) |
 | Chapters | Container chapters from `TracksKnown` merged with Podcasting 2.0 JSON and PSC by `ChapterIndex` ([06 Chapters](06-playback.md#chapters)); `DesktopChapterExtractor` implements `ChapterRepository.ensureLoaded(id, localFile)` with `FfDemuxer` for downloads |
 | OS surfaces | Publishes `NowPlaying` to `SystemMediaSession`; acquires and releases `IdleSleepInhibitor`; reacts to `PowerMonitor` and `AudioRouteMonitor` ([OS integration](#os-integration)) |
-| Remote sessions (MS3) | A playing controller ignores remote sessions; an idle one shows "Continue on this device" when `SessionAdopter` writes a newer session; resuming goes through `play()` ([06 Shared playback core](06-playback.md#shared-playback-core), [10 Conflict resolution](10-sync.md#conflict-resolution)) |
+| Sync ports (MS2, MS3) | `DesktopPlaybackController` implements 10's `PlaybackSyncPort` (`active`, `PAUSED` / `STOPPED` / `TRANSITIONED` events, `onRemoteMarkedPlayed` freezing position writes without skipping or stopping) and calls `PrePlaySync.beforeStart()` before UI-started plays. A playing controller ignores remote sessions; an idle one shows "Continue on this device" when `SessionAdopter` writes a newer session; resuming goes through `play()` ([06 Shared playback core](06-playback.md#shared-playback-core), [10 Conflict resolution](10-sync.md#conflict-resolution)) |
 
 `EngineState` maps to `:playback:api`'s `PlayerPhase`: `Idle` → `NOT_LOADED`, `Buffering` → `BUFFERING`, `Ready` → `READY`, `Ended` → `ENDED`, `Error` → `ERROR` with `PlaybackIssue` per [Engine errors and recovery](#engine-errors-and-recovery). `StreamKind` is `LOCAL`, `STREAM` or `YOUTUBE` from the `ResolvedSource`.
 
@@ -783,7 +784,7 @@ Loop of `nd-engine`, per iteration (one block ≈ 1,024 output frames):
 
 ### Sources and SpanCache
 
-`DesktopSourceResolver` applies 06's resolution rules without Media3 types ([06 EpisodeResolver](06-playback.md#episoderesolver)): a downloaded file from `LocalMediaIndex` wins; otherwise the pinned enclosure (`ep:{episodeId}:{fingerprint}`, a new pin at each connection, the stale final URL dropped on retry); otherwise, for YouTube with the engine available, `YouTubeStreamResolver` ([04 Stream resolution](04-youtube.md#stream-resolution)) and the key `yt:{videoId}:{formatId}`, waiting for `availableAtMs` up to 30 s as 06 does. In external mode a YouTube item is `Unsupported` before any resolve.
+`DesktopEpisodeSourceResolver` (`:playback:desktop`, behind the engine's `DesktopSourceResolver` interface) applies 06's resolution rules without Media3 types ([06 EpisodeResolver](06-playback.md#episoderesolver)): a downloaded file from `LocalMediaIndex` wins; otherwise the pinned enclosure (`ep:{episodeId}:{fingerprint}`, a new pin at each connection, the stale final URL dropped on retry); otherwise, for YouTube with the engine available, `YouTubeStreamResolver` ([04 Stream resolution](04-youtube.md#stream-resolution)) and the key `yt:{videoId}:{formatId}`, waiting for `availableAtMs` up to 30 s as 06 does. In external mode a YouTube item is `Unsupported` before any resolve.
 
 | Component | Rules |
 |---|---|
@@ -1204,12 +1205,12 @@ Changing any of these after the first public desktop release creates a different
 
 ### jlink modules
 
-The start list is the `suggestModules` result of the research build (Compose 1.12.1, Material 3, a cover grid) plus three modules the features need; `suggestModules` runs in CI when dependencies change, and the packaged-app smoke start on every target catches a missing module at run time (risk [T25](../PLAN.md#8-risks-and-mitigations)).
+The start list is the 14-module set the research build (Compose 1.12.1, Material 3, a cover grid) was packaged and measured with, minus `jdk.crypto.ec` (its provider moved into `java.base`; Unverified for JDK 25), plus two modules the features need; `suggestModules` runs in CI when dependencies change, and the packaged-app smoke start on every target catches a missing module at run time (risk [T25](../PLAN.md#8-risks-and-mitigations)).
 
 | Module | Why |
 |---|---|
 | `java.base`, `java.desktop`, `java.datatransfer`, `java.prefs`, `java.xml` | AWT, Swing, Compose desktop, tray, file dialogs, drag and drop, `java.awt.Desktop` |
-| `java.logging`, `java.management`, `java.naming`, `java.security.sasl`, `java.sql`, `java.transaction.xa` | Required by libraries on the classpath per the research `suggestModules` run (re-checked for our classpath) |
+| `java.logging`, `java.management`, `java.naming`, `java.security.sasl`, `java.sql`, `java.transaction.xa` | In the measured research image; kept until `suggestModules` on our classpath shows which are unused |
 | `jdk.unsupported` | `sun.misc.Unsafe` users (Okio, coroutines, Skiko) |
 | `jdk.accessibility` | Java Access Bridge on Windows (R8.10, [Accessibility](#accessibility)) |
 | `jdk.charsets` | Feed encodings outside `java.base` (for example Shift_JIS, GBK, Big5), [03 Parser](03-feeds-and-discovery.md#parser) |
@@ -1651,7 +1652,7 @@ Serves N1, N4, N5, N7, N8, N11 for the desktop; risks T19, T20, T24, T25, T26. R
 | Test class | Runner | Cases | Milestone |
 |---|---|---|---|
 | `AppDirsTest` | `desktopTest` (pure) | each OS with and without `LOCALAPPDATA`, `XDG_*` absolute, relative (ignored) and unset; macOS paths from `user.home`; `ensureCreated` sets `0700` on POSIX | M0b |
-| `SingleInstanceTest` | `desktopTest`, two JVMs started by the test | second launch delivers its arguments and exits 0 without creating a window; owner still starting (no port file) → retries then succeeds; wrong token rejected; oversize line rejected; owner killed → the lock is free at once; stale `instance.port` overwritten (M0 AC11) | M0b |
+| `SingleInstanceTest` | `desktopTest`, two JVMs started by the test (test sources are outside the `ProcessBuilder` rule) | second launch delivers its arguments and exits 0 without creating a window; owner still starting (no port file) → retries then succeeds; wrong token rejected; oversize line rejected; owner killed → the lock is free at once; stale `instance.port` overwritten (M0 AC11) | M0b |
 | `DesktopOpenHandlerTest` | `desktopTest` | every input row of [Links and files from the OS](#links-and-files-from-the-os) → its route; relative paths resolved against `cwd`; > 20 inputs truncated; directory and unknown type → message; inputs before the first frame queued in order | M0b, MD2 |
 | `UrlSchemeRegistrarTest` | nightly on `windows-2025` | `neutrodyne` written; a foreign `feed` handler is not overwritten; one of ours is updated to the current launcher; "take over" overwrites | MD2 |
 | `CloseBehaviourTest` | `desktopTest` with fakes | idle close quits within 2 s; close while playing or downloading hides and shows the tray; `KEEP_RUNNING` always hides; hidden and idle for 10 min quits (`TestClock`); no tray support → iconify (MD2 AC3) | M0b, MD2 |
@@ -1661,7 +1662,7 @@ Serves N1, N4, N5, N7, N8, N11 for the desktop; risks T19, T20, T24, T25, T26. R
 | `DesktopNotifierTest` | `desktopTest` (Linux back end over the private bus; fakes elsewhere) | one notification per event; `replaces_id` reuse; click → route; no server → banner fallback | MD2 |
 | `SpanCacheTest` | `desktopTest` | spans written, extended, read across span boundaries; LRU eviction by `lastAccess` with pinned resources kept; limit change applies at once; `ep:` resource emptied at a new pin; `yt:` reused across sessions and dropped on a `clen` mismatch; write failure → uncached reads continue; `clear` keeps current pins | MD1a |
 | `HttpByteSourceTest` | `desktopTest` + MockWebServer | `Range`/`If-Range` resume after a cut; server ignoring `Range` (200) → restart from 0 without corrupting spans; 403 then success after re-resolve; changed total length → `ContentChangedException`; throttled server → `Buffering` then playback; `Accept-Encoding: identity` and the User-Agent sent (MD1 AC2) | MD1a |
-| `DesktopSourceResolverTest` | `desktopTest` with fakes for `LocalMediaIndex`, `YouTubeStreamResolver`, capabilities | local file wins; a new pin starts an empty resource; stale final URL dropped on `attempt` 1; YouTube key `yt:{videoId}:{formatId}`; external mode → `Unsupported` before any resolve; `availableAtMs` waits ≤ 30 s | MD1a, MD3 |
+| `DesktopEpisodeSourceResolverTest` | `desktopTest` with fakes for `LocalMediaIndex`, `YouTubeStreamResolver`, capabilities | local file wins; a new pin starts an empty resource; stale final URL dropped on `attempt` 1; YouTube key `yt:{videoId}:{formatId}`; external mode → `Unsupported` before any resolve; `availableAtMs` waits ≤ 30 s | MD1a, MD3 |
 | `TimelineClockTest` | `desktopTest` | position across speed changes, silence-skip markers, seeks and transitions; latency offset; lock-free reads from another thread | MD0, MD1a |
 | `SilenceSkipperParityTest`, `SonicParityTest` | `desktopTest` against committed golden PCM produced by Media3's own processors in a `:playback:impl` unit test | sample-exact equality for speech, music and silence fixtures at 0.5×, 1×, 1.5×, 2×, 3× | MD0, MD1a |
 | `FfAudioEngineTest` | `desktopTest`, null back-end, the generated corpus | play, pause, seek, speed 0.5–3.0×, skip silence: reported position within 50 ms of the reference timeline (MD1 AC1); a non-zero position never replaced by 0 (`PositionSaverTest` shared); transition gap ≤ 50 ms, no device restart (MD1 AC4); prepare failure of the next item → skipped | MD1a, MD1b |
@@ -1724,7 +1725,8 @@ S13 ([S13 desktop packaging and performance](#s13-desktop-packaging-and-performa
 
 | Milestone | Delivered in this area |
 |---|---|
-| [M0b](../PLAN.md#m0-scaffold-and-ci) | `:desktopApp` (`MainKt`, `DesktopAppGraph`, one window with the five destinations, macOS menu bar, tray stub, `SingleInstanceLock` and `InstanceHandshake`, `AppDirs`, crash files, `SmokeMode`, `ShutdownCoordinator`, `BuildInfo`); the frozen identifiers with the MSI `upgradeUuid` recorded in [Frozen identifiers](#frozen-identifiers); `nativeDistributions` for all formats on four runners, the macOS 0.x ZIP, `runtime.lock`, the runtime source asset and `RUNTIME-SOURCES.md`, `check-desktop-image.sh`, `check-runtime-sources.sh`; the empty `:playback:engine`, `:playback:native`, `:playback:desktop`, `:desktop:system`, `:youtube:ytdlp-desktop` modules; S13 with results; the draft README section of [README source text](#readme-source-text) |
+| [M0a](../PLAN.md#m0-scaffold-and-ci) | `:playback:engine`, `:playback:native`, `:playback:desktop`, `:desktop:system` and `:youtube:ytdlp-desktop` exist as empty modules with their convention plugins and one placeholder test (PLAN M0 deliverables); `AppDirs` and `JobLane` contracts in `:core:common` |
+| M0b | `:desktopApp` (`MainKt`, `DesktopAppGraph`, one window with the five destinations, macOS menu bar, tray stub, `SingleInstanceLock` and `InstanceHandshake`, `AppDirs`, crash files, `SmokeMode`, `ShutdownCoordinator`, `BuildInfo`); the frozen identifiers with the MSI `upgradeUuid` recorded in [Frozen identifiers](#frozen-identifiers); `nativeDistributions` for all formats on four runners, the macOS 0.x ZIP, `runtime.lock`, the runtime source asset and `RUNTIME-SOURCES.md`, `check-desktop-image.sh`, `check-runtime-sources.sh`; S13 with results; the draft README section of [README source text](#readme-source-text) |
 | [MD0](../PLAN.md#md0-desktop-audio-engine-spike) | S18: FFmpeg build script and checks, FFM bindings and `ffoffsets.c`, AVIO bridge, `ndmedia` prototype with the OS shims, engine-thread prototype with the DSP ports, corpus on four targets, OS-integration prototypes; the go or fallback decision recorded in [MD0 spike and the libmpv fallback](#md0-spike-and-the-libmpv-fallback) and D86 |
 | [M1a](../PLAN.md#m1-subscribe-and-ingest-rss) | `DesktopJobRunner` with the `refresh` lane and the wake catch-up; Room on the desktop through `DesktopDatabaseFactory`; library, podcast and episode screens in the desktop window (M1 AC10) |
 | M1b | `DesktopSecretStore` for Basic-auth feeds (M1 AC12) |
@@ -1752,9 +1754,9 @@ S13 ([S13 desktop packaging and performance](#s13-desktop-packaging-and-performa
 | `AppDirs`, `JobLane` | classes | `:core:common` `desktopMain` |
 | `DesktopJobRunner`, `LaneStatus`, `DesktopSecretStore` | classes | `:core:data` `desktopMain` |
 | Lane names `refresh`, `downloads-manual`, `downloads-auto`, `downloads-move`, `artwork`, `app-update-check`, `engine-update`, `sync`, `maintenance` | strings | [Lanes](#lanes) |
-| `AudioEngine`, `FfAudioEngine`, `EngineItem`, `EngineState`, `EngineEvent`, `EngineError`, `TransitionReason`, `DiscontinuityReason`, `Gapless`, `DesktopSourceResolver`, `ResolvedSource`, `ByteSource`, `FileByteSource`, `HttpByteSource`, `SpanCache`, `LookAheadLoader`, `AvioBridge`, `DemuxerFactory`, `Demuxer`, `FfDemuxer`, `DecoderFactory`, `Decoder`, `FfDecoder`, `FfmpegLibrary`, `SilenceSkipper`, `Sonic`, `GainStage`, `TimelineClock`, `MpvAudioEngine` (fallback only) | classes | `:playback:engine` |
+| `AudioEngine`, `FfAudioEngine`, `EngineItem`, `EngineWindowDiff`, `EngineState`, `EngineEvent`, `EngineError`, `TransitionReason`, `DiscontinuityReason`, `Gapless`, `DesktopSourceResolver`, `ResolvedSource`, `ByteSource`, `FileByteSource`, `HttpByteSource`, `SpanCache`, `LookAheadLoader`, `AvioBridge`, `DemuxerFactory`, `Demuxer`, `FfDemuxer`, `DecoderFactory`, `Decoder`, `FfDecoder`, `FfmpegLibrary`, `SilenceSkipper`, `Sonic`, `GainStage`, `TimelineClock`, `MpvAudioEngine` (fallback only) | classes | `:playback:engine` |
 | `ndmedia` (`nd_out_*`, `nd_events_init`, `nd_session_publish`, `nd_power_keep_awake`, `nd_notify_post`, `nd_win_*`, `nd_mac_login_item`), `NdmediaLibrary`, `NdOutput`, `ffoffsets.c`, `ffmpeg-layout.json`, `ffmpeg-license.txt` | native library, classes, files | `:playback:native` |
-| `DesktopPlaybackController`, `DesktopQueueProjector`, `DesktopPlaybackModule`, `DesktopChapterExtractor` | classes | `:playback:desktop` |
+| `DesktopPlaybackController`, `DesktopQueueProjector`, `DesktopEpisodeSourceResolver`, `DesktopPlaybackModule`, `DesktopChapterExtractor` | classes | `:playback:desktop` |
 | `SystemMediaSession`, `RemoteCommand`, `WindowsSmtcSession`, `MacNowPlayingSession`, `LinuxMprisSession`, `PowerMonitor`, `PowerEvent`, `IdleSleepInhibitor`, `AudioRouteMonitor`, `RouteEvent`, `TrayController`, `TrayAction`, `LoginItemRegistrar` (`WindowsRunKeyRegistrar`, `MacLoginItemRegistrar`, `XdgAutostartRegistrar`), `LoginItemState`, `DesktopNotifier`, `DesktopNotification`, `NotificationKind` | classes | `:desktop:system` |
 | `YtxProcess`, `YtxChild`, `StdioYtxTransport`, `PythonRuntimeLocator`, `DesktopEngineStorePaths`, `DesktopEngineUpdateLane`, `QuickJsBridge`, `host_stdio.py`, `bootstrap.py` | classes, Python files | `:youtube:ytdlp-desktop`, `youtube/engine/python/neutrodyne_ytx/` |
 | Stdio message types `hello`, `call`, `ok`, `err`, `cancel`, `jsc`, `jsc_ok`, `jsc_err`, `status` | protocol | [Stdio protocol](#stdio-protocol) |
