@@ -1,6 +1,6 @@
 # Handoff — state of the Neutrodyne planning work
 
-This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-05 18:57 UTC, during the replan for Kotlin Multiplatform, desktop and sync. Steps 1–3 are done; the critics (step 4) are running.**
+This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-05 ~22:40 UTC. The replan for Kotlin Multiplatform, desktop and sync is complete and published to `main`; next come the owner's open questions, then M0.**
 
 ## 1. What this repository is
 
@@ -32,29 +32,34 @@ Neutrodyne is a planned open-source podcast player. So far the repository holds 
 
 ## 3. Current state
 
-- **`main`** holds the Android-only plan with every decision up to PO-35 (commit `ad7ead2`). One item there is stale: it still describes debuggable debug builds, which the replan corrects.
-- **Branch `ccr-ac54917e-u0kl2v`, PR [#4](https://github.com/L-K-M/Neutrodyne/pull/4):** the **replan for Kotlin Multiplatform + desktop + sync server** is in progress. Checkpoint commits ("Replan checkpoint") are pushed to this branch regularly.
-- Replan steps (the binding instructions for all of them are in §5):
-  1. **Lead pass:** rewrite `docs/PLAN.md` for the new scope and write the change brief (it will be committed as `docs/research/briefs/change-brief-3-kmp.md`).
-  2. **New docs:** write `docs/design/10-sync.md` and `docs/design/11-desktop.md`, each followed by an adversarial review.
-  3. **Revise `01`–`09`** following the brief's per-doc checklists.
-  4. **Two critics:** coverage/consistency and technical/licensing soundness.
-  5. **A fixer** applies the critics' findings and rewrites `README.md` for the new scope.
-  6. **Final checks:** the doc checkers, then push the branch and fast-forward `main` (the owner wants the plan on `main`). Open a PR when none is open; GitHub marks it merged once `main` contains the branch.
+- **`main`** holds the complete plan for **Android + desktop (Windows, macOS, Linux) + self-hosted sync server, all in v1.0**, built on Kotlin Multiplatform:
+  - `docs/PLAN.md`: requirements R1–R8 and N1–N13, decisions D1–D97, owner decisions PO-1–PO-48, and milestones M0a…M11b, MD0–MD5 and MS0–MS3;
+  - eleven design docs, including the new `10-sync.md` and `11-desktop.md`;
+  - the README.
+
+  Link and anchor checks report 0 problems, and all 78 Mermaid diagrams parse.
+- **Branch `ccr-ac54917e-u0kl2v`** is identical to `main`. The PR for the replan ([#4](https://github.com/L-K-M/Neutrodyne/pull/4)) is merged by fast-forward.
+- **No code exists yet.** Implementation starts with **M0a.1** (see `docs/PLAN.md` §7).
 
 ### Progress log
 
-- 16:2x UTC: replan launched; lead pass running.
-- ~17:0x UTC: lead pass done. `docs/PLAN.md` is rewritten and the brief is saved as [`docs/research/briefs/change-brief-3-kmp.md`](docs/research/briefs/change-brief-3-kmp.md).
-- ~17:xx UTC: first drafts of `docs/design/10-sync.md` and `docs/design/11-desktop.md` are written. Their adversarial reviews are still pending.
-- By 18:57 UTC: `01`–`05` are revised and `06` is in progress. Still to do: revise `07`, `08`, `09`; review `10` and `11`; the two critics; the fixer, which also rewrites `README.md`.
-- 18:47 UTC: the automatic 10-minute checkpoint job reached its 2-hour limit and stopped. Checkpoints are now made by hand.
-- ~19:1x UTC: `06` revised; revising `07` and `08`.
-- ~19:4x UTC: `07` revised; revising `08` and `09`. Still to do: review `10` and `11`; the critics; the fixer.
-- ~20:2x UTC: `08` revised; `09` is being revised and `10-sync.md` is under review. Still to do: review `11`; the critics; the fixer.
-- ~20:4x UTC: one more of these finished (`09` revision or `10` review); `11-desktop.md` review started. Still to do: whichever of the `09` revision and `10` review is still running, the `11` review, the two critics and the fixer (which also rewrites `README.md`).
-- ~21:2x UTC: all drafting and per-doc reviews are done (`PLAN.md`, `01`–`11`); both critics are running. Still to do: the fixer (which also rewrites `README.md`), then the final checks and publishing (§3 step 6).
-- ~22:0x UTC: both critics are done; the fixer is applying their findings and rewriting `README.md`. Still to do: the final checks and publishing.
+- 2026-10-04: first Android-only plan (PR #1).
+- 2026-10-05: owner decisions PO-1/2/5/8: yt-dlp, GitHub only, no verification, `ch.lkmc` (PR #2).
+- 2026-10-05: owner decisions PO-31–35: notify-only updates, no beta, no mirror, debug builds (PR #3).
+- 2026-10-05 16:2x–22:3x UTC: KMP + desktop + sync replan (PR #4). Steps: the lead pass (brief saved as [`docs/research/briefs/change-brief-3-kmp.md`](docs/research/briefs/change-brief-3-kmp.md)); new docs `10-sync.md` and `11-desktop.md`, each written and then reviewed; revision of `01`–`09`; two critics (42 findings); a fixer (40 fixed, 1 handed to the orchestrator for `CLAUDE.md`, 1 rejected because it targeted the scratch brief). `CLAUDE.md` is updated to match.
+
+### Open owner questions (ask these next; each has a default in `docs/PLAN.md` §4)
+
+Most important first:
+- **PO-48 Licence classes:** the final review found two cases beyond the agreed rules.
+  - **WiX code (MS-RL)** is embedded in every Windows MSI. If declined, Windows ships as a ZIP only.
+  - **python-build-standalone carries MPL-2.0 patches** in the desktop Python. If declined, CPython must be built without them.
+- **PO-46** Desktop recovery snapshot. Default: none in v1.0; the user restores a manual backup or reconnects sync.
+- **PO-47** Sync timing promises and the mass-change threshold for small libraries.
+- **PO-37 / PO-38** Sync scope (what syncs; feed passwords) and server accounts. Default: admin-created accounts, devices linked by code.
+- **PO-39** macOS tester builds before 1.0.0. **PO-40** Windows on Arm (default: x64 under emulation). **PO-42** Ship the JDK AOT cache for faster desktop start.
+- **PO-43** Reference hardware. **PO-44** Desktop secret storage. **PO-45** Server operations defaults. **PO-41** gpodder/Open Podcast API layers (default: v1.1).
+- **Older questions still on their defaults:** PO-3, 4, 6, 7, 9–21, 24–28, 30, 36.
 
 ## 4. How to resume if this session stops
 

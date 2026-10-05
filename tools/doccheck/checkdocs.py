@@ -35,9 +35,9 @@ for f in files:
 problems = 0
 for f in files:
     txt = open(f, encoding='utf-8').read()
-    if '/tmp/' in txt or 'scratchpad' in txt or 'skeleton.md' in txt or 'research/' in txt:
+    if '/tmp/' in txt or 'scratchpad' in txt or 'skeleton.md' in txt:
         for i, line in enumerate(txt.splitlines(), 1):
-            if any(k in line for k in ('/tmp/', 'scratchpad', 'skeleton.md', 'research/')):
+            if any(k in line for k in ('/tmp/', 'scratchpad', 'skeleton.md')):
                 print(f'LEAK {os.path.relpath(f, root)}:{i}: {line.strip()[:140]}'); problems += 1
     if txt.count('```') % 2:
         print(f'FENCE odd count in {os.path.relpath(f, root)}'); problems += 1

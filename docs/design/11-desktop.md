@@ -1,6 +1,6 @@
 # 11 — Desktop app
 
-> Status: Draft v1, 2026-10-05 · scope revision 2026-10-05 (S0–S13): new document — the desktop app for Windows, macOS and Linux, built from the shared Kotlin Multiplatform code, with its own shell, in-process background runner, OS media integration, FFmpeg-based audio engine, CPython-hosted YouTube engine and jpackage installers under the runtime exception; adversarial review 2026-10-05: MSI install location made mandatory (jpackage's default would be the data directory, which its uninstaller deletes), `jdk.security.auth` and `jdk.net` added for D-Bus, portable DEB/RPM dependencies and compression, the runtime check reworked because jlink's `release` file carries no implementor, launcher facts verified in the jpackage source · Implements: R8.1–R8.11, R6.5, R6.6 (desktop behaviour), R1.1 (desktop file opening), R3.5, R3.6, R3.8, R3.9 (desktop host), R4.1, R4.2, R4.3, R4.8 (desktop), R5.2, R5.3, R5.7 (desktop surfaces) / N1, N2, N3, N4, N5, N6, N7, N8, N9, N11, N12 (desktop parts) · Milestones: M0b, MD0, M1a, M3, M6 (M6a, M6b), MD1 (MD1a, MD1b), MD2, MD3, M10, MD4, M11a, MD5, M11b; desktop parts of MS2 and MS3 · Honours: D2, D3, D4, D14, D25, D38–D45, D47–D49, D52, D57, D61–D64, D72–D84, D91–D93, D97; PO-2, PO-5, PO-10, PO-19, PO-27, PO-39, PO-40, PO-42, PO-43, PO-44 · Owns: D85–D90, R8, R6.5; spikes S13 and S18 (= MD0); the measurement procedure of budgets PB24–PB29 (09 owns the table); the modules `:desktopApp`, `:playback:engine`, `:playback:native`, `:playback:desktop`, `:desktop:system`, `:youtube:ytdlp-desktop`; the `AppDirs` table, the frozen desktop identifiers (including the MSI `upgradeUuid`), the desktop install and update guidance text, `DesktopJobRunner` and its lane contract, the desktop crash files
+> Status: Draft v1, 2026-10-05 · scope revision 2026-10-05 (S0–S13): new document — the desktop app for Windows, macOS and Linux, built from the shared Kotlin Multiplatform code, with its own shell, in-process background runner, OS media integration, FFmpeg-based audio engine, CPython-hosted YouTube engine and jpackage installers under the runtime exception; adversarial review 2026-10-05: MSI install location made mandatory (jpackage's default would be the data directory, which its uninstaller deletes), `jdk.security.auth` and `jdk.net` added for D-Bus, portable DEB/RPM dependencies and compression, the runtime check reworked because jlink's `release` file carries no implementor, launcher facts verified in the jpackage source; **final cross-document review 2026-10-05:** the `import-backup` lane, desktop service ports, the play/pause desired-state register, jlink's native strip on Linux, the WiX MS-RL components and `wix.lock`, the desktop `PlaybackSyncPort` in MS2 · Implements: R8.1–R8.11, R6.5, R6.6 (desktop behaviour), R1.1 (desktop file opening), R3.5, R3.6, R3.8, R3.9 (desktop host), R4.1, R4.2, R4.3, R4.8 (desktop), R5.2, R5.3, R5.7 (desktop surfaces) / N1, N2, N3, N4, N5, N6, N7, N8, N9, N11, N12 (desktop parts) · Milestones: M0b, MD0, M1a, M3, M6 (M6a, M6b), MD1 (MD1a, MD1b), MD2, MD3, M10, MD4, M11a, MD5, M11b; desktop parts of MS2 and MS3 · Honours: D2, D3, D4, D14, D25, D38–D45, D47–D49, D52, D57, D61–D64, D72–D84, D91–D93, D97; PO-2, PO-5, PO-10, PO-19, PO-27, PO-39, PO-40, PO-42, PO-43, PO-44 · Owns: D85–D90, R8, R6.5; spikes S13 and S18 (= MD0); the measurement procedure of budgets PB24–PB29 (09 owns the table); the modules `:desktopApp`, `:playback:engine`, `:playback:native`, `:playback:desktop`, `:desktop:system`, `:youtube:ytdlp-desktop`; the `AppDirs` table, the frozen desktop identifiers (including the MSI `upgradeUuid`), the desktop install and update guidance text, `DesktopJobRunner` and its lane contract, the desktop crash files
 
 Contents: [Scope](#scope) · [Platform matrix](#platform-matrix) · [Desktop shell](#desktop-shell) ([Window and tray behaviour](#window-and-tray-behaviour)) · [Background work](#background-work) · [OS integration](#os-integration) · [Desktop playback engine](#desktop-playback-engine) · [Desktop downloads and storage](#desktop-downloads-and-storage) · [Desktop YouTube engine host](#desktop-youtube-engine-host) · [Packaging and the runtime exception](#packaging-and-the-runtime-exception) · [Install and update](#install-and-update) · [Desktop UX](#desktop-ux) · [Accessibility](#accessibility) · [Desktop diagnostics and crash files](#desktop-diagnostics-and-crash-files) · [Testing](#testing) · [Delivery by milestone](#delivery-by-milestone) · [New names introduced here](#new-names-introduced-here) · [Open questions](#open-questions) · [Sources](#sources)
 
@@ -1456,21 +1456,27 @@ The README sweep copies this block (placeholders `{v}` and `{owner}` stay as wri
 ### Install on Windows, macOS or Linux
 
 Download the file for your computer from the latest release on GitHub — only from there:
-Windows 10 22H2/11 (x64, also Windows 11 on Arm): `…-windows-x64.msi` (or the portable `.zip`);
-Mac with Apple silicon, macOS 13 or later: `…-macos-arm64.dmg`; Linux x64 or arm64: `.deb`, `.rpm` or `.tar.gz`.
-Check it against `SHA256SUMS` or with `gh attestation verify <file> --repo {owner}/Neutrodyne`.
+Windows 10 22H2/11 (x64, also Windows 11 on Arm, which runs it emulated): `neutrodyne-{v}-windows-x64.msi`
+(per-user, no administrator rights) or the portable `.zip`; Mac with Apple silicon, macOS 13 or later:
+`neutrodyne-{v}-macos-arm64.dmg` (tester builds before 1.0.0: a `.zip` of the app); Linux x64 or arm64 with
+glibc 2.31 or later: `.deb`, `.rpm` or `.tar.gz`. Check it against `SHA256SUMS` or with
+`gh attestation verify <file> --repo {owner}/Neutrodyne`.
 
 The desktop builds are not signed by a registered developer:
-- macOS: after the first start of every newly installed or updated version, open System Settings ›
-  Privacy & Security and click "Open Anyway" (or run `xattr -dr com.apple.quarantine /Applications/Neutrodyne.app`).
-- Windows: SmartScreen shows "Windows protected your PC" — choose "More info", then "Run anyway".
-  Smart App Control must be off; it has no per-app exception.
-- Linux: `sudo apt install ./<file>.deb`, `sudo dnf install ./<file>.rpm`, or extract the `.tar.gz`.
 
-Updating means installing the newer file the same way; your library, settings and downloads stay.
-Uninstalling never deletes your library. Screen readers work on macOS (VoiceOver) and Windows (NVDA);
-Linux screen readers are not supported. The installers bundle an unmodified OpenJDK runtime and an
-LGPL FFmpeg; their sources are attached to every release.
+- **macOS:** after the first start of every newly installed or updated version, open System Settings ›
+  Privacy & Security and click "Open Anyway" (or run `xattr -dr com.apple.quarantine /Applications/Neutrodyne.app`).
+- **Windows:** SmartScreen shows "Windows protected your PC" — choose "More info", then "Run anyway".
+  Smart App Control must be off; it has no per-app exception.
+- **Linux:** `sudo apt install ./<file>.deb`, `sudo dnf install ./<file>.rpm`, or extract the `.tar.gz`.
+
+Updating means installing the newer file the same way; your library, settings and downloads stay, and
+uninstalling never deletes your library. The desktop app checks GitHub once a day while it runs and links to
+the right file for your computer; it never installs anything itself. Closing the window while playing or
+downloading keeps Neutrodyne in the tray or menu bar; closing it while idle quits. Screen readers work on
+macOS (VoiceOver) and Windows (NVDA, with Java Access Bridge turned on — the help explains how); Linux screen
+readers are not supported. The installers bundle an unmodified OpenJDK runtime and an LGPL FFmpeg; their
+sources are attached to every release.
 ```
 
 ### Desktop update check
