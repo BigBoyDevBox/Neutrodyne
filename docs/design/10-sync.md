@@ -46,7 +46,7 @@ Neutrodyne Sync keeps **user state** — subscriptions, groups, listening state,
 | `:sync:impl` (`ch.lkmc.neutrodyne.sync.impl`) | KMP shared implementation | `commonMain`: `SyncEngine`, `SyncClient`, `SyncEventsClient`, `OutboxReader`, `ChangeBuilder`, `SyncApplier`, `EpisodeMatcher`, `SyncParkedStateApplier`, `FirstLinkMerger`, `MassChangeGuard`, `SessionAdopter`, `SettingsCapture`, `SyncPrePlay`, `ServerDiscovery`, `SyncTokenStore`, `SyncScheduler`, `SyncBackoff`, `SyncControllerImpl`; `androidMain`: `WorkManagerSyncScheduler`, `SyncWorker`, `LocalNetworkPermissionGate`; `desktopMain`: `DesktopSyncLane` |
 | `:feature:sync` | KMP feature | Settings › Sync screens and dialogs (layout and wording: [08 Sync screens](08-ui-ux.md#sync-screens)) |
 | `:sync:server` (`ch.lkmc.neutrodyne.sync.server`) | JVM application, depends only on `:sync:protocol` and `:feeds` | [Server architecture](#server-architecture) |
-| `:core:testing` | KMP | `FakeSyncController`, `FakePlaybackSyncPort`, `FakePrePlaySync`, `FakeSyncIngestHook`, `InMemorySyncServer` (a `RecordWriter` over an in-memory `SyncStore`, for client tests and S15) |
+| `:core:testing` | KMP | `FakeSyncController`, `FakePlaybackSyncPort`, `FakePrePlaySync`, `FakeSyncIngestHook`, `InMemorySyncServer` (the server's merge, dedupe and cursor rules in memory, built only on `:sync:protocol`, for client tests and S15; `:core:testing` never depends on `:sync:server`) |
 
 ```kotlin
 // :sync:api — what features and the shells see. All flows are main-safe; suspend functions never throw
@@ -937,13 +937,13 @@ sequenceDiagram
 | Trigger | Behaviour |
 |---|---|
 | App start, window focus after more than 60 s, "Sync now" | a round |
-| Outbox gains a row other than `pos` or `session` | a round 2 s after the last change |
+| Outbox gains a row other than `pos` or `session` | `DesktopJobRunner.poke("sync")` 2 s after the last change (debounced on the invalidation-tracker flow, as on Android) |
 | Playback pause, stop, transition; every 60 s while playing | a round when `pos` or `session` rows are pending |
 | `DesktopJobRunner` tick | a pull when the last round is more than 15 min old (R7.4), catch-up after sleep or restart within 2 min (R8.7) |
 | `PowerMonitor` `Suspending` / `Resumed` | close SSE / reconnect and run a round |
 | Live updates | SSE whenever the app runs and the server offers `sse` |
 
-Nothing runs while the app is quit; quitting does not wait for a pending push (the outbox survives). Only the instance holding the single-instance lock syncs (risk T26).
+On an explicit Quit, `ShutdownCoordinator` gives one push a 2-s budget when the outbox is not empty ([11 Desktop shell](11-desktop.md#desktop-shell)); whatever is left stays in the outbox for the next start. Nothing runs while the app is quit. Only the instance holding the single-instance lock syncs (risk T26). When the window is hidden, a held batch of the [Mass-change guard](#mass-change-guard) also posts a desktop notification (`NotificationKind.SYNC_HELD`, [11 OS integration](11-desktop.md#os-integration)); on Android it posts one notification on the channel 08 assigns.
 
 ### Live updates
 
@@ -960,7 +960,7 @@ Nothing runs while the app is quit; quitting does not wait for a pending push (t
 `SyncTokenStore` keeps the device token in `SecretStore` (`:core:domain`) under the origin `sync:<host>`:
 
 - **Android:** `KeystoreCredentialStore` — the `credential` table encrypted with the Android Keystore key ([03 Basic auth and CredentialStore](03-feeds-and-discovery.md#basic-auth-and-credentialstore), [02 credential](02-data-model.md#credential)). 01's `AuthInterceptor` matches feed origins only, so a `sync:` origin is never sent to a feed host; 02's `db-maintenance` credential sweep must keep `sync:%` origins (it removes credentials no podcast references).
-- **Desktop:** `DesktopSecretStore` ([PO-44](../PLAN.md#48-further-product-owner-decisions)): DPAPI on Windows, a `0600` file elsewhere. The stored entry carries an installation fingerprint (hash of host name, OS user name and data-directory path); on a mismatch — a data directory copied to another computer — the token is not used and Settings › Sync shows "Reconnect", so two machines never share a device ID and an HLC node ([Relinking, reconnecting and copied installations](#relinking-reconnecting-and-copied-installations)).
+- **Desktop:** `DesktopSecretStore` ([PO-44](../PLAN.md#48-further-product-owner-decisions)): DPAPI on Windows, a `0600` file elsewhere. The `sync:<host>` entry also carries an installation fingerprint (member `fp`: SHA-256 of host name, OS user name and data-directory path; 11 owns the file format, [11 Desktop shell](11-desktop.md#desktop-shell)); on a mismatch — a data directory copied to another computer — the token is not used and Settings › Sync shows "Reconnect", so two machines never share a device ID and an HLC node ([Relinking, reconnecting and copied installations](#relinking-reconnecting-and-copied-installations)).
 - The token never appears in logs, crash reports, diagnostics exports or backups ([N3](../PLAN.md#22-non-functional-requirements)); the `SYNC` OkHttp client adds it per request in `SyncClient`, not through an interceptor shared with other clients.
 
 ### Local-network gate
@@ -1390,7 +1390,7 @@ A red banner "This server is not using HTTPS" appears on every page in insecure 
 
 ### Performance and footprint
 
-Prototype measured by the research for this plan (Ktor 3.6.0 CIO + sqlite-jdbc 3.53.4.0 on a 4-vCPU x86-64 container, OpenJDK 21): 27.5 MB of JARs; idle RSS 92 MB with `-Xmx64m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1` (133 MB with the default heap); 50,000 single-field changes pushed in 1.7–2.0 s and pulled in 0.5–0.7 s. The real merge of JSON documents is slower per change (Unverified); a household sees a few hundred changes a day and one-off initial uploads of about 50,000 records, so throughput is not a concern. The documented flags are `-Xmx96m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xss512k`; S16 confirms them on a Raspberry Pi 4 against PB30 (idle ≤ 160 MB RSS, a 50,000-record initial upload ≤ 60 s) ([Spikes](#spikes)).
+Prototype measured by the research for this plan (Ktor 3.6.0 CIO + sqlite-jdbc 3.53.4.0 on a 4-vCPU x86-64 container, OpenJDK 21): 27.5 MB of JARs; idle RSS 92 MB with `-Xmx64m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1` (133 MB with the default heap); 50,000 single-field changes pushed in 1.7–2.0 s and pulled in 0.5–0.7 s. The real merge of JSON documents is slower per change (Unverified); a household sees a few hundred changes a day and one-off initial uploads of about 50,000 records, so throughput is not a concern. The documented flags are `-Xmx96m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xss512k`; S16 confirms them on a Raspberry Pi 4 against PB30 (idle ≤ 160 MB RSS, a 50,000-record initial upload ≤ 60 s) ([Spikes](#spikes)); Unverified until then: the footprint and upload time on a Pi.
 
 ### Server failure modes
 
@@ -1455,7 +1455,7 @@ Tokens are stored only as SHA-256 (high-entropy secrets need no slow hash), look
 
 - Cookie `nds_session`: `HttpOnly; Secure; SameSite=Strict; Path=/`. In insecure LAN mode `Secure` is omitted (browsers would not store it over `http://`) and the red banner shows.
 - Every state-changing form carries a synchronizer token bound to the session (hidden field, compared in constant time) in addition to Ktor's CSRF plugin with `originMatchesHost()` and `allowOrigin(publicUrl)`.
-- Headers on every web response: `Content-Security-Policy: default-src 'self'; script-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`; HSTS is the reverse proxy's job (Caddy sends it by default for its sites; the nginx snippet adds it).
+- Headers on every web response: `Content-Security-Policy: default-src 'self'; script-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`; HSTS is the reverse proxy's job (the reference `Caddyfile` and the nginx snippet both add it).
 
 ### Authorisation scoping
 
@@ -1596,11 +1596,12 @@ volumes:
 ```text
 # Caddyfile
 sync.example.org {
+	header Strict-Transport-Security "max-age=31536000"
 	reverse_proxy neutrodyne-server:8787
 }
 ```
 
-Caddy obtains certificates automatically, adds `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host`, and flushes `text/event-stream` responses immediately ([reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)), so SSE needs no extra configuration. The server's port is not published; only Caddy is reachable. `tmpfs: [/tmp]` gives the JVM and sqlite-jdbc (which extracts its native library to the temporary directory) a writable `/tmp` on the read-only root; Docker's tmpfs default allows execution ([tmpfs mounts](https://docs.docker.com/engine/storage/tmpfs/)).
+Caddy obtains certificates automatically ([Automatic HTTPS](https://caddyserver.com/docs/automatic-https)), adds `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host`, and flushes `text/event-stream` responses immediately ([reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)), so SSE needs no extra configuration. The server's port is not published; only Caddy is reachable. `tmpfs: [/tmp]` gives the JVM and sqlite-jdbc (which extracts its native library to the temporary directory) a writable `/tmp` on the read-only root; Docker's tmpfs default allows execution ([tmpfs mounts](https://docs.docker.com/engine/storage/tmpfs/)).
 
 ### nginx
 
@@ -1797,7 +1798,7 @@ Serves N1, N9, N13. Strategy and CI placement: [09 Test strategy](09-quality-and
 
 S15 and `SyncConvergenceTest` (`:sync:impl` `commonTest`):
 
-- 5 simulated devices, each a replica of the synced state with its own `HlcClock`, wall clock skewed by up to ±4 min (within the admission bound) and an outbox; the server is `RecordWriter` over an in-memory `SyncStore`.
+- 5 simulated devices, each a replica of the synced state with its own `HlcClock`, wall clock skewed by up to ±4 min (within the admission bound) and an outbox; the server is `InMemorySyncServer`. `ServerConvergenceTest` (`:sync:server`, nightly) drives the same generator with field-level replicas against the real `RecordWriter` on a temporary database, so client and server implementations of the shared rules are both covered.
 - Random operations from a seeded generator: subscribe (including the same feed on two devices), unsubscribe, feed move, group create/rename (including equal names)/delete, membership add/remove/reorder, Up next add/move/remove, position saves, reset, mark played/unplayed, favourite, settings, rekey; random offline periods; duplicated, delayed and reordered pushes; pull pages cut at random points; one device's cursor expired.
 - After quiescence: every replica equals the server's state and each other; invariants: no position 0 replaced a non-zero one without `reset`; an effectively played episode is never in Up next; no podcast or group exists twice by key or `nameKey`; every Up next list has unique keys after tie-break.
 - 1,000 seeds in PR CI (`unit`), 100,000 nightly (`sync-convergence`); a failing seed is printed and becomes a regression test.
@@ -1880,7 +1881,7 @@ PB30 (server on a Pi 4) and PB31 (propagation ≤ 10 s) live in [09 Performance 
 | `SettingsRepository.localSyncedChanges`, `SettingsRepository.applyRemote`, `SettingKey.synced` | requested from 01 | `:core:datastore` |
 | `PodcastRepository.unsubscribe(ids, origin = SYNC)`, `AliasReason.SYNC` | requested from 03 and 02 | `:core:data`, `:core:model` |
 | `FakeSyncController`, `FakePlaybackSyncPort`, `FakePrePlaySync`, `FakeSyncIngestHook`, `InMemorySyncServer` | test doubles | `:core:testing` |
-| `MainKt`, `ServerCli`, `ServerConfig`, `ServerModule`, `WellKnownRoutes`, `AuthRoutes`, `DeviceRoutes`, `SyncRoutes`, `ChangesRoutes`, `EventsRoutes`, `AccountRoutes`, `HealthRoutes`, `AdminWeb`, `RequestGuards`, `ClientAddress`, `SyncStore`, `SqliteSyncStore`, `Migrator`, `RecordWriter`, `PodcastDeduper`, `GroupNameMerger`, `TokenService`, `PasswordHasher`, `LinkService`, `InviteService`, `SetupService`, `WebSessions`, `RateLimits`, `EventBus`, `GcJob`, `BackupJob`, `AccountBackupWriter`, `ServerUpdateNotice`, `HealthCheck`, `AuditLog`; test tools `SyncLoadTool`, `ServerConformanceTest` | server | `:sync:server` |
+| `MainKt`, `ServerCli`, `ServerConfig`, `ServerModule`, `WellKnownRoutes`, `AuthRoutes`, `DeviceRoutes`, `SyncRoutes`, `ChangesRoutes`, `EventsRoutes`, `AccountRoutes`, `HealthRoutes`, `AdminWeb`, `RequestGuards`, `ClientAddress`, `SyncStore`, `SqliteSyncStore`, `Migrator`, `RecordWriter`, `PodcastDeduper`, `GroupNameMerger`, `TokenService`, `PasswordHasher`, `LinkService`, `InviteService`, `SetupService`, `WebSessions`, `RateLimits`, `EventBus`, `GcJob`, `BackupJob`, `AccountBackupWriter`, `ServerUpdateNotice`, `HealthCheck`, `AuditLog`; test tools `SyncLoadTool`, `ServerConformanceTest`, `ServerConvergenceTest` | server | `:sync:server` |
 | Endpoints `GET /api/v1/account`, `AccountResetRequest.mode` (`library`, `purge`), `GET /api/v1/events?hb=`, problem code `insecure_transport` (421), `forbidden`, `not_found` | protocol additions to the canonical list | — |
 | Wire fields `group.createdAt` (`MinField`), `match` on `upnext` and `session` changes, `~rekey` outbox field, cursor form `c:<epoch>:<seq>` | protocol details | — |
 | Server tables `account.epoch`, `link_request.purpose`, `podcast_key.live`/`dead_at`, token kinds `setup` and `web_session`; properties `quota.records`, `backup.time`, `backups.keep`, `account_backups.keep`, `retention.*`, `sse.max_per_account`; cookie `nds_session`, web-session prefix `ndw_` | server storage and configuration | `:sync:server` |
@@ -1918,7 +1919,7 @@ All checked 2026-10-05 by the research behind the scope revision unless marked o
 - Ktor 3.6.0 server SSE: https://ktor.io/docs/server-server-sent-events.html · client SSE (in `ktor-client-core`, reconnection): https://ktor.io/docs/client-server-sent-events.html · rate limiting (429, `Retry-After`; checked 2026-10-05): https://ktor.io/docs/server-rate-limit.html · forwarded headers (no trusted-proxy list; checked 2026-10-05): https://ktor.io/docs/server-forward-headers.html · CSRF plugin (`allowOrigin`, `originMatchesHost`, `checkHeader`; checked 2026-10-05): https://api.ktor.io/ktor-server-csrf/io.ktor.server.plugins.csrf/-c-s-r-f.html · compression (request decompression without a documented limit): https://ktor.io/docs/server-compression.html · client engines (`preconfigured` OkHttp): https://ktor.io/docs/client-engines.html · licence: https://github.com/ktorio/ktor/blob/main/LICENSE
 - sqlite-jdbc 3.53.4.0 (Apache-2.0, natives): https://github.com/xerial/sqlite-jdbc · SQLite UPSERT: https://www.sqlite.org/lang_upsert.html · `RETURNING`: https://www.sqlite.org/lang_returning.html · `VACUUM INTO`: https://www.sqlite.org/lang_vacuum.html
 - Bouncy Castle licence (MIT): https://www.bouncycastle.org/about/license/ · OWASP Argon2id minimum (m = 19 MiB, t = 2, p = 1): https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html · logback dual EPL/LGPL (banned): https://logback.qos.ch/license.html
-- Caddy licence: https://github.com/caddyserver/caddy/blob/master/LICENSE · `reverse_proxy` (immediate flush of `text/event-stream`, `X-Forwarded-*` defaults; checked 2026-10-05): https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
+- Caddy licence: https://github.com/caddyserver/caddy/blob/master/LICENSE · Automatic HTTPS: https://caddyserver.com/docs/automatic-https · `reverse_proxy` (immediate flush of `text/event-stream`, `X-Forwarded-*` defaults; checked 2026-10-05): https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
 - nginx proxy module (`proxy_buffering`, `X-Accel-Buffering`, `proxy_read_timeout` default 60 s; checked 2026-10-05): https://nginx.org/en/docs/http/ngx_http_proxy_module.html
 - systemd.exec (`DynamicUser`, `StateDirectory` under `/var/lib/private`, recursive ownership adjustment, static user preferred when it exists; checked 2026-10-05 from the man-page source https://github.com/systemd/systemd/blob/main/man/systemd.exec.xml): https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html
 - distroless Java images (Temurin OpenJDK, `java -jar` entry point; checked 2026-10-05): https://github.com/GoogleContainerTools/distroless/blob/main/java/README.md · Docker tmpfs defaults (`exec` by default; checked 2026-10-05): https://docs.docker.com/engine/storage/tmpfs/ · Compose build contexts from Git: https://docs.docker.com/reference/compose-file/build/ · GHCR: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry · `actions/attest`: https://github.com/actions/attest

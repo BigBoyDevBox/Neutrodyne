@@ -823,7 +823,7 @@ Rules: the libraries keep their upstream names and are never linked into `ndmedi
 - **Hand-written** downcall handles in `FfmpegLibrary` for about 30 functions: version and licence queries; `avformat_alloc_context`, `avio_alloc_context`, `avio_context_free`, `av_malloc`, `av_free`, `avformat_open_input`, `avformat_find_stream_info`, `av_find_best_stream`, `av_read_frame`, `avformat_seek_file`, `avformat_close_input`; `avcodec_find_decoder`, `avcodec_alloc_context3`, `avcodec_parameters_to_context`, `avcodec_open2`, `avcodec_send_packet`, `avcodec_receive_frame`, `avcodec_flush_buffers`, `avcodec_free_context`; packet and frame alloc, unref and free; `swr_alloc_set_opts2`, `swr_init`, `swr_convert_frame`, `swr_free`; `av_dict_get`, `av_dict_set`, `av_strerror`, `av_log_set_level`. jextract is never used (GPL-2.0, [jextract licence](https://github.com/openjdk/jextract/blob/master/LICENSE); banned by `verifyDependencyPolicy`).
 - **Struct fields.** FFmpeg functions and `AVOptions` are used wherever they exist (`swr_convert_frame` instead of reading frame data pointers, `av_dict_get` for titles, `av_opt_set_*` for resampler options). The remaining fields — `AVFormatContext` `pb`, `flags`, `nb_streams`, `streams`, `nb_chapters`, `chapters`, `duration`; `AVStream` `codecpar`, `time_base`, `discard`; `AVCodecParameters` `codec_type`, `codec_id`, `sample_rate`, `ch_layout`, `initial_padding`, `trailing_padding`, `seek_preroll`; `AVPacket` `stream_index`, `pts`; `AVFrame` `nb_samples`, `format`, `sample_rate`, `ch_layout`, `pts`; `AVChapter` `time_base`, `start`, `end`, `metadata` — are read through offsets that `ffoffsets.c` prints from the very headers of each build into `ffmpeg-layout.json` (shipped next to the libraries). `FfmpegLibrary` refuses to bind when the loaded libraries' majors differ from the layout's, so a replacement library of the same major works and a different major fails with a clear error. This refines [D86](../PLAN.md#3-key-decisions)'s "accessor functions only": FFmpeg has no accessors for these fields since 4.0 (Unverified that layouts are stable within a major for every field above; the major check enforces the assumption).
 - **Threads and upcalls.** Decoders run with `thread_count = 1`, so FFmpeg starts no threads; AVIO read and seek callbacks and the `AVIOInterruptCB` are FFM upcalls that run on `nd-engine` or `nd-prepare` inside the calling downcall, never on the audio thread. Upcall bodies catch everything and return `AVERROR(EIO)`. FFmpeg logging is off (`AV_LOG_QUIET`); errors come from return codes through `av_strerror`.
-- **Memory.** Native objects are created and freed by FFmpeg's own functions; Java handles live in a confined `Arena` per pipeline, owned by one thread at a time (handed from `nd-prepare` to `nd-engine` once).
+- **Memory.** Native objects are created and freed by FFmpeg's own functions; Java handles live in a shared `Arena` per pipeline (`Arena.ofShared()`, because the pipeline moves from `nd-prepare` to `nd-engine` once), used by one thread at a time and closed when the pipeline closes.
 
 ### Demux and decode
 
@@ -919,3 +919,886 @@ Spike S18 = milestone MD0 ([PLAN MD0](../PLAN.md#md0-desktop-audio-engine-spike)
 | Pass criteria | PLAN MD0 AC1–AC4: corpus demux and decode with reference sample counts, chapters and ±50-ms seeks on all targets; LGPL-2.1+ separate libraries ≤ 4 MB with no network protocol; clock within 50 ms at 0.5×–3× with skip silence and a 30-min underrun-free run per OS; media keys through all three sessions with the main window hidden, headphone removal pauses on Windows and macOS, suspend notice before audio stops |
 | Results | Pending (MD0). Recorded here per item: sizes per target, sample counts, seek errors, clock error, CPU at 3× on the slowest reference laptop, OS-integration outcomes, Modern Standby behaviour, macOS media-key routing, Linux device-removal behaviour |
 | Fallback | `MpvAudioEngine` behind the same `AudioEngine` seam: an LGPL libmpv build (`-Dgpl=false`) with an LGPL FFmpeg, our `ByteSource` through `mpv_stream_cb_add_ro`, speed through `scaletempo2`, positions from `time-pos`, the queue window mapped to mpv's playlist with `prefetch-playlist`. Costs recorded in [D86](../PLAN.md#3-key-decisions): different time-stretch quality and skip-silence feel than Android (skip silence would need our own detection, never the GPL script), about seven native libraries per target (libplacebo, libass, FreeType, HarfBuzz, FriBidi, libavfilter, libswscale are hard dependencies of mpv 0.41, [mpv meson.build](https://raw.githubusercontent.com/mpv-player/mpv/v0.41.0/meson.build)) and their source bundles. The decision is written into this section and D86 (MD0 AC5) |
+
+---
+
+## Desktop downloads and storage
+
+Serves R8.8, R4.2, R4.3, R8.11, N6. Delivered in M6a (default folder, desktop lane, "Show in folder"), M6b ("Change folder…" with moves). Honours [D48](../PLAN.md#3-key-decisions), [D49](../PLAN.md#3-key-decisions), [D85](../PLAN.md#3-key-decisions). The download engine, its state machine, the transfer core, the naming algorithm and the move algorithm are 07's and identical on both platforms ([07 Storage layout](07-downloads.md#storage-layout), [07 Desktop runners](07-downloads.md#desktop-runners)); this section adds what only the desktop has.
+
+### Download folders
+
+| Folder | Path | Setting |
+|---|---|---|
+| Default | `<data>/Downloads/` — `%LOCALAPPDATA%\Neutrodyne\Downloads\`, `~/Library/Application Support/ch.lkmc.neutrodyne/Downloads/`, `$XDG_DATA_HOME/neutrodyne/Downloads/` | `desktop.downloads_dir` = null |
+| Chosen | Any writable directory the user picks with "Change folder…" | `desktop.downloads_dir` = absolute path (device-local, never synced or backed up as a path) |
+
+Both are 07's roots with the same layout (`.partial/`, `<Podcast Title> [p<id>]/<date> <Episode Title> [e<id>].<ext>`); 07 owns the root identifiers. On Windows the `.partial` directory gets the hidden attribute. Android's `.nomedia` marker has no meaning on the desktop and is not written there.
+
+Choosing a folder (`FilePicker` of `:core:ui`, 08):
+
+| OS | Dialog |
+|---|---|
+| macOS | AWT `FileDialog` with `apple.awt.fileDialogForDirectories=true` (native open panel) |
+| Windows | Swing `JFileChooser` in directories-only mode with the system look and feel (AWT's `FileDialog` cannot pick folders on Windows); a native `IFileOpenDialog` through JNA is a v1.x polish |
+| Linux | The XDG portal `org.freedesktop.portal.FileChooser.OpenFile` with `directory: true` over D-Bus ([portal FileChooser](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.FileChooser.html)); `JFileChooser` when no portal answers |
+
+Validation before the folder is accepted: it exists or can be created; a probe file `.neutrodyne-probe` can be created, written and deleted; it is not inside the installation directory, `<cache>` or `<state>`; free space is shown in the confirmation. A folder that fails shows the reason and keeps the previous setting.
+
+### Change folder
+
+"Change folder…" (Settings › Desktop, R8.8) asks "Move {n} downloads ({size}) to {folder}?" with **Move** (default) and **Leave them where they are**, and calls 07's `changeRoot(rootId, moveExisting)`. New downloads use the new folder at once; queued and paused rows follow it at their next prepare.
+
+`DesktopMoveLane` (lane `downloads-move`) runs 07's move algorithm ([07 Moving between roots](07-downloads.md#moving-between-roots)) with one desktop optimisation: when source and target are on the same file store (`Files.getFileStore` equal), each completed file is moved with `Files.move(…, ATOMIC_MOVE)` — a rename — instead of copy, verify and delete; across stores 07's copy (256-KiB buffer, `force`, length check), rename, commit and journal deletion apply. The playing episode's file is deferred until it is no longer current. Progress shows in Settings and on the Downloads screen (`MOVE_IN_PROGRESS`); a quit or crash leaves the remaining rows on the old root, and the lane continues at the next start (R8.8 "continues after an interruption"). Emptied `[p…]` folders on the old root are removed; the old root itself is never deleted.
+
+### Names and path lengths on the desktop
+
+07's `DownloadPaths.component` already removes `/ \ : * ? " < > |` and control characters, trims spaces and dots at both ends and appends `[p…]`/`[e…]`, which makes every name unique on case-insensitive file systems (NTFS, default APFS) and rules out Windows device names such as `CON` or `NUL` ([07 Directory layout and naming](07-downloads.md#directory-layout-and-naming)). The desktop adds one rule: on Windows the full path `root\folder\file` is kept at ≤ 259 UTF-16 code units (the classic `MAX_PATH` limit that Explorer and many tools still apply), by shrinking the title budget of both components proportionally (never below 20 characters of title, never cutting the suffixes or the date). On macOS and Linux 07's 100-byte component budget applies unchanged. Names are NFC-normalised on every OS.
+
+### Show in folder
+
+`RevealInFolder` (`:core:ui` `desktopMain`, R8.8) — labelled "Show in Explorer", "Show in Finder" or "Show in Files" — appears on downloaded episodes (episode detail overflow, Downloads row context menu) and on the folder row of Settings › Desktop.
+
+| OS | Mechanism | Fallback |
+|---|---|---|
+| macOS | `Desktop.browseFileDirectory(file)` (selects the file, [java.awt.Desktop](https://docs.oracle.com/en/java/javase/25/docs/api/java.desktop/java/awt/Desktop.html)) | `Desktop.open(parent)` |
+| Windows | `SHOpenFolderAndSelectItems` through JNA ([docs](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shopenfolderandselectitems)) | `Desktop.open(parent)` |
+| Linux | `org.freedesktop.FileManager1.ShowItems([file URI], "")` over D-Bus ([file manager interface](https://www.freedesktop.org/wiki/Specifications/file-manager-interface/)) | `Desktop.open(parent)` (folder without selection) |
+
+No `explorer.exe`, `open` or `xdg-open` process is started (only `:youtube:ytdlp-desktop` may start processes, [PLAN 5.1](../PLAN.md#51-module-graph) rule 6).
+
+### Disk full
+
+- **Before a transfer:** 07's free-space check with `FileStore.getUsableSpace()` in place of Android's allocatable bytes (no `allocateBytes` on the desktop): short → 07's cleanup planner when it would free enough, else `Wait(STORAGE, STORAGE_FULL)` ([07 Free space and allocation](07-downloads.md#free-space-and-allocation)).
+- **During a transfer:** the JVM reports a full disk only as an `IOException` whose message differs per OS, so after any write `IOException` the lane re-reads the store's usable space; below 1 MiB it is a full disk: every transfer on that root stops as `QUEUED(STORAGE)` with `STORAGE_FULL`, `.part` files are kept, and `DesktopNotifier` posts "Storage full — downloads paused" with a route to the Downloads screen. Freed space (deletes, cleanup, a folder change) pokes both download lanes.
+- **FAT32 volumes** (`FileStore.type()` `vfat`, `msdos` or `FAT32`): a file that would exceed 4 GiB fails as `FAILED(STORAGE_UNAVAILABLE)` before the transfer starts when the size is known, as Android's `EFBIG` rule does.
+
+### Removable and network drives
+
+A chosen folder on a USB drive, memory card or network share follows 07's removable-volume rules ([07 Removable volumes](07-downloads.md#removable-volumes)): when the root is unreachable, `COMPLETED` rows become `MISSING` with `STORAGE_UNAVAILABLE`, queued rows wait in `STORAGE`, and nothing is deleted; when the same path is reachable again, reconciliation restores intact files. The download lanes check `Files.isDirectory(root)` on every run, at start and after `Resumed`; the Downloads screen re-checks every 30 s while it is visible. Windows drive letters can change; the stored absolute path is compared literally, and a different letter means "unavailable" until the user picks the folder again. On network shares the final rename may not be atomic (Unverified); 07's verify-then-rename still keeps partial files from being played. Playing a file whose drive is gone falls back to streaming ([Engine errors and recovery](#engine-errors-and-recovery)).
+
+### macOS folder privacy
+
+macOS protects `~/Desktop`, `~/Documents`, `~/Downloads`, removable and network volumes for every app, sandboxed or not, and asks the user before the first access ([control access to files and folders](https://support.apple.com/guide/mac-help/control-access-to-files-and-folders-on-mac-mchld5a35146/mac)). Grants are tied to the code identity, which changes with every ad-hoc-signed build, so the prompt may return after each update (risk [P12](../PLAN.md#8-risks-and-mitigations); Unverified). The default folder in Application Support needs no grant; when the user picks a protected folder, Settings › Desktop explains the prompt and the re-prompt after updates.
+
+---
+
+## Desktop YouTube engine host
+
+Serves R8.6, R3.1 (search), R3.5, R3.6, R3.8, R3.9 (desktop), N5 (PB29), N8, N11. Delivered in M8 (external-only bindings with `ExternalReason.NOT_YET_AVAILABLE`), MD3 (the host). Honours [D90](../PLAN.md#3-key-decisions), [D72](../PLAN.md#3-key-decisions)–[D77](../PLAN.md#3-key-decisions). The engine logic, protocol methods, shim, trust chain, capability rules and update policy are shared with Android and owned by 04 ([04 Shared engine module](04-youtube.md#shared-engine-module)); this section owns the desktop host: CPython, the child process, stdio framing, paths and the JS bridge.
+
+```mermaid
+flowchart LR
+  subgraph JVM["Neutrodyne JVM"]
+    RES["YtDlpStreamResolver, YtDlpEnricher,<br/>YtDlpChannelSearch, YtDlpChannelLookup<br/>(youtube engine island)"] --> CLI["YtDlpClient<br/>single flight, deadlines"]
+    CLI --> TR["StdioYtxTransport<br/>JSON lines, nd-ytx-out, nd-ytx-err"]
+    TR --> PROC["YtxProcess<br/>start, idle stop, kill on hang"]
+    UPD["DesktopEngineUpdateLane and EngineStore<br/>data dir ytdlp"] --> CLI
+    QJ["QuickJsBridge<br/>quickjs-kt, only with the JS provider"]
+  end
+  subgraph CHILD["CPython child (python -I -X utf8 -B)"]
+    HOST["neutrodyne_ytx with host_stdio.py<br/>worker threads"] --> YT["yt-dlp from the active version dir"]
+    YT --> NET["urllib handler, source_address per call,<br/>OpenSSL with the bundled cacert.pem"]
+  end
+  PROC -->|"stdin and stdout pipes"| HOST
+  HOST -.->|"jsc request over stdout"| QJ
+```
+
+### CPython selection and pins
+
+- **Distribution:** python-build-standalone (Astral) CPython 3.14.x, the `install_only_stripped` archive per target, pinned by release tag and SHA-256 in `youtube/ytdlp-desktop/python-components.lock`, the same CPython minor as Android's Chaquopy host (3.14; S7's fallback to 3.13 applies to both hosts). It is relocatable, exists for all targets, links libedit instead of GNU readline and disables `_gdbm` upstream ([running](https://github.com/astral-sh/python-build-standalone/blob/main/docs/running.rst), [technotes](https://github.com/astral-sh/python-build-standalone/blob/main/docs/technotes.rst)); the Linux builds need glibc ≥ 2.17, below our floor.
+- **Gradle tasks** (`:youtube:ytdlp-desktop`): `fetchPythonStandalone` (exact URL under `github.com/astral-sh/python-build-standalone/releases/download/<tag>/`, SHA-256 check), `trimPythonStandalone` (`scripts/engine/trim-python.sh`), `checkPythonLicences` (the component list, taken from the release's `PYTHON.json` licence metadata and committed in the lock, against D3's allow-list), `verifyBundledYtDlp` (the same vendored `yt-dlp` file and signature check as Android, [01 Python and native components](01-foundation.md#python-and-native-components)), `shimTestStdio` (the shared shim tests through the stdio adapter on the host CPython).
+- **Never:** a system Python, yt-dlp's PyInstaller executables or PyInstaller (GPL parts), GraalPy, Deno, Node, Bun, the `qjs` CLI ([D3](../PLAN.md#3-key-decisions), [D90](../PLAN.md#3-key-decisions)).
+
+### Trim list and checks
+
+`trim-python.sh` removes, per target: `include/`, `share/`, `lib/pkgconfig/`, `lib/libpython3.14*.so*` on Linux (the executable is statically linked, measured), every `bin/` entry except the interpreter (`idle*`, `pip*`, `pydoc*`, `*-config`), the standard-library packages `tkinter`, `idlelib`, `turtledemo`, `test`, `ensurepip`, `pydoc_data`, `__phello__`, `site-packages/pip*`, `config-3.14-*`, all of Tcl/Tk (`libtcl*`, `libtk*`, `tcl9*`, `tk9*`, `itcl*`, `thread*`, Windows `tcl\` and `DLLs\tcl*.dll`, `DLLs\tk*.dll`), `_tkinter*` and `_dbm*` (statically linked Berkeley DB 6.0.19 under the Sleepycat licence on Linux). Measured on Linux x64: 44 MB on disk, 15.6 MB as tar.gz, with `ssl`, `sqlite3`, `json`, `http.client`, `xml.etree`, `zipimport` and `ctypes` still importable. The upstream `LICENSE.txt` and the notices generated from `PYTHON.json` stay and appear on the Licences screen. `check-desktop-image.sh` re-checks the trimmed tree in every image ([Image scan rules](#image-scan-rules)); on macOS every Mach-O file of the tree is signed ad hoc before the app bundle is ([macOS DMG, ad-hoc signing and the 0.x ZIP](#macos-dmg-ad-hoc-signing-and-the-0x-zip)).
+
+Resources (`appResourcesRootDir`, [Resources layout](#resources-layout)): `<os>-<arch>/engine/python/` (the trimmed tree), `common/engine/ytdlp/yt-dlp` and `bundled.json`, `common/engine/shim/neutrodyne_ytx/` (the shared shim with `host_stdio.py`, compiled to `.pyc` by the target's bundled interpreter on its own runner), `common/engine/cacert.pem` (certifi's CA bundle, MPL-2.0, unmodified data). `PythonRuntimeLocator` finds the interpreter (`engine/python/python.exe` on Windows, `engine/python/bin/python3.14` elsewhere) under `compose.application.resources.dir`, or under the build directory for `InstallKind.DEV`; a missing or non-executable interpreter makes capabilities external with `ENGINE_FAILED` ([04 Capability matrix](04-youtube.md#capability-matrix)).
+
+### Process model
+
+The states and rules mirror `:ytx` ([04 Process and lifecycle](04-youtube.md#process-and-lifecycle)); the transport differs.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Stopped
+  Stopped --> Starting: prewarm or first call
+  Starting --> Compiling: hello reports compiling
+  Compiling --> Ready: hello reports ready
+  Starting --> Ready: hello reports ready
+  Starting --> Stopped: exit or no hello within 15 s, failure counted
+  Starting --> Failed: third failed start for this app and engine version
+  Failed --> Stopped: Try again, or a new app or engine version
+  Ready --> Stopped: idle 3 min, hang kill, crash, version switch, app quit
+```
+
+| Aspect | Rule |
+|---|---|
+| Command line | `<python> -I -X utf8 -B <shim>/bootstrap.py --lib <versionDir> --shim <shimDir> --parent-pid <jvmPid>`. `-I` ignores `PYTHON*` variables and user site-packages; `-X utf8` fixes the I/O encoding; `-B` forbids writing bytecode (versions are precompiled and read-only) ([CPython command line](https://docs.python.org/3/using/cmdline.html)) |
+| Environment | Cleared, then only `SSL_CERT_FILE=<resources>/engine/cacert.pem`; `TMP`, `TEMP`, `TMPDIR` = `<cache>/engine-cache/tmp`; `HOME` (and `USERPROFILE` on Windows) = `<cache>/engine-cache/home`; on Windows `SYSTEMROOT` (needed by Winsock and the crypto libraries); `PATH` = the interpreter's directory. No proxy variables, no secrets |
+| Working directory | `<cache>/engine-cache/` |
+| Streams | stdin and stdout are the protocol pipes; stderr is read by `nd-ytx-err` into the engine log (redacted, capped at 1 MiB per child) |
+| Ready | The shim prints `hello` after its imports (`ready`), or `compiling` first while a version is compiled for the first time (a separate first-compile cap of 120 s, Unverified as on Android); a call that meets a compile gets `Transient(ENGINE_UNAVAILABLE)` at its deadline |
+| Calls | Absolute deadlines; worker threads in the child (a pool of 4), one `YoutubeDL` per worker and `hl`, cursors as on Android ([04 Binder API](04-youtube.md#binder-api)) |
+| Hang | A call still running 5 s after its deadline: `Process.destroyForcibly()`, `Transient(TIMEOUT)` for that call, `Transient(ENGINE_UNAVAILABLE)` for the others; open cursors are lost |
+| Idle stop | 3 min after the last call or pre-warm: close stdin (the shim exits on end of file), `destroyForcibly()` after 2 s (PB29) |
+| Crash | The child exits with calls in flight → `Transient(ENGINE_UNAVAILABLE)`; the next call starts a fresh child; playback never stops because of the engine; engine crashes are engine health, never crash reports ([D62](../PLAN.md#3-key-decisions)) |
+| Failed starts | As 04: a failed start of a downloaded version rolls back at once; three consecutive failed starts of the bundled version per app and engine version make capabilities external with `ENGINE_FAILED` |
+| Orphan guard | The shim exits on stdin end of file; it also checks every 5 s that the parent is alive (macOS and Linux: `os.getppid()` changed; Windows: a handle from `OpenProcess(--parent-pid)` signalled) |
+| Pre-warm | 04's triggers ([04 Capability consumers](04-youtube.md#capability-consumers)); at most one start in flight |
+| Version switch | Activation, rollback and "Reset to bundled" stop an idle child; the next start uses the new directory |
+
+### Stdio protocol
+
+UTF-8 JSON, one object per line, `\n`-terminated; JSON escapes keep newlines out of strings. stdout carries only protocol lines: the shim points `sys.stdout` at stderr before importing yt-dlp, and writes protocol lines to the saved original stream under a lock, flushing after each line. Lines are at most 256 KiB; payloads ≤ 16 KiB and results ≤ 128 KiB as on Android; an oversize result becomes `EXTRACTION` in the child, an oversize or malformed line from the child kills it (`Transient(ENGINE_UNAVAILABLE)`).
+
+| Direction | Line | Meaning |
+|---|---|---|
+| child → JVM | `{"t":"hello","state":"ready","shimApi":1,"host":"stdio","python":"3.14.8","ytDlp":"2026.08.19","ejs":"0.8.0","jsc":false,"pid":4321}` | Imports done (or `"state":"compiling"` first) |
+| JVM → child | `{"t":"call","id":17,"m":"resolve","p":{"videoId":"dQw4w9WgXcQ","ctx":{"hl":"en","gl":"CH","ua":"Neutrodyne/1.0 …","ipFamily":"V4"}},"deadline":1759660800000}` | One call of 04's method table (`ping`, `version`, `selftest`, `resolve`, `facts`, `lookup`, `tab_open`, `tab_next`, `search_open`, `search_next`) with an absolute epoch-millisecond deadline |
+| child → JVM | `{"t":"ok","id":17,"r":{…}}` | Result, the same JSON as on Android |
+| child → JVM | `{"t":"err","id":17,"code":"UNAVAILABLE","msg":"…"}` | Error codes of 04 (`RATE_LIMITED`, `AGE_RESTRICTED`, …, `CURSOR_EXPIRED`) |
+| JVM → child | `{"t":"cancel","id":17}` | Cooperative cancel |
+| child → JVM | `{"t":"jsc","id":"j3","req":{…}}` | JS challenge request (only with the provider) |
+| JVM → child | `{"t":"jsc_ok","id":"j3","r":{…}}` or `{"t":"jsc_err","id":"j3","code":"TIMEOUT"}` | JS challenge answer |
+| JVM → child, child → JVM | `{"t":"status"}`, `{"t":"status","r":{"pid":4321,"running":1,"queued":0,"engineVersion":"2026.08.19","ejsVersion":"0.8.0","shimApi":1,"python":"3.14.8","jsChallenges":false}}` | Diagnostics, as Android's `status()` |
+
+```kotlin
+// :youtube:ytdlp-desktop — YtxTransport is 04's host-independent contract
+class StdioYtxTransport(private val process: YtxProcess, private val store: EngineStore,
+                        private val clock: Clock, private val jsc: QuickJsBridge?) : YtxTransport {
+    override suspend fun call(method: String, json: String, deadline: Duration): String
+    override fun cancel(callId: Long)
+    override val status: StateFlow<HostStatus>
+    override fun prewarm(reason: PrewarmReason)
+    override fun shutdown()
+}
+class YtxProcess(private val runtime: PythonRuntimeLocator, private val paths: DesktopEngineStorePaths) {
+    fun start(versionDir: Path): YtxChild            // the only ProcessBuilder use in the code base
+}
+class YtxChild(val pid: Long, val stdin: OutputStream, val stdout: InputStream,
+               val stderr: InputStream, private val process: Process) { fun kill() }
+```
+
+The writer is serialised by a mutex; `nd-ytx-out` completes the pending call by `id` and ignores unknown IDs (a late answer after a kill); `shimApi` versioning covers both host adapters ([04 Shared engine module](04-youtube.md#shared-engine-module)), and the canary tests both before approving a yt-dlp release ([09 engine-canary.yml](09-quality-and-release.md#engine-canaryyml)).
+
+### Networking and TLS
+
+- **A2 rule** ([D72](../PLAN.md#3-key-decisions), [04 IP-family matching](04-youtube.md#ip-family-matching)): yt-dlp's built-in urllib handler with `source_address` = `0.0.0.0` for `V4` or `::` for `V6` per call's `ctx.ipFamily`, so the `ip=` parameter of googlevideo URLs matches the family the JVM uses for media requests. The shim keeps urllib as the only handler (plus the test-only `ReplayRH`) and sets `proxy = ''`; `shimTestStdio` fails when a request reaches another handler.
+- **TLS:** PBS's OpenSSL with `SSL_CERT_FILE` pointing at the bundled certifi CA file, because the build's default verify paths do not exist on every OS; the system trust store is not consulted, so a TLS-inspecting corporate proxy breaks YouTube resolution (documented; [Open questions](#open-questions) 7).
+- **Later:** an HTTP-over-stdio bridge to the island's OkHttp client (one TLS stack, real cancellation, system proxy) is a v1.x option, as D74's bridge is on Android.
+
+### Engine store paths
+
+`DesktopEngineStorePaths` implements 04's `EngineStorePaths`: `<data>/ytdlp/active.json` (written atomically by the JVM only; the child receives its version directory in argv), `<data>/ytdlp/versions/<version>/` (`yt-dlp` kept for re-extraction, `lib/` compiled to `.pyc` in legacy layout, marker `.compiled-<python minor>`, files read-only: mode `0444`/`0555` or the Windows read-only attribute), `<data>/ytdlp/staging/` (emptied when the update lane starts), and yt-dlp's `cachedir` = `<cache>/engine-cache/yt-dlp/` (player JS and solver data only, never stream URLs, [D50](../PLAN.md#3-key-decisions)). The bundled version is extracted from the resources and compiled once per app version by the first `engine-update` lane run that finds no marker (30 s after start, never on a resolve path), the desktop form of Android's `engine-prepare`.
+
+### Engine updates on the desktop
+
+The trust chain, keys, manifest, policies and checks 1–11 are 04's and identical ([04 Engine updates](04-youtube.md#engine-updates)): the Ed25519 manifest signature verified with the JDK (`JdkEd25519Verifier`), yt-dlp's upstream OpenPGP signature (`OpenPgpDetachedVerifier`), SHA-256, origin, anti-rollback below the version bundled in this desktop build, the shim-API range. `DesktopEngineUpdateLane` replaces `EngineUpdateWorker`: it checks once a day while the app runs (jittered), at once when the circuit breaker opens, and on "Check for engine update"; it downloads only from `github.com/yt-dlp/yt-dlp/releases/download/…`; stages, extracts with zip-slip and size checks, compiles with the bundled interpreter (`-I -m compileall`), makes the files read-only, runs `selftest` in a fresh child, and activates only while idle (no call in flight, no YouTube item playing), keeping the previous version for 04's automatic rollback. No native code is ever downloaded, so Gatekeeper, SmartScreen and Smart App Control never see engine updates; `.pyc` files are data to the OS.
+
+### JS challenge provider over stdio
+
+Only if [D75](../PLAN.md#3-key-decisions)'s provider ships (decided in M9b): the shim registers `NeutrodyneQuickJsJCP`, which sends the solver input as a `jsc` line; `QuickJsBridge` evaluates it in quickjs-kt 1.0.15 inside the JVM with 04's limits, interrupt and in-memory preprocessed-player cache ([04 JS challenge provider](04-youtube.md#js-challenge-provider)), and answers on stdin. The QuickJS context gets no `std` or `os` module (Unverified that quickjs-kt registers none; MD3 checks). Never the `qjs` CLI: a program run with `qjs --script` can import `qjs:os` and call `os.exec`, so YouTube-supplied code would run with the user's privileges.
+
+### Engine security
+
+There is no app sandbox on the desktop: the child runs with the user's full file and network access, so a malicious engine update or solver input could reach user files (risk [P14](../PLAN.md#8-risks-and-mitigations)). The boundary is the mandatory trust chain ([D76](../PLAN.md#3-key-decisions)); further measures: only pure-Python code is downloaded and only from pinned origins; `-I` and a cleared environment; working directory and home inside the engine cache; no secrets, no database access, no network credentials in the child; inputs are video IDs, channel URLs and search text from the JVM; logs redacted (URLs replaced by `<url>`). v1.x (M17) adds OS sandboxing of the child: a Windows job object with `KILL_ON_JOB_CLOSE` and a restricted token or AppContainer, a macOS `sandbox-exec` profile (deprecated API, Unverified longevity), Linux Landlock rules applied by the shim through `ctypes` ([Landlock](https://docs.kernel.org/userspace-api/landlock.html)).
+
+### Host failure modes
+
+| Failure | Behaviour |
+|---|---|
+| Interpreter missing or not executable (antivirus quarantine, damaged install) | Capabilities external with `ENGINE_FAILED`; Settings › YouTube says "The YouTube engine could not start" with "Try again"; diagnostics show the path and error |
+| macOS kills the child for an invalid signature | Same as above; S13 and MD3 AC5 check `codesign --verify --deep --strict` with the nested Python binaries |
+| Smart App Control on (Windows) | The launcher is already blocked; if only `python.exe` were blocked, the same `ENGINE_FAILED` path applies |
+| Protocol violation (malformed or oversize line) | Kill, `Transient(ENGINE_UNAVAILABLE)`, counted in engine health |
+| Engine update fails a check or the self-test | 04's rules: rejected, never activated; the active version stays |
+| The JVM crashes | The child sees end of file or a dead parent and exits within 5 s |
+
+---
+
+## Packaging and the runtime exception
+
+Serves R8.2, R6.5, N5 (PB24–PB27), N7, N8, N12. Delivered in M0b (all formats on four runners, runtime sources, image scan, S13), MD1b (FFmpeg source bundle), MD3 (Python tree), MD5 (final configuration, AOT cache, release blockers). Honours [D89](../PLAN.md#3-key-decisions), [D3](../PLAN.md#3-key-decisions), [D4](../PLAN.md#3-key-decisions), [D61](../PLAN.md#3-key-decisions), [D63](../PLAN.md#3-key-decisions), [D79](../PLAN.md#3-key-decisions), [PO-39](../PLAN.md#48-further-product-owner-decisions), [PO-42](../PLAN.md#48-further-product-owner-decisions). The release workflow, its jobs and the publish step are 09's ([09 release.yml](09-quality-and-release.md#releaseyml)); this section defines what one desktop job builds and checks.
+
+### Packaging pipeline
+
+```mermaid
+flowchart TB
+  A["setup: Temurin 25 from runtime.lock (checksum), WiX on Windows, NASM, CMake, rpm and fakeroot on Linux"] --> B["buildFfmpeg, buildNdmedia, ffoffsets"]
+  A --> C["fetchPythonStandalone, trimPythonStandalone, checkPythonLicences"]
+  B --> D["createDistributable: jlink runtime, JARs, merged resources, launcher"]
+  C --> D
+  D --> E["trainAotCache: neutrodyne.aot into the image"]
+  E --> F["one image copy per install kind, install-kind file written"]
+  F --> G["macOS: sign nested code ad hoc, then the bundle; 0.x: mac-zip.sh"]
+  F --> H["jpackage from the image: MSI, DMG, DEB, RPM; ZIP and tar.gz archived"]
+  G --> H
+  H --> I["smoke start of every package (-Dneutrodyne.smoke=true)"]
+  I --> J["check-desktop-image.sh, codesign verify on macOS"]
+  J --> K["workflow artefact; release job renames to neutrodyne-v-os-arch.ext"]
+```
+
+Each target builds only on its own runner ([Supported targets](#supported-targets)). Compose's package tasks are used for MSI, DMG, DEB and RPM; whether Compose 1.12.1 packages a prepared app image per install kind or needs one `createDistributable` per kind is Unverified (S13 picks the cheaper working form). The ProGuard `*Release*` tasks are never registered or run ([D89](../PLAN.md#3-key-decisions); `verifyDependencyPolicy` bans `com.guardsquare:proguard*`).
+
+### nativeDistributions configuration
+
+```kotlin
+// build-logic: neutrodyne.desktop.application, applied by :desktopApp (sketch)
+compose.desktop.application {
+    mainClass = "ch.lkmc.neutrodyne.desktop.MainKt"
+    javaHome = temurin25Home()                                   // the runtime.lock JDK on this runner
+    jvmArgs += desktopJvmOptions(os)                             // table below
+    nativeDistributions {
+        targetFormats(*formatsFor(os))                           // Msi | Dmg | Deb, Rpm (ZIP, mac-zip, tar.gz are archives of the image)
+        packageName = "Neutrodyne"; packageVersion = versionName // X.Y.Z; the macOS 0.x case is handled by mac-zip.sh
+        description = "Podcast player organised around groups"; vendor = "Neutrodyne contributors"
+        licenseFile.set(rootProject.file("LICENSE"))             // Unlicense
+        modules(*JLINK_MODULES)
+        appResourcesRootDir.set(layout.buildDirectory.dir("desktop-resources"))   // common/, <os>/, <os>-<arch>/
+        windows {
+            perUserInstall = true; upgradeUuid = NEUTRODYNE_UPGRADE_UUID           // frozen, table below
+            menu = true; menuGroup = "Neutrodyne"; shortcut = false; dirChooser = false
+            installationPath = "Programs\\Neutrodyne"                             // Unverified mapping, S13
+            iconFile.set(file("icons/neutrodyne.ico"))
+            fileAssociation("text/x-opml", "opml", "OPML subscription list", file("icons/neutrodyne.ico"))
+        }
+        macOS {
+            bundleID = "ch.lkmc.neutrodyne"; dockName = "Neutrodyne"; minimumSystemVersion = "13.0"
+            appCategory = "public.app-category.music"; iconFile.set(file("icons/neutrodyne.icns"))
+            fileAssociation("text/x-opml", "opml", "OPML subscription list", file("icons/neutrodyne.icns"))
+            infoPlist { extraKeysRawXml = MAC_URL_TYPES + MAC_LOCAL_NETWORK_USAGE }
+            // no signing block: jpackage signs ad hoc
+        }
+        linux {
+            packageName = "neutrodyne"; appCategory = "AudioVideo"; menuGroup = "AudioVideo"
+            debMaintainer = "neutrodyne@users.noreply.github.com"; rpmLicenseType = "Unlicense"
+            // no iconFile, shortcut or fileAssociation: our own desktop entry (Links and files from the OS)
+        }
+    }
+}
+```
+
+The DSL members used (`fileAssociation` on the platform blocks, `infoPlist.extraKeysRawXml`, `minimumSystemVersion`, `installationPath`, `perUserInstall`, `upgradeUuid`) exist in the Compose Gradle plugin 1.12.1 ([plugin artefacts](https://repo1.maven.org/maven2/org/jetbrains/compose/compose-gradle-plugin/1.12.1/), [native distributions](https://kotlinlang.org/docs/multiplatform/compose-native-distribution.html)). The `.opml` association is declared per platform, never at the top level, because a Linux file association would switch jpackage's own desktop integration on.
+
+`MAC_URL_TYPES` declares `CFBundleURLTypes` with the schemes `neutrodyne`, `feed`, `podcast`, `pcast` and `itpc`; `MAC_LOCAL_NETWORK_USAGE` sets `NSLocalNetworkUsageDescription` = "Neutrodyne connects to your own sync server on your local network." (macOS 15's local network privacy, [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)).
+
+### Frozen identifiers
+
+Changing any of these after the first public desktop release creates a different app, breaks upgrades or orphans user data ([D61](../PLAN.md#3-key-decisions)).
+
+| Identifier | Value |
+|---|---|
+| macOS bundle ID | `ch.lkmc.neutrodyne` |
+| Windows MSI `upgradeUuid` | Generated once in M0b with a UUIDv4 generator and recorded here in the M0b pull request; not yet generated (planning) |
+| Windows AppUserModelID | `ch.lkmc.neutrodyne` |
+| Windows install location | `%LOCALAPPDATA%\Programs\Neutrodyne\` (per user; S13 confirms the jpackage mapping) |
+| Linux package name and location | `neutrodyne`, `/opt/neutrodyne` |
+| Linux desktop entry | `ch.lkmc.neutrodyne.desktop` (S13 confirms the mechanism, [Links and files from the OS](#links-and-files-from-the-os)) |
+| `nativeDistributions.packageName`, launcher | `Neutrodyne` — `Neutrodyne.exe`, `Neutrodyne.app`, `/opt/neutrodyne/bin/Neutrodyne` |
+| Main class | `ch.lkmc.neutrodyne.desktop.MainKt` |
+| MPRIS bus name and track IDs | `org.mpris.MediaPlayer2.neutrodyne`, `/ch/lkmc/neutrodyne/episode/{id}` |
+| URL schemes and file type | `neutrodyne`, `feed`, `podcast`, `pcast`, `itpc`; `.opml` as `text/x-opml` |
+| Data directory names | `Neutrodyne` (Windows), `ch.lkmc.neutrodyne` (macOS), `neutrodyne` (Linux), [AppDirs](#appdirs) |
+
+### jlink modules
+
+The start list is the `suggestModules` result of the research build (Compose 1.12.1, Material 3, a cover grid) plus three modules the features need; `suggestModules` runs in CI when dependencies change, and the packaged-app smoke start on every target catches a missing module at run time (risk [T25](../PLAN.md#8-risks-and-mitigations)).
+
+| Module | Why |
+|---|---|
+| `java.base`, `java.desktop`, `java.datatransfer`, `java.prefs`, `java.xml` | AWT, Swing, Compose desktop, tray, file dialogs, drag and drop, `java.awt.Desktop` |
+| `java.logging`, `java.management`, `java.naming`, `java.security.sasl`, `java.sql`, `java.transaction.xa` | Required by libraries on the classpath per the research `suggestModules` run (re-checked for our classpath) |
+| `jdk.unsupported` | `sun.misc.Unsafe` users (Okio, coroutines, Skiko) |
+| `jdk.accessibility` | Java Access Bridge on Windows (R8.10, [Accessibility](#accessibility)) |
+| `jdk.charsets` | Feed encodings outside `java.base` (for example Shift_JIS, GBK, Big5), [03 Parser](03-feeds-and-discovery.md#parser) |
+| `jdk.localedata` | Localised dates and numbers in every shipped language (`DateFormatter` uses `java.time.format`); Unverified size, and whether Compose's jlink step can restrict it with `--include-locales` |
+
+jlink options: `--strip-debug --no-header-files --no-man-pages`, no `--compress` (a compressed image is larger after the installer's own compression: 40.0 MB instead of 32.3 MB as tar.gz in the research measurement). JDK 25 links from the runtime image without `jmods/` ([JEP 493](https://openjdk.org/jeps/493)).
+
+### JVM options
+
+| Option | Why |
+|---|---|
+| `--enable-native-access=ALL-UNNAMED` | FFM restricted methods without warnings; likely mandatory in future JDKs ([JEP 454](https://openjdk.org/jeps/454)) |
+| `-XX:AOTCache=$APPDIR/neutrodyne.aot` | The AOT cache ([AOT cache](#aot-cache)); jpackage launchers replace `$APPDIR` with the app directory ([jpackage](https://docs.oracle.com/en/java/javase/25/docs/specs/man/jpackage.html)) |
+| `-XX:+ExitOnOutOfMemoryError` | A clean unclean-exit report instead of a half-working UI |
+| `-XX:ErrorFile=…/hs_err_pid%p.log` | Native crash logs into the state directory: `$LOCALAPPDATA\Neutrodyne\Logs\` (Windows), `$HOME/Library/Logs/Neutrodyne/` (macOS), `$HOME/.local/state/neutrodyne/` (Linux; a custom `XDG_STATE_HOME` is not honoured here); jpackage substitutes environment variables in Java options (Unverified for this exact option; the crash reporter also searches the temp directory) |
+| `-Xmx768m` | Caps the heap below the default 25 % of RAM; the research measured < 80 MB of heap; S13 tunes heap and GC against PB25 and PB26 (Unverified value) |
+| `-Dapple.awt.application.appearance=system` (macOS) | The window title bar follows the OS light or dark appearance (Unverified that Compose 1.12 does not already do this) |
+| `-Djavax.accessibility.assistive_technologies=com.sun.java.accessibility.AccessBridge` (Windows) | Loads Java Access Bridge for Neutrodyne without a system-wide change ([Toolkit](https://docs.oracle.com/en/java/javase/25/docs/api/java.desktop/java/awt/Toolkit.html), [Accessibility](#java-access-bridge)) |
+
+No `-Dfile.encoding` (UTF-8 is the default since JDK 18), no renderer flags (Skiko chooses its back-end), no debugging or agent options.
+
+### Resources layout
+
+`appResourcesRootDir` merges `common/`, `<os>/` and `<os>-<arch>/` into the image; at run time `System.getProperty("compose.application.resources.dir")` points at the merged directory ([native distributions](https://kotlinlang.org/docs/multiplatform/compose-native-distribution.html)).
+
+```
+desktop-resources/
+  common/
+    engine/ytdlp/yt-dlp, bundled.json, SHA2-256SUMS, SHA2-256SUMS.sig
+    engine/shim/neutrodyne_ytx/…           (compiled shim incl. host_stdio.py, bootstrap.py)
+    engine/cacert.pem                       (certifi, MPL-2.0 data, unmodified)
+    licenses/THIRD_PARTY_NOTICES.md, COPYING.LGPLv2.1, miniaudio.txt, python/…
+  windows-x64/  native/ndmedia.dll, avcodec-63.dll, avformat-63.dll, avutil-61.dll, swresample-7.dll,
+                ffmpeg-layout.json, ffmpeg-license.txt;  engine/python/…
+  macos-arm64/  native/libndmedia.dylib, libavcodec.63.dylib, …;  engine/python/…
+  linux-x64/    native/libndmedia.so, libavcodec.so.63, …;  engine/python/…
+  linux-arm64/  (as linux-x64)
+```
+
+The packaging pipeline adds `install-kind` (one line: `msi`, `zip`, `dmg`, `mac-zip`, `deb`, `rpm` or `tar.gz`) to the merged directory of each image copy; `BuildInfo.installKind` reads it, and its absence means `DEV`. The `-Pneutrodyne.youtubeEngine=false` build omits `engine/` entirely.
+
+### Native libraries and native access
+
+Our libraries (`ndmedia`, FFmpeg) load from `<resources>/native/` by absolute path with `SymbolLookup.libraryLookup(path, Arena.global())`, FFmpeg in dependency order (`avutil`, `swresample`, `avcodec`, `avformat`), so Windows resolves each library's imports to the already-loaded modules. JNI libraries inside third-party JARs keep their own loaders: Skiko's native library is placed in the image by the Compose plugin; JNA loads with `jna.nosys=true` and its bundled native extracted to `<cache>/native/`; `sqlite-bundled` and quickjs-kt extract their natives by their own rules. Unverified per library: whether each loader can be pointed at the image instead of a temporary directory; S13 lists every loader, sets the override where one exists, and records the rest (N7 states "native code loaded only from the app image"; [Open questions](#open-questions) 9).
+
+### AOT cache
+
+[PO-42](../PLAN.md#48-further-product-owner-decisions): ship the JDK 25 AOT cache ([JEP 483](https://openjdk.org/jeps/483), [JEP 514](https://openjdk.org/jeps/514), [JEP 515](https://openjdk.org/jeps/515)); measured in the research build: first frame 0.58–0.63 s instead of 1.70–2.09 s, idle RSS ≈ 199 MB instead of ≈ 238 MB, cache 55.6 MB (14.1 MB compressed), under software rendering.
+
+1. `trainAotCache` (`:desktopApp`) runs on each runner after `createDistributable`, with the image's own runtime and exactly the launcher's options plus `-XX:AOTCacheOutput=<image>/app/neutrodyne.aot -Dcompose.aot.training-run=true` and a scripted training journey in a temporary `AppDirs`: start, open the five destinations, open a podcast and an episode built from the build's test fixtures (passed by path, never shipped), play 2 s of generated PCM through the null back-end, quit.
+2. The cache ships in the image; the launcher passes `-XX:AOTCache=$APPDIR/neutrodyne.aot`.
+3. The JVM ignores a cache that does not match its runtime or class path and starts normally (Unverified for every flag combination, risk [T24](../PLAN.md#8-risks-and-mitigations)). Unverified: that the cache is still accepted after jpackage installs the image at a different path than the training location; S13 installs every package and checks the cache use with `-Xlog:aot`.
+4. When Compose Multiplatform's `aot { mode = AotMode.AotPrebuild }` is stable (1.13, [PR #5644](https://github.com/JetBrains/compose-multiplatform/pull/5644)), it replaces our task ([D4](../PLAN.md#3-key-decisions)).
+5. Fallback if relocation fails: train at the user's first start into `<cache>/aot/` and use it from the second start (Unverified mechanism), or ship without a cache (first frame ≤ 2.5 s, PB24's second limit).
+
+### Windows MSI and ZIP
+
+- **MSI** `neutrodyne-{v}-windows-x64.msi` (jpackage with WiX 3.14 or 5.x on the runner; WiX is a build tool under MS-RL and nothing of it ships except jpackage's own `wixhelper.dll` custom action, which is GPL-2.0 with the Classpath Exception and covered by the runtime exception): per-user install without UAC, a Start-menu entry in "Neutrodyne", no desktop shortcut, no directory chooser, the `.opml` association; `msiPackageVersion` = `MAJOR.MINOR.PATCH` (≤ 255, ≤ 255, ≤ 65535); a newer MSI with the same `upgradeUuid` replaces the installed version and keeps every file outside the install directory.
+- **Install location:** `%LOCALAPPDATA%\Programs\Neutrodyne\` through `installationPath`. Unverified mapping for per-user installs; if jpackage places the app in `%LOCALAPPDATA%\Neutrodyne\` (its default), app files and user data share that directory without overlap (`app\`, `runtime\`, `Neutrodyne.exe` against `neutrodyne.db`, `artwork\`, `Cache\`, `Logs\`, `Downloads\`, `ytdlp\`) and the MSI still removes only its own components (S13 decides; [Open questions](#open-questions) 3).
+- **`WindowsShortcutIdentity`** (MSI only, start-up band 0–99): sets `System.AppUserModel.ID` = `ch.lkmc.neutrodyne` on the per-user Start-menu shortcut the MSI created, through `IPropertyStore` in the shim (`nd_win_shortcut_set_aumid`), because jpackage's shortcut carries no AppUserModelID and changing that in the MSI would need a changed `main.wxs`. The media flyout and toasts then show the app's name and icon (Unverified; MD2).
+- **ZIP** `neutrodyne-{v}-windows-x64.zip`: the app image (`Neutrodyne\Neutrodyne.exe`, `app\`, `runtime\`); extracted anywhere writable; no Start-menu entry, uninstaller or `.opml` association; links are registered at start like the MSI. Explorer's extraction propagates the Mark of the Web, so SmartScreen also asks on first start (Unverified).
+
+### macOS DMG, ad-hoc signing and the 0.x ZIP
+
+- **Ad-hoc signatures.** Apple silicon runs only signed code, and an ad-hoc signature suffices, though it cannot pass Gatekeeper ([Big Sur release notes](https://developer.apple.com/documentation/macos-release-notes/macos-big-sur-11_0_1-universal-apps-release-notes)). jpackage signs ad hoc when no identity is configured ([`CodesignConfig.java`](https://github.com/openjdk/jdk25u/blob/master/src/jdk.jpackage/macosx/classes/jdk/jpackage/internal/CodesignConfig.java)). Nested code is signed first, inside out — every Mach-O under `Contents/app/resources/` (FFmpeg, `ndmedia`, the Python interpreter and its extension modules) with `codesign --force -s -` — and the bundle last; `--deep` is used only to verify. No hardened runtime and no library validation (they would refuse ad-hoc libraries); no entitlements. Unverified whether jpackage's own signing already covers files added through `appResourcesRootDir`; S13 decides whether the convention plugin signs them before jpackage seals the bundle. A bundle modified after signing is reported as "damaged" and cannot be opened even with "Open Anyway" ([native distributions](https://kotlinlang.org/docs/multiplatform/compose-native-distribution.html)), so every image must pass `codesign --verify --deep --strict --verbose=2` in CI (N7, MD5 AC1).
+- **DMG** `neutrodyne-{v}-macos-arm64.dmg` from `1.0.0`: jpackage's DMG with the app and an Applications link; `minimumSystemVersion` 13.0.
+- **0.x ZIP** `neutrodyne-{v}-macos-arm64.zip` before `1.0.0` ([PO-39](../PLAN.md#48-further-product-owner-decisions), [D63](../PLAN.md#3-key-decisions)): jpackage refuses an app version whose first number is 0 ([`CFBundleVersion.java`](https://github.com/openjdk/jdk25u/blob/master/src/jdk.jpackage/macosx/classes/jdk/jpackage/internal/CFBundleVersion.java)). `scripts/desktop/mac-zip.sh`:
+  1. Build the app image with the placeholder version `1.0.0`.
+  2. Set `CFBundleShortVersionString` and `CFBundleVersion` in `Contents/Info.plist` to the real `0.Y.Z` with `plutil -replace`; write `install-kind` = `mac-zip`.
+  3. Re-sign nested code and the bundle ad hoc (the plist change breaks the seal); `codesign --verify --deep --strict`.
+  4. `ditto -c -k --sequesterRsrc --keepParent Neutrodyne.app neutrodyne-{v}-macos-arm64.zip`.
+  5. Smoke start the unzipped app. Unverified: that LaunchServices accepts a `0.x` bundle version (S13).
+
+### Linux DEB, RPM and tar.gz
+
+- **DEB** (`dpkg-deb` via jpackage) and **RPM** (`rpmbuild`) install to `/opt/neutrodyne`; the release job renames them to `neutrodyne-{v}-linux-{x64|arm64}.{deb|rpm}`; RPM versions contain no `-` and our SemVer has none; the packages are not signed. Our maintainer scripts install and remove the desktop entry and the hicolor icons (`png/neutrodyne-{16…512}.png`, [08 Brand assets](08-ui-ux.md#brand-assets)) and run `update-desktop-database` and `gtk-update-icon-cache` when present ([Links and files from the OS](#links-and-files-from-the-os)). miniaudio loads PulseAudio or ALSA at run time, so `ndmedia` adds no hard package dependency; the README states the PulseAudio or PipeWire-pulse requirement.
+- **tar.gz** `neutrodyne-{v}-linux-{arch}.tar.gz`: the app image as `Neutrodyne/`; start `Neutrodyne/bin/Neutrodyne`; no system integration until Settings › Desktop › "Add to applications menu" writes a user desktop entry and icons under `~/.local/share/`.
+
+### Runtime exception obligations and checks
+
+[D3](../PLAN.md#3-key-decisions)'s runtime exception lets the desktop images carry an unmodified OpenJDK runtime: HotSpot under GPL-2.0, the class library, the jpackage launcher and `wixhelper.dll` under GPL-2.0 WITH Classpath-exception-2.0 ([OpenJDK legal](https://openjdk.org/legal/gplv2+ce.html)), the GCC runtime under GPL-3.0 WITH GCC-exception-3.1, Microsoft's VC++ redistributables. Temurin binaries are distributed under GPL-2.0 with the Classpath Exception ([Adoptium FAQ](https://adoptium.net/docs/faq/)). Our code links only against the class library's public API and stays Unlicense; the bundle is aggregation ([GPL-2.0](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html) §2; [GPL FAQ](https://www.gnu.org/licenses/gpl-faq.html)); not legal advice.
+
+| Duty | What the desktop build does | Enforced by |
+|---|---|---|
+| Unmodified runtime, one vendor and version per release | Temurin 25.0.x pinned in `desktopApp/runtime.lock` (vendor, version, per-target archive SHA-256, source tarball name and SHA-256); jlink only selects modules and strips debug data, headers and man pages; nothing of ours is placed in `runtime/` | `check-runtime-sources.sh`: `runtime/release` (`IMPLEMENTOR`, `IMPLEMENTOR_VERSION`, `JAVA_VERSION`) of every image equals `runtime.lock` |
+| Keep the notices | `runtime/legal/` untouched (jlink copies each module's `legal/`) | `check-desktop-image.sh`; the Licences screen shows `LICENSE`, `ASSEMBLY_EXCEPTION`, `ADDITIONAL_LICENSE_INFO`, `gcc.md` and the third-party notices of the runtime |
+| Complete corresponding source from the same place | Every release with desktop assets carries `openjdk-{jdk}-temurin-sources.tar.gz` (Adoptium's source tarball of exactly that build, [Temurin 25 releases](https://github.com/adoptium/temurin25-binaries/releases)) and `RUNTIME-SOURCES.md` (GPL-2.0 §3: equivalent access from the same place) | `check-runtime-sources.sh` checks the tarball's SHA-256 against `runtime.lock`; the `publish` job refuses a release without both files ([09 release.yml](09-quality-and-release.md#releaseyml)) |
+| jpackage launcher and `wixhelper.dll` | Built from the same JDK source tree (`src/jdk.jpackage`), so the same tarball covers them | Named in `RUNTIME-SOURCES.md` |
+| Never commingle | No JDK file is copied into this repository; jpackage resource overrides (Linux maintainer scripts, RPM spec) are written from scratch | Review rule ([01 Copied code and contributions](01-foundation.md#copied-code-and-contributions)) |
+
+`RUNTIME-SOURCES.md` contains: vendor and version; the release URL; the per-target binary archive SHA-256s; the source tarball's name and SHA-256; the jlink module list and options per target; the components it covers (class library, HotSpot, jpackage launcher, `wixhelper.dll`, GCC runtime notes, VC++ redistributables); the statement that the runtime is unmodified; the licence texts' location in `runtime/legal/`.
+
+### FFmpeg LGPL obligations
+
+Following FFmpeg's compliance checklist ([FFmpeg legal](https://ffmpeg.org/legal.html)) and LGPL-2.1 §§ 4 and 6 ([LGPL-2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)), risk [L6](../PLAN.md#8-risks-and-mitigations):
+
+1. LGPL-2.1-or-later configuration only, checked at build and in smoke mode ([FFmpeg build](#ffmpeg-build)).
+2. Separate shared libraries with upstream names, loaded at run time. Users may replace them with builds of the same major and names in `<resources>/native/`; on macOS they then re-sign the bundle with `codesign --force --deep -s - /Applications/Neutrodyne.app`. `THIRD_PARTY_NOTICES.md` ("Replacing FFmpeg") explains both. The app checks only the major version (the interface), never the licence of a user's replacement.
+3. Every release from MD1b attaches `ffmpeg-{ver}-neutrodyne-src.tar.xz`: the pristine upstream tarball with its signature, `changes.diff` (empty), `BUILD.md` (configure line and toolchain per target), `build.sh`, `ffoffsets.c`, `COPYING.LGPLv2.1`.
+4. Notices: the release body and README carry "This software uses code of FFmpeg licensed under the LGPLv2.1 and its source can be downloaded here" with the link to that asset; the Licences screen names FFmpeg with its licence text.
+5. Our licence terms permit modification and reverse engineering (LGPL-2.1 §6); the Unlicense does.
+6. AAC and HE-AAC are decoded by our FFmpeg build on every OS (patent note in `THIRD_PARTY_NOTICES.md`, risk [L7](../PLAN.md#8-risks-and-mitigations)).
+
+### Image scan rules
+
+`scripts/ci/check-desktop-image.sh` runs on every image (PR builds on Linux x64, every target nightly and at release) and fails when an image:
+
+- contains a path matching `_dbm*`, `libdb*`, `_gdbm*`, `libreadline*`, `readline*` (other than libedit), `_tkinter*`, `libtcl*`, `libtk*`, `tcl9*`, `tk9*`, `site-packages/pip`, `ensurepip`, `mutagen`, `bgutil`, `qjs`, `qjs.exe`, `deno`, `node`, `bun`, `AppRun`, `libfuse*`, `proguard*`, `jextract*`, `javafx*`, `vlcj*`, `gstreamer*`, `libavfilter*`, `libswscale*`, `libpostproc*` or `libmpv*` (the last only while the fallback is not chosen);
+- lacks `runtime/legal/` or has a `runtime/release` that disagrees with `runtime.lock`;
+- has FFmpeg libraries under other names, or an `ffmpeg-license.txt` (written by `buildFfmpeg` from `avcodec_license()` of the built library) other than "LGPL version 2.1 or later";
+- contains a JAR that is not on `:desktopApp`'s Licensee-checked runtime classpath;
+- has a Python tree whose component list differs from `python-components.lock`;
+- contains test classes, fixture directories or entry points other than smoke mode;
+- on macOS, fails `codesign --verify --deep --strict`.
+
+### Lockfiles
+
+| File | Content | Checked by |
+|---|---|---|
+| `desktopApp/runtime.lock` | `vendor`, `version`, per target `{archiveUrl, sha256}`, `sourceTarball {name, url, sha256}` | `check-runtime-sources.sh`, the runner set-up |
+| `playback/native/native-components.lock` | Per component (FFmpeg, miniaudio, C++/WinRT headers): `name`, `version`, `spdx` (`LGPL-2.1-or-later`, `MIT-0`, `MIT`), `sourceUrl`, `sha256` | `checkNativeLicences` against D3's allow-list ([01 Python and native components](01-foundation.md#python-and-native-components)) |
+| `youtube/ytdlp-desktop/python-components.lock` | PBS release tag, CPython version, per target `{archive, sha256}`, the component list with SPDX IDs from `PYTHON.json` | `checkPythonLicences` |
+
+### Sizes
+
+Estimates per target (Unverified until S13 measures them; PB27: installed ≤ 300 MB, download ≤ 130 MB):
+
+| Piece | Installed | Compressed |
+|---|---|---|
+| jlink'd Temurin 25 runtime (measured, Linux x64) | 93–94 MB | 32 MB |
+| Compose, Skiko and app JARs (measured base 55 MB) plus Room, sqlite-bundled, Ktor, OkHttp, Coil, Metro and the rest | 65–75 MB | 30–35 MB |
+| FFmpeg (measured 2.83 MB) and `ndmedia` (1–2 MB) | 4–5 MB | 2 MB |
+| Trimmed CPython (measured 44 MB) and yt-dlp (3.1 MB) | 47 MB | 16 MB |
+| AOT cache (measured) | 56 MB | 14 MB |
+| **Total** | **≈ 265–280 MB** | **≈ 95–100 MB** (the installers compress about as well as tar.gz, Unverified per format) |
+
+A release carries 9 desktop installers and archives of roughly this download size plus the runtime source (≈ 121 MB) and the FFmpeg source bundle; GitHub sets no limit on a release's total size ([about releases](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)).
+
+### S13 desktop packaging and performance
+
+Spike S13 runs in M0b on the reference laptops of [PO-43](../PLAN.md#48-further-product-owner-decisions) (risk [T24](../PLAN.md#8-risks-and-mitigations)).
+
+| Item | Content |
+|---|---|
+| Question | Do the packages, the runtime exception checks and the start-up and memory budgets hold on real hardware, and do the unsigned first-run flows work as documented? |
+| Procedure | Build every format on its runner; install each on the reference laptop of its OS (and macOS 13 and Windows 10 22H2 machines once, [macOS floor](#macos-floor)); measure first frame with and without the AOT cache (cold and warm, 5 runs), idle RSS 30 s after start, installed and download sizes; check the AOT cache after installation at a non-training path; check `codesign --verify --deep --strict` and a real download, quarantine and open of the macOS ZIP; the `0.x` bundle version in LaunchServices; the MSI install location and upgrade over a previous build; the jpackage resource overrides for the Linux desktop entry; Kotlin `jvmTarget` 25 for the desktop modules (fallback 21); the JNI loaders' library locations; the unsigned first-run flows on macOS 15 or later ("Open Anyway"), Windows 11 (SmartScreen; Smart App Control on and off), Ubuntu 24.04 and Fedora; one Windows 11 on Arm laptop if available |
+| Pass criteria | PLAN M0 AC12–AC14: every format built and smoke-started; `codesign` passes; sizes recorded; first frame ≤ 1.0 s with the cache and ≤ 2.5 s without, idle RSS ≤ 350 MB on every reference laptop, or the measured values go to the PO with a proposal |
+| Results | Pending (M0b). Recorded here: a table per target with the measurements, the resolved Unverified items of this section and the decisions taken (install location, desktop-entry mechanism, signing of nested code, cache relocation) |
+| Fallbacks | No AOT cache (≤ 2.5 s first frame); one `createDistributable` per install kind; jpackage's Linux desktop entry name with D61 amended; per-user MSI in jpackage's default location |
+
+### Packaging failure modes
+
+| Failure | Behaviour |
+|---|---|
+| One desktop runner fails or is unavailable | `release.yml` retries the matrix job once; no partial release; fix forward with the next PATCH (risk [P15](../PLAN.md#8-risks-and-mitigations), [D79](../PLAN.md#3-key-decisions)) |
+| AOT training fails on a runner | Release blocks (MD5 onwards); before MD5 the image ships without a cache and the job logs a warning |
+| A check of this section fails | The image is not uploaded; the release cannot publish |
+| Temurin publishes a security update between tags | Renovate's JDK group bumps `runtime.lock` (archives and source tarball together); the next tag ships it |
+
+---
+
+## Install and update
+
+Serves R6.5, R6.6, R8.2, N12. Delivered in M0b (draft README section, tester flows), M11a (update check on the desktop, help page), MD5 (final guidance, walkthroughs). Honours [D78](../PLAN.md#3-key-decisions), [D79](../PLAN.md#3-key-decisions), [D80](../PLAN.md#3-key-decisions), [PO-2](../PLAN.md#po-2-distribution-channels), [PO-5](../PLAN.md#po-5-google-developer-verification) (desktop analogue: no Apple Developer Program, no Windows code signing). This section is the source text for the README's "Install on Windows, macOS or Linux" section and for the desktop parts of the in-app Install & updates help ([08 Install and updates help](08-ui-ux.md#install-and-updates-help)); 09 owns the release assets and the update-check logic ([09 Distribution channels](09-quality-and-release.md#distribution-channels), [09 Update check](09-quality-and-release.md#update-check)).
+
+### Which file to download
+
+| Computer | Download | Also possible |
+|---|---|---|
+| Windows 10 22H2 or 11 on x64 | `neutrodyne-{v}-windows-x64.msi` | `…-windows-x64.zip` (portable, no installer) |
+| Windows 11 on Arm | the same x64 MSI or ZIP (runs emulated) | — |
+| Mac with Apple silicon, macOS 13 or later | `neutrodyne-{v}-macos-arm64.dmg` (from 1.0.0) | tester builds before 1.0.0: `…-macos-arm64.zip` |
+| Linux x64: Debian, Ubuntu, Mint, Pop!_OS | `neutrodyne-{v}-linux-x64.deb` | `…-linux-x64.tar.gz` |
+| Linux x64: Fedora, openSUSE, RHEL family | `neutrodyne-{v}-linux-x64.rpm` | `…-linux-x64.tar.gz` |
+| Linux arm64 (for example a Raspberry Pi 5 desktop, an Arm laptop) | the `linux-arm64` DEB, RPM or tar.gz | — |
+
+Intel Macs, 32-bit systems, Windows 7 or 8, Windows 10 on Arm and Linux with glibc older than 2.31 are not supported ([D88](../PLAN.md#3-key-decisions)).
+
+### Checking a download
+
+Download only from the project's GitHub release page; desktop builds carry no publisher signature, so the release page, `SHA256SUMS` and the provenance attestations are what make a file checkable ([N12](../PLAN.md#22-non-functional-requirements)):
+
+| OS | Checksum | Attestation |
+|---|---|---|
+| Windows (PowerShell) | `Get-FileHash -Algorithm SHA256 .\neutrodyne-{v}-windows-x64.msi` and compare with `SHA256SUMS` | `gh attestation verify .\neutrodyne-{v}-windows-x64.msi --repo {owner}/Neutrodyne` |
+| macOS | `shasum -a 256 neutrodyne-{v}-macos-arm64.dmg` | `gh attestation verify neutrodyne-{v}-macos-arm64.dmg --repo {owner}/Neutrodyne` |
+| Linux | `sha256sum -c SHA256SUMS --ignore-missing` | `gh attestation verify neutrodyne-{v}-linux-x64.deb --repo {owner}/Neutrodyne` |
+
+### First install and every update
+
+**macOS** (Gatekeeper, risk [P12](../PLAN.md#8-risks-and-mitigations)):
+
+1. Open the DMG and drag Neutrodyne into Applications. Start it from Applications, not from the DMG or the Downloads folder (a quarantined app started elsewhere runs from a temporary read-only copy; Unverified on current macOS).
+2. macOS says it cannot verify that Neutrodyne is free of malware. Choose **Done**, not "Move to Bin".
+3. Open **System Settings › Privacy & Security**, go to **Security** and click **Open Anyway**. The button is available for about an hour after the attempt. Enter your login password and confirm. macOS saves the exception ([Apple: open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac); the Control-click shortcut no longer works since macOS 15, [Apple developer news](https://developer.apple.com/news/?id=saqachfa)).
+4. **After every update** repeat steps 1–3: every build has a new ad-hoc identity and every download is quarantined again. Permissions tied to the identity (notifications, the Local Network prompt when your sync server is on your local network, access to protected folders) may be asked again ([TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements), [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)).
+5. Terminal alternative to steps 2–3: `xattr -dr com.apple.quarantine /Applications/Neutrodyne.app`, then open the app.
+6. If macOS reports the app as "damaged", the download is incomplete or modified: download it again from the release page and check its checksum.
+
+**Windows** (SmartScreen and Smart App Control, risk [P13](../PLAN.md#8-risks-and-mitigations)):
+
+1. Run the MSI. SmartScreen shows "Windows protected your PC": choose **More info**, then **Run anyway**. This happens for every release, because unsigned files never build SmartScreen reputation ([SmartScreen reputation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)).
+2. The MSI installs for your user only, without administrator rights; start Neutrodyne from the Start menu.
+3. **Smart App Control** (Windows 11) blocks unsigned apps and has no per-app exception: if Windows blocks Neutrodyne with a Smart App Control message, Neutrodyne can only run with Smart App Control turned off (Windows Security › App & browser control › Smart App Control settings). Recent Windows versions allow turning it on again later ([Smart App Control FAQ](https://support.microsoft.com/en-us/windows/smart-app-control-frequently-asked-questions-285ea03d-fa88-4d56-882e-6698afdb7003)).
+4. **Windows on Arm:** install the x64 MSI; Windows 11 runs it emulated.
+5. **Updates:** run the newer MSI; SmartScreen asks again; the library, settings and downloads stay.
+6. **Portable ZIP:** extract it to a folder you can write to and start `Neutrodyne.exe`; SmartScreen may ask at the first start. There is no Start-menu entry and no `.opml` association.
+7. **Screen readers:** NVDA works through Java Access Bridge, which Neutrodyne enables for itself ([Accessibility](#java-access-bridge)).
+
+**Linux:**
+
+1. Debian or Ubuntu: `sudo apt install ./neutrodyne-{v}-linux-x64.deb`. Fedora or openSUSE: `sudo dnf install ./neutrodyne-{v}-linux-x64.rpm` or `sudo zypper install ./neutrodyne-{v}-linux-x64.rpm`. The app appears in the applications menu.
+2. Any distribution: `tar -xzf neutrodyne-{v}-linux-x64.tar.gz` and start `./Neutrodyne/bin/Neutrodyne`; Settings › Desktop › "Add to applications menu" adds a menu entry and link handling.
+3. **Updates:** install the newer package the same way (it replaces the old version); for the tar.gz, extract the new archive in place of the old folder.
+4. Requirements: glibc 2.31 or later, PulseAudio or PipeWire with `pipewire-pulse`, X11 or XWayland. Screen readers are not supported on Linux ([Accessibility](#linux-screen-reader-gap)).
+
+**All systems:** the installers bundle an unmodified OpenJDK runtime (GPL-2.0 with the Classpath Exception) and an LGPL-2.1 FFmpeg; their sources are attached to the same release (`openjdk-{jdk}-temurin-sources.tar.gz`, `RUNTIME-SOURCES.md`, `ffmpeg-{ver}-neutrodyne-src.tar.xz`) ([D89](../PLAN.md#3-key-decisions), [Packaging and the runtime exception](#packaging-and-the-runtime-exception)).
+
+### README source text
+
+The README sweep copies this block (placeholders `{v}` and `{owner}` stay as written; the release body uses the same wording, [09 Distribution channels](09-quality-and-release.md#distribution-channels)):
+
+```markdown
+### Install on Windows, macOS or Linux
+
+Download the file for your computer from the latest release on GitHub — only from there:
+Windows 10 22H2/11 (x64, also Windows 11 on Arm): `…-windows-x64.msi` (or the portable `.zip`);
+Mac with Apple silicon, macOS 13 or later: `…-macos-arm64.dmg`; Linux x64 or arm64: `.deb`, `.rpm` or `.tar.gz`.
+Check it against `SHA256SUMS` or with `gh attestation verify <file> --repo {owner}/Neutrodyne`.
+
+The desktop builds are not signed by a registered developer:
+- macOS: after the first start of every newly installed or updated version, open System Settings ›
+  Privacy & Security and click "Open Anyway" (or run `xattr -dr com.apple.quarantine /Applications/Neutrodyne.app`).
+- Windows: SmartScreen shows "Windows protected your PC" — choose "More info", then "Run anyway".
+  Smart App Control must be off; it has no per-app exception.
+- Linux: `sudo apt install ./<file>.deb`, `sudo dnf install ./<file>.rpm`, or extract the `.tar.gz`.
+
+Updating means installing the newer file the same way; your library, settings and downloads stay.
+Uninstalling never deletes your library. Screen readers work on macOS (VoiceOver) and Windows (NVDA);
+Linux screen readers are not supported. The installers bundle an unmodified OpenJDK runtime and an
+LGPL FFmpeg; their sources are attached to every release.
+```
+
+### Desktop update check
+
+R6.6, [D78](../PLAN.md#3-key-decisions). The checker, source, manifest parser and notices are common code owned by 09; on the desktop `DesktopUpdateCheckLane` runs them once a day (jittered) while the app runs and while "Check for updates" (`updates.check_enabled`, on by default, disclosed by the first-run card) is on, and on "Check now" in any case. A newer release puts a dot badge on the Settings gear, shows the update card in Settings › Updates and posts one `APP_UPDATE` notification per version ([Notifications](#notifications)); the card links "Open release on GitHub" and "Download for this computer", opened with `Desktop.browse`. The app never downloads, verifies or installs an update.
+
+`DesktopAssetSelector` (`:core:data` common, 09) picks the asset for "Download for this computer":
+
+1. `os` = `BuildInfo.os`; `arch` = x64 on Windows regardless of the hardware (Windows on Arm runs the x64 build; the manifest has no Windows arm64 entries), else `BuildInfo.arch`.
+2. `preferred` = `BuildInfo.installKind`; `DEV` → no asset (release page only).
+3. Candidates = the manifest's `desktop[]` entries with that `os` and `arch`.
+4. Take the entry whose `kind` equals `preferred`; otherwise the first match of the fallback chain: `msi` → `zip`; `zip` → `msi`; `dmg` → `mac-zip`; `mac-zip` → `dmg` (testers move to the DMG at 1.0.0); `deb` → `tar.gz`; `rpm` → `tar.gz`; `tar.gz` → (none).
+5. When the entry has `minOs` and the running OS is older (`os.version` compared numerically; Windows reports `10.0` for 10 and 11), no download link is shown and the card says "This version needs {OS} {minOs} or later".
+6. Every URL must lie under `{repoUrl}/releases/` (09 rejects the manifest otherwise).
+
+The card adds a one-line hint for the install kind: MSI "Run the downloaded installer; SmartScreen asks again"; ZIP "Extract over your Neutrodyne folder"; DMG and mac-zip "Replace the app in Applications, then use Open Anyway again"; DEB and RPM the install command; tar.gz "Extract in place of the old folder". It shows the SHA-256 of the selected asset.
+
+### Uninstall and data retention
+
+R8.2: uninstalling never deletes user data; reinstalling the same or a newer version finds the library where it was.
+
+| Installation | Uninstall | Left behind on purpose | To remove everything as well |
+|---|---|---|---|
+| Windows MSI | Settings › Apps › Installed apps › Neutrodyne › Uninstall (no administrator rights) | `%LOCALAPPDATA%\Neutrodyne\` (library, settings, downloads, logs); the per-user link registrations under `HKCU\Software\Classes`; the Run value if "Start at login" was on | Turn "Start at login" off first, uninstall, delete `%LOCALAPPDATA%\Neutrodyne\` and the chosen download folder |
+| Windows ZIP | Delete the folder | as above | as above |
+| macOS | Drag `/Applications/Neutrodyne.app` to the Bin | `~/Library/Application Support/ch.lkmc.neutrodyne/`, `~/Library/Caches/ch.lkmc.neutrodyne/`, `~/Library/Logs/Neutrodyne/` | Turn "Start at login" off first (Unverified whether macOS removes a login item of a deleted app), then delete those folders and the chosen download folder |
+| Linux DEB or RPM | `sudo apt remove neutrodyne` or `sudo dnf remove neutrodyne` (our `postrm` removes the desktop entry and icons) | the XDG data, config, cache and state directories of [AppDirs](#appdirs); an autostart entry is skipped by desktops once the program is gone (`TryExec`) | Delete `~/.local/share/neutrodyne`, `~/.config/neutrodyne`, `~/.cache/neutrodyne`, `~/.local/state/neutrodyne`, `~/.config/autostart/ch.lkmc.neutrodyne.desktop` |
+| Linux tar.gz | Delete the folder (and the user desktop entry if added) | as above | as above |
+
+A linked sync server keeps the account's data after an uninstall; "Unlink this device" or "Delete my data" in Settings › Sync handles it ([10 Linking and first merge](10-sync.md#linking-and-first-merge)).
+
+---
+
+## Desktop UX
+
+Serves R8.9, R5.7 (desktop), N4. Delivered in M0b (window, five destinations, macOS menu bar), MD4 (menus, shortcuts, context menus, drag and drop, sizing, desktop screenshots). Per-screen keyboard, hover, scrollbar and context-menu behaviour belongs to [08 Keyboard and mouse](08-ui-ux.md#keyboard-and-mouse) and [08 Adaptive layouts](08-ui-ux.md#adaptive-layouts); this section owns the window-level menus and the global shortcut list.
+
+### Menus
+
+`DesktopMenuBar` (Compose `MenuBar`) is the macOS menu bar and, on Windows and Linux, a menu bar inside the window. Its items carry the accelerators of the table below, except Space and the arrow keys, which are handled by the root (a menu accelerator on Space would steal it from text fields); the Playback menu shows them in its labels only.
+
+| Menu | Items |
+|---|---|
+| Neutrodyne (macOS app menu) | About Neutrodyne, Settings… (Cmd+,), Hide, Quit Neutrodyne (Cmd+Q) — through `Desktop.setAboutHandler`, `setPreferencesHandler`, `setQuitHandler` |
+| File | Add podcast… · Import OPML or backup… · Export OPML… · Back up library… · Refresh · Close window · Quit (Windows and Linux) |
+| Edit | Undo, Cut, Copy, Paste, Select all (text fields) · Find |
+| Playback | Play/Pause · Skip back · Skip forward · Previous chapter · Next chapter · Previous episode · Next episode · Speed › presets · Skip silence (check item) · Sleep timer › 15, 30, 45, 60 min, end of episode, off · Volume up · Volume down |
+| Go | Feeds · Library · Up next · Downloads · Discover · Settings · Back |
+| Window (macOS) | Minimise, Zoom, Bring all to front (standard) |
+| Help | Install & updates help · Keyboard shortcuts · Licences · Diagnostics · Report a problem (opens the repository's issue page) |
+
+### Keyboard shortcuts
+
+Global shortcuts (R8.9); "Ctrl/Cmd" means Ctrl on Windows and Linux, Cmd on macOS. Space and the arrow keys act only when the focused element did not consume them (08's bubbling rule, `Modifier.onKeyEvent` in `NeutrodyneRoot`).
+
+| Shortcut | Action |
+|---|---|
+| Space | Play / pause |
+| ← / → (also Ctrl/Cmd+← / →) | Skip back / forward by the skip intervals |
+| Shift+← / → | Previous / next chapter |
+| Ctrl/Cmd+Shift+← / → | Previous / next episode (06's previous rule: restart when more than 3 s in) |
+| Ctrl/Cmd+↑ / ↓ | Volume up / down by 10 % |
+| Ctrl/Cmd+F | Find: focus the search field of the current destination (Discover search, Library filter) |
+| Ctrl/Cmd+N | Add podcast sheet |
+| Ctrl/Cmd+O | Import OPML or backup (file dialog) |
+| Ctrl/Cmd+R, F5 | Refresh the current feed page (Feeds) or all podcasts |
+| Ctrl/Cmd+1 … 5 | Feeds, Library, Up next, Downloads, Discover |
+| Ctrl/Cmd+, | Settings |
+| Ctrl+Tab, Ctrl+Shift+Tab | Next / previous Feeds page (08) |
+| Esc | Back: collapse the player, leave selection, close sheets and dialogs (08's back order) |
+| Ctrl/Cmd+W | Close the window (close behaviour applies) |
+| Ctrl+Q (Windows, Linux), Cmd+Q (macOS) | Quit |
+
+Media keys are not UI shortcuts: they reach the player through the OS media sessions ([Remote commands](#remote-commands)).
+
+### Tray menu
+
+Show Neutrodyne · Play / Pause · Next · Quit, shown only while the window is hidden ([Window and tray behaviour](#window-and-tray-behaviour)).
+
+### Drag and drop
+
+The whole window is a drop target (Compose desktop drag-and-drop): files ending in `.opml`, `.xml` or `.zip` and URL text (a link dragged from a browser) are accepted and routed exactly like OS hand-offs ([Links and files from the OS](#links-and-files-from-the-os)); an overlay "Drop to import" or "Drop to add podcast" shows while dragging; at most 20 items per drop; anything else shows "Neutrodyne can't open this file". Dragging out of the app (episodes, files) is not supported in v1.0.
+
+### Window sizing
+
+Minimum 600 × 480 dp ([PO-19](../PLAN.md#48-further-product-owner-decisions)); default 1200 × 800 dp on first start; width classes and panes per [08 Adaptive layouts](08-ui-ux.md#adaptive-layouts) (desktop windows are usually medium or expanded, so list-detail and the side-panel player are the common layouts); macOS full screen and Windows snap layouts work through the AWT frame; the window follows the OS scale factor (Compose density), and the screenshot matrix covers 600, 900 and 1400 dp widths (MD4 AC2).
+
+### Desktop settings
+
+Settings › Desktop exists only on the desktop (`PlatformInfo`), layout by 08 ([08 Settings screens](08-ui-ux.md#settings-screens)); every key is device-local and never synced ([10 What syncs](10-sync.md#what-syncs)).
+
+| Row | Key | Values |
+|---|---|---|
+| When the window is closed | `desktop.close_behaviour` | "Quit unless playing or downloading" (`QUIT_WHEN_IDLE`, default) · "Keep running in the tray" / "…in the menu bar" (`KEEP_RUNNING`) |
+| Start at login | `desktop.start_at_login` | Off (default); shows the OS state and, on macOS, the approval hint ([Start at login](#start-at-login)) |
+| Downloads folder | `desktop.downloads_dir` | The path · "Change folder…" · "Show in Explorer / Finder / Files" · "Use default folder" ([Change folder](#change-folder)) |
+| Language | `desktop.language` | System default · each shipped language; applies at once (composition key, [D83](../PLAN.md#3-key-decisions)) |
+| Links (Windows; Linux tar.gz) | — | "Open podcast links with Neutrodyne" (takes over `feed:`, `podcast:`, `pcast:`, `itpc:`); "Add to applications menu" (tar.gz) |
+| Accessibility (Windows) | — | Java Access Bridge status and a link to the help ([Java Access Bridge](#java-access-bridge)) |
+
+Rows of shared settings that do not apply on the desktop are hidden with a one-line explanation where users may look for them: metered-network and Wi-Fi-only rows, "only while charging", "Pause for navigation prompts", the notification-permission prompt, Auto Backup ([Behaviour differences from Android](#behaviour-differences-from-android)).
+
+---
+
+## Accessibility
+
+Serves R8.10, N4 (desktop). Delivered in MD4; risk [U3](../PLAN.md#8-risks-and-mitigations). Shared semantics, labels, the custom-actions catalogue and contrast rules are 08's ([08 Accessibility](08-ui-ux.md#accessibility)); the desktop gets them through Compose Multiplatform's accessibility bridge.
+
+### Platform support
+
+| OS | Screen readers | Mechanism | Status |
+|---|---|---|---|
+| macOS | VoiceOver | Compose maps semantics to the macOS accessibility API | "Fully supported" ([Compose desktop accessibility](https://kotlinlang.org/docs/multiplatform/compose-desktop-accessibility.html)) |
+| Windows | NVDA, JAWS | Java Access Bridge (`jdk.accessibility` in the image), off by default in a JDK | Supported through the bridge; NVDA supports Java Access Bridge ([NVDA user guide](https://www.nvaccess.org/files/nvda/documentation/userGuide.html)) |
+| Windows | Narrator | Narrator speaks UI Automation; whether it reads Java apps through the bridge is not documented | Unverified; MD4 records it ([Open questions](#open-questions) 6) |
+| Linux | Orca and others | — | Not supported: Compose Multiplatform has no Linux accessibility back-end |
+
+### Java Access Bridge
+
+- The image contains `jdk.accessibility` ([jlink modules](#jlink-modules)).
+- On Windows the launcher passes `-Djavax.accessibility.assistive_technologies=com.sun.java.accessibility.AccessBridge`, which makes AWT load the bridge for Neutrodyne alone; the system property takes precedence over the per-user `.accessibility.properties` file ([Toolkit](https://docs.oracle.com/en/java/javase/25/docs/api/java.desktop/java/awt/Toolkit.html)). Unverified: the exact provider name and that NVDA then reads the app without a system-wide `jabswitch /enable`; MD4 checks.
+- Fallback, documented in the help: create `%USERPROFILE%\.accessibility.properties` with the line `assistive_technologies=com.sun.java.accessibility.AccessBridge` and restart Neutrodyne (the bundled runtime may not contain `jabswitch.exe`; Compose's documentation describes `jabswitch.exe /enable` for a full JDK).
+- Settings › Desktop shows whether the bridge is loaded (`Toolkit` reports the active provider; Unverified API detail).
+
+### VoiceOver
+
+VoiceOver reads the shared semantics; every custom action of 08's catalogue must also be reachable by keyboard or a context menu on the desktop (MD4 AC1), because the mapping of Compose custom actions to VoiceOver's actions menu is Unverified. macOS "Full Keyboard Access" and Tab traversal reach every control.
+
+### Linux screen-reader gap
+
+Statement for the README, About and the help (R8.10, MD4 AC4): "Screen readers are not supported on Linux: the user-interface toolkit Neutrodyne uses has no Linux accessibility support yet. Keyboard navigation, scaling and the high-contrast themes work. On macOS (VoiceOver) and Windows (NVDA, with Java Access Bridge, which Neutrodyne turns on for itself) screen readers are supported." Revisit when Compose Multiplatform adds a Linux back-end (U3).
+
+### MD4 manual checklist
+
+Run on macOS 15 with VoiceOver and Windows 11 with NVDA (Java Access Bridge on); Narrator recorded; Linux keyboard-only. Results are recorded in the MD4 release issue.
+
+| # | Check | Pass |
+|---|---|---|
+| 1 | Subscribe by URL: Ctrl/Cmd+N, type a URL, Subscribe | Every step announced; the new podcast announced in the library |
+| 2 | Play from a group feed: open Feeds, move to a group page, play an episode | Row announced as one stop with its state; play announced; the player's controls labelled |
+| 3 | Reorder Up next with the keyboard or context menu ("Move up", "Move down", "Move to top") | Order change announced |
+| 4 | Every action of 08's custom-actions catalogue reachable by keyboard or context menu | MD4 AC1 |
+| 5 | Dialogs and sheets take focus, Esc closes them, focus returns to the opener | — |
+| 6 | Snackbars and banners (download failed, storage full, update available) announced | — |
+| 7 | 200 % OS display scaling: no clipped text in the five destinations and the player | — |
+| 8 | Contrast of the brand and artwork schemes in light and dark (08's rules) | — |
+
+---
+
+## Desktop diagnostics and crash files
+
+Serves N3 (desktop), [D62](../PLAN.md#3-key-decisions), [PO-10](../PLAN.md#48-further-product-owner-decisions). Delivered in M0b (log files, crash files), M11b (crash dialog final, diagnostics rows). The diagnostics API, redaction rules and the export are 09's ([09 Crash reporting and diagnostics](09-quality-and-release.md#crash-reporting-and-diagnostics)) and 01's ([01 Logging and redaction](01-foundation.md#logging-and-redaction)).
+
+### Logs and rotation
+
+- `<logs>/neutrodyne.log`, UTF-8, through the shared redacting logger with a file sink; rotation at 2 MiB, 5 files (`neutrodyne.1.log` … `neutrodyne.4.log`); level INFO in packaged builds, DEBUG for `InstallKind.DEV`.
+- `<logs>/engine.log`: the CPython child's stderr, redacted by the shim (URLs replaced by `<url>`) and again by the JVM, 1 MiB per child, 2 files.
+- FFmpeg logs nothing (`AV_LOG_QUIET`); `ndmedia` reports errors through return codes and the event callback.
+- Redaction ([01 Logging and redaction](01-foundation.md#logging-and-redaction)): feed and enclosure URLs, tokens, passwords, sync server addresses and paths under the user's home (written as `~/…`) never appear in a log line.
+- Diagnostics › "Open log folder" uses `RevealInFolder`.
+
+### Crash files and the email dialog
+
+| Situation | Detection | Record |
+|---|---|---|
+| Exception on the EDT, in composition or on the main thread | `Thread.setDefaultUncaughtExceptionHandler` and Compose's window exception handler | `crash-<UTC yyyyMMdd-HHmmss>.txt` in `<state>`; dialog "Neutrodyne hit an error and has to close"; quit through `ShutdownCoordinator` (positions saved) |
+| Exception on another thread that nothing caught | the default handler | crash file; the app continues; at most 3 such files per session |
+| JVM or native crash (FFmpeg, `ndmedia`, Skiko, the JVM itself) | `session.json` with `cleanExit = false` at the next start, plus `hs_err_pid<pid>.log` from the state directory (`-XX:ErrorFile`) or the temp directory | crash file built from the previous session's data and the `hs_err` summary (problematic frame, library names; no memory dumps) |
+| The process was killed or power was lost | `cleanExit = false` and no `hs_err` file | logged only ("previous session ended without shutdown"); no dialog |
+| The CPython child crashed | `YtxProcess` exit status | engine health only, never a crash report ([D62](../PLAN.md#3-key-decisions)) |
+
+Crash file content: app version and code, OS and version, architecture (and "x64 on Arm" when Windows reports an ARM64 native machine through `IsWow64Process2`), install kind, runtime vendor and version, uptime, thread, the redacted stack trace or `hs_err` summary, the last 200 redacted log lines, the current destination key and the lanes' status — the same fields and redaction as 09's ACRA report on Android, without device identifiers.
+
+At the next start, when unhandled crash files exist and the committed mailbox `neutrodyne.acraMailto` is not empty, a dialog asks per crash: "Neutrodyne closed unexpectedly last time. Send a report by email?" with **Show report**, **Send by email** and **Don't send**. "Send by email" opens `Desktop.mail` with a `mailto:` URI ([RFC 2368](https://www.rfc-editor.org/info/rfc2368)) to the mailbox, subject "Neutrodyne crash {versionName}", and the report body truncated to 1,800 characters with a note to attach the full file, which "Show report" reveals in the file manager (mail clients limit `mailto:` length; Unverified per client). Handled files are renamed `*.sent` or `*.dismissed`; at most 10 files and 30 days are kept. `InstallKind.DEV` never asks.
+
+### Diagnostics screen additions
+
+Desktop rows of Settings › About › Diagnostics (09's `DiagnosticsRepository`, included in the redacted export):
+
+| Group | Rows |
+|---|---|
+| Build | version, install kind, OS and architecture (emulated or native), runtime vendor and version, AOT cache in use (yes, no, rejected), first frame of this start (ms) |
+| Directories | `AppDirs` paths with "Open"; free space of the data and download stores |
+| Audio | output back-end, device name, sample rate, period, underruns this session; FFmpeg version and licence string; `ndmedia` version |
+| OS integration | media session (SMTC, Now Playing or MPRIS: active or the reason it is not), idle-sleep inhibitor state, last suspend and resume, tray supported, notification back-end and permission, link registration state (Windows, Linux), login item state |
+| Background work | `LaneStatus` per lane, last wake |
+| YouTube engine | child state, PID, versions (`hello`), starts, failed starts, last kill reason, engine log path |
+| Accessibility | Java Access Bridge loaded (Windows) |
+
+---
+
+## Testing
+
+Serves N1, N4, N5, N7, N8, N11 for the desktop; risks T19, T20, T24, T25, T26. Runners, CI jobs and the test pyramid are 09's ([09 Test strategy](09-quality-and-release.md#test-strategy), [09 CI pipelines](09-quality-and-release.md#ci-pipelines)): `desktopTest` and `commonTest` run on the Linux x64 CI host in `ci.yml`'s `unit` job; native and packaged tests run in `nightly.yml`'s `desktop-matrix` job on the four runners and in `release.yml`'s desktop jobs. Shared logic (queue, positions, sleep timer, chapters, refresh, downloads, sync) is tested once in `commonTest` and is not repeated here.
+
+### Unit and integration tests
+
+| Test class | Runner | Cases | Milestone |
+|---|---|---|---|
+| `AppDirsTest` | `desktopTest` (pure) | each OS with and without `LOCALAPPDATA`, `XDG_*` absolute, relative (ignored) and unset; macOS paths from `user.home`; `ensureCreated` sets `0700` on POSIX | M0b |
+| `SingleInstanceTest` | `desktopTest`, two JVMs started by the test | second launch delivers its arguments and exits 0 without creating a window; owner still starting (no port file) → retries then succeeds; wrong token rejected; oversize line rejected; owner killed → the lock is free at once; stale `instance.port` overwritten (M0 AC11) | M0b |
+| `DesktopOpenHandlerTest` | `desktopTest` | every input row of [Links and files from the OS](#links-and-files-from-the-os) → its route; relative paths resolved against `cwd`; > 20 inputs truncated; directory and unknown type → message; inputs before the first frame queued in order | M0b, MD2 |
+| `UrlSchemeRegistrarTest` | nightly on `windows-2025` | `neutrodyne` written; a foreign `feed` handler is not overwritten; one of ours is updated to the current launcher; "take over" overwrites | MD2 |
+| `CloseBehaviourTest` | `desktopTest` with fakes | idle close quits within 2 s; close while playing or downloading hides and shows the tray; `KEEP_RUNNING` always hides; hidden and idle for 10 min quits (`TestClock`); no tray support → iconify (MD2 AC3) | M0b, MD2 |
+| `DesktopJobRunnerTest` | `desktopTest`, `TestClock`, fake lanes | only due work runs; `poke` runs a lane within one dispatch and coalesces; a running lane is never started twice, a poke during a run reruns it once; an exception backs the lane off and leaves the others running; after a simulated 3-h sleep (`Resumed`, and separately a wall-clock jump without a notice) every overdue lane starts within 2 min (M1 AC10, MD2 AC6); `stop(3 s)` cancels and returns | M1a, MD2 |
+| `PowerPolicyTest` | `desktopTest` with fake `PowerMonitor`, `IdleSleepInhibitor`, engine | `Suspending` → pause and an event position save before returning; `Resumed` → nothing plays, pools evicted, lanes poked; inhibitor held exactly while playing (MD2 AC2) | MD2 |
+| `LinuxMprisSessionTest` | `desktopTest` on Linux CI with a private `dbus-daemon --session` | bus name owned; `Metadata`, `PlaybackStatus`, `Rate` limits; `PlayPause`, `Next`, `Seek`, `SetPosition` with a wrong track ID ignored; `Seeked` on seek and on silence skips at most once per second; `Raise`, `Quit` (MD2 AC1) | MD2 |
+| `DesktopNotifierTest` | `desktopTest` (Linux back end over the private bus; fakes elsewhere) | one notification per event; `replaces_id` reuse; click → route; no server → banner fallback | MD2 |
+| `SpanCacheTest` | `desktopTest` | spans written, extended, read across span boundaries; LRU eviction by `lastAccess` with pinned resources kept; limit change applies at once; `ep:` resource emptied at a new pin; `yt:` reused across sessions and dropped on a `clen` mismatch; write failure → uncached reads continue; `clear` keeps current pins | MD1a |
+| `HttpByteSourceTest` | `desktopTest` + MockWebServer | `Range`/`If-Range` resume after a cut; server ignoring `Range` (200) → restart from 0 without corrupting spans; 403 then success after re-resolve; changed total length → `ContentChangedException`; throttled server → `Buffering` then playback; `Accept-Encoding: identity` and the User-Agent sent (MD1 AC2) | MD1a |
+| `DesktopSourceResolverTest` | `desktopTest` with fakes for `LocalMediaIndex`, `YouTubeStreamResolver`, capabilities | local file wins; a new pin starts an empty resource; stale final URL dropped on `attempt` 1; YouTube key `yt:{videoId}:{formatId}`; external mode → `Unsupported` before any resolve; `availableAtMs` waits ≤ 30 s | MD1a, MD3 |
+| `TimelineClockTest` | `desktopTest` | position across speed changes, silence-skip markers, seeks and transitions; latency offset; lock-free reads from another thread | MD0, MD1a |
+| `SilenceSkipperParityTest`, `SonicParityTest` | `desktopTest` against committed golden PCM produced by Media3's own processors in a `:playback:impl` unit test | sample-exact equality for speech, music and silence fixtures at 0.5×, 1×, 1.5×, 2×, 3× | MD0, MD1a |
+| `FfAudioEngineTest` | `desktopTest`, null back-end, the generated corpus | play, pause, seek, speed 0.5–3.0×, skip silence: reported position within 50 ms of the reference timeline (MD1 AC1); a non-zero position never replaced by 0 (`PositionSaverTest` shared); transition gap ≤ 50 ms, no device restart (MD1 AC4); prepare failure of the next item → skipped | MD1a, MD1b |
+| `FfmpegCorpusTest` | nightly `desktop-matrix` on all four runners | per file of [MD0 spike and the libmpv fallback](#md0-spike-and-the-libmpv-fallback): reference sample counts (gapless and the fMP4 priming rule), chapters, seek within ±50 ms after decode-and-discard (MD0 AC1, MD1 AC4); `avcodec_license()` and library sizes (MD0 AC2) | MD0, MD1b |
+| `FfmpegLayoutTest` | nightly matrix | `ffmpeg-layout.json` majors equal the loaded libraries'; a library of another major is refused with the documented error | MD0 |
+| `DesktopPlaybackControllerTest` | `desktopTest` with a fake `AudioEngine` | "Play group tech" with two Up next items (M4 AC6 through `:playback:core`, MD1 AC3); sleep timer counts only while playing, fades over 10 s, end of episode marks played (MD1 AC5); session restored paused at start with nothing resolved; remote session ignored while playing; `EngineError` → `UnplayableReason` / `PlaybackIssue` per [Engine errors and recovery](#engine-errors-and-recovery) | MD1a, MD1b, MS3 |
+| `DeviceLossTest` | `desktopTest`, null back-end with an injected stop and a `DeviceRemoved` event | pause and save; next play re-creates the device; `DefaultChanged` alone keeps playing | MD1b |
+| `YtxProcessTest` | nightly matrix and `desktopTest` on Linux with the host CPython | kill mid-resolve, a call hung past its deadline + 5 s, an injected Python crash → `Transient`, playback continues, child gone 3 min after the last call (MD3 AC3); the child exits when its parent dies; cleared environment (no `PYTHON*`, no proxy variables) | MD3 |
+| `StdioYtxTransportTest` | `desktopTest` with the host CPython and `ReplayRH` | the recorded-response vectors of M9 AC1 through the stdio host (MD3 AC1); framing: oversize and malformed lines kill the child; late answers after a kill ignored; `jsc` round trip with a fake `QuickJsBridge` | MD3 |
+| `EngineUpdaterTest` (desktop store) | `desktopTest` | the cases of M9 AC10 with `DesktopEngineStorePaths` and the stdio host; read-only files; "Reset to bundled" (MD3 AC4) | MD3 |
+| `DesktopSecretStoreTest` | `desktopTest`; DPAPI round trip nightly on Windows | entries stored and read; `0600` and `0700` on POSIX; atomic replace; nothing in the database (M1 AC12) | M1b |
+| `WindowsPathLengthTest` | `desktopTest` | long titles under a deep root stay ≤ 259 UTF-16 units; suffixes and dates never cut; macOS and Linux keep 07's budgets | M6a |
+| `CrashReporterTest` | `desktopTest` | uncaught EDT exception → file, redacted, quit path; background exception → file, app continues, cap 3; `cleanExit = false` with an `hs_err` file → summary report; without one → no dialog; `DEV` never asks | M0b, M11b |
+| `DesktopAppGraphTest` | `desktopTest` | the graph builds; every `NavKey` has an installer; every lane of [Lanes](#lanes) is bound once | M0b |
+
+### Packaged-app smoke tests per target
+
+Every image built by `ci.yml` (Linux x64 under Xvfb), `nightly.yml`'s `desktop-matrix` and `release.yml` runs [Smoke mode](#smoke-mode) from the installed or extracted package and then `check-desktop-image.sh` ([Image scan rules](#image-scan-rules)); macOS images also pass `codesign --verify --deep --strict`. Failures block the PR (Linux x64), the nightly status and the release (M0 AC11–AC12, MD5 AC1).
+
+### E11 desktop journey
+
+E11 (09 owns the journey list, [09 End-to-end journeys](09-quality-and-release.md#end-to-end-journeys)) runs on the desktop JVM with `runComposeUiTest` and the test graph: start, open the five destinations, subscribe to a recorded feed through the add sheet, open the podcast, play a local file with the null back-end for 2 s, pause, check the saved position, quit.
+
+### OS-integration manual checklists
+
+Run per OS before MD2, MD5 and every minor release; results in the release issue.
+
+| Area | Windows 11 | macOS 15 | Ubuntu 24.04 (GNOME) and Fedora or Kubuntu (KDE) |
+|---|---|---|---|
+| Media keys and panels | keyboard media keys, the media flyout (title, podcast, artwork, position, speed, seek) | keyboard keys, Control Center Now Playing, AirPods controls | keyboard keys, GNOME and KDE MPRIS panels |
+| Headset and Bluetooth | play/pause, next | play/pause, next | play/pause, next |
+| Sleep | sleep while playing → paused, position saved, nothing resumes; idle sleep blocked while playing, allowed after pause; a Modern Standby laptop recorded | same | same |
+| Output devices | unplug headphones, disconnect Bluetooth → pause | unplug the jack, disconnect Bluetooth → pause | recorded (best effort) |
+| Window and tray | close while playing → tray; Show, Play/Pause, Next, Quit; idle close quits | menu-bar icon; Dock click reopens; Cmd+Q | tray with and without an AppIndicator extension; iconify fallback |
+| Start at login | Run key; Task Manager shows it | `SMAppService` approval flow (recorded) | autostart entry |
+| Links and files | `feed:` link from a browser, double-clicked `.opml` (MSI); ZIP via drag and drop | `feed:` link, `.opml` from Finder | `feed:` link, `.opml` from Files (DEB/RPM); tar.gz after "Add to applications menu" |
+| Notifications | new episodes, download failed, update | same, including the permission prompt | same |
+| Accessibility | [MD4 manual checklist](#md4-manual-checklist) | same | keyboard only |
+
+### Spike procedures
+
+S13 ([S13 desktop packaging and performance](#s13-desktop-packaging-and-performance)) and S18 ([MD0 spike and the libmpv fallback](#md0-spike-and-the-libmpv-fallback)) record their procedures and results in this document.
+
+### Budgets PB24–PB29
+
+09 owns the budget table ([09 Performance budgets](09-quality-and-release.md#performance-budgets)); on the desktop they are measured on the reference laptops of [PO-43](../PLAN.md#48-further-product-owner-decisions) with the release packages, at S13 (M0b) and again in MD5.
+
+| Budget | Limit | Measurement |
+|---|---|---|
+| PB24 first frame | ≤ 1.0 s with the AOT cache, ≤ 2.5 s without | JVM start (`RuntimeMXBean.startTime`) to the end of the first `withFrameNanos`, logged by the app; median of 5 warm starts and the first start after a reboot, with the library fixture of 300 podcasts |
+| PB25 idle RSS | ≤ 350 MB | 30 s after the first frame on the Library destination with the fixture; Windows working set, macOS RSS (`ps`), Linux `VmRSS`; the CPython child excluded |
+| PB26 RSS while playing | ≤ 450 MB | after 10 min of streaming at 1.5× with skip silence on |
+| PB27 size | installed ≤ 300 MB, download ≤ 130 MB per target | size of the installed directory; size of the release asset |
+| PB28 local playback start | ≤ 300 ms | `playEpisode` of a downloaded MP3 to the first advance of `framesPlayed`, median of 10 warm starts |
+| PB29 YouTube engine | cold resolve p50 ≤ 3 s, warm ≤ 1.5 s, child ≤ 120 MB RSS, child gone 3 min after the last call | `YtDlpClient` timings with the child stopped and running; child RSS by PID; exit time logged |
+
+---
+
+## Delivery by milestone
+
+| Milestone | Delivered in this area |
+|---|---|
+| [M0b](../PLAN.md#m0-scaffold-and-ci) | `:desktopApp` (`MainKt`, `DesktopAppGraph`, one window with the five destinations, macOS menu bar, tray stub, `SingleInstanceLock` and `InstanceHandshake`, `AppDirs`, crash files, `SmokeMode`, `ShutdownCoordinator`, `BuildInfo`); the frozen identifiers with the MSI `upgradeUuid` recorded in [Frozen identifiers](#frozen-identifiers); `nativeDistributions` for all formats on four runners, the macOS 0.x ZIP, `runtime.lock`, the runtime source asset and `RUNTIME-SOURCES.md`, `check-desktop-image.sh`, `check-runtime-sources.sh`; the empty `:playback:engine`, `:playback:native`, `:playback:desktop`, `:desktop:system`, `:youtube:ytdlp-desktop` modules; S13 with results; the draft README section of [README source text](#readme-source-text) |
+| [MD0](../PLAN.md#md0-desktop-audio-engine-spike) | S18: FFmpeg build script and checks, FFM bindings and `ffoffsets.c`, AVIO bridge, `ndmedia` prototype with the OS shims, engine-thread prototype with the DSP ports, corpus on four targets, OS-integration prototypes; the go or fallback decision recorded in [MD0 spike and the libmpv fallback](#md0-spike-and-the-libmpv-fallback) and D86 |
+| [M1a](../PLAN.md#m1-subscribe-and-ingest-rss) | `DesktopJobRunner` with the `refresh` lane and the wake catch-up; Room on the desktop through `DesktopDatabaseFactory`; library, podcast and episode screens in the desktop window (M1 AC10) |
+| M1b | `DesktopSecretStore` for Basic-auth feeds (M1 AC12) |
+| [M3](../PLAN.md#m3-import-export-and-backup) | File dialogs, drag and drop of `.opml` and backup files onto the window, cross-platform backup and restore on the desktop (M3 AC11) |
+| [M6](../PLAN.md#m6-downloads) | M6a: the default download folder, `downloads-manual` lane hosting, "Show in folder", disk-full handling, Windows path lengths (M6 AC14). M6b: `downloads-auto` and `downloads-move` hosting, "Change folder…" (M6 AC15) |
+| M8 | Desktop YouTube bindings external-only with `NOT_YET_AVAILABLE` and the browser as the external target |
+| [MD1](../PLAN.md#md1-desktop-playback) | MD1a: `:playback:engine` (sources, `SpanCache`, FFmpeg demux and decode, DSP ports, clock), `:playback:native` output, `DesktopPlaybackController` and the shared player UI on the desktop. MD1b: native build matrix in the nightly and release jobs, `ffmpeg-{ver}-neutrodyne-src.tar.xz` in every release, transitions, chapters and `DesktopChapterExtractor`, sleep timer, engine error recovery, device loss |
+| [MD2](../PLAN.md#md2-desktop-shell-behaviours-and-os-integration) | `:desktop:system` complete (SMTC, Now Playing, MPRIS, power, audio routes, tray, login items, `DesktopNotifier`); close behaviour; start at login; `UrlSchemeRegistrar`, `WindowsShortcutIdentity`, the `.opml` associations and the Linux desktop entry; `DesktopJobRunner` hardening and diagnostics |
+| [MS2](../PLAN.md#ms2-client-sync) | Hosting of the `sync` lane; the sync token in `DesktopSecretStore`; `NSLocalNetworkUsageDescription` and the macOS Local Network note in the help |
+| [MS3](../PLAN.md#ms3-live-updates-and-handoff) | SSE in the `sync` lane while the app runs; "Continue on this device" through `DesktopPlaybackController` |
+| [MD3](../PLAN.md#md3-desktop-youtube-engine) | `:youtube:ytdlp-desktop` (`YtxProcess`, `StdioYtxTransport`, `PythonRuntimeLocator`, `DesktopEngineStorePaths`, `DesktopEngineUpdateLane`, `QuickJsBridge` if the provider shipped); PBS fetch, trim and checks; `python-components.lock`; bindings switched to the engine; Settings › YouTube on the desktop |
+| [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) / [MD4](../PLAN.md#md4-desktop-ux-and-accessibility) | M10: desktop goldens of the shared components. MD4: `DesktopMenuBar`, the global shortcuts, context menus, drag-and-drop overlay, window sizing, Settings › Desktop, Java Access Bridge loading, the accessibility checklist and the Linux statement |
+| [M11](../PLAN.md#m11-release-hardening-and-v10) | M11a: `DesktopUpdateCheckLane` hosting, the desktop update card hints and the desktop sections of the Install & updates help. M11b: crash dialog final, diagnostics rows, cross-device gate on each desktop OS (M11 AC14), network captures (M11 AC8) |
+| [MD5](../PLAN.md#md5-desktop-packaging-and-release) | Final jpackage configurations (associations, URL schemes, `NSLocalNetworkUsageDescription`, AppUserModelID shortcut), the AOT cache trained per build, PB24–PB29 measured, release-blocking image and source checks, the desktop Licences screen, final README section and help, upgrade and uninstall walkthroughs |
+
+---
+
+## New names introduced here
+
+| Name | Kind | Module or place |
+|---|---|---|
+| `NeutrodyneWindow`, `DesktopMenuBar`, `DesktopOpenHandler`, `ShutdownCoordinator`, `SmokeMode`, `BuildInfo` (desktop), `InstallKind` (incl. `DEV`), `DesktopOs`, `DesktopArch` | classes | `:desktopApp` |
+| `SingleInstanceLock`, `InstanceHandshake`, `HandoffRequest`, `HandoffResponse`, `HandoffOutcome` | classes | `:desktopApp` |
+| `UrlSchemeRegistrar`, `WindowsShortcutIdentity`, `DesktopCrashReporter` | classes | `:desktopApp` |
+| `AppDirs`, `JobLane` | classes | `:core:common` `desktopMain` |
+| `DesktopJobRunner`, `LaneStatus`, `DesktopSecretStore` | classes | `:core:data` `desktopMain` |
+| Lane names `refresh`, `downloads-manual`, `downloads-auto`, `downloads-move`, `artwork`, `app-update-check`, `engine-update`, `sync`, `maintenance` | strings | [Lanes](#lanes) |
+| `AudioEngine`, `FfAudioEngine`, `EngineItem`, `EngineState`, `EngineEvent`, `EngineError`, `TransitionReason`, `DiscontinuityReason`, `Gapless`, `DesktopSourceResolver`, `ResolvedSource`, `ByteSource`, `FileByteSource`, `HttpByteSource`, `SpanCache`, `LookAheadLoader`, `AvioBridge`, `DemuxerFactory`, `Demuxer`, `FfDemuxer`, `DecoderFactory`, `Decoder`, `FfDecoder`, `FfmpegLibrary`, `SilenceSkipper`, `Sonic`, `GainStage`, `TimelineClock`, `MpvAudioEngine` (fallback only) | classes | `:playback:engine` |
+| `ndmedia` (`nd_out_*`, `nd_events_init`, `nd_session_publish`, `nd_power_keep_awake`, `nd_notify_post`, `nd_win_*`, `nd_mac_login_item`), `NdmediaLibrary`, `NdOutput`, `ffoffsets.c`, `ffmpeg-layout.json`, `ffmpeg-license.txt` | native library, classes, files | `:playback:native` |
+| `DesktopPlaybackController`, `DesktopQueueProjector`, `DesktopPlaybackModule`, `DesktopChapterExtractor` | classes | `:playback:desktop` |
+| `SystemMediaSession`, `RemoteCommand`, `WindowsSmtcSession`, `MacNowPlayingSession`, `LinuxMprisSession`, `PowerMonitor`, `PowerEvent`, `IdleSleepInhibitor`, `AudioRouteMonitor`, `RouteEvent`, `TrayController`, `TrayAction`, `LoginItemRegistrar` (`WindowsRunKeyRegistrar`, `MacLoginItemRegistrar`, `XdgAutostartRegistrar`), `LoginItemState`, `DesktopNotifier`, `DesktopNotification`, `NotificationKind` | classes | `:desktop:system` |
+| `YtxProcess`, `YtxChild`, `StdioYtxTransport`, `PythonRuntimeLocator`, `DesktopEngineStorePaths`, `DesktopEngineUpdateLane`, `QuickJsBridge`, `host_stdio.py`, `bootstrap.py` | classes, Python files | `:youtube:ytdlp-desktop`, `youtube/engine/python/neutrodyne_ytx/` |
+| Stdio message types `hello`, `call`, `ok`, `err`, `cancel`, `jsc`, `jsc_ok`, `jsc_err`, `status` | protocol | [Stdio protocol](#stdio-protocol) |
+| Threads `nd-playback`, `nd-engine`, `nd-prepare`, `nd-loader`, `nd-win-shim`, `nd-ytx-out`, `nd-ytx-err`, `nd-handshake` | thread names | [Threading model](#threading-model) |
+| Files `instance.lock`, `instance.port`, `instance.token`, `session.json`, `crash-*.txt`, `neutrodyne.log`, `engine.log`, `secrets.bin`, `secrets.json`, `install-kind`, `neutrodyne.aot` | files | [AppDirs](#appdirs), [Resources layout](#resources-layout) |
+| Launcher argument `--background` | flag | [Start at login](#start-at-login) |
+| `trainAotCache` | Gradle task | `:desktopApp` |
+| `scripts/desktop/mac-zip.sh`, `playback/native/ffmpeg/build.sh` | scripts | [macOS DMG, ad-hoc signing and the 0.x ZIP](#macos-dmg-ad-hoc-signing-and-the-0x-zip), [FFmpeg build](#ffmpeg-build) |
+| `ch.lkmc.neutrodyne.desktop` (desktop entry), `HKCU\Software\Classes\{neutrodyne, feed, podcast, pcast, itpc}` | OS registrations | [Links and files from the OS](#links-and-files-from-the-os) |
+
+Names fixed by PLAN and the change brief (`desktop.*` keys, `-Dneutrodyne.smoke`, release asset names, lockfiles, CI scripts) are used as given.
+
+---
+
+## Open questions
+
+1. **Desktop OS floors (PO).** Oracle's JDK 25 certification lists macOS 14 and later and Windows 11, not macOS 13 or Windows 10 ([macOS floor](#macos-floor)); Windows 10 reached its end of support on 14 October 2025 ([Microsoft](https://support.microsoft.com/en-us/windows/windows-10-support-has-ended-on-october-14-2025-2ca8b313-1946-43d3-b55c-2b95b107f281)). Default: keep D88's floors (macOS 13, Windows 10 22H2) and test once in S13; the PO may raise them to macOS 14 and Windows 11.
+2. **Linux desktop-entry name (S13).** Our own maintainer scripts installing `ch.lkmc.neutrodyne.desktop` depend on jpackage accepting complete replacement DEB scripts and an RPM spec; if not, the entry is jpackage's `neutrodyne-Neutrodyne.desktop` and D61's frozen name must be amended before the first public desktop release.
+3. **MSI install location (S13).** Whether `installationPath` places a per-user install under `%LOCALAPPDATA%\Programs\Neutrodyne\`; the fallback shares `%LOCALAPPDATA%\Neutrodyne\` with user data without overlap.
+4. **Windows on Arm performance (S13).** Start-up time and audio-engine CPU of the x64 build under Prism; if poor, a native arm64 build moves up the v1.x list.
+5. **Start at login on macOS (MD2).** `SMAppService` with an ad-hoc-signed app that changes identity with every update; if it fails, the row is hidden on macOS.
+6. **Narrator (MD4).** Whether Narrator reads the app through Java Access Bridge; if not, R8.10's "NVDA or Narrator" should read "NVDA (and other Java Access Bridge screen readers)".
+7. **Proxies (PO).** v1.0 uses no system proxy on the desktop: OkHttp follows the JVM's default `ProxySelector` (no OS proxy settings unless `java.net.useSystemProxies` is set) and the engine child runs with a cleared environment and its own CA file. Default: no proxy support in v1.0 (documented); `-Djava.net.useSystemProxies=true` for feeds and an OkHttp bridge for the engine in v1.x.
+8. **Hidden idle quit (PO).** A window closed while busy keeps the app running; the design quits it after 10 idle minutes so a paused episode can still be resumed from media keys. Default: 10 min.
+9. **Third-party JNI locations (S13).** Whether `sqlite-bundled`, quickjs-kt and JNA can load their natives from the image instead of a temporary or cache directory (N7).
+10. **Windows notifications (MD2).** Toast behaviour without a registered activator CLSID, and on ZIP installs (no shortcut); fallback is the AWT tray balloon.
+11. **AOT cache relocation (S13).** Whether the JDK 25 cache trained in the build directory is accepted after jpackage installs the image elsewhere.
+12. **`jdk.localedata` size (S13).** Its installed size and whether the Compose plugin's jlink step can restrict it to the shipped locales.
+
+---
+
+## Sources
+
+Checked 2026-10-05 unless noted.
+
+- Compose Multiplatform: compatibility and supported platforms https://kotlinlang.org/docs/multiplatform/compose-compatibility-and-versioning.html · native distributions (formats, versions, `appResourcesRootDir`, `infoPlist`, ProGuard release tasks, no cross-compilation, "damaged" apps) https://kotlinlang.org/docs/multiplatform/compose-native-distribution.html · Gradle plugin 1.12.1 (DSL classes inspected: `fileAssociation`, `installationPath`, `minimumSystemVersion`, jpackage options incl. `--resource-dir`) https://repo1.maven.org/maven2/org/jetbrains/compose/compose-gradle-plugin/1.12.1/ · tray https://kotlinlang.org/docs/multiplatform/compose-desktop-tray.html · accessibility https://kotlinlang.org/docs/multiplatform/compose-desktop-accessibility.html · AOT support PR #5644 https://github.com/JetBrains/compose-multiplatform/pull/5644
+- JDK and jpackage: jpackage 25 (resources, `--install-dir`, `$APPDIR` substitution) https://docs.oracle.com/en/java/javase/25/docs/specs/man/jpackage.html · Linux desktop-file naming https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jpackage/linux/classes/jdk/jpackage/internal/DesktopIntegration.java · macOS version rule https://github.com/openjdk/jdk25u/blob/master/src/jdk.jpackage/macosx/classes/jdk/jpackage/internal/CFBundleVersion.java · ad-hoc identity https://github.com/openjdk/jdk25u/blob/master/src/jdk.jpackage/macosx/classes/jdk/jpackage/internal/CodesignConfig.java · macOS deployment target https://raw.githubusercontent.com/openjdk/jdk25u/master/make/autoconf/flags.m4 · Oracle JDK 25 certified configurations https://www.oracle.com/java/technologies/javase/products-doc-jdk25certconfig.html · `java.awt.Desktop` https://docs.oracle.com/en/java/javase/25/docs/api/java.desktop/java/awt/Desktop.html · `SystemSleepListener` https://docs.oracle.com/en/java/javase/25/docs/api/java.desktop/java/awt/desktop/SystemSleepListener.html · `Toolkit` (assistive technologies) https://docs.oracle.com/en/java/javase/25/docs/api/java.desktop/java/awt/Toolkit.html · JEP 454 (FFM) https://openjdk.org/jeps/454 · JEP 483 https://openjdk.org/jeps/483 · JEP 493 https://openjdk.org/jeps/493 · JEP 514 https://openjdk.org/jeps/514 · JEP 515 https://openjdk.org/jeps/515 · jextract licence (GPL-2.0) https://github.com/openjdk/jextract/blob/master/LICENSE
+- Licences: OpenJDK GPL-2.0 + Classpath Exception https://openjdk.org/legal/gplv2+ce.html · GPL-2.0 https://www.gnu.org/licenses/old-licenses/gpl-2.0.html · GPL FAQ https://www.gnu.org/licenses/gpl-faq.html · LGPL-2.1 https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html · Adoptium FAQ https://adoptium.net/docs/faq/ · Temurin 25 releases and source tarballs https://github.com/adoptium/temurin25-binaries/releases · FFmpeg legal checklist https://ffmpeg.org/legal.html · FFmpeg releases https://ffmpeg.org/releases/ · FFmpeg codecs https://ffmpeg.org/general.html · JNA licence https://github.com/java-native-access/jna/blob/master/LICENSE · mpv skip-silence script (GPL, never copied) https://codeberg.org/ferreum/mpv-skipsilence · mpv 0.41 build dependencies https://raw.githubusercontent.com/mpv-player/mpv/v0.41.0/meson.build
+- Audio: miniaudio https://github.com/mackron/miniaudio · Sonic https://github.com/waywardgeek/sonic · `sqlite-bundled-jvm` 2.7.1 natives https://dl.google.com/android/maven2/androidx/sqlite/sqlite-bundled-jvm/2.7.1/sqlite-bundled-jvm-2.7.1.jar · quickjs-kt-jvm 1.0.15 natives https://repo1.maven.org/maven2/io/github/dokar3/quickjs-kt-jvm/1.0.15/ · Room KMP https://developer.android.com/kotlin/multiplatform/room
+- Windows: SMTC interop https://learn.microsoft.com/en-us/windows/win32/api/systemmediatransportcontrolsinterop/nn-systemmediatransportcontrolsinterop-isystemmediatransportcontrolsinterop · AppUserModelIDs https://learn.microsoft.com/en-us/windows/win32/shell/appids · `SetCurrentProcessExplicitAppUserModelID` https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-setcurrentprocessexplicitappusermodelid · toasts from unpackaged apps https://learn.microsoft.com/en-us/windows/apps/design/shell/tiles-and-notifications/send-local-toast-desktop-cpp-wrl · `RegisterSuspendResumeNotification` https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registersuspendresumenotification · `SetThreadExecutionState` https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate · `IMMNotificationClient` https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nn-mmdeviceapi-immnotificationclient · Run keys https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys · URL scheme registration https://learn.microsoft.com/en-us/previous-versions/windows/internet-explorer/ie-developer/platform-apis/aa767914(v=vs.85) · `SHOpenFolderAndSelectItems` https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shopenfolderandselectitems · `CryptProtectData` https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata · `FOLDERID_LocalAppData` https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid · SmartScreen reputation https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation · Smart App Control FAQ https://support.microsoft.com/en-us/windows/smart-app-control-frequently-asked-questions-285ea03d-fa88-4d56-882e-6698afdb7003 · Windows on Arm emulation https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation · code-signing options https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options
+- macOS: MPNowPlayingInfoCenter https://developer.apple.com/documentation/mediaplayer/mpnowplayinginfocenter · MPRemoteCommandCenter https://developer.apple.com/documentation/mediaplayer/mpremotecommandcenter · IOPMAssertion QA1340 https://developer.apple.com/library/archive/qa/qa1340/_index.html · `SMAppService` https://developer.apple.com/documentation/servicemanagement/smappservice · `UNUserNotificationCenter` https://developer.apple.com/documentation/usernotifications/unusernotificationcenter · Gatekeeper "Open Anyway" https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac · Sequoia change https://developer.apple.com/news/?id=saqachfa · TN3127 https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements · TN3179 https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy · ad-hoc signing on Apple silicon https://developer.apple.com/documentation/macos-release-notes/macos-big-sur-11_0_1-universal-apps-release-notes · files and folders privacy https://support.apple.com/guide/mac-help/control-access-to-files-and-folders-on-mac-mchld5a35146/mac
+- Linux and freedesktop: MPRIS Player interface https://specifications.freedesktop.org/mpris/latest/Player_Interface.html · dbus-java https://github.com/hypfvieh/dbus-java · logind inhibitor locks https://systemd.io/INHIBITOR_LOCKS/ · portal Inhibit https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Inhibit.html · portal FileChooser https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.FileChooser.html · notification specification https://specifications.freedesktop.org/notification-spec/latest/ · file manager interface https://www.freedesktop.org/wiki/Specifications/file-manager-interface/ · Desktop Entry specification https://specifications.freedesktop.org/desktop-entry-spec/latest/ · XDG autostart https://specifications.freedesktop.org/autostart/latest/ · XDG base directories https://specifications.freedesktop.org/basedir/latest/ · Landlock https://docs.kernel.org/userspace-api/landlock.html
+- Python engine host: python-build-standalone running notes https://github.com/astral-sh/python-build-standalone/blob/main/docs/running.rst · technotes https://github.com/astral-sh/python-build-standalone/blob/main/docs/technotes.rst · CPython command line (`-I`, `-X utf8`, `-B`) https://docs.python.org/3/using/cmdline.html · PyInstaller licence https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt
+- Accessibility: NVDA user guide (Java Access Bridge support) https://www.nvaccess.org/files/nvda/documentation/userGuide.html
+- GitHub: hosted runners https://docs.github.com/en/actions/reference/runners/github-hosted-runners · release limits https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases · `actions/attest` https://github.com/actions/attest
+- Mail: RFC 2368 (`mailto:`) https://www.rfc-editor.org/info/rfc2368
+- Measurements cited without a URL (FFmpeg minimal build size and corpus results, jlink image size, first-frame and RSS numbers, trimmed CPython size) come from the scope-revision research of 2026-10-05; their methods are summarised where they are used and they are re-measured by MD0 and S13.
