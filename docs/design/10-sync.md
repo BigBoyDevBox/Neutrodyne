@@ -1,6 +1,6 @@
 # 10 — Sync
 
-> Status: Draft v1, 2026-10-05, created by the scope revision 2026-10-05 (S0–S13): Neutrodyne Sync — an optional, self-hosted server and its protocol v1 that keep one user's library state in step across the Android and desktop apps · Implements: R7.1–R7.9, R7.10 (v1.x), R6.7, R1.9 (sync side), R8.5 (cross-device resume) / N1, N2 (SSE), N3, N5 (sync and server budgets), N6 (offline queueing), N8 (server artefacts), N9, N12 (server image), N13 · Milestones: M0b (server skeleton), M1a (groundwork in schema v1), MS0, MS1, MS2, MS3, M11b, M16 (v1.x) · Honours: D1, D3, D18, D20, D22, D23, D24, D28, D29, D33, D34, D35, D38, D41, D43, D44, D59, D60, D63, D78, D79, D81, D84, D85, D91–D95; PO-2, PO-13, PO-37, PO-38, PO-41, PO-44, PO-45 (resolved) · Owns: the sync protocol (endpoints, DTOs, statuses, errors, limits, cursor and versioning), the conflict rules and conformance vectors, the client sync engine (capture rules, outbox, push, apply, parked state, scheduling, SSE, token storage, LAN gate), linking and the first merge, the server (`:sync:server`: storage, merge, dedupe, authentication, web UI, CLI, backups, garbage collection, observability), server deployment, sync and server security, the compatibility layers (v1.x), spikes S14–S17 and the procedures behind budgets PB30 and PB31
+> Status: Draft v1, 2026-10-05, created by the scope revision 2026-10-05 (S0–S13): Neutrodyne Sync — an optional, self-hosted server and its protocol v1 that keep one user's library state in step across the Android and desktop apps; adversarial review 2026-10-05: server writes on a per-account HLC that orders after every stored clock, "Use this device's library everywhere" uploads before it prunes, full resync re-asserts with stored clocks, the mass-change guard stages memberships and Up next with their podcast, group deletions held 10 s for undo, 2-s foreground pushes on Android (PB31), deployment fixes (tmpfs `noexec`, CIO idle timeout, Debian 13 Java) · Implements: R7.1–R7.9, R7.10 (v1.x), R6.7, R1.9 (sync side), R8.5 (cross-device resume) / N1, N2 (SSE), N3, N5 (sync and server budgets), N6 (offline queueing), N8 (server artefacts), N9, N12 (server image), N13 · Milestones: M0b (server skeleton), M1a (groundwork in schema v1), MS0, MS1, MS2, MS3, M11b, M16 (v1.x) · Honours: D1, D3, D18, D20, D22, D23, D24, D28, D29, D33, D34, D35, D38, D41, D43, D44, D59, D60, D63, D78, D79, D81, D84, D85, D91–D95; PO-2, PO-13, PO-37, PO-38, PO-41, PO-44, PO-45 (resolved) · Owns: the sync protocol (endpoints, DTOs, statuses, errors, limits, cursor and versioning), the conflict rules and conformance vectors, the client sync engine (capture rules, outbox, push, apply, parked state, scheduling, SSE, token storage, LAN gate), linking and the first merge, the server (`:sync:server`: storage, merge, dedupe, authentication, web UI, CLI, backups, garbage collection, observability), server deployment, sync and server security, the compatibility layers (v1.x), spikes S14–S17 and the procedures behind budgets PB30 and PB31
 
 Contents: [Scope](#scope) · [What syncs](#what-syncs) · [Identity mapping](#identity-mapping) · [Protocol](#protocol) · [Conflict resolution](#conflict-resolution) · [Client sync engine](#client-sync-engine) · [Linking and first merge](#linking-and-first-merge) · [Interaction with backup, retention and YouTube](#interaction-with-backup-retention-and-youtube) · [Server architecture](#server-architecture) · [Authentication and device linking](#authentication-and-device-linking) · [Deployment](#deployment) · [Security](#security) · [Compatibility layers](#compatibility-layers) · [Testing](#testing) · [Delivery by milestone](#delivery-by-milestone) · [New names introduced here](#new-names-introduced-here) · [Open questions](#open-questions) · [Sources](#sources)
 
@@ -291,7 +291,7 @@ Two devices that subscribe to the same feed offline create two `syncId`s for one
 
 - **Index.** The server keeps `podcast_key(account, feed_key, podcast_rid, live)` over every podcast record's `feedKeys` plus `UrlNormalizer.forIdentity(feedUrl)` computed server-side with the shared `:feeds` code.
 - **Live collision.** A change that makes podcast `B` live with a key owned by another live podcast `A` merges them: `SurvivorRule.podcast` keeps the one with the smaller `subscribedAt`, then the smaller `syncId`; the loser gets `mergedInto = survivor` and is dead; its fields merge into the survivor by the normal field rules; its `episode`, `upnext` and `member` records are re-keyed to the survivor (field merge where the target exists; the old record becomes dead with `mergedInto`). The push result for the loser is `merged` with `mergedInto`.
-- **Revival.** A change that makes `B` live with a key owned by a *dead, unsubscribed* (not merged) podcast `A` whose death is less than 180 days old merges `B` into `A` and revives `A` (`subscribed = true` with `B`'s clock). Every record with `A`'s prefix gets a fresh `seq`, so devices that already passed those records receive the history again: re-subscribing restores played state and positions ([PO-45](../PLAN.md#48-further-product-owner-decisions) keeps unsubscribed podcasts' episode records 180 days). The same re-sequencing happens when any device overturns `subscribed = false` with a newer `true` (for example "Keep mine", [Mass-change guard](#mass-change-guard)).
+- **Revival.** A change that makes `B` live with a key owned by a *dead, unsubscribed* (not merged) podcast `A` whose death is less than 180 days old merges `B` into `A` and revives `A`: `subscribed = true` stamped with the server clock, which orders after `A`'s tombstone even when `B`'s own clock does not (a device whose stored tombstone clock is newer than `B`'s would otherwise ignore the revival and diverge). `A`'s live `episode` and `member` records get fresh `seq`s, so devices that already passed them receive the history again: re-subscribing restores played state, positions and group membership ([PO-45](../PLAN.md#48-further-product-owner-decisions) keeps unsubscribed podcasts' episode records 180 days); Up next items do not come back (the server removed them when `A` died, [Write path](#write-path)). The same re-sequencing happens when any device overturns `subscribed = false` with a newer `true` (for example "Keep mine", [Mass-change guard](#mass-change-guard)).
 - **Equal real `podcastGuid` alone never merges**, as on the device ([03 Podcast dedupe and merge](03-feeds-and-discovery.md#podcast-dedupe-and-merge)).
 
 ### Feed moves
@@ -424,6 +424,9 @@ Content-Encoding: gzip
             {"i":3,"status":"applied"},
             {"i":4,"status":"merged","mergedInto":{"p":"6f0c2a3e-1b6d-4c1e-9a55-0b9b8c2f1d10","k":"g:ep7-guid"}}],
  "records":[
+  {"coll":"upnext","id":{"p":"6f0c2a3e-1b6d-4c1e-9a55-0b9b8c2f1d10","k":"g:tag:example.com,2026:ep43"},"seq":4650,"by":"3b1f…",
+   "fields":{"in":{"v":false,"c":"01a10c944d400000-1f2e3d4c5b6a7980"},"ok":{"v":"a0V","c":"01a10c944d400000-1f2e3d4c5b6a7980"}},
+   "match":{"guid":"tag:example.com,2026:ep43","enc":"https://cdn.example.com/ep43.mp3","kv":1}},
   {"coll":"group","id":"0d7c5b1e-8f0a-4a63-b2d4-5c3e1f6a7b80","seq":4712,"by":"3b1f…",
    "fields":{"name":{"v":"Tech","c":"01a10c90a1c00000-1f2e3d4c5b6a7980"},"ok":{"v":"a0","c":"01a10c90a1c00000-1f2e3d4c5b6a7980"},
              "deleted":{"v":false,"c":"01a10c90a1c00000-1f2e3d4c5b6a7980"},"createdAt":{"v":1790900000000}}},
@@ -435,11 +438,13 @@ Content-Encoding: gzip
  "cursor":"c:7f3a9c01:4795","hasMore":false,"serverTime":"2026-10-05T15:00:05.412Z"}
 ```
 
+The `upnext` record (`seq` 4650, below `since`) is the current state behind result 2: another device removed the item later, so the push was `stale`. The five records this push changed (`seq` 4791–4795: the podcast, the `ep42` episode, the member, the dead `u:old…/ep7` record and its `g:ep7-guid` survivor) are also in `records`; they are left out of the example for brevity.
+
 Server rules for one call (one write transaction, [Write path](#write-path)):
 
 1. Validate the headers, size and depth ([Request pipeline](#request-pipeline)), then each change independently. A rejected change never fails the batch.
 2. Merge every accepted change into its stored record with `RecordMerger` (`:sync:protocol`), assign a new `seq` to every record that changed, update the dedupe indexes and run merges.
-3. After the push, read the records with `seq > since` in `seq` order, at most 1,000, **plus** the current record of every change whose result is `stale` or `merged` (so the client learns the winning values even when its cursor is already past them). `cursor` is the `seq` of the last returned record in `seq` order (or `since` when none changed); `hasMore` is true when more records exist after it.
+3. After the push, read the **page**: the records with `seq > since` in `seq` order, at most 1,000 and at most 8 MiB of uncompressed JSON. Add the current record of every change whose result is `stale` or `merged` that is not already in the page (so the client learns the winning values even when its cursor is already past them); these **extras** are always included, whatever their size (a client whose push was `stale` has no other way to learn the winning value), and never move the cursor. Real records are a few hundred bytes, so page plus extras stay far below the client's 32-MiB response cap; only records filled to every field cap by a misbehaving device of the same account could exceed it, and that round then fails visibly ([Error handling and backoff](#error-handling-and-backoff)). `cursor` is the `seq` of the page's last record (or `since` when the page is empty); `hasMore` is true when records with a larger `seq` exist.
 4. The caller's own changes come back in `records`; clients apply every record idempotently and do not skip their own echoes, because a record whose last writer is this device can still contain other devices' newer fields.
 
 ### Pull only
@@ -469,7 +474,7 @@ data: {"cursor":"c:7f3a9c01:4796","by":"3b1f0c9e-…"}
 
 - `GET /api/v1/account` → `AccountSummary {username, counts {podcasts, groups, episodes, upnext, settings}, devices, quotaRecords, records}` (live records only). The first link uses it to decide whether the account is empty ([First-link choices](#first-link-choices)).
 - `POST /api/v1/account/reset` with `AccountResetRequest {confirm: "DELETE", mode}`:
-  - `mode = "library"` tombstones every live `podcast`, `group`, `member` and `upnext` record and clears `session` (fields set with the server's current HLC on its own node ID); episode records and settings are kept. Used by "Use this device's library everywhere" ([Use this device's library everywhere](#use-this-devices-library-everywhere)).
+  - `mode = "library"` with `before` (an HLC wire string, required; more than 5 min ahead of server time → `400 invalid`), in one write transaction: every live `podcast`, `group`, `member` and `upnext` record whose `max_hlc` is older than `before` gets its removal (`subscribed = false`, `deleted = true`, `in = false`), and a `session` older than `before` gets `episode = null`, all stamped with the account's server clock ([Hybrid logical clocks](#hybrid-logical-clocks)); records changed at or after `before` stay, and episode records and settings are untouched. The calling device uploads its library first and prunes last ([Use this device's library everywhere](#use-this-devices-library-everywhere)). Audit-logged.
   - `mode = "purge"` deletes every record, index row and per-account backup ZIP of the account, revokes every device token and web session of the account (the caller's included) and rotates the account's cursor epoch. Used by "Delete my data on the server". Audit-logged.
 - `GET /api/v1/account/export` streams a Neutrodyne backup ZIP (05 format, `formatVersion` 1) built by `AccountBackupWriter` from the account's records ([Backups](#backups)); credentials are never included.
 - `GET /healthz` answers `200` while the process serves; `GET /readyz` answers `200` when the database accepts a write transaction (`BEGIN IMMEDIATE; ROLLBACK`), migrations are complete and the data volume has ≥ 50 MB free, else `503`. `GET /metrics` exists only when `NEUTRODYNE_SERVER_METRICS_LISTEN` is set ([Observability](#observability)).
@@ -492,7 +497,8 @@ data: {"cursor":"c:7f3a9c01:4796","by":"3b1f0c9e-…"}
 @Serializable data class LinkTokenRequest(val deviceCode: String)
 @Serializable data class LinkApproveRequest(val userCode: String)
 @Serializable data class LinkApproveResponse(val deviceName: String, val platform: String, val appVersion: String,
-    val requestedAt: String)
+    val requestedAt: String, val purpose: String,                // "device" | "web"
+    val sameNetwork: Boolean)                                    // link/start came from the approver's client IP
 @Serializable data class LinkConfirmRequest(val userCode: String, val approve: Boolean)
 @Serializable data class TokenResponse(val token: String, val accountId: String, val deviceId: String, val username: String)
 @Serializable data class OAuthErrorDto(val error: String)       // authorization_pending | slow_down | expired_token | access_denied
@@ -502,7 +508,8 @@ data: {"cursor":"c:7f3a9c01:4796","by":"3b1f0c9e-…"}
 @Serializable data class AccountSummary(val username: String, val counts: LibraryCountsDto, val devices: Int,
     val quotaRecords: Long, val records: Long)
 @Serializable data class LibraryCountsDto(val podcasts: Int, val groups: Int, val episodes: Int, val upnext: Int, val settings: Int)
-@Serializable data class AccountResetRequest(val confirm: String, val mode: String)   // "DELETE"; "library" | "purge"
+@Serializable data class AccountResetRequest(val confirm: String, val mode: String,    // "DELETE"; "library" | "purge"
+    val before: String? = null)                                  // library: HLC wire; records older than it are removed
 
 @Serializable data class SyncRequest(val since: String? = null, val changes: List<ChangeDto> = emptyList())
 @Serializable data class SyncResponse(val results: List<ChangeResultDto>, val records: List<RecordDto>,
@@ -542,8 +549,8 @@ enum class SyncErrorCode(val wire: String) { PROTOCOL_TOO_OLD("protocol_too_old"
 | Status | Meaning | Client action |
 |---|---|---|
 | `applied` | At least one field advanced, or every field equals the stored one (an idempotent retry) | Delete the pushed outbox rows whose `hlc` ≤ the pushed one; raise `sync_clock` to the pushed clocks |
-| `stale` | Every incoming field lost to a newer stored field | Delete the pushed rows (the winning record is in `records` and is applied) |
-| `merged` | The record was redirected (`mergedInto`): a dedupe, a revival or a rekey | Delete the rows; follow the redirect ([Redirects on clients](#redirects-on-clients)) |
+| `stale` | Every incoming field lost to a newer stored field | Delete the pushed rows whose `hlc` ≤ the pushed one (the winning record is in `records` and is applied) |
+| `merged` | The record was redirected (`mergedInto`): a dedupe, a revival or a rekey | Delete the pushed rows whose `hlc` ≤ the pushed one; follow the redirect ([Redirects on clients](#redirects-on-clients)), which moves any newer pending rows to the survivor's `rid` |
 | `rejected` + `clock_skew` | A field clock is more than 5 min ahead of server time or before 2020-01-01 | Correct the clock offset, re-stamp the rows and retry next round; a second rejection sets `SyncProblem.ClockSkew` |
 | `rejected` + `invalid` | Shape, type or cap violation | Drop the rows (a retry cannot fix them); count in diagnostics |
 | `rejected` + `quota` | The account's record quota is reached | Keep the rows, stop pushing, `SyncProblem.QuotaReached` |
@@ -591,11 +598,13 @@ Content-Type: application/problem+json
 - A cursor is the opaque string `c:<epoch>:<seq>`: `epoch` is 8 hex digits stored per account and rotated by a server restore ([Backups](#backups)) or a purge; `seq` is the account's change counter at the last returned record. Clients store it in `sync_state.cursor` and never interpret it.
 - Every committed change of a record assigns the account's next `seq` to that record; a pull returns current full records with `seq > since`, so a record changed several times arrives once, with all fields. Because one SQLite writer commits in `seq` order, a reader never skips a record committed late (the gap problem of global sequences on PostgreSQL does not arise; a later PostgreSQL store keeps the per-account counter row under lock, [Storage](#storage)).
 - The server answers `410 cursor_expired` when `since`'s epoch differs from the account's or its `seq` is below `min_cursor` (the highest `seq` the garbage collector has purged, [Garbage collection and retention](#garbage-collection-and-retention)), or above the account's `seq` (impossible cursor).
-- **Full resync** (client): keep the outbox; set `cursor = null`; pull every page from the beginning and apply with `FirstLinkMerger` in Merge mode ([Merge](#merge)), which unions local-only podcasts, groups and memberships back onto the server and decides state by timestamps; then resume normal rounds. Records deleted elsewhere and purged after 365 days can come back this way — the accepted price of "Merge never removes local data" — and the user gets `SyncNotice.Resynced(n)`.
+- **Full resync** (client, `FirstLinkMerger.resync()`): keep the outbox; pull every page from the beginning (`since` absent) into the staging file and apply it as a normal pull — field by field against `sync_clock` and the outbox, guard included — then **re-assert**: for every field whose local `sync_clock` clock is newer than the pulled record's (or whose record the server no longer has at all), capture the local value with that exact clock (`captureAt` with the stored HLC; a literal removal when the local row is gone). Store the new cursor and resume normal rounds; the user gets `SyncNotice.Resynced(n)` with the number of re-asserted records.
+  - This uses the clocks the device already knows rather than Merge's row timestamps: after sync, a row's `updatedAt` is the time it was *applied* here, and stamping with it would let a stale value beat a newer one from another device — exactly when every device resyncs at once after a server restore.
+  - After a server restore it returns what the restored copy lost, removals included (a device whose local unsubscribe was acknowledged and then lost pushes its `subscribed = false` again). After a GC-driven `410` (a device unseen for 180 days), records deleted elsewhere and purged after 365 days come back from this device — the accepted price of "Merge never removes local data".
 
 ### Versioning
 
-- `PROTOCOL_VERSION` changes only for incompatible changes (a changed meaning, a removed field, a new required member). Additive changes — new optional members, new fields in a collection, new `features` — keep version 1: older peers ignore what they do not know, and the server stores unknown fields.
+- `PROTOCOL_VERSION` changes only for incompatible changes (a changed meaning, a removed field, a new required member). Additive changes — new optional members, new fields in a collection, new `features` — keep version 1: older peers ignore what they do not know, and the server stores unknown fields as `Lww`. A new field whose kind is not `Lww` (a new grow-set or max field) would merge wrongly on an older server, so it ships behind a new `features` flag and clients send it only to servers that advertise the flag.
 - The server advertises `[min, max]`. A request whose `Neutrodyne-Sync-Protocol` is below `min` gets `426 protocol_too_old`; a client whose own version exceeds `max` stops with `ServerTooOld` ("Update the sync server") before sending anything.
 - Policy: a server release keeps accepting the previous protocol version for at least 12 months after introducing a new one, so apps and server can be updated in either order within a household. Apps and server share one version line and one release per tag ([D63](../PLAN.md#3-key-decisions)), but compatibility is decided by the protocol range, never by app version numbers.
 
@@ -614,11 +623,11 @@ Following Kulkarni et al. ([HLC paper](https://cse.buffalo.edu/tech-reports/2014
 | State per device | `sync_state.hlc` = packed `(ms << 16) or counter` (64-bit signed; valid until the year 6429), `sync_state.nodeId` = 16 random hex digits generated at each link, `sync_state.clockOffsetMs` |
 | Wire form | `HHHHHHHHHHHHCCCC-NNNNNNNNNNNNNNNN`: 12 hex digits of milliseconds, 4 of counter, `-`, 16 of node ID, lowercase. 2026-10-05T15:00:00Z with counter 3 is `01a10c942d800003-9f86d081884c7d65`. Byte-wise string order equals clock order with the node ID as tie-break, so the server compares strings and SQL can compare `max_hlc` columns directly |
 | Local tick | Every captured change: `hlc = max(hlc + 1, (wallMs + clockOffsetMs) << 16)` — in SQL inside the capture trigger ([Capture rules](#capture-rules)) or in `HlcClock.tick()` for Kotlin-side captures; a counter overflow carries into the milliseconds, which keeps order |
-| Receive | `SyncApplier` raises `hlc` to the largest packed clock it applied (`hlc = max(hlc, remote)`), so a change made after seeing a remote value orders after it ("I changed X after seeing Y") |
+| Receive | `SyncApplier` raises `hlc` to the largest packed clock it **received** in the page — applied, staged by the [Mass-change guard](#mass-change-guard), parked or lost (`hlc = max(hlc, remote)`) — so a change made after seeing a remote value orders after it ("I changed X after seeing Y"). Raising only on applied clocks would let "Keep mine" stamp a staged podcast below the tombstone it answers when the removing device's clock runs ahead, and the server would answer `stale` forever |
 | Admission bound | The server rejects a change with any field clock more than 5 min (`maxSkewMs`) ahead of its own time or before 2020-01-01 (`rejected: clock_skew`); this bounds the damage of a wrong device clock to 5 min |
 | Offset correction | Every response carries `serverTime`. `SyncClient` estimates `offset = serverTime − (sentAt + receivedAt) / 2`; when `|offset| > 120 s` it stores `clockOffsetMs = offset` (otherwise 0, so small jitter never moves the clock). After a correction, a persisted `hlc` more than 5 min ahead of the adjusted wall clock is clamped to it (such a clock can never have been accepted) and the pending rows with such clocks are re-stamped |
 | No clocks before linking | With `sync_state.enabled = 0` the triggers capture nothing and no clock exists. The first link stamps existing state from the rows' own timestamps (counter 0, this node; timestamps before 2020 are raised to 2020-01-01), never "now" ([Merge](#merge)) |
-| Server clock | The server's own writes (account reset, revival) use an `HlcClock` on the server's node ID (`0000000000000000`) with the server's wall clock; `doctor` warns when the system clock looks unsynchronised (Unverified detection method, [Open questions](#open-questions) 9) |
+| Server clock | The server's own writes (the library reset's tombstones, a revival's `subscribed = true`, the Up next tombstones of a podcast that dies, [Write path](#write-path)) use an `HlcClock` per account on the server's node ID (`0000000000000000`): `tick = max(wallMs << 16, accountMax + 1)`, where `accountMax` is the largest clock the account has stored (`SELECT max(max_hlc) FROM record WHERE account_id = ?` on first use, then kept in memory and raised by every admitted clock). A server write therefore always orders after every value it overrides, even when a device's clock ran up to 5 min ahead; with the wall clock alone a reset or revival could lose to the records it is meant to replace. `doctor` warns when the system clock looks unsynchronised (Unverified detection method, [Open questions](#open-questions) 9) |
 
 ### Field kinds and the record merger
 
@@ -626,9 +635,9 @@ Following Kulkarni et al. ([HLC paper](https://cse.buffalo.edu/tech-reports/2014
 |---|---|---|
 | `Lww` | The value with the greater clock wins; equal clocks keep the stored value (they are the same write) | most fields |
 | `LwwPosition` | `Lww`, except that an incoming `{ms: 0}` without `reset: true` is ignored (N1); positions are never max-wins, because seeking back and re-listening are legitimate | `episode.pos` |
-| `GrowSet` | Union, no clock; sent as `{add: [...]}` | `podcast.feedKeys` |
+| `GrowSet` | Union, no clock; sent as `{add: [...]}`. A union that would exceed 64 entries keeps the 64 lexicographically smallest, on the server and every client alike, so replicas still converge (a change that itself carries more than 64 entries is `invalid`) | `podcast.feedKeys` |
 | `MinField` / `MaxField` | Minimum / maximum of the values; a clock may be sent and only feeds `max_hlc` | `subscribedAt`, `group.createdAt`, `member.addedAt` / `playCount`, `lastPlayedAt` |
-| `Tombstone` | An `Lww<Boolean>` named `subscribed`, `deleted` or `in`; a record whose tombstone field is "removed" is dead, and edits to its other fields never resurrect it — only a newer `true` / `false` / `true` does | removals |
+| `Tombstone` | An `Lww<Boolean>` named `subscribed`, `deleted` or `in`; a record whose tombstone field says "removed" is dead, and edits to its other fields merge but never resurrect it — only a newer `subscribed = true`, `deleted = false` or `in = true` does | removals |
 | `Redirect` | `mergedInto`, written once by the server; the first value stays | merges, revivals, rekeys |
 
 Unknown fields (a newer client, an older server) are stored by the server as opaque `Lww` values within the caps and returned; clients ignore fields they do not know. Unknown collections are rejected (`unknown_collection`).
@@ -665,14 +674,15 @@ data class FieldSpec(val name: String, val kind: FieldKind, val type: ValueType,
 
 The merged fields of an episode record decide its effective local state through `EpisodeStateRules.derive(fields)` (`:sync:protocol`), applied by every client after the field merge. Because every client derives from the same fields, derived local writes are never pushed.
 
+The rows are evaluated in order; the first that matches decides. "Listening position" means a `pos` with `ms > 0` (a `reset: true` position is never one).
+
 | Fields after the merge | Effective state on every device |
 |---|---|
-| `played = true`, played clock newer than the position clock | played; position 0; `startedAt = null`; not in Up next (06's mark-played semantics) |
-| `played = true`, position clock newer than the played clock (a device kept listening without having seen the mark) | in progress at `pos.ms`: `playedAt` cleared locally, `startedAt` set; the latest action wins, as re-listening does on one device ([06 Played state](06-playback.md#played-state)) |
-| `played = false`, `pos.ms > 0` | in progress (`startedAt` set when null) |
-| `played = false`, `pos.ms = 0` or no position | unplayed |
-| `pos` with `reset: true` newest | position 0 (an explicit reset, mark played or mark unplayed elsewhere) |
-| `fav` | independent |
+| `played = true`, and no listening position or one whose clock is older than the played clock | played; position 0; `startedAt = null`; not in Up next (06's mark-played semantics). The mark-played chain captures `played` and the `pos` reset in one transaction, so the reset's clock may be newer than `played`'s — it still yields "played" |
+| `played = true`, listening position whose clock is newer than the played clock (a device kept listening without having seen the mark) | in progress at `pos.ms`: `playedAt` cleared locally, `startedAt` set; the latest action wins, as re-listening does on one device ([06 Played state](06-playback.md#played-state)) |
+| `played = false`, listening position | in progress (`startedAt` set when null) |
+| `played = false` (or absent), position 0, reset or absent | unplayed; position 0 |
+| `fav` | independent of every row above |
 
 Further rules:
 
@@ -695,7 +705,7 @@ Further rules:
 - Unsubscribe pushes `subscribed = false`; group delete `deleted = true`; removing a member or an Up next item `in = false`. Receivers apply them through the normal local paths ([Pull and apply](#pull-and-apply)), guarded by the mass-change rule.
 - The server keeps tombstoned `podcast`, `group`, `member` and `upnext` records for 365 days and the `episode` records of unsubscribed podcasts for 180 days ([PO-45](../PLAN.md#48-further-product-owner-decisions)), so a re-subscription within that time restores history ([Same podcast on two devices](#same-podcast-on-two-devices)). Purges advance `min_cursor` ([Garbage collection and retention](#garbage-collection-and-retention)).
 - Local storage housekeeping never propagates: episode retention ([D23](../PLAN.md#3-key-decisions)) and stub cleanup run with `applying = 1`, and the triggers ignore every `DELETE` on `episode_state` and `episode_position` ([Capture rules](#capture-rules)).
-- There is no cross-device undo: R2.1's 10-s local undo of a group delete works because the Android push debounce is 10 s and the desktop's undo re-creates the group with a newer `deleted = false` if the 2-s push already left.
+- There is no cross-device undo, and none is needed for R2.1's 10-s local undo of a group delete: `OutboxReader` holds back a group's `deleted = true` row and the `member` `in = false` rows of that group until the deletion is 10 s old, on both platforms ([Outbox and coalescing](#outbox-and-coalescing)). An undo inside the window re-inserts the group, whose captures (every field, `in = true`) replace the held rows with newer clocks before anything leaves the device.
 
 ### Merges and redirects
 
@@ -719,11 +729,12 @@ stateDiagram-v2
   Restored --> [*]: local values pushed with fresh clocks
 ```
 
-1. While applying pages, `SyncApplier` applies every non-removal field at once but **stages** each winning removal of a locally present podcast or group (unsubscribe, group delete) in one provisional `sync_held` row of the round (in the page's transaction, so the advancing cursor never loses it). Member and Up next removals and episode state are never held.
-2. At the end of the round `MassChangeGuard` counts the staged removals against the thresholds (denominator: podcasts subscribed locally when the round started). Below → the staged removals are applied (after re-checking that their clocks still win) and the row is deleted. Above → the row becomes a held batch with a summary (`{device, podcasts: [titles], groups: [names]}`) and `SyncController.heldChanges` emits a `MassChangePrompt`: "Pixel removed 37 podcasts and 2 groups. Apply here?" (wording: [08 Sync screens](08-ui-ux.md#sync-screens)).
-3. **Apply** applies every staged removal whose clock still wins locally. **Keep mine** captures fresh `*` changes (every field, new HLC) for each staged podcast and `deleted = false` plus fields for each staged group, then requests a push: the server revives them and re-sequences their history ([Same podcast on two devices](#same-podcast-on-two-devices)), so the removing device gets them back too. **Decide later** keeps the batch; the banner stays and later rounds add newer removals to it or drop items a newer remote `subscribed = true` restored.
-4. A removal of the podcast loaded in a **playing** player is never applied while it plays (sync never stops a player, R7.5): it is staged in a `sync_held` row with reason `PLAYING` that `SyncEngine` applies automatically when `PlaybackSyncPort` reports the player stopped or the item changed.
-5. Account resets by another device ("Use this device's library everywhere") reach other devices as many removals and are therefore held there — the second confirmation on the resetting device says so.
+1. While applying pages, `SyncApplier` applies every non-removal field at once but **stages** each winning removal of a locally present podcast or group (unsubscribe, group delete) in one provisional `sync_held` row of the round (in the page's transaction, so the advancing cursor never loses it; the staged clocks still raise the local HLC, [Hybrid logical clocks](#hybrid-logical-clocks)). Removals that belong to a staged record join it: `member` `in = false` of a staged group or podcast and `upnext` `in = false` of a staged podcast's episodes (the server removes a dying podcast's Up next items itself, [Write path](#write-path)), so neither Apply nor Keep mine finds the group half-emptied or Up next already cleared. Other member and Up next removals, episode state and `mergedInto` redirects (a merge is not a removal) are never held.
+2. At the end of the round `MassChangeGuard` counts the staged podcast and group removals against the thresholds (denominator: podcasts subscribed locally when the round started). Below → the staged removals are applied (after re-checking that their clocks still win) and the row is deleted. Above → the row becomes a held batch with a summary (`{device, podcasts: [titles], groups: [names]}`) and `SyncController.heldChanges` emits a `MassChangePrompt`: "Pixel removed 37 podcasts and 2 groups. Apply here?" (wording: [08 Sync screens](08-ui-ux.md#sync-screens)). A provisional row left by a round that died before this step is evaluated at the start of the next round.
+3. **Apply** applies every staged removal whose clock still wins locally. **Keep mine** captures fresh `*` changes (every field, new HLC) for each staged podcast, `deleted = false` plus fields for each staged group, and fresh `in = true` and `ok` for the local memberships and Up next items of the staged podcasts and groups, then requests a push: the server revives them and re-sequences their history and memberships ([Same podcast on two devices](#same-podcast-on-two-devices)), so the removing device gets them back too. **Decide later** keeps the batch; the banner stays and later rounds add newer removals to it or drop items a newer remote `subscribed = true` or `deleted = false` restored, recomputing the prompt's counts.
+4. A removal of the podcast loaded in a **playing** player is never applied while it plays (sync never stops a player, R7.5): it is staged in a `sync_held` row whose `batch` state is "deferred while playing", which `SyncEngine` applies automatically when `PlaybackSyncPort` reports the player stopped or the item changed (re-checking that the clock still wins).
+5. A library reset by another device ("Use this device's library everywhere") reaches other devices as the removals of everything the resetting device lacks, and is held there when those exceed the thresholds — the second confirmation on the resetting device says so ([Use this device's library everywhere](#use-this-devices-library-everywhere)).
+6. The guard sees what one round pulls. Removals made one by one while both devices are online arrive in separate rounds and pass individually, which matches deliberate clean-ups; a device that was offline sees them together and asks.
 
 ### Now playing and handoff
 
@@ -750,7 +761,7 @@ stateDiagram-v2
 }
 ```
 
-Required vectors (MS0 acceptance 1): LWW ties broken by node ID; equal clocks keep the stored value; the position-zero guard; `reset: true` wins; played-versus-position derivation in both orders; played removes Up next; tombstones not resurrected by edits; a newer `subscribed = true` revives; grow-set union; min and max fields; redirect written once; `orderKey` ties by record ID; clock admission (5 min ahead, before 2020); unknown fields preserved; idempotent re-application; every permutation of a 3-change set converges to one result.
+Required vectors (MS0 acceptance 1): LWW ties broken by node ID; equal clocks keep the stored value; the position-zero guard; `reset: true` wins; played-versus-position derivation in both orders, including a mark-played whose reset clock is newer than its `played` clock (still played); played removes Up next; tombstones not resurrected by edits; a newer `subscribed = true` revives; grow-set union and its 64-entry cap; min and max fields; redirect written once; `orderKey` ties by record ID; clock admission (5 min ahead, before 2020); unknown fields preserved; idempotent re-application; every permutation of a 3-change set converges to one result. Server-only vectors (run by `ServerConformanceTest`): a revival or library reset stamped by the server clock beats a stored clock that ran 4 min ahead; a dying podcast's Up next records are removed and its episode and member records re-sequenced on revival; the library reset keeps records changed at or after `before`.
 
 ---
 
@@ -838,8 +849,10 @@ DataStore is not SQLite, so settings use `SettingsCapture` (`:sync:impl`) instea
 
 - One row per `(coll, rid, field)`: repeated changes coalesce, so 5-s position saves for one episode keep one row whatever the push cadence.
 - Value at push time: `ChangeBuilder` reads the outbox rows and the current source rows in one read transaction, so a value always corresponds to the newest clock of its row. A row whose source row no longer exists and whose `value` is NULL is skipped (the deletion wrote its own literal row).
+- A `*` row and per-field rows of one record may coexist (an insert after a pending removal, such as a group re-created by undo); `ChangeBuilder` takes, per wire field, the row with the newest clock, so a newer `*` supersedes an older literal removal and vice versa. A `*` row is not deleted when a remote value beats it for one field; `ChangeBuilder` instead omits every field whose `sync_clock` entry is newer than the row's clock (that field now holds the remote value).
+- **Undo window.** `OutboxReader` skips a group's `deleted = true` row, and the `member` `in = false` rows with that group's `uuid` prefix, until 10 s after the deletion was captured (05's undo, R2.1). `SyncScheduler` notes the capture time of each new group-deletion row in memory when the outbox changes; after a process restart the rows are eligible at once, matching 05's rule that process death inside the window makes the delete final. The scheduler pokes a round when the oldest skipped row comes of age. Every other row is eligible at once.
 - After the server accepts a change, the engine deletes only rows whose `hlc` ≤ the pushed clock (`DELETE … WHERE coll = ? AND rid = ? AND field = ? AND hlc <= ?`), so a change made during the round stays for the next one.
-- A remote value that wins against a pending local row (remote clock > outbox `hlc`) deletes that row during apply: the local change lost under LWW and the server would answer `stale` anyway.
+- A remote value that wins against a pending per-field row (remote clock > outbox `hlc`) deletes that row during apply: the local change lost under LWW and the server would answer `stale` anyway (a `*` row stays, as above).
 - Expected size: tens of rows in normal use; a 300-feed import produces about 1,000 rows (podcasts, members, groups), pushed in one or two rounds.
 
 ### Push
@@ -863,16 +876,16 @@ Each field's clock is the wire form of its row's `hlc` and this device's `nodeId
 `SyncApplier.apply(records)` runs one write transaction per page with `applying = 1`, in collection order `podcast`, `group`, `member`, `episode`, `upnext`, `session`, `setting` (so a page's members find its podcasts):
 
 1. Resolve the record ID through redirects and aliases (≤ 8 hops).
-2. Merge field by field: for each incoming field, compare its clock with the local clock — the newer of `sync_clock`'s entry and any pending outbox row. Incoming newer → write the local column(s) through 02's column-scoped statements, raise `sync_clock`, delete a losing pending outbox row. Local newer or equal → keep, raise nothing.
+2. Merge field by field: for each incoming field, compare its clock with the local clock — the newer of `sync_clock`'s entry and any pending outbox row (the field's own row or the record's `*` row, which counts for every field). Incoming newer → write the local column(s) through 02's column-scoped statements, raise `sync_clock`, delete a losing per-field outbox row. Local newer or equal → keep, raise nothing.
 3. Collection-specific writes:
-   - `podcast`: unknown and live → resolve a same-feed collision ([Same podcast on two devices](#same-podcast-on-two-devices)); otherwise insert as `PENDING_FIRST_FETCH`, `initialFetch = 1`, `nextRefreshAt = now`, `feedKey = UrlNormalizer.forIdentity(feedUrl)` (a URL that is not `http(s)` or exceeds 4 KiB is skipped), aliases with reason `SYNC`, title from the hint or the URL host, `artworkUrl` hint and `artworkKey` as restore does, synced overrides; credentials per [Feed passwords and private feed URLs](#feed-passwords-and-private-feed-urls). Known → user fields, overrides, a move when `feedUrl` won, display hints only while pending. A winning `subscribed = false` → staged for the [Mass-change guard](#mass-change-guard).
+   - `podcast`: unknown and dead → record its clocks in `sync_clock` (a few bytes, so later `episode`, `member` and `upnext` records of a dead podcast are dropped instead of parked) and delete parked rows with its `syncId`; unknown and live → resolve a same-feed collision ([Same podcast on two devices](#same-podcast-on-two-devices)); otherwise insert as `PENDING_FIRST_FETCH`, `initialFetch = 1`, `nextRefreshAt = now`, `feedKey = UrlNormalizer.forIdentity(feedUrl)` (a URL that is not `http(s)` or exceeds 4 KiB is skipped), aliases with reason `SYNC`, title from the hint or the URL host, `artworkUrl` hint and `artworkKey` as restore does, synced overrides; credentials per [Feed passwords and private feed URLs](#feed-passwords-and-private-feed-urls). Known → user fields, overrides, a move when `feedUrl` won, display hints only while pending. A winning `subscribed = false` → staged for the [Mass-change guard](#mass-change-guard).
    - `group`: insert or update (name through `GroupNames`; a `nameKey` collision → `SurvivorRule.group`); a winning `deleted = true` → staged.
-   - `member`: both ends resolved → `INSERT OR IGNORE` with `orderKey`, or delete; an end missing → park.
+   - `member`: both ends resolved → `INSERT OR IGNORE` with `orderKey`, or delete; an end known dead here → drop; an end missing → park. The same "known dead → drop" rule applies to `episode` and `upnext` records of a dead podcast.
    - `episode`: podcast missing → park; episode matched by `EpisodeMatcher` → write the derived state ([Episode-state rules](#episode-state-rules)): `episode_state` (`playedAt`, `playCount = max`, `lastPlayedAt = max`, `isFavorite`, `measuredDurationMs`, `startedAt` per derivation), `episode_position` (a winning reset through 02's `reset`, a winning non-zero position by a direct update); not matched → stub or park.
    - `upnext`: resolved and not effectively played and not the local current item → upsert `queue_entry(episodeId, orderKey)`; removal → delete; unresolved → stub (from `match`) or park.
    - `session`: `SessionAdopter` ([Now playing and handoff](#now-playing-and-handoff)).
    - `setting`: `SettingsRepository.applyRemote` (or pending while the switch is off).
-4. Raise `sync_state.hlc` to the largest applied clock; store `cursor`; set `applying = 0`; commit. A crash before the commit re-applies the page idempotently.
+4. Raise `sync_state.hlc` to the largest clock received in the page (applied, staged, parked or lost, [Hybrid logical clocks](#hybrid-logical-clocks)); store `cursor`; set `applying = 0`; commit. A crash before the commit re-applies the page idempotently. A record that fails validation (caps, types, URL schemes, an unknown collection) is skipped and counted in diagnostics, and the cursor still advances past it, so one hostile or too-new record cannot block every later round.
 5. After the commit, in order: removals that passed the guard through `PodcastRepository.unsubscribe(ids, origin = SYNC)` (03; files deleted first, its transaction with `applying = 1`) and group deletes (05); `GroupNotificationChannels.sync()` (05); first fetch of podcasts added by sync (`SyncScheduler.requestFirstFetch()`: Android unique work `import-sync`, the desktop refresh lane); artwork sync requests; notices.
 
 ### Parked state and stubs
@@ -921,7 +934,7 @@ sequenceDiagram
 | Trigger | Mechanism (work names as in [PLAN 5.2](../PLAN.md#52-runtime-flows)) |
 |---|---|
 | App comes to the foreground (`ProcessLifecycleOwner` ON_START); "Sync now" | unique one-time work `sync-now` (`KEEP`; expedited on API 31+, like `refresh-now`, [D25](../PLAN.md#3-key-decisions)), network constraint |
-| Outbox gains a row other than `pos` or `session` | `SyncScheduler` listens to Room's invalidation-tracker flow for `sync_outbox`, debounces 1 s, checks `EXISTS(… WHERE field NOT IN ('pos') AND coll <> 'session')` and enqueues `sync-push` (`KEEP`, 10-s initial delay, network constraint); the 10-s delay also covers R2.1's undo window |
+| Outbox gains a row other than `pos` or `session` | `SyncScheduler` listens to Room's invalidation-tracker flow for `sync_outbox`, debounces, and checks `EXISTS(… WHERE field NOT IN ('pos') AND coll <> 'session')`. While the UI is visible (`ProcessLifecycleOwner` at least STARTED) or playback runs: an in-process round in `@ApplicationScope` 2 s after the last change, as on the desktop, so PB31's 10 s holds for changes made on the phone (a 10-s work delay alone would exceed it). Otherwise, and when that round fails: `sync-push` (`KEEP`, 10-s initial delay, network constraint). The group-delete undo window is kept by the outbox hold-back, not by the delay ([Outbox and coalescing](#outbox-and-coalescing)) |
 | Playback pause, stop or item transition (`PlaybackSyncPort.events`) | an immediate round in `@ApplicationScope` while the process is alive (during playback the media FGS keeps it alive and networked); on failure `sync-push` |
 | While playing | a round at most every 60 s when `pos` or `session` rows are pending (`PlaybackSyncPort.active.isPlaying`) |
 | Background | unique periodic work `sync-periodic`, 60 min (WorkManager's minimum is 15 min, [define work](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work)), network constraint, 8-min soft deadline (continues as `sync-now` when cut) |
@@ -929,6 +942,8 @@ sequenceDiagram
 | Live updates | SSE ([Live updates](#live-updates)) only while the UI is visible or playback runs |
 
 `SyncWorker` (`CoroutineWorker`) serves all three sync work names. Nothing is enqueued while sync is not configured, and unlinking cancels every sync work name (R7.1). No exact alarms, no FGS of its own, no start from `BOOT_COMPLETED` ([N2](../PLAN.md#22-non-functional-requirements)).
+
+R7.4's "at most 60 min in the background" is what `sync-periodic` requests; Android can stretch it: jobs wait for Doze maintenance windows, and the App Standby buckets limit how often they run (Working set: 10 min of execution per rolling 4 h; Rare and Restricted: no network access for jobs at all, [power management limits](https://developer.android.com/topic/performance/power/power-details)). A regularly used podcast app sits in Active or Working set; the next foreground start or playback pause syncs at once either way.
 
 ### Scheduling on the desktop
 
@@ -951,7 +966,7 @@ On an explicit Quit, `ShutdownCoordinator` gives one push a 2-s budget when the 
 
 - **Android:** connected while `ProcessLifecycleOwner` is at least STARTED or `PlaybackSyncPort.active.isPlaying`; disconnected 60 s after both became false (MS3 acceptance 4); `hb=90` (risk SR7).
 - **Desktop:** connected while the app runs and the machine is awake; `hb=60`.
-- **Watchdog:** no byte for `2 × hb + 15 s` → reconnect. Reconnects wait the server's `retry` (10 s), then back off exponentially to 5 min with ±20 % jitter after repeated failures; a `401` stops it (`Revoked`); a `429` waits `Retry-After`.
+- **Watchdog:** the stream uses 01's derived `SYNC` client without read and call timeouts ([01 Networking baseline](01-foundation.md#networking-baseline); the base client's 30-s read timeout would cut a 60–90-s heartbeat), so the watchdog bounds it instead: no byte for `2 × hb + 15 s` → reconnect. Reconnects wait the server's `retry` (10 s), then back off exponentially to 5 min with ±20 % jitter after repeated failures; a `401` stops it (`Revoked`); a `429` waits `Retry-After`.
 - **Events:** `changed` with `by ≠` this device → a round within 500 ms (coalesced); `by` = this device → ignored.
 - If the server lacks `sse` or a proxy breaks streaming, polling covers it: rounds on foreground, pause and the timers above.
 
@@ -967,10 +982,10 @@ On an explicit Quit, `ShutdownCoordinator` gives one push a 2-s budget when the 
 
 **Android 17 (target 37).** Connections to local-network addresses need the runtime permission `ACCESS_LOCAL_NETWORK` (`NEARBY_DEVICES` group); without it TCP connections "typically result in a timeout error" ([local network permission](https://developer.android.com/privacy-and-security/local-network-permission)). `LocalNetworkPermissionGate` (`androidMain`):
 
-1. During setup, after discovery's DNS resolution, it classifies the server address with the LAN guard's ranges (10/8, 172.16/12, 192.168/16, 169.254/16, `fc00::/7`, `fe80::/10`, `.local` names, [01 Interceptors](01-foundation.md#interceptors)). Loopback and public addresses need nothing.
+1. During setup, `ServerDiscovery` first resolves the host name (DNS to the configured resolver is exempt from the rule, [local network permission](https://developer.android.com/privacy-and-security/local-network-permission)) and the gate classifies the addresses with the LAN guard's ranges (10/8, 172.16/12, 192.168/16, 169.254/16, `fc00::/7`, `fe80::/10`, `.local` names, [01 Interceptors](01-foundation.md#interceptors)) **before** the discovery request is sent — without the permission that request would only time out. Loopback and public addresses need nothing.
 2. Local on API 37+ → `LinkState.NeedsLocalNetworkPermission`: 08 shows the rationale, then the system prompt ([D28](../PLAN.md#3-key-decisions), PO-13). Granted → continue. Denied → `SyncProblem.LocalNetworkPermissionDenied` with the help link; nothing is sent.
-3. The `SYNC` OkHttp client bypasses the LAN guard only while the gate reports `NOT_REQUIRED` (API < 37) or `GRANTED`. Every other client keeps the guard, so LAN feeds still show `LocalNetworkUnsupported` (MS2 acceptance 5).
-4. The gate re-checks at each round; a revoked permission stops sync with the same problem. Unverified: whether a public host name that resolves to a LAN address inside the home, and Tailscale's `100.64.0.0/10` addresses, count as local network for Android — S17 checks both.
+3. The `SYNC` OkHttp client bypasses the LAN guard only while the gate has set 01's `LocalNetworkAccess.syncAllowed` (true below API 37, or while the permission is granted). Every other client keeps the guard, so LAN feeds still show `LocalNetworkUnsupported` (MS2 acceptance 5).
+4. The gate re-classifies the resolved address at each round, because split-horizon DNS gives the same name a LAN address at home and a public one outside: a missing or revoked permission blocks only rounds whose server resolves locally (`LocalNetworkPermissionDenied`), and the help offers the permission again. The gate classifies by resolved address, so it works whether or not Android applies the rule to names; Unverified: whether Android counts Tailscale's `100.64.0.0/10` as local network (the page lists no ranges) — S17 checks it.
 
 **Desktop.** No platform rule on Windows and Linux. macOS may show its Local Network privacy prompt for a LAN server ([TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)); the bundle declares `NSLocalNetworkUsageDescription` (11 owns the `Info.plist`), and because the ad-hoc identity changes with every update the prompt may return after an update (Unverified with ad-hoc identity, S17). A denied prompt shows as connection failures; the help names the System Settings switch.
 
@@ -988,7 +1003,7 @@ On an explicit Quit, `ShutdownCoordinator` gives one push a 2-s budget when the 
 | `429` | status | wait `Retry-After` |
 | `5xx`, `503` | status | backoff as unreachable |
 | `rejected: clock_skew` twice | results | `ClockSkew`; rounds continue for pulls; pushes resume after the next successful offset correction |
-| Malformed response, caps exceeded | decoding | the page is discarded, the round fails (`Server(200)` in diagnostics); records are never partially applied |
+| Malformed response (not JSON, wrong envelope, response cap exceeded) | decoding | the page is discarded, the round fails (`Server(200)` in diagnostics); a page is never partially applied. A single invalid record inside a well-formed page is skipped and counted instead ([Pull and apply](#pull-and-apply) step 4) |
 | Process death mid-round | — | outbox rows remain until acknowledged; pages re-apply idempotently; staged removals live in `sync_held` |
 | Database full | `SQLITE_FULL` | the page transaction rolls back; retried next round; 02's error handling surfaces storage-full |
 
@@ -1084,38 +1099,44 @@ stateDiagram-v2
 
 | Situation | Behaviour |
 |---|---|
-| Account empty | Upload everything stamped from row timestamps ([Merge](#merge) steps 4–6 without the pull); no prompt |
+| Account empty | Upload everything stamped from row timestamps ([Merge](#merge) steps 4–6 without the pull); no choice, but the step names the account ("Upload this library to *alice* on sync.example.org?") so a device linked to the wrong account — a mistyped or guessed code — never uploads silently |
 | This device empty (new phone, new desktop, fresh install) | Pull from the beginning; podcasts appear at once as pending and fetch in the background (like an import, R1.3), state is applied, stubbed or parked; no prompt |
-| Both have data | `LinkState.ChooseFirstLink` with both counts: **Merge** (default), **Use the server's library on this device**, **Use this device's library everywhere** (a second confirmation names the effect: "Other devices will remove 37 podcasts and 2 groups when they next sync; each will ask before applying") |
+| Both have data | `LinkState.ChooseFirstLink` with both counts: **Merge** (default), **Use the server's library on this device**, **Use this device's library everywhere** (a second confirmation, shown after that choice's pull, names the effect on other devices — how many podcasts and groups they will remove, and that each asks first when this exceeds its mass-change thresholds; wording: 08) |
 
-If the app dies before the step ends, Settings › Sync shows `SyncStatus.LinkUnfinished` and asks again; every choice is idempotent and may be re-run.
+`sync_state.linkedAt` is written in the transaction that completes the first-link step; a stored token without `linkedAt` is `SyncStatus.LinkUnfinished`. If the app dies before the step ends, Settings › Sync shows it and asks again; every choice is idempotent and may be re-run from its first step (re-running pulls again, so uploads of the interrupted attempt come back as server records).
 
 ### Merge
 
 `FirstLinkMerger` maps the server's records onto 05's restore inputs and runs `RestoreMerger` in its sync policy, so one routine and one rules table serve backups and sync ([05 Full backup and restore](05-groups-opml-backup.md#full-backup-and-restore), [D92](../PLAN.md#3-key-decisions)):
 
 1. Pull every page (`since` absent) into a staging list held on disk in the cache directory (`sync-link-<deviceId>.jsonl`, deleted afterwards), so a 50,000-record account never sits in memory.
-2. Map records to `PodcastV1` (`key` = `feedKeys[0]`, aliases, `syncId`, user fields, overrides), `GroupV1` (`uuid`, name, look, `orderKey`, settings, members), `EpisodeLineV1` (match hints as stub fields, state with field-clock milliseconds as timestamps) and `QueueV1` (Up next by `orderKey`, the session). Settings records map to `SettingsV1`.
+2. Map records to `PodcastV1` (`key` = `UrlNormalizer.forIdentity(feedUrl)` — a grow-set has no order — with `feedKeys` as aliases, `syncId`, user fields, overrides), `GroupV1` (`uuid`, name, look, `orderKey`, settings, members), `EpisodeLineV1` (match hints as stub fields, state with field-clock milliseconds as timestamps) and `QueueV1` (Up next by `orderKey`, the session). Settings records map to `SettingsV1`.
 3. Run `RestoreMerger` with `applying = 1`, mode MERGE, state policy **timestamp LWW**: subscriptions, aliases, groups (matched `uuid` → `nameKey`) and memberships are united; played state, position (zero guard), favourite are decided by the newer of the server field clock and the local row timestamp (`playedAt` when played, else `episode_state.updatedAt`; `episode_position.updatedAt`), so a local `playedAt` from June loses to a server "unplayed" from October (MS2 acceptance 3); `playCount` and `lastPlayedAt` take the maximum; Up next keeps the local list first and appends server items not yet queued; settings: the server's values win where the account has them. A local podcast or group matched by key or name but carrying a different ID adopts the server's ID ([Redirects on clients](#redirects-on-clients)).
-4. Set `sync_state.enabled = 1` (capture on), `cursor` = the last pulled cursor, `hlc = max(own, seen, now)`.
-5. Capture the local library for upload with `captureAt`, stamped from row timestamps: podcasts (`subscribedAt`; user fields and overrides with the podcast's newest local change time), groups (`updatedAt`), members (`addedAt`), episodes with state (`episode_state.updatedAt`, `episode_position.updatedAt`), Up next (`addedAt`; server-only items appended in step 3 get fresh `orderKey`s and fresh clocks so every device adopts the merged order), the session (`play_session.updatedAt`), settings the account lacked (now).
+4. Record the server's field clocks in `sync_clock` for every record the merge applied or matched (the server's values that won now carry the server's clocks locally); set `sync_state.enabled = 1` (capture on), `cursor` = the last pulled cursor, `hlc = max(own, every clock seen, now)`.
+5. Capture for upload, with `captureAt`, only what the server lacks or what the local side won in step 3 (`RestoreMerger` reports both per field), stamped with the local row timestamps read **before** step 3 — step 3's own writes set `updatedAt` to now, and a value the server won is never re-stamped (that would be AntennaPod's flaw below): podcasts (`subscribedAt`; user fields and overrides with the podcast's newest local change time), groups (`updatedAt`), members (`addedAt`), episodes with state (`episode_state.updatedAt`, `episode_position.updatedAt`), Up next (`addedAt`; server-only items appended in step 3 get fresh `orderKey`s and fresh clocks so every device adopts the merged order), the session (`play_session.updatedAt`), settings the account lacked (now). Then write `linkedAt` (the step is complete; a crash before this re-runs it, [First-link choices](#first-link-choices)).
 6. Push in rounds of 1,000; the server's field merge keeps whichever side is newer.
 
 AntennaPod's first sync uploads every played episode stamped with the current time ([SyncService at 9c7ffa1](https://github.com/AntennaPod/AntennaPod/blob/9c7ffa16736c020045571d274aef4cdcf0878100/net/sync/service/src/main/java/de/danoeh/antennapod/net/sync/service/SyncService.java#L228-L248)), which flips later "unplayed" marks on other devices; stamping with row timestamps avoids that (risk SR2).
 
 ### Use the server's library on this device
 
-05's **Replace** with the server's records as the backup: local podcasts the server lacks are unsubscribed (D24), local-only groups deleted, state replaced, Up next and session replaced, settings replaced. The dialog first offers "Save a backup first" (05's backup flow). All local writes run with `applying = 1`; then `enabled = 1` with the pulled cursor. Nothing is pushed except later local changes.
+05's **Replace** with the server's records as the backup: local podcasts the server lacks are unsubscribed (D24), local-only groups deleted, state replaced, Up next and session replaced, settings replaced. The dialog first offers "Save a backup first" (05's backup flow). All local writes run with `applying = 1`; the server's field clocks go into `sync_clock` for every applied record, `hlc` is raised past every clock seen, then `enabled = 1` and `linkedAt` with the pulled cursor. Nothing is pushed except later local changes, which therefore order after the adopted state.
 
 ### Use this device's library everywhere
 
-1. `POST /api/v1/account/reset {confirm: "DELETE", mode: "library"}`: the server tombstones the account's live podcasts, groups, members and Up next items and clears the session with server clocks. Episode records (listening history) and settings stay and merge by timestamps.
-2. `enabled = 1`, then `captureAll` for every local podcast, group, member, Up next item, the session and every synced setting **with fresh clocks** (newer than the tombstones), and `captureAt` with row timestamps for episode state (history still merges by time).
-3. Push in rounds. Other devices receive the tombstones and the fresh records together; removals of podcasts and groups this device lacks are held by their mass-change guard.
+Upload first, prune last, so no device ever sees a wiped library and the order of clocks never decides whether this device's library survives:
+
+1. **Pull** every page into the staging file, as in [Merge](#merge) step 1, raising `hlc` past every clock received. Compute the effect (server podcasts and groups this device lacks) for the second confirmation, which can only be shown now ([First-link choices](#first-link-choices)).
+2. **Adopt IDs and merge history only:** local podcasts and groups matched by key or `nameKey` adopt the server's IDs ([Redirects on clients](#redirects-on-clients)); `episode` records of podcasts this device has run through `RestoreMerger`'s timestamp policy (listening history still merges by time, as 05's Replace for all devices promises); every other server record — podcasts, groups, members, Up next, session, settings — is not applied. All with `applying = 1`; the server's clocks of the merged episode records go into `sync_clock`.
+3. `enabled = 1`, `cursor` = the staged cursor; `t0` = a fresh `hlc` tick. `captureAll` for every local podcast, group, member, Up next item, the session and every synced setting (clocks ≥ `t0`), and `captureAt` with the pre-step-2 row timestamps for episode state the local side won.
+4. **Push** every round until the outbox is empty (the server's field merge makes this device's values win everywhere they are newer than `t0`, which is all of them).
+5. **Prune:** `POST /api/v1/account/reset {confirm: "DELETE", mode: "library", before: t0}` — the server removes every live `podcast`, `group`, `member` and `upnext` record whose newest clock is older than `t0` (whatever this device did not just upload and nobody changed since) and clears an older `session` ([Account and health endpoints](#account-and-health-endpoints)). Then write `linkedAt`.
+
+Other devices receive one consistent change set: the uploaded values and, after the prune, the removals of what this device lacks, which their mass-change guard holds when above the thresholds. A crash anywhere before step 5 leaves a merged library (nothing lost) and `LinkUnfinished`; re-running starts again at step 1. A record another device changes between steps 3 and 5 has a newer clock and survives the prune — the safe direction. Clocks cannot defeat it: `t0` comes from this device's HLC, raised past every clock of the step-1 snapshot, so every record that existed then and was not re-uploaded is older than `t0` however far another device's clock ran ahead, and the uploaded values are newer than every value they replace.
 
 ### Unlink and Delete my data
 
-- **Unlink this device:** `POST /api/v1/auth/logout` (best effort; offline unlinks still proceed), then locally: `enabled = 0`, delete the token, clear `sync_outbox`, `sync_clock`, `sync_parked`, `sync_held`, reset `sync_state` except `serverUrl` (kept for a quick re-link), cancel sync work, close SSE. The library stays exactly as it is. A device unlinked while offline stays in the server's device list until revoked from another device or the web page.
+- **Unlink this device:** when online, one round with a 5-s budget first pushes pending changes (so the last edits reach the other devices); then `POST /api/v1/auth/logout` (best effort; offline unlinks still proceed), then locally: `enabled = 0`, delete the token, clear `sync_outbox`, `sync_clock`, `sync_parked`, `sync_held`, reset `sync_state` except `serverUrl` (kept for a quick re-link), cancel sync work, close SSE. The library stays exactly as it is. A device unlinked while offline stays in the server's device list until revoked from another device or the web page.
 - **Revoke another device:** `DELETE /api/v1/devices/{id}`; that device gets `401` on its next call and shows `Revoked`.
 - **Delete my data on the server:** requires typing `DELETE`; `POST /api/v1/account/reset {mode: "purge"}` deletes every record and per-account backup ZIP and unlinks every device of the account (all tokens revoked); this device then unlinks locally. Other devices keep their libraries and show `Revoked`. The account itself remains (the administrator removes accounts, [Roles and accounts](#roles-and-accounts)).
 
@@ -1127,7 +1148,7 @@ AntennaPod's first sync uploads every played episode stamped with the current ti
 | Android install restored by Auto Backup or a manual restore | The database (with `sync_state` and the token) is never in a backup; `sync.server_url` and `sync.username` are portable, so `SyncStatus.Reconnect` shows "Reconnect to sync.example.org" and nothing is pushed before the user reconnects (R7.9). The old device entry stays until revoked or flagged stale after 180 days ([PO-38](../PLAN.md#48-further-product-owner-decisions)) |
 | Desktop data directory copied to another computer | The token's installation fingerprint no longer matches ([Token storage](#token-storage)) → `Reconnect`; the copy links as a new device |
 | Server address changes (new domain) | Unlink and link again; Merge converges without data loss |
-| Server restored from a backup | Cursor epoch rotated → `410` on every device → full resync in Merge mode, which re-uploads changes the restored server lost ([Backups](#backups)) |
+| Server restored from a backup | Cursor epoch rotated → `410` on every device → full resync, whose re-assert step re-uploads, with their original clocks, the changes and removals the restored server lost ([Cursor semantics and resync](#cursor-semantics-and-resync), [Backups](#backups)) |
 
 ---
 
@@ -1143,9 +1164,9 @@ Serves R7.9, R1.7, R1.8, R3.4, N1. Delivered in MS2. Honours [D23](../PLAN.md#3-
 | Auto Backup and first-launch restore (Android) | The token, `sync_state` and the other `sync_*` tables never travel (the database is not backed up, [D34](../PLAN.md#3-key-decisions)); `sync.server_url` and `sync.username` do, hence the "Reconnect" banner; nothing is pushed before reconnecting |
 | OPML, NewPipe, LibreTube and Takeout imports | Captured like any local change (podcasts, groups, memberships); 300 feeds are one or two rounds |
 | Episode retention and stub cleanup | Never propagate (`applying = 1`); the server's GC keeps what matters ([Garbage collection and retention](#garbage-collection-and-retention)) |
-| Unsubscribe | Propagates as a tombstone, guarded by the mass-change rule on receivers; history kept on the server 180 days |
+| Unsubscribe | Propagates as a tombstone, guarded by the mass-change rule on receivers; the server removes the podcast's Up next items and keeps its history and memberships 180 days, so a re-subscription restores them ([Same podcast on two devices](#same-podcast-on-two-devices)) |
 | Feed moves and merges | [Feed moves](#feed-moves); merges are server-arbitrated |
-| Delete group with undo | The push debounce covers the 10-s undo on Android; on the desktop the undo re-creates the group with newer clocks ([Tombstones and retention](#tombstones-and-retention)) |
+| Delete group with undo | The outbox holds a group deletion back for 10 s on both platforms, so an undo never leaves the device ([Tombstones and retention](#tombstones-and-retention)) |
 | YouTube channels | The same records (`sourceType = YOUTUBE_CHANNEL`, `youtubeChannelId`, `youtubeVariants`); a device in external mode keeps YouTube Up next items and sessions greyed and never projects them ([06 Queue and play context](06-playback.md#queue-and-play-context)); the engine and its settings are device-local |
 | Downloads | Never synced; a podcast added by sync gets `initialFetch = 1`, so no notifications and no auto-download storm ([D66](../PLAN.md#3-key-decisions), [D67](../PLAN.md#3-key-decisions)); `downloadDismissedAt` stays local |
 | LAN feeds | The desktop may subscribe to a LAN feed; on Android it syncs as a subscription whose refresh shows `LocalNetworkUnsupported` ([D28](../PLAN.md#3-key-decisions)) |
@@ -1183,7 +1204,7 @@ Serves R7.8, N5, N8, N9, N13. Delivered in M0b (skeleton: `serve`, health, disco
 
 ### Ktor setup
 
-Ktor 3.6.0 with the CIO engine, `embeddedServer(CIO, host, port)`; every artefact Apache-2.0 ([Ktor licence](https://github.com/ktorio/ktor/blob/main/LICENSE)). Logging through slf4j-api with slf4j-simple (MIT); logback (EPL-2.0/LGPL-2.1) is banned by `verifyDependencyPolicy` because the Ktor project generator defaults to it.
+Ktor 3.6.0 with the CIO engine, `embeddedServer(CIO, host, port)` with `connectionIdleTimeoutSeconds = 180` ([server engines](https://ktor.io/docs/server-engines.html); a connection is idle only while no request runs, so open SSE streams are unaffected): longer than Caddy's 2-min upstream keep-alive ([reverse_proxy `keepalive`](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)), so the proxy never reuses a connection the server is just closing — a race that would turn a `POST /api/v1/sync` into a `502` (Unverified: CIO's own default, 45 s in Ktor's example). Every artefact is Apache-2.0 ([Ktor licence](https://github.com/ktorio/ktor/blob/main/LICENSE)). Logging through slf4j-api with slf4j-simple (MIT); logback (EPL-2.0/LGPL-2.1) is banned by `verifyDependencyPolicy` because the Ktor project generator defaults to it.
 
 | Plugin (artifact) | Use |
 |---|---|
@@ -1211,7 +1232,7 @@ Ktor's XForwardedHeaders plugin is not installed: it offers no check of the imme
 
 ### Storage
 
-`SyncStore` hides SQL from routes; `SqliteSyncStore` uses sqlite-jdbc 3.53.4.0 ([xerial/sqlite-jdbc](https://github.com/xerial/sqlite-jdbc), Apache-2.0, natives for Linux x86-64 and aarch64 among others) and plain JDBC, with SQL kept to the subset that SQLite ≥ 3.35 and PostgreSQL ≥ 13 share (`INSERT … ON CONFLICT … DO UPDATE`, [SQLite UPSERT](https://www.sqlite.org/lang_upsert.html); `RETURNING`, [SQLite RETURNING](https://www.sqlite.org/lang_returning.html)), so a PostgreSQL store stays possible on demand (v1.x, M16). Connection settings: `journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 5000`; one write connection behind the writer dispatcher, four read connections. Database file `<data>/neutrodyne-server.db`.
+`SyncStore` hides SQL from routes; `SqliteSyncStore` uses sqlite-jdbc 3.53.4.0 ([xerial/sqlite-jdbc](https://github.com/xerial/sqlite-jdbc), Apache-2.0, natives for Linux x86-64 and aarch64 among others) and plain JDBC, with SQL kept to the subset that SQLite ≥ 3.35 and PostgreSQL ≥ 13 share (`INSERT … ON CONFLICT … DO UPDATE`, [SQLite UPSERT](https://www.sqlite.org/lang_upsert.html); `RETURNING`, [SQLite RETURNING](https://www.sqlite.org/lang_returning.html)), so a PostgreSQL store stays possible on demand (v1.x, M16). Connection settings: `journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 5000`; one write connection behind the writer dispatcher, four read connections. Database file `<data>/neutrodyne-server.db`; `PRAGMA auto_vacuum = INCREMENTAL` is set by `Migrator` before the first table exists (SQLite ignores a later change without a full `VACUUM`, [PRAGMA auto_vacuum](https://www.sqlite.org/pragma.html#pragma_auto_vacuum)), so GC's `incremental_vacuum` works. sqlite-jdbc extracts its native library to `org.sqlite.tmpdir` (default `java.io.tmpdir`, [loader](https://github.com/xerial/sqlite-jdbc/blob/master/src/main/java/org/sqlite/SQLiteJDBCLoader.java)); `ServerConfig` sets it to `<data>/native` (`0700`) before the first connection unless the administrator set it, because systemd's `PrivateTmp` inherits a host `/tmp` that may be `noexec` and Docker mounts `tmpfs` `noexec` by default ([Container image](#container-image)).
 
 ```sql
 -- schema version 1 (sync/server/src/main/resources/db/001-initial.sql)
@@ -1229,7 +1250,7 @@ CREATE TABLE account (
   created_at INTEGER NOT NULL, disabled_at INTEGER
 );
 CREATE TABLE device (
-  id TEXT PRIMARY KEY,                          -- client-generated UUIDv4
+  id TEXT PRIMARY KEY,                          -- client-generated UUIDv4; a taken ID is refused (400 invalid), the client draws a new one
   account_id INTEGER NOT NULL REFERENCES account(id) ON DELETE CASCADE,
   name TEXT NOT NULL, platform TEXT NOT NULL,   -- android | windows | macos | linux | gpodder
   app_version TEXT, node_id TEXT NOT NULL,      -- 16 hex
@@ -1266,7 +1287,7 @@ CREATE TABLE record (
   updated_at INTEGER NOT NULL,                  -- server ms of the last change (GC)
   PRIMARY KEY (account_id, coll, rid)
 );
-CREATE INDEX record_seq ON record (account_id, seq);
+CREATE UNIQUE INDEX record_seq ON record (account_id, seq);   -- one record per seq: pages never split a seq
 CREATE INDEX record_gc ON record (account_id, dead, updated_at);
 CREATE TABLE podcast_key (
   account_id INTEGER NOT NULL, feed_key TEXT NOT NULL, podcast_rid TEXT NOT NULL,
@@ -1295,16 +1316,20 @@ Episode records hold about 200–300 bytes each (Unverified estimate): 50,000 pl
 2. `rekey` → `PodcastDeduper.rekey(old, new)`: merge the old record into the new one (field rules), mark the old one dead with `mergedInto`, do the same for the `upnext` record with the same ID; result `merged`.
 3. Load the stored record; follow `merged_into` (≤ 8 hops); a redirected change merges into the survivor and reports `merged` with `mergedInto`.
 4. `RecordMerger.merge(stored, incoming)`; nothing advanced → `stale` or idempotent `applied` without a new `seq`.
-5. Advanced → `UPDATE account SET seq = seq + 1 WHERE id = ? RETURNING seq`; `INSERT … ON CONFLICT (account_id, coll, rid) DO UPDATE` with the merged `data`, `max_hlc`, `dead`, `seq`, `by_device`, `updated_at`.
-6. `podcast` and `group` records: maintain `podcast_key` (`feedKeys` ∪ `forIdentity(feedUrl)`, `live`, `dead_at`) and `group_name` (`GroupNames` of the merged name, live groups only), and run [Dedupe and merges on the server](#dedupe-and-merges-on-the-server); every record those merges touch gets its own `seq`.
-7. After the loop: read the response records ([Sync round trip](#sync-round-trip)); set `device.last_cursor` to the request's `since` (the device has applied everything up to it) and `last_seen_at` (at most once per minute); commit; then `EventBus.publish(account, cursor, device)` when any `seq` advanced.
+5. Advanced → `UPDATE account SET seq = seq + 1 WHERE id = ? RETURNING seq`; `INSERT … ON CONFLICT (account_id, coll, rid) DO UPDATE` with the merged `data`, `max_hlc`, `dead`, `seq`, `by_device`, `updated_at`; the account's server `HlcClock` observes every admitted clock ([Hybrid logical clocks](#hybrid-logical-clocks)).
+6. `podcast` and `group` records: maintain `podcast_key` (`feedKeys` ∪ `forIdentity(feedUrl)`, `live`, `dead_at`) and `group_name` (`GroupNames` of the merged name, live groups only), and run [Dedupe and merges on the server](#dedupe-and-merges-on-the-server); every record those merges touch gets its own `seq`. Life-cycle side effects, each stamped with the server clock and given its own `seq`:
+   - a podcast that becomes dead by `subscribed = false` gets `in = false` on every live `upnext` record of its episodes (devices drop those items by cascade, and a later re-subscription must not refill Up next); its `episode` and `member` records stay, so a revival restores history and group membership;
+   - a podcast or group that becomes live again (a revival, or a newer `subscribed = true` / `deleted = false`, for example "Keep mine") gets a fresh `seq` on its live `episode` and `member` records (podcast) or its live `member` records (group), so devices that dropped them receive them again. Members are found by the `p` half of their `rid` (`substr(rid, 37)`), a scan of the account's few hundred member records.
+7. After the loop: read the response records ([Sync round trip](#sync-round-trip)); set `device.last_cursor` to the request's `since` (the device has applied everything up to it) and `last_seen_at` (at most once per minute); commit; then `EventBus.publish(account, cursor, device)` when any `seq` advanced. `GET /api/v1/changes` updates `last_cursor` and `last_seen_at` the same way from its `since`.
+
+No write transaction suspends or performs I/O other than the database: the request body is decoded and validated before the transaction starts, and the response is encoded after it commits, so the single writer is never held by a slow client.
 
 ### Dedupe and merges on the server
 
 ```mermaid
 flowchart TD
   A["podcast change merged"] --> B{"live after the merge?"}
-  B -- no --> Z["mark keys dead, keep 180 days"]
+  B -- no --> Z["mark keys dead, remove its Up next items, keep history 180 days"]
   B -- yes --> C{"a key owned by another podcast?"}
   C -- "no" --> D["index keys as live"]
   C -- "live owner" --> E["SurvivorRule: smaller subscribedAt, then syncId"]
@@ -1312,7 +1337,7 @@ flowchart TD
   E --> G["loser: dead, mergedInto survivor, fields merged into survivor"]
   F --> G
   G --> H["re-key loser episode, upnext, member records to the survivor"]
-  H --> I["re-sequence survivor history after a revival"]
+  H --> I["after a revival: subscribed true on the server clock, re-sequence episode and member records"]
 ```
 
 - Group names: after a `group` change, if another live group has the same `nameKey`, `SurvivorRule.group` decides; the loser's `member` records are re-keyed to the survivor (union) and the loser becomes `deleted` with `mergedInto`.
@@ -1326,6 +1351,7 @@ flowchart TD
 | Records | Kept | Purge condition |
 |---|---|---|
 | Dead `podcast`, `group`, `member`, `upnext` (tombstoned or merged) | 365 days after death | and `seq` ≤ the smallest `last_cursor` of the account's devices seen in the last 180 days |
+| Live `member` records whose podcast or group record is dead | purged together with that dead record | same `seq` rule |
 | `episode` records of podcasts unsubscribed for more than 180 days | 180 days | same `seq` rule |
 | `episode` records with no information (unplayed, position 0, not favourite, not in Up next) | 30 days after their last change | same `seq` rule |
 | Played, favourite or in-progress `episode` records of live podcasts | forever | — |
@@ -1342,7 +1368,7 @@ Every purge raises `account.min_cursor` to the highest purged `seq`, so only a d
 
 - **Server database:** `BackupJob` runs nightly at `backup.time` (default 03:30 server local time) `VACUUM INTO '<data>/backups/neutrodyne-server-YYYY-MM-DD.db'` ([SQLite VACUUM INTO](https://www.sqlite.org/lang_vacuum.html): a consistent copy of a live database), keeps 7, and records the result for the status page and `/metrics`. The CLI's `backup <file>` does the same on demand. Every migration is preceded by `neutrodyne-server-pre-migration-v{from}-{yyyyMMddHHmm}.db` (kept until the next successful nightly backup after 7 days).
 - **Per account:** `AccountBackupWriter` writes a Neutrodyne backup ZIP (05 format v1: `manifest.json` with `app.abi = "server"`, `library.json`, `episodes.jsonl`, `queue.json`, `settings.json`, `subscriptions.opml` through `:feeds`' `OpmlWriter`) to `<data>/account-backups/<accountId>/neutrodyne-backup-YYYY-MM-DD.zip`, keeps 14, and serves the latest through the web UI's "Download my data" and `GET /api/v1/account/export`. Feed passwords are never included. The app restores it like any backup, so a user can recover even if the server is gone.
-- **Restore (`restore <file>`, server stopped):** checks `PRAGMA integrity_check` and `schema_version ≤` supported, moves the current database to `neutrodyne-server-replaced-<ts>.db`, installs the copy and **rotates every account's `epoch`**. Every device then gets `410` and resyncs in Merge mode, re-uploading what the restored copy lacks.
+- **Restore (`restore <file>`, server stopped):** checks `PRAGMA integrity_check` and `schema_version ≤` supported, moves the current database to `neutrodyne-server-replaced-<ts>.db`, installs the copy and **rotates every account's `epoch`**. Every device then gets `410` and resyncs, re-asserting with their original clocks the changes the restored copy lacks ([Cursor semantics and resync](#cursor-semantics-and-resync)).
 
 ### Event bus and SSE
 
@@ -1357,7 +1383,7 @@ Server-rendered HTML through kotlinx.html; no JavaScript; English only (N10); ev
 | `/setup` | anyone holding the setup code, only while no admin exists | create the first admin (username, optional password) |
 | `/` | anyone | sign in with a password, or "Sign in with a code from the app" (a `web` link request: the page shows a code, approved with "Link another device" in a linked app; the page refreshes with `<meta http-equiv="refresh" content="5">` until approved) |
 | `/link` | user | "Approve a device": enter a code, check the device name, confirm or deny |
-| `/devices` | user | devices with platform, app version, last seen, stale flag; rename, revoke |
+| `/devices` | user | devices with platform, app version, last seen, stale flag; rename, revoke; open web sessions (browser, last used) with sign-out |
 | `/library` | user | read-only counts, subscriptions (titles, never URLs), groups, last sync |
 | `/account` | user | download my data (latest per-account ZIP), set or change the password, delete my data (typed confirmation) |
 | `/admin/accounts` | admin | create, disable, enable, delete accounts; create invites (shown once); reset a password by invite |
@@ -1367,7 +1393,7 @@ A red banner "This server is not using HTTPS" appears on every page in insecure 
 
 ### CLI
 
-`java -jar neutrodyne-server-{v}.jar <command>` (in the container: `docker compose exec neutrodyne-server java -jar /app/neutrodyne-server.jar <command>`). Commands open the database directly and must run as the server's user ([Deployment](#deployment)).
+`java -jar neutrodyne-server-{v}.jar <command>` (in the container, which has no shell: `docker compose exec neutrodyne-server /usr/bin/java -jar /app/neutrodyne-server.jar <command>`; `restore` needs the server stopped, so it runs as `docker compose run --rm neutrodyne-server restore <file>` with the service down). Commands open the database directly and must run as the server's user ([Deployment](#deployment)).
 
 | Command | Effect |
 |---|---|
@@ -1432,13 +1458,14 @@ When the database has no admin, `SetupService` creates a one-time **setup code**
 | `deviceCode` | 32 random bytes, base64url; stored only as SHA-256 |
 | Validity | 10 min (`expiresIn: 600`) |
 | Polling | `interval: 5` s; a poll sooner than the interval answers `slow_down` and adds 5 s to the stored interval (RFC 8628 §3.5) |
-| Approval attempts | at most 5 `approve` look-ups per code (then the code is invalid: `expired_token` for the poller); at most 10 failed code entries per approving account per 15 min |
-| Approval | requires an authenticated device or web session; `approve` returns the requesting device's name, platform and app version, and only `confirm` with `approve = true` links (against consent phishing with a code someone else generated); `approve = false` ends the request (`access_denied`) |
+| Approval attempts | at most 5 failed code entries per approving account per 15 min (the `link-approve` limiter; 08's "Too many attempts") and at most 5 `approve` look-ups per code (then the code is invalid: `expired_token` for the poller) — the "5 approval attempts" of N13 |
+| Pending requests | at most 1,000 unexpired link requests server-wide and 20 `link/start` calls per IP per hour; beyond → `429` (table bloat and code-space exhaustion) |
+| Approval | requires an authenticated device or web session; `approve` returns the requesting device's name, platform, app version, purpose (`device`, or `web` for a browser sign-in) and `sameNetwork` (whether `link/start` came from the approver's client IP), and only `confirm` with `approve = true` links (against consent phishing with a code someone else generated, [RFC 8628 §5.4](https://www.rfc-editor.org/rfc/rfc8628#section-5.4)); `approve = false` ends the request (`access_denied`). 08's sheet says what approval grants ("gets your whole library" / "signs a browser in to your account") and warns "Requested from a different network — only approve a device you are holding" when `sameNetwork` is false |
 | Result | a `device` row (or, for `purpose = 'web'`, a web session) in the approver's account, and a token for the poller |
 
 ### Passwords
 
-Optional per account (for the web UI and password login). `PasswordHasher` uses Argon2id from Bouncy Castle `bcprov-jdk18on` 1.86 (MIT, [licence](https://www.bouncycastle.org/about/license/); `Argon2BytesGenerator`) with OWASP's minimum `m = 19 MiB, t = 2, p = 1` ([OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)), a 16-byte salt and a 32-byte hash in PHC string form; at most two hashes run concurrently (memory bound on a Pi). Unknown users are hashed against a dummy record so timing does not reveal account names; errors are generic ("Wrong username or password"). Minimum length 10, maximum 256, no composition rules. argon2-jvm (LGPL-3.0) is banned.
+Optional per account (for the web UI and password login). `PasswordHasher` uses Argon2id from Bouncy Castle `bcprov-jdk18on` 1.86 (MIT, [licence](https://www.bouncycastle.org/about/license/); `Argon2BytesGenerator`) with OWASP's minimum `m = 19 MiB, t = 2, p = 1` ([OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)), a 16-byte salt and a 32-byte hash in PHC string form; at most two hashes run concurrently (memory bound on a Pi). Unknown users are hashed against a dummy record so timing does not reveal account names; errors are generic ("Wrong username or password"). Minimum length 10, maximum 256, no composition rules. Changing an existing password requires the current one, so a web session obtained by a phished code cannot lock the owner out; setting a first password is audit-logged, and web sessions appear on `/devices` with a revoke button like devices. Two concurrent hashes take about 38 MiB of the 96 MiB heap, which is why the limit is two. argon2-jvm (LGPL-3.0) is banned.
 
 ### Tokens
 
@@ -1469,8 +1496,8 @@ Ktor RateLimit token buckets, keyed by the client IP from `ClientAddress` and wh
 |---|---|---|
 | `login` (password login, invite redemption, web sign-in, setup) | 10 per 15 min | IP + username (or IP) |
 | `link-start` | 20 per hour | IP |
-| `link-approve` | 10 failed look-ups per 15 min | account |
-| `sync` (`/sync`, `/changes`) | 60 per min | account; 120 per min per IP |
+| `link-approve` | 5 failed code entries per 15 min | account |
+| `sync` (`/sync`, `/changes`) | 300 per min per account; 600 per min per IP (each request is capped at 1,000 changes or records, and a 50,000-record first link needs about 100 calls, so a 60-per-minute limit would stretch PB30's upload and every first link by minutes) | account; IP |
 | `account` (devices, logout, reset, summary) | 30 per min | account |
 | `export` | 6 per hour | account |
 | `public` (discovery) | 60 per min | IP |
@@ -1526,7 +1553,7 @@ WantedBy=multi-user.target
 
 - `DynamicUser=yes` puts the state directory under `/var/lib/private/` behind a symlink and implies `ProtectSystem=strict` and `NoNewPrivileges` ([systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)). `MemoryDenyWriteExecute` is deliberately absent (the JVM's JIT needs writable executable memory).
 - A web server (Caddy or nginx) on the same host terminates TLS and proxies to `127.0.0.1:8787` ([Reverse proxy with Caddy](#reverse-proxy-with-caddy), [nginx](#nginx)).
-- Account administration normally happens in the web UI. CLI commands must run as the service's user; with `DynamicUser` that is `sudo systemd-run --pty --wait -p DynamicUser=yes -p User=neutrodyne-server -p StateDirectory=neutrodyne-server -E NEUTRODYNE_SERVER_DATA=/var/lib/neutrodyne-server /usr/bin/java -jar /opt/neutrodyne-server/neutrodyne-server.jar user list`. Unverified: that a transient unit with the same `User=` shares the running service's dynamic UID (checked in MS1; the fallback is a static user created by a `sysusers.d` snippet, for which systemd uses the static user instead of allocating one, [Open questions](#open-questions) 3).
+- Account administration normally happens in the web UI. CLI commands must run as the service's user; with `DynamicUser` that is `sudo systemd-run --pty --wait -p DynamicUser=yes -p User=neutrodyne-server -p StateDirectory=neutrodyne-server -E NEUTRODYNE_SERVER_DATA=/var/lib/neutrodyne-server /usr/bin/java -jar /opt/neutrodyne-server/neutrodyne-server.jar user list`. systemd keeps one dynamic user per name, shared by every unit that names it while any of them runs ([`dynamic-user.c`](https://github.com/systemd/systemd/blob/main/src/core/dynamic-user.c)), and derives its UID from a hash of the name, so the transient unit gets the service's UID and the state directory's ownership does not change; MS1 still runs the command against a live service. A static user created by a `sysusers.d` snippet also works (systemd then uses it, [systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)), with `sudo -u neutrodyne-server` for the CLI.
 
 ### Container image
 
@@ -1601,7 +1628,7 @@ sync.example.org {
 }
 ```
 
-Caddy obtains certificates automatically ([Automatic HTTPS](https://caddyserver.com/docs/automatic-https)), adds `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host`, and flushes `text/event-stream` responses immediately ([reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)), so SSE needs no extra configuration. The server's port is not published; only Caddy is reachable. `tmpfs: [/tmp]` gives the JVM and sqlite-jdbc (which extracts its native library to the temporary directory) a writable `/tmp` on the read-only root; Docker's tmpfs default allows execution ([tmpfs mounts](https://docs.docker.com/engine/storage/tmpfs/)).
+Caddy obtains certificates automatically ([Automatic HTTPS](https://caddyserver.com/docs/automatic-https)), adds `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host`, and flushes `text/event-stream` responses immediately ([reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)), so SSE needs no extra configuration. The server's port is not published; only Caddy is reachable. `tmpfs: [/tmp]` gives the JVM a writable `/tmp` on the read-only root. Docker mounts such a tmpfs `noexec,nosuid,nodev` unless `exec` is given ([moby `oci_linux.go`](https://github.com/moby/moby/blob/master/daemon/oci_linux.go)), so sqlite-jdbc's native library is extracted to `/data/native` instead ([Storage](#storage)); the named volume is mounted without `noexec`. `server-image-smoke` (09) runs exactly this file, so a library that cannot load fails the nightly job.
 
 ### nginx
 
@@ -1656,7 +1683,7 @@ Precedence: command-line flag > environment > `server.properties` (`--config`) >
 
 ### Raspberry Pi
 
-Supported: 64-bit OS on Raspberry Pi 3, 4, 5 and Zero 2 W (arm64), the JAR on Java 21+ or the `linux/arm64` image. Raspberry Pi OS based on Debian 12 ships only Java 17 ([Debian packages](https://packages.debian.org/bookworm/openjdk-17-jre-headless)), so Pi users install Temurin 21+ or use the image (Unverified: the default Java of Debian 13-based Raspberry Pi OS). 32-bit Raspberry Pi OS is not supported (R7.8 names x86-64 and arm64). Budgets and flags: [Performance and footprint](#performance-and-footprint), S16.
+Supported: 64-bit OS on Raspberry Pi 3, 4, 5 and Zero 2 W (arm64), the JAR on Java 21+ or the `linux/arm64` image. The current Raspberry Pi OS is based on Debian 13 (released 2025-10-02, [announcement coverage](https://linuxiac.com/raspberry-pi-os-based-on-debian-13-now-available-for-download/)), which packages Java 21 (`apt install openjdk-21-jre-headless`, [Debian trixie](https://packages.debian.org/trixie/openjdk-21-jre-headless)); the older Debian 12-based release ships only Java 17 ([Debian bookworm](https://packages.debian.org/bookworm/openjdk-17-jre-headless)), so its users install Temurin 21+ or use the image. Unverified until S16: the Zero 2 W (512 MB) runs the server with room for little else. 32-bit Raspberry Pi OS is not supported (R7.8 names x86-64 and arm64). Budgets and flags: [Performance and footprint](#performance-and-footprint), S16.
 
 ### Upgrades and migrations
 
@@ -1694,7 +1721,8 @@ Serves N13, N3, N9. Delivered in MS1 (server), MS2 (clients), M11b (review and n
 | Listening history, private feed URLs, shared feed passwords on the server | An internet attacker against a self-hosted server (credential stuffing, token guessing, request bombs, exploits) | TLS at the proxy and refusal of public plain HTTP; 256-bit hashed tokens; no device passwords; rate limits; input and decompression caps; strict CSP and CSRF; unprivileged sandboxed process; no outbound requests; audit log (risk SR5) |
 | Same | The server's operator | Out of scope by design: the operator is the user or someone they trust; no end-to-end encryption in v1, disclosed before linking (risk SR6) |
 | A device token | A stolen or lost phone or laptop; a malicious APK signed with the public key ([risk P10](../PLAN.md#8-risks-and-mitigations)) | Per-device revocation from any device or the web page; Android Keystore encryption; DPAPI or a `0600` file on the desktop; tokens never logged |
-| Account linking | Consent phishing (a user approves an attacker's code) | Approval shows the device name, platform and version and needs a second confirmation; codes expire in 10 min; 5 look-ups per code |
+| Account linking | Consent phishing (a user approves an attacker's code, [RFC 8628 §5.4](https://www.rfc-editor.org/rfc/rfc8628#section-5.4)); guessing another user's pending code | Approval shows the device name, platform, version and purpose, warns when the request came from another network, and needs a second confirmation; codes expire in 10 min; 5 look-ups per code and 5 failed entries per account per 15 min against 20^8 codes; the new device shows the account name before uploading anything ([First-link choices](#first-link-choices)) |
+| A device token (abuse) | A stolen token used before it is revoked | It can read and change the library and purge it ("Delete my data" needs only the typed confirmation): other devices keep their libraries and can re-upload through a new link with Merge; revocation from any device or the web page ends it; the audit log records resets and purges |
 | Client integrity | A malicious or compromised server sending hostile data | Clients treat server data as untrusted (N9): typed decoding, caps, URL scheme checks, `GroupNames` and setting validators, unknown collections ignored, the mass-change guard, the position-zero guard; the server can never make a client start playback, fetch an unusual URL scheme or write outside the database |
 | Other accounts | A user of the same server | Every query scoped by the token's account; record IDs are per account |
 | The local network | Insecure LAN mode | Opt-in on both sides; plain HTTP only to local addresses; warnings |
@@ -1815,13 +1843,16 @@ S14 plus MS2, in `desktopTest` with the bundled SQLite driver and a subset as An
 | `OutboxReaderTest`, `ChangeBuilderTest` | batching by record, `*` expansion, current-value snapshot, literal values, deletion of acknowledged rows only up to the pushed clock |
 | `SyncApplierTest` | idempotent re-application; field-by-field clock comparison against `sync_clock` and pending rows; collection order; stubs only for in-progress, favourite and queued; parked records released by `afterIngest`; redirects; no capture while applying |
 | `EpisodeStateRulesTest` | every row of [Episode-state rules](#episode-state-rules) |
-| `FirstLinkMergerTest` | 05's rules table with the timestamp policy, the June-played versus October-unplayed case (MS2 acceptance 3), ID adoption, Up next order, settings precedence |
-| `MassChangeGuardTest` | thresholds (10 podcasts, 20 %, 3 groups) with the boundary values, staging across pages, Apply, Keep mine, Decide later, deferral while playing |
+| `FirstLinkMergerTest` | 05's rules table with the timestamp policy, the June-played versus October-unplayed case (MS2 acceptance 3), ID adoption, Up next order, settings precedence; values the server won are not captured; "Use the server's library" fills `sync_clock`; "Use this device's library everywhere" uploads before it prunes and survives a crash between the two; `resync()` re-asserts with stored clocks, removals included |
+| `MassChangeGuardTest` | thresholds (10 podcasts, 20 %, 3 groups) with the boundary values, staging across pages, member and Up next removals staged with their podcast or group, Apply, Keep mine (memberships and Up next restored), Decide later, deferral while playing, a provisional row left by a dead round |
+| `UndoHoldBackTest` | a group deletion and its member removals stay in the outbox for 10 s; an undo inside the window leaves nothing to push; after 10 s they are pushed |
 | `SessionAdopterTest` | adoption only when not playing, the offer's conditions, context mapping, `generation` bump |
 | `SettingsCaptureTest` | capture, reconcile after a lost event, the switch off and on |
 | `OrderKeyTest` | `between`, jitter, no trailing `0`, `BINARY` collation order in SQLite, rewrite beyond 64 characters (MS0 acceptance 4) |
 | `HlcTest` | packing, wire round trip, tick, receive, offset correction, clamping |
-| `LocalNetworkPermissionGateTest` (Robolectric) | classification of addresses, API levels, guard bypass only for `SYNC` |
+| `LocalNetworkPermissionGateTest` (Robolectric) | classification of addresses before the first request, API levels, re-classification per round (split-horizon DNS), guard bypass only for `SYNC` |
+| `SyncTokenStoreTest` | the token only in `SecretStore` under `sync:<host>`; the desktop fingerprint mismatch (copied data directory) yields `Reconnect`; the token never in logs, diagnostics or backups |
+| `SyncScenarioTest` | the scripted rows of [Data-loss scenarios](#data-loss-scenarios) |
 
 ### Server black-box tests
 
@@ -1830,13 +1861,51 @@ S14 plus MS2, in `desktopTest` with the bundled SQLite driver and a subset as An
 - authentication: setup code, invite redemption, link start/approve/confirm/token with `authorization_pending`, `slow_down`, `expired_token`, `access_denied`, look-up limit, password login (timing-safe failure), logout, device revocation closing SSE, web sessions, CSRF rejection, security headers;
 - sync: merge statuses, `stale` records returned, dedupe by feed key, revival with re-sequencing, group merges, rekey, quota, clock skew, cursor paging and `hasMore`, `410` on `min_cursor` and epoch change;
 - guards: 2 MiB / 16 MiB / 1,000-change / depth / string caps, gzip bombs, `415`, `421`, `426`, rate limits with `Retry-After`;
-- jobs: GC with the device-cursor rule and `min_cursor`, nightly backup and per-account ZIP (the ZIP restored by 05's `BackupCodec`), migrations with the pre-migration backup, refusal of a newer schema, `restore` rotating epochs;
+- jobs: GC with the device-cursor rule and `min_cursor` (including live members of dead podcasts), nightly backup and per-account ZIP (the ZIP restored by 05's `BackupCodec`), migrations with the pre-migration backup, refusal of a newer schema, `restore` rotating epochs;
+- server clock and life cycle: the library reset with `before`, revival and "Keep mine" against stored clocks 4 min ahead, Up next removal on a podcast's death, re-sequencing on revival, `stale` extras outside the page budget, `last_cursor` from `/changes`;
 - `LogRedactionTest`: no token, code (except the setup banner), password, feed URL or payload in any log line across the suite;
 - `HealthCheckTest`, `ListenRuleTest` (M0b acceptance 16).
 
 ### Cross-device journey
 
 E12 / `CrossDeviceSyncTest` (09 owns the journey; nightly and in M11b): an Android emulator (API 36) and a desktop JVM (headless app graph) against a server from the release JAR; random offline edits to subscriptions, groups, order, played state, positions, favourites and Up next converge (MS2 acceptance 2); a desktop pause resumes on Android within 1 s of the next sync through "Continue on this device" (R8.5); unsubscribing 11 of 50 podcasts is held (MS2 acceptance 4); propagation with both apps in the foreground ≤ 10 s (PB31, MS3 acceptance 1). M11b acceptance 14 adds the manual checklist with a phone, a desktop on each OS and a server.
+
+### Data-loss scenarios
+
+Each scenario is a test; the property test generates the first four at random, the others are scripted (`SyncScenarioTest`, `:sync:impl` `desktopTest` against `InMemorySyncServer`, and the server suite where marked).
+
+| Scenario | Rule that prevents loss | Test |
+|---|---|---|
+| Two devices offline edit the same episode: A marks played, B keeps listening later | Episode-state rules: the newer listening position wins over the older mark; B's position never becomes 0 | `SyncConvergenceTest`, `EpisodeStateRulesTest` |
+| Two devices offline subscribe to the same feed, or create "News" | Server merge by feed key or `nameKey`; local `SurvivorRule` when the collision arrives first | `SyncConvergenceTest`, server `sync` suite |
+| A device clock 4 min ahead, another 4 min behind | HLC receive rule, 5-min admission bound, offset correction above 120 s, server clock for server writes | `SyncConvergenceTest` (±4 min), `HlcTest` |
+| A device's clock jumps 1 h ahead, then is corrected | Rejected `clock_skew`, offset correction, clamp and re-stamp of pending rows | `HlcTest`, server `sync` suite |
+| Remote unsubscribe of 11 podcasts while this device was offline, then "Keep mine" | Mass-change guard stages podcasts with their memberships and Up next; Keep mine re-captures all three with fresh clocks; the server re-sequences history | `MassChangeGuardTest`, `CrossDeviceSyncTest` |
+| Group deleted and undone within 10 s | Outbox hold-back of the deletion | `UndoHoldBackTest` |
+| The playing podcast is unsubscribed elsewhere | Removal deferred while playing; `onRemoteMarkedPlayed`-style no-touch rule | `MassChangeGuardTest`, 06's `SessionPlayerTest` |
+| Restore a backup while linked (Merge, Replace this device, Replace everywhere) | `captureAt` with backup timestamps; unlink first; upload-then-prune | 05's `RestoreWhileLinkedTest`, `FirstLinkMergerTest` |
+| Android Auto Backup restore, or a copied desktop data directory | No token or `sync_state` travels; installation fingerprint; `Reconnect` | `SyncTokenStoreTest`, `RestoreWhileLinkedTest` |
+| Server restored from last night's backup | Epoch rotation → `410` → resync re-asserts with stored clocks, removals included | `FirstLinkMergerTest` (`resync()`), server `jobs` suite, `CrossDeviceSyncTest` nightly variant |
+| Feed moves on one device while another is offline; a local merge after a move | `feedUrl` LWW plus `feedKeys` union; the local merge is pushed as a move, never as an unsubscribe | `SyncConvergenceTest`, `SyncApplierTest` |
+| Episode key version or GUID rewrite between app versions | Match hints, `rekey`, parking until ingest | `SyncApplierTest`, server `sync` suite |
+| Process death mid-round, mid-merge or mid-reset | Outbox until acknowledged; page transactions; provisional `sync_held` rows; `LinkUnfinished` re-runs | `SyncApplierTest`, `FirstLinkMergerTest` |
+| A hostile or too-new record in a page | Skipped and counted; the cursor advances | `SyncApplierTest`, 09's untrusted-input suite |
+
+### Acceptance mapping
+
+| PLAN criterion | Evidence here |
+|---|---|
+| M0 AC16 | `ListenRuleTest`, `HealthCheckTest`, Licensee and the logback ban ([Server black-box tests](#server-black-box-tests)) |
+| M1 AC11 | `SyncInertTest` |
+| MS0 AC1 / AC2 / AC3 / AC4 | `ConformanceVectorTest` / `SyncConvergenceTest` (S15) / S14 with `SyncCaptureTest`, `SyncTriggerCostTest` and 02's hygiene tests / `OrderKeyTest` |
+| MS1 AC1–AC5 | the server black-box suite (authentication, sync, guards, `LogRedactionTest`, jobs) |
+| MS1 AC6 / AC7 | S16 / `check-server-image.sh` and `server-image-smoke` (09) |
+| MS2 AC1 | `SyncInertJourneyTest` with the network capture (09) |
+| MS2 AC2 / AC3 / AC4 | `CrossDeviceSyncTest` / `FirstLinkMergerTest` / `MassChangeGuardTest` and E12 |
+| MS2 AC5 | `LocalNetworkPermissionGateTest` plus S17 on a physical Android 17 phone |
+| MS2 AC6 / AC7 | 05's `RestoreWhileLinkedTest` / `SyncDisclosure` and `auth` capture tests in `SyncCaptureTest` |
+| MS3 AC1–AC4 | E12 timing (PB31) / `SessionAdopterTest` and the cross-device checklist / 06's `RemotePlayedGuard` tests / S17 and the SSE gating test |
+| M11 AC14 | E12 plus the manual checklist with a phone, a desktop on each OS and a server ([Cross-device journey](#cross-device-journey)) |
 
 ### Spikes
 
@@ -1845,7 +1914,7 @@ E12 / `CrossDeviceSyncTest` (09 owns the journey; nightly and in M11b): an Andro
 | S14 Change capture (MS0) | Do triggers on the synced columns work under Room 3 KMP with the bundled driver (and Android's framework driver if used), cheaply and without disturbing list invalidation? Does `julianday('now')` give millisecond precision on every driver? Do FK cascade deletes fire the member and queue triggers, and in which order? | Implement the triggers of [Capture rules](#capture-rules) in a branch; run `SyncCaptureTest`, `SyncTriggerCostTest` and 02's hygiene tests on the desktop JVM and the reference phone; measure the 5-s save and a 5,000-row mark-played; probe `julianday` precision and cascade behaviour | MS0 acceptance 3; precision ≤ 1 ms; cascades produce either the expected literal rows or none (both acceptable) | Explicit `SyncRecorder.record(…)` calls inside the existing transaction helpers (`PositionWriter`, the mark-played chain, `GroupRepository`, `QueueDao`, restore, import commit) plus an architecture test that every synced-column writer uses them; the clock computed in Kotlin |
 | S15 Convergence harness (MS0) | Do the field kinds and episode rules converge under skew, duplication and reordering? | [Convergence property test](#convergence-property-test) | MS0 acceptance 2 at 100,000 seeds | simplify field kinds (drop `MaxField` for `playCount`, make `lastPlayedAt` LWW) |
 | S16 Server on a Raspberry Pi (MS1) | Footprint and speed on the smallest supported hardware | Pi 4 (4 GB, 64-bit Raspberry Pi OS), the JAR on Temurin 21 and the image; the documented flags; idle RSS after 10 min; 50,000-record initial upload with `SyncLoadTool` (server test sources); start-up time; repeat on a Pi 3 or Zero 2 W (arm64) | PB30: idle ≤ 160 MB RSS, upload ≤ 60 s; recorded in the MS1 release issue | tighter flags (`-Xmx64m`, `-XX:ReservedCodeCacheSize=32m`, `-XX:MaxMetaspaceSize=64m`); recommend ≥ 2 GB devices; streaming record merge |
-| S17 Network paths (MS2–MS3) | Android 17 `ACCESS_LOCAL_NETWORK` for LAN servers; public names resolving to LAN addresses; Tailscale `100.64.0.0/10`; SSE through Caddy and nginx (buffering, idle timeouts); the macOS Local Network prompt with the ad-hoc identity, before and after an update | Physical Android 17 phone on Wi-Fi with a server on `192.168.x.x`; split-horizon DNS; a Tailscale node; `server-image-smoke` with the reference compose and a test certificate plus an nginx variant holding an SSE stream for 2 h; a desktop build updated over itself on macOS 15 | MS2 acceptance 5, MS3 acceptance 4; documented results for the unverified cases | polling-only mode for problematic paths; documentation of the macOS switch; treat CGNAT ranges as local in the gate if Android does |
+| S17 Network paths (MS2–MS3) | Android 17 `ACCESS_LOCAL_NETWORK` for LAN servers; public names resolving to LAN addresses; Tailscale `100.64.0.0/10`; SSE through Caddy and nginx (buffering, idle timeouts); no `502` from proxy keep-alive reuse against CIO's idle timeout (`/sync` calls spaced 40–200 s apart through both proxies); the macOS Local Network prompt with the ad-hoc identity, before and after an update | Physical Android 17 phone on Wi-Fi with a server on `192.168.x.x`; split-horizon DNS; a Tailscale node; `server-image-smoke` with the reference compose and a test certificate plus an nginx variant holding an SSE stream for 2 h; a desktop build updated over itself on macOS 15 | MS2 acceptance 5, MS3 acceptance 4; documented results for the unverified cases | polling-only mode for problematic paths; documentation of the macOS switch; treat CGNAT ranges as local in the gate if Android does |
 
 ### Budgets
 
@@ -1876,13 +1945,14 @@ PB30 (server on a Pi 4) and PB31 (propagation ≤ 10 s) live in [09 Performance 
 | `DiscoveryDocument`, `ProtocolRange`, `DeviceInfoDto`, `LoginRequest`, `InviteRedeemRequest`, `LinkStartRequest`, `LinkStartResponse`, `LinkTokenRequest`, `LinkApproveRequest`, `LinkApproveResponse`, `LinkConfirmRequest`, `TokenResponse`, `OAuthErrorDto`, `DeviceDto`, `DeviceRenameRequest`, `AccountSummary`, `LibraryCountsDto`, `AccountResetRequest`, `SyncRequest`, `SyncResponse`, `ChangesPage`, `ChangeDto`, `FieldValue`, `MatchHints`, `RecordDto`, `ChangeResultDto`, `ChangedEvent`, `ProblemDto` | wire DTOs | `:sync:protocol` |
 | `SyncController`, `SyncStatus`, `SyncActivity`, `SyncProblem`, `LinkFlow`, `LinkMethod`, `LinkState`, `MergePhase`, `LibraryCounts`, `FirstLinkChoice`, `MassChangePrompt`, `HeldDecision`, `RemoteSessionOffer`, `SyncNotice`, `SyncDisclosure`, `SyncDevice`, `PendingDevice`, `ServerInfo`, `SyncReport`, `SyncError` | sync API | `:sync:api` |
 | `PlaybackSyncPort`, `ActivePlayback`, `PlaybackSyncEvent`, `PrePlaySync`, `SyncIngestHook` | ports | `:core:domain` |
-| `SyncEngine`, `SyncClient`, `SyncEventsClient`, `OutboxReader`, `ChangeBuilder`, `SyncApplier`, `EpisodeMatcher`, `SyncParkedStateApplier`, `FirstLinkMerger`, `MassChangeGuard`, `SessionAdopter`, `SettingsCapture`, `SyncPrePlay`, `ServerDiscovery`, `SyncTokenStore`, `SyncScheduler`, `SyncBackoff`, `SyncStateCache`, `SyncControllerImpl`, `LinkFlowImpl`; `WorkManagerSyncScheduler`, `SyncWorker`, `LocalNetworkPermissionGate` (`androidMain`); `DesktopSyncLane` (`desktopMain`) | client engine | `:sync:impl` |
+| `SyncEngine`, `SyncClient`, `SyncEventsClient`, `OutboxReader`, `ChangeBuilder`, `SyncApplier`, `EpisodeMatcher`, `SyncParkedStateApplier`, `FirstLinkMerger` (with `resync()`), `MassChangeGuard`, `SessionAdopter`, `SettingsCapture`, `SyncPrePlay`, `ServerDiscovery`, `SyncTokenStore`, `SyncScheduler`, `SyncBackoff`, `SyncStateCache`, `SyncControllerImpl`, `LinkFlowImpl`; `WorkManagerSyncScheduler`, `SyncWorker`, `LocalNetworkPermissionGate` (`androidMain`); `DesktopSyncLane` (`desktopMain`) | client engine | `:sync:impl` |
 | `SyncOutboxDao` (`captureLiteral`, `captureAll`, `captureAt`), `SyncStateDao.withApplying`, trigger `sync_cap_episode_rekey` | requested from 02 | `:core:database` |
 | `SettingsRepository.localSyncedChanges`, `SettingsRepository.applyRemote`, `SettingKey.synced` | requested from 01 | `:core:datastore` |
 | `PodcastRepository.unsubscribe(ids, origin = SYNC)`, `AliasReason.SYNC` | requested from 03 and 02 | `:core:data`, `:core:model` |
 | `FakeSyncController`, `FakePlaybackSyncPort`, `FakePrePlaySync`, `FakeSyncIngestHook`, `InMemorySyncServer` | test doubles | `:core:testing` |
+| `SyncScenarioTest`, `UndoHoldBackTest`, `SyncTokenStoreTest` | tests | `:sync:impl` |
 | `MainKt`, `ServerCli`, `ServerConfig`, `ServerModule`, `WellKnownRoutes`, `AuthRoutes`, `DeviceRoutes`, `SyncRoutes`, `ChangesRoutes`, `EventsRoutes`, `AccountRoutes`, `HealthRoutes`, `AdminWeb`, `RequestGuards`, `ClientAddress`, `SyncStore`, `SqliteSyncStore`, `Migrator`, `RecordWriter`, `PodcastDeduper`, `GroupNameMerger`, `TokenService`, `PasswordHasher`, `LinkService`, `InviteService`, `SetupService`, `WebSessions`, `RateLimits`, `EventBus`, `GcJob`, `BackupJob`, `AccountBackupWriter`, `ServerUpdateNotice`, `HealthCheck`, `AuditLog`; test tools `SyncLoadTool`, `ServerConformanceTest`, `ServerConvergenceTest` | server | `:sync:server` |
-| Endpoints `GET /api/v1/account`, `AccountResetRequest.mode` (`library`, `purge`), `GET /api/v1/events?hb=`, problem code `insecure_transport` (421), `forbidden`, `not_found` | protocol additions to the canonical list | — |
+| Endpoints `GET /api/v1/account`, `AccountResetRequest.mode` (`library`, `purge`) and `AccountResetRequest.before` (the library prune bound), `LinkApproveResponse.purpose` and `sameNetwork`, `GET /api/v1/events?hb=`, problem code `insecure_transport` (421), `forbidden`, `not_found` | protocol additions to the canonical list | — |
 | Wire fields `group.createdAt` (`MinField`), `match` on `upnext` and `session` changes, `~rekey` outbox field, cursor form `c:<epoch>:<seq>` | protocol details | — |
 | Server tables `account.epoch`, `link_request.purpose`, `podcast_key.live`/`dead_at`, token kinds `setup` and `web_session`; properties `quota.records`, `backup.time`, `backups.keep`, `account_backups.keep`, `retention.*`, `sse.max_per_account`; cookie `nds_session`, web-session prefix `ndw_` | server storage and configuration | `:sync:server` |
 | Rate limiter names `login`, `link-start`, `link-approve`, `sync`, `account`, `export`, `public`, `web` | server | `:sync:server` |
@@ -1893,17 +1963,20 @@ PB30 (server on a Pi 4) and PB31 (propagation ≤ 10 s) live in [09 Performance 
 
 Numbering is stable; resolved items stay listed with their resolution.
 
-1. **Owners 02, 03, 05, 06, 11** (MS0–MS3): this document needs from them — 02: the trigger list plus `sync_cap_episode_rekey`, `SyncOutboxDao` captures, `SyncStateDao.withApplying`, the credential sweep keeping `sync:%` origins, `AliasReason.SYNC`, `sync_parked` also holding member and Up next records (`identityKey` `@member:<uuid>`), parked-row expiry in `db-maintenance`; 03: the merge transaction deleting its loser with `applying = 1` plus the literal move capture ([Feed moves](#feed-moves)), `SyncIngestHook.afterIngest`, `PodcastRepository.unsubscribe(…, origin = SYNC)`; 05: `RestoreMerger`'s timestamp-LWW state policy for sync, `captureAt` in `RestoreWorker`, group-`uuid` changes through sync merges (channel re-creation); 06 and 11: `PlaybackSyncPort` (including "no skip and no further position writes" for `onRemoteMarkedPlayed`) and the `PrePlaySync` call in `PlayStarter`.
+1. **Owners 02, 03, 05, 06, 11** (MS0–MS3): this document needs from them — 02: the trigger list plus `sync_cap_episode_rekey`, `SyncOutboxDao` captures, `SyncStateDao.withApplying`, the credential sweep keeping `sync:%` origins, `AliasReason.SYNC`, `sync_parked` also holding member and Up next records (`identityKey` `@member:<uuid>`), parked-row expiry in `db-maintenance`; 03: the merge transaction deleting its loser with `applying = 1` plus the literal move capture ([Feed moves](#feed-moves)), `SyncIngestHook.afterIngest`, `PodcastRepository.unsubscribe(…, origin = SYNC)`; 05: `RestoreMerger`'s timestamp-LWW state policy for sync, `captureAt` in `RestoreWorker`, group-`uuid` changes through sync merges (channel re-creation); 06 and 11: `PlaybackSyncPort` (including "no skip and no further position writes" for `onRemoteMarkedPlayed`) and the `PrePlaySync` call in `PlayStarter`; 08 (review 2026-10-05): the approval sheet's purpose line and the `sameNetwork` warning ([Link codes](#link-codes)), the account name in the empty-account upload step ([First-link choices](#first-link-choices)), the second confirmation of "Use this device's library everywhere" shown after its pull.
 2. **PO (N13 wording):** the first-start setup code of [PO-38](../PLAN.md#48-further-product-owner-decisions) is printed to the log; N13 says logs never contain tokens. Proposed: amend N13 to "…except the one-time setup code printed at first start while no administrator exists". Alternative: write the code only to `<data>/setup-token` and print its path (harder in a shell-less container).
-3. **Unverified (MS1):** running CLI commands against a `DynamicUser` service through `systemd-run` with the same `User=`. Fallback: a `sysusers.d` snippet creating a static `neutrodyne-server` user (systemd then uses it), with `sudo -u neutrodyne-server` for the CLI.
+3. Resolved 2026-10-05 (review): systemd shares one dynamic user per name among all units that name it and derives its UID from the name's hash ([`dynamic-user.c`](https://github.com/systemd/systemd/blob/main/src/core/dynamic-user.c)), so the `systemd-run` command of [JAR on Java 21 or later](#jar-on-java-21-or-later) runs with the service's UID; MS1 still runs it against a live service, and the static `sysusers.d` user remains the documented alternative.
 4. **Owner 09 / D95 (MS1):** distroless `java25-debian13` carries its own Temurin build, possibly a different version from the desktop's `runtime.lock`, which would mean two runtime source tarballs per release. Alternative to evaluate: `gcr.io/distroless/base-debian13` plus our own jlink-trimmed runtime of the same version as the desktop (one source tarball, smaller image).
 5. **Owner 05 and 08 (MS2):** when a sync merge changes a group's `uuid` on a device, its notification channel `new_episodes_{uuid}` must be re-created; Android lets the app copy the old channel's importance, sound and vibration only partly. Proposed: copy what `NotificationChannel` exposes and accept that a user-customised channel may lose some customisation (rare: only offline equal-name collisions).
 6. **Owner 06 (MS2):** a synced change of a global or override speed while an item plays — apply at once (neither start, stop nor seek, so R7.5 allows it) or at the next item? Proposed: as for any local settings change (06's rule).
-7. **Unverified (S17):** whether Android classifies public names resolving to LAN addresses and CGNAT `100.64.0.0/10` (Tailscale) as local network; whether macOS asks again after each ad-hoc-signed update.
+7. **Unverified (S17):** whether Android classifies CGNAT `100.64.0.0/10` (Tailscale) as local network (the gate classifies by resolved address, so names resolving to LAN addresses are handled either way); whether macOS asks again after each ad-hoc-signed update.
 8. **Unverified (S14):** `julianday('now')` precision on every driver; whether FK cascade deletes fire the member and Up next triggers before or after the parent row disappears.
 9. **Unverified:** a reliable way for `doctor` to detect an unsynchronised system clock without an outbound request; v1 prints the time and a reminder.
 10. **Unverified estimates:** episode record size (200–300 bytes), `orderKey` growth rate, the real merge cost per change on a Pi (S16).
 11. **v1.x (M16):** whether gpodder clients send `new` for "mark unplayed" reliably; the effort of Nextcloud Login Flow v2 for AntennaPod's Nextcloud option.
+12. **PO (R7.7 thresholds):** "more than 20 % of them" holds every single remote unsubscribe on a library of up to four podcasts (1 of 4 is 25 %). Proposed: apply the percentage rule only from 3 removals ("more than 10, or more than 20 % and at least 3"). Until the PO answers, the guard follows R7.7 literally.
+13. **Owner 05 (MS2):** 05's [Delete and undo](05-groups-opml-backup.md#delete-and-undo) step 6 still explains the undo window by Android's 10-s push delay and a desktop re-creation; with the outbox hold-back ([Outbox and coalescing](#outbox-and-coalescing)) an undo never leaves either platform. 05 should point to the hold-back.
+14. **v1.x:** moving a server to a new address keeps the same database, but the apps must unlink and link again (a new device and node ID, then Merge). A `serverId` in the discovery document would let a client verify that a new address is the same server and keep its token and cursor; additive, so it can come in a minor release.
 
 ---
 
@@ -1912,17 +1985,18 @@ Numbering is stable; resolved items stay listed with their resolution.
 All checked 2026-10-05 by the research behind the scope revision unless marked otherwise.
 
 - Hybrid logical clocks (Kulkarni, Demirbas, Madeppa, Avva, Leone, 2014; "HLC fits in 64 bits"): https://cse.buffalo.edu/tech-reports/2014-04.pdf
-- RFC 8628 OAuth 2.0 Device Authorization Grant (`device_code`, `user_code`, consonant alphabet, `interval`, `authorization_pending`, `slow_down` adding 5 s): https://www.rfc-editor.org/rfc/rfc8628 · RFC 9457 Problem Details: https://www.rfc-editor.org/rfc/rfc9457
+- RFC 8628 OAuth 2.0 Device Authorization Grant (`device_code`, `user_code`, consonant alphabet, `interval`, `authorization_pending`, `slow_down` adding 5 s; §5.4 remote phishing): https://www.rfc-editor.org/rfc/rfc8628 · RFC 9457 Problem Details: https://www.rfc-editor.org/rfc/rfc9457
 - Fractional indexing (CC0-1.0; base-62 digits; keys whose fractional part ends in `0` are invalid): https://github.com/rocicorp/fractional-indexing · https://github.com/rocicorp/fractional-indexing/blob/main/src/index.js (checked 2026-10-05 in this document's preparation) · Greenspan: https://observablehq.com/@dgreensp/implementing-fractional-indexing · Figma: https://www.figma.com/blog/realtime-editing-of-ordered-sequences/
 - gpodder API v2 (subscriptions per device, episode actions, Basic auth, sync devices): https://gpoddernet.readthedocs.io/en/latest/api/ · AntennaPod synchronisation options: https://antennapod.org/documentation/general/synchronization · AntennaPod first-sync stamping (behaviour fact only): https://github.com/AntennaPod/AntennaPod/blob/9c7ffa16736c020045571d274aef4cdcf0878100/net/sync/service/src/main/java/de/danoeh/antennapod/net/sync/service/SyncService.java#L228-L248
 - Open Podcast API (0.1.0, CC BY-SA 4.0 text, sync and episodes on branches): https://openpodcastapi.org/ · https://github.com/OpenPodcastAPI/api-specs
-- Ktor 3.6.0 server SSE: https://ktor.io/docs/server-server-sent-events.html · client SSE (in `ktor-client-core`, reconnection): https://ktor.io/docs/client-server-sent-events.html · rate limiting (429, `Retry-After`; checked 2026-10-05): https://ktor.io/docs/server-rate-limit.html · forwarded headers (no trusted-proxy list; checked 2026-10-05): https://ktor.io/docs/server-forward-headers.html · CSRF plugin (`allowOrigin`, `originMatchesHost`, `checkHeader`; checked 2026-10-05): https://api.ktor.io/ktor-server-csrf/io.ktor.server.plugins.csrf/-c-s-r-f.html · compression (request decompression without a documented limit): https://ktor.io/docs/server-compression.html · client engines (`preconfigured` OkHttp): https://ktor.io/docs/client-engines.html · licence: https://github.com/ktorio/ktor/blob/main/LICENSE
-- sqlite-jdbc 3.53.4.0 (Apache-2.0, natives): https://github.com/xerial/sqlite-jdbc · SQLite UPSERT: https://www.sqlite.org/lang_upsert.html · `RETURNING`: https://www.sqlite.org/lang_returning.html · `VACUUM INTO`: https://www.sqlite.org/lang_vacuum.html
+- Ktor 3.6.0 server SSE: https://ktor.io/docs/server-server-sent-events.html · CIO `connectionIdleTimeoutSeconds` (idle = no request running): https://ktor.io/docs/server-engines.html · client SSE (in `ktor-client-core`, reconnection): https://ktor.io/docs/client-server-sent-events.html · rate limiting (429, `Retry-After`; checked 2026-10-05): https://ktor.io/docs/server-rate-limit.html · forwarded headers (no trusted-proxy list; checked 2026-10-05): https://ktor.io/docs/server-forward-headers.html · CSRF plugin (`allowOrigin`, `originMatchesHost`, `checkHeader`; checked 2026-10-05): https://api.ktor.io/ktor-server-csrf/io.ktor.server.plugins.csrf/-c-s-r-f.html · compression (request decompression without a documented limit): https://ktor.io/docs/server-compression.html · client engines (`preconfigured` OkHttp): https://ktor.io/docs/client-engines.html · licence: https://github.com/ktorio/ktor/blob/main/LICENSE
+- sqlite-jdbc 3.53.4.0 (Apache-2.0, natives): https://github.com/xerial/sqlite-jdbc · native-library extraction to `org.sqlite.tmpdir`: https://github.com/xerial/sqlite-jdbc/blob/master/src/main/java/org/sqlite/SQLiteJDBCLoader.java · `auto_vacuum`: https://www.sqlite.org/pragma.html#pragma_auto_vacuum · SQLite UPSERT: https://www.sqlite.org/lang_upsert.html · `RETURNING`: https://www.sqlite.org/lang_returning.html · `VACUUM INTO`: https://www.sqlite.org/lang_vacuum.html
 - Bouncy Castle licence (MIT): https://www.bouncycastle.org/about/license/ · OWASP Argon2id minimum (m = 19 MiB, t = 2, p = 1): https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html · logback dual EPL/LGPL (banned): https://logback.qos.ch/license.html
-- Caddy licence: https://github.com/caddyserver/caddy/blob/master/LICENSE · Automatic HTTPS: https://caddyserver.com/docs/automatic-https · `reverse_proxy` (immediate flush of `text/event-stream`, `X-Forwarded-*` defaults; checked 2026-10-05): https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
+- Caddy licence: https://github.com/caddyserver/caddy/blob/master/LICENSE · Automatic HTTPS: https://caddyserver.com/docs/automatic-https · `reverse_proxy` (immediate flush of `text/event-stream`, `X-Forwarded-*` defaults, no transport read timeout, upstream `keepalive` 2 min; checked 2026-10-05): https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
 - nginx proxy module (`proxy_buffering`, `X-Accel-Buffering`, `proxy_read_timeout` default 60 s; checked 2026-10-05): https://nginx.org/en/docs/http/ngx_http_proxy_module.html
+- systemd dynamic users shared by name, UID from the name's hash (checked 2026-10-05 in review): https://github.com/systemd/systemd/blob/main/src/core/dynamic-user.c
 - systemd.exec (`DynamicUser`, `StateDirectory` under `/var/lib/private`, recursive ownership adjustment, static user preferred when it exists; checked 2026-10-05 from the man-page source https://github.com/systemd/systemd/blob/main/man/systemd.exec.xml): https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html
-- distroless Java images (Temurin OpenJDK, `java -jar` entry point; checked 2026-10-05): https://github.com/GoogleContainerTools/distroless/blob/main/java/README.md · Docker tmpfs defaults (`exec` by default; checked 2026-10-05): https://docs.docker.com/engine/storage/tmpfs/ · Compose build contexts from Git: https://docs.docker.com/reference/compose-file/build/ · GHCR: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry · `actions/attest`: https://github.com/actions/attest
-- Debian 12 Java 17 package: https://packages.debian.org/bookworm/openjdk-17-jre-headless · Temurin platforms: https://adoptium.net/supported-platforms/ · OpenJDK GPL-2.0 with Classpath Exception: https://openjdk.org/legal/gplv2+ce.html
-- Android local network permission (Android 17 enforcement, `NEARBY_DEVICES` group, TCP timeouts, DNS exemption; re-checked 2026-10-05): https://developer.android.com/privacy-and-security/local-network-permission · WorkManager 15-min minimum: https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work · macOS Local Network privacy TN3179: https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy
+- distroless Java images (Temurin OpenJDK, `java -jar` entry point; checked 2026-10-05): https://github.com/GoogleContainerTools/distroless/blob/main/java/README.md · Docker tmpfs mounts get `noexec,nosuid,nodev` unless `exec` is passed (moby source, checked 2026-10-05 in review; the docs page's option table does not state the default): https://github.com/moby/moby/blob/master/daemon/oci_linux.go and https://github.com/moby/moby/blob/master/daemon/container/container_unix.go · tmpfs mounts: https://docs.docker.com/engine/storage/tmpfs/ · Compose build contexts from Git: https://docs.docker.com/reference/compose-file/build/ · GHCR: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry · `actions/attest`: https://github.com/actions/attest
+- Debian 12 Java 17 package: https://packages.debian.org/bookworm/openjdk-17-jre-headless · Debian 13 Java 21 package (arm64 and armhf; checked 2026-10-05 in review): https://packages.debian.org/trixie/openjdk-21-jre-headless · Raspberry Pi OS based on Debian 13, released 2025-10-02: https://linuxiac.com/raspberry-pi-os-based-on-debian-13-now-available-for-download/ · Temurin platforms: https://adoptium.net/supported-platforms/ · OpenJDK GPL-2.0 with Classpath Exception: https://openjdk.org/legal/gplv2+ce.html
+- Android local network permission (Android 17 enforcement for target 37, `NEARBY_DEVICES` group, TCP timeouts, DNS exemption; the page lists no address ranges; re-checked 2026-10-05): https://developer.android.com/privacy-and-security/local-network-permission · App Standby bucket limits for jobs (checked 2026-10-05 in review): https://developer.android.com/topic/performance/power/power-details · WorkManager 15-min minimum: https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work · macOS Local Network privacy TN3179: https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy
 - Prototype measurements (Ktor 3.6.0 CIO with sqlite-jdbc on x86-64, idle RSS and 50,000-change push and pull) were taken during the research for this plan on 2026-10-05; they are not externally sourced and are re-measured by S16.

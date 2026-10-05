@@ -52,6 +52,7 @@ Neutrodyne is a planned open-source podcast player. So far the repository holds 
 - ~19:1x UTC: `06` revised; revising `07` and `08`.
 - ~19:4x UTC: `07` revised; revising `08` and `09`. Still to do: review `10` and `11`; the critics; the fixer.
 - ~20:2x UTC: `08` revised; `09` is being revised and `10-sync.md` is under review. Still to do: review `11`; the critics; the fixer.
+- ~20:4x UTC: one more of these finished (`09` revision or `10` review); `11-desktop.md` review started. Still to do: whichever of the `09` revision and `10` review is still running, the `11` review, the two critics and the fixer (which also rewrites `README.md`).
 
 ## 4. How to resume if this session stops
 
