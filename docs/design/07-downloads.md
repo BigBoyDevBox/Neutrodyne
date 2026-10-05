@@ -119,8 +119,10 @@ Callers: features (`:feature:downloads`, `:feature:episode`, `:feature:podcast`,
 | `DownloadWakeWorker`; unique work `download-wake-MANUAL`, `download-wake-AUTO` (one-time, policy `REPLACE`, tag `download`) | worker and work names, `:download:impl` | Delayed or condition-bound re-arming of a lane ([Wake work](#wake-work)) |
 | `NOTIF_ID_DOWNLOAD_ERRORS = 2002`, `NOTIF_ID_STORAGE_FULL = 2003`, `NOTIF_ID_DOWNLOADS_WAITING = 2004` | notification IDs (range 2000–2999) | Error summary, storage full, "open the app to continue" |
 | Actions `app.neutrodyne.download.action.PAUSE_ALL`, `…RETRY_FAILED`, `…DISMISS_ERRORS` | explicit intents to `DownloadActionReceiver` | Notification actions |
-| `STOP_PROCESS_DEATH = -1`, `STOP_SOFT_DEADLINE = -2`, `STOP_USER_PAUSE = -3`, `STOP_USER_TASK_MANAGER = -4` | `download.lastStopReason` values below 0 (≥ 0 are platform `STOP_REASON_*`) | Diagnostics and the torn-tail rule |
-| `DownloadDao.observeEntries()`, `observePlayedCompletedIds()`, `queuedNeeds(lane, now)`, `markWait(ids, reason, nextAttemptAt)`, `clearStorageWaits()`, `requeueChangedEnclosures(now)`, `rowsOnOtherRoots(target, limit)`, `pathsByRoot()`; `EpisodeDao.downloadSources(ids)`; `PlaySessionDao.observeCurrentEpisodeId()` | DAO functions requested from 02 | SQL owned by 02 ([Open questions](#open-questions)) |
+| `STOP_PROCESS_DEATH = -1`, `STOP_SOFT_DEADLINE = -2`, `STOP_USER_PAUSE = -3`, `STOP_USER_TASK_MANAGER = -4`, `STOP_HANDOVER = -5` | `download.lastStopReason` values below 0 (≥ 0 are platform `STOP_REASON_*`) | Diagnostics, the torn-tail rule, `AUTO` → UIDT handover |
+| Runner tokens `uidt:{startedAtMs}`, `work:{workSpecId}:{startedAtMs}` | format of `download.runnerToken` | Live-runner check and the Task Manager rule ([Pause, cancel and Task Manager stops](#pause-cancel-and-task-manager-stops)) |
+| `downloads.planner_baseline_at` | `device_settings` key | [No backfill watermark](#no-backfill-watermark) |
+| `DownloadDao` functions `claimNext`, `candidates`, `observeEntries()`, `observePlayedCompletedIds()`, `queuedNeeds(lane, now)`, `markWait(…)`, `clearStorageWaits()`, `requeueChangedEnclosures(now)`, `rowsOnOtherRoots(target, limit)`, `pathsByRoot()`, `autoCandidates(…)`, `cleanupCandidates(…)`; `EpisodeDao.downloadSources(ids)`; `PlaySessionDao.observeCurrentEpisodeId()` | DAO functions defined by 02 ([02 Downloads](02-data-model.md#downloads)); `candidates` gains an `offset` parameter ([Open questions](#open-questions)) | SQL owned by 02 |
 
 ---
 
@@ -202,9 +204,14 @@ Every runner claims through one critical section so that two runners (the UIDT j
 private val claimMutex = Mutex()
 private suspend fun claimOne(lanes: List<DownloadLane>, token: String, c: Conditions): DownloadEntity? =
     claimMutex.withLock {
+        if (!c.connected) return@withLock null                        // offline: rows wait in NETWORK, no busy loop
         val skipped = mutableListOf<Long>()
-        val row = dao.claimNext(lanes, c.now, c.unmetered, c.charging, c.youtubeAllowed, token) { r ->
-            slots.canStart(r).also { ok -> if (!ok) skipped += r.episodeId }   // host, YouTube, AUTO cap, pacing
+        var row: DownloadEntity? = null
+        for (page in 0 until 10) {                                    // pages of 20 candidates, at most 200 rows
+            row = dao.claimNext(lanes, c.now, c.unmetered, c.charging, c.youtubeAllowed, token, offset = page * 20) { r ->
+                slots.canStart(r).also { ok -> if (!ok) skipped += r.episodeId }   // host, YouTube, AUTO cap
+            }
+            if (row != null || skipped.size < (page + 1) * 20) break   // claimed, or fewer than 20 candidates left
         }
         row?.let { slots.acquire(it) }
         if (skipped.isNotEmpty()) dao.markWait(skipped, WaitReason.SLOT, null)   // writes only rows not already SLOT
@@ -212,22 +219,27 @@ private suspend fun claimOne(lanes: List<DownloadLane>, token: String, c: Condit
     }
 ```
 
-`claimNext` is 02's transaction (candidates ordered `priority DESC, requestedAt ASC, episodeId ASC`, then `claim` sets `RESOLVING`, `waitReason = NONE`, `runnerToken`; [02 Downloads](02-data-model.md#downloads)). `Conditions` comes from `NetworkMonitor.status` (`unmetered = isConnected && !isMetered`), `ChargingMonitor.isCharging`, and `youtubeAllowed = YouTubeCapabilities.downloads && YouTubeHealth.extractionGate(now) !is Deny`. Slots are released in the transfer's `finally`. `pause`, `cancel` and `delete` of queued rows also take `claimMutex`, so a row is never paused in the database while a runner is claiming it.
+`claimNext` is 02's transaction (candidates ordered `priority DESC, requestedAt ASC, episodeId ASC`, then `claim` sets `RESOLVING`, `waitReason = NONE`, `runnerToken`; [02 Downloads](02-data-model.md#downloads)). Paging matters for throughput: after "Download all" of 200 episodes from one host, the first 20 candidates all wait for that host's 2 slots, and a row from another host further down must still get the third slot. `Conditions` comes from `NetworkMonitor.status` (`connected = isConnected`, `unmetered = isConnected && !isMetered`), `ChargingMonitor.isCharging`, and `youtubeAllowed = YouTubeCapabilities.downloads && YouTubeGateView.blockedUntil(health.state.value, now) == null`. `YouTubeGateView` is a pure read of 04's `YouTubeHealthState` (breaker `OPEN` with `breakerOpenUntil > now`, or `rateLimitedUntil > now`). The engine never calls `YouTubeHealth.extractionGate` for claims: that call hands out the breaker's single half-open trial ([04 Circuit breaker](04-youtube.md#circuit-breaker)), which must go to the resolver's own call. Slots are released in the transfer's `finally`. `pause`, `cancel` and `delete` of queued rows also take `claimMutex`, so a row is never paused in the database while a runner is claiming it.
 
 ### Drain loop
 
 `suspend fun drain(req: DrainRequest): DrainOutcome` where `DrainRequest(lanes, runnerToken, softDeadlineElapsed: Long?, reporter)`:
 
-1. Once per process: `DownloadReconciler.resetOrphanedRunners()` (cheap, idempotent; [Lifecycle and reconciliation](#lifecycle-and-reconciliation)) and `CredentialLookup.awaitLoaded()` (requested from 01/03, so a private enclosure is never fetched before its Basic-auth credential is in memory).
-2. Register the token in `LaneRegistry` (phase `ACTIVE`).
+1. Once per process: `DownloadReconciler.resetOrphanedRunners()` (cheap, idempotent; [Lifecycle and reconciliation](#lifecycle-and-reconciliation)) and `CredentialLookup.awaitLoaded()` (01's interface, implemented by 03's `CredentialStore`), so a private enclosure is never fetched before its Basic-auth credential is in memory.
+2. Register the token in `LaneRegistry` as `DRAINING` ([Lane registry and the exit protocol](#lane-registry-and-the-exit-protocol)).
 3. Loop:
    1. If `softDeadlineElapsed` has passed: stop accepting, set `StopIntent.Requeue(SYSTEM, STOP_SOFT_DEADLINE)` on every own transfer, await them, return `DeadlineReached`.
-   2. While a global slot is free: `claimOne(...)`; for each row launch a child coroutine running [the transfer lifecycle](#transfer-lifecycle).
+   2. While a global slot is free: `claimOne(...)`; for each row launch a child coroutine running [the transfer lifecycle](#transfer-lifecycle). A `MANUAL` lane worker stops claiming while the UIDT job is running (`LaneRegistry.uidtRunning`) and lets the job take the remaining rows.
    3. If nothing is active and nothing was claimed: enter the [exit protocol](#lane-registry-and-the-exit-protocol); return `Empty`, `Waiting(earliest)` or `Blocked(reason)`.
-   4. Otherwise suspend until one of: a transfer ended; `wake(lane)` was signalled (new request, resume, freed slot, network or charging change, freed storage); the soft deadline; the earliest due `nextAttemptAt` within the next 60 s.
+   4. Otherwise suspend until one of: a transfer ended; `wake(lane)` was signalled (new request, resume, freed slot, network or charging change, freed storage); the soft deadline; the earliest due `nextAttemptAt` of the lane within the **wait horizon** — 5 min for the UIDT job, 60 s for lane workers. The UIDT job is quota-exempt, so it can wait out the first backoffs (about 1, 2 and 4 min) of a user's download instead of handing it to a quota-bound worker. Its notification then shows "Retrying in {t}". Lane workers must not burn quota waiting.
 4. `finally`: unregister the token.
 
-The engine also collects `NetworkMonitor.status` and `ChargingMonitor` while any transfer is active: on "metered", transfers whose row has `allowMetered = false` get `StopIntent.Requeue(UNMETERED_NETWORK)`; on "disconnected", every transfer gets `Requeue(NETWORK)` (no attempt is counted); on "unplugged", `AUTO` transfers with `requireCharging` get `Requeue(CHARGING)`.
+The engine also collects `NetworkMonitor.status` and `ChargingMonitor` while any transfer is active:
+- on "metered", transfers whose row has `allowMetered = false` get `StopIntent.Requeue(UNMETERED_NETWORK)`;
+- on "disconnected", every transfer gets `Requeue(NETWORK)` (no attempt is counted), and claims pause until `connected`;
+- on "unplugged", `AUTO` transfers with `requireCharging` get `Requeue(CHARGING)`.
+
+Every `finish` that leaves a row `QUEUED` calls `ensureScheduled(row.lane)` after its commit, so a row requeued by a runner of the other lane (for example, after a handover) is re-armed.
 
 ### Transfer lifecycle
 
@@ -266,7 +278,7 @@ Not persisted in v1 (in-memory sub-states visible through `LiveProgress.state`):
 
 #### Transfer lifecycle recovery
 
-At `RESOLVING`, before any network request: if the row has no usable `.part` but the deterministic final file for this row exists on its root and its length equals the stored `totalBytes`, the engine skips straight to verification and completes the row (a process death between rename and the `COMPLETED` write). If the row's `lastStopReason == STOP_PROCESS_DEATH`, the `.part` is truncated by `min(64 KiB, length)` before resuming, which drops a possibly torn tail (Unverified necessity on ext4/f2fs; cheap insurance).
+At `RESOLVING`, before any network request, the engine checks for a process death between the rename and the `COMPLETED` write. If the row has no `.part`, its `totalBytes` is known, and the podcast's `[p{podcastId}]` folder on the row's root holds a file named `… [e{episodeId}].{ext}` of exactly that length, the engine skips straight to verification and completes the row. The file is found by its suffix: the title and date part of the name may have changed since. If the row's `lastStopReason == STOP_PROCESS_DEATH`, the `.part` is truncated by `min(64 KiB, length)` before resuming, which drops a possibly torn tail (Unverified necessity on ext4/f2fs; cheap insurance).
 
 ### Requests
 
@@ -274,8 +286,8 @@ At `RESOLVING`, before any network request: if the row has no usable `.part` but
 
 1. Load `EpisodeDao.downloadSources(ids)` (chunks of 500): episode, podcast and first audio alternate enclosure.
 2. Per episode, reject with a `RejectReason`: row gone → `EPISODE_GONE`; no enclosure and no YouTube video ID → `NOT_DOWNLOADABLE`; effective type `application/x-mpegurl` or a `.m3u8` path ([03 Enclosure types](03-feeds-and-discovery.md#enclosure-types-and-media-acceptance)) → `UNSUPPORTED_STREAM`; YouTube while `!YouTubeCapabilities.downloads` (`play`, and `foss` before M9) → `YOUTUBE_NOT_SUPPORTED`; `availability != AVAILABLE` → `UNAVAILABLE`.
-3. Metered rule for `MANUAL` with `allowMetered == null`: `downloads.manual_metered` `ALWAYS` → `true`; `NEVER` → `false`; `ASK` → if the network is connected and metered, return `NeedsMeteredDecision(count, knownBytes, unknownSizeCount)` **without writing anything**; otherwise `false` (the row waits for Wi-Fi if the network changes and offers "Use mobile data"). 08's dialog answers with `request(ids, MANUAL, true)` ("Download now"), `request(ids, MANUAL, false)` ("Wait for Wi-Fi"), or sets `ALWAYS` and retries ("Always use mobile data").
-4. Existing rows: `COMPLETED` → `alreadyPresent`; in flight or `QUEUED` → for `MANUAL` over an `AUTO` row: `lane = MANUAL`, `priority = max(priority, 100)`, `requireCharging = false`; a non-null `allowMetered` from the caller is applied to any non-`COMPLETED` row (this is how 08's "Use mobile data" works); `PAUSED` → resume; `FAILED` → retry semantics; `MISSING` → back to `QUEUED` (file fields cleared).
+3. Metered rule for `MANUAL` with `allowMetered == null`: `downloads.manual_metered` `ALWAYS` → `true`; `NEVER` → `false`; `ASK` → if the network is connected and metered and at least one episode would be inserted or re-queued (not merely `alreadyPresent` or rejected), return `NeedsMeteredDecision(count, knownBytes, unknownSizeCount)` over those episodes **without writing anything**; otherwise `false` (the row waits for Wi-Fi if the network changes and offers "Use mobile data"). 08's dialog answers with `request(ids, MANUAL, true)` ("Download now"), `request(ids, MANUAL, false)` ("Wait for Wi-Fi"), or sets `ALWAYS` and retries ("Always use mobile data").
+4. Existing rows: `COMPLETED` → `alreadyPresent`; in flight or `QUEUED` → for `MANUAL` over an `AUTO` row: `lane = MANUAL`, `priority = max(priority, 100)`, `requireCharging = false` ([handover](#handover-from-auto-to-uidt) if it is in flight); a non-null `allowMetered` from the caller is applied to any non-`COMPLETED` row (this is how 08's "Use mobile data" works); `PAUSED` → resume; `FAILED` → retry semantics; `MISSING` → back to `QUEUED` (file fields cleared).
 5. New rows in one write transaction: `lane = trigger`, `priority` (`MANUAL` 100, `AUTO` 0), `requestedAt = now + index` (keeps the caller's order, e.g. newest first for "Download all"), `sourceKind`, `sourceRef` (enclosure URL — the first audio alternate for `isVideo` episodes, same rule as 06's streaming; YouTube video ID), `formatPref` (YouTube: `youtube.audio_quality` name; RSS: null), `rootId = downloads.root_id`, `allowMetered`, `requireCharging` (`AUTO`: from policy), `estimatedBytes` ([Estimates](#estimates)).
 6. `MANUAL` requests clear the episode's tombstone (`EpisodeStateDao.clearDismissed`): the user changed their mind ([R4.4](../PLAN.md#21-functional-requirements)).
 7. `ensureScheduled(trigger)`; return `Queued(…, askNotificationPermission)` where the flag is true when API ≥ 33, `POST_NOTIFICATIONS` is not granted and `downloads.notification_prompted` is false (08 shows the contextual prompt and sets the flag; [01 Platform compliance](01-foundation.md#platform-compliance) P22).
@@ -291,22 +303,27 @@ At `RESOLVING`, before any network request: if the row has no usable `.part` but
 | `pause(ids)` | Under `claimMutex`: `QUEUED → PAUSED` in the DB; in-flight rows get `StopIntent.Pause` (→ `PAUSED`, `lastStopReason = STOP_USER_PAUSE`). `PAUSED` rows never resume by themselves |
 | `resume(ids)` | `PAUSED` and `QUEUED(NEEDS_FOREGROUND)` → `QUEUED(NONE)`, `nextAttemptAt = NULL`; `ensureScheduled` (from visible UI, so `MANUAL` gets a UIDT job) |
 | `retry(ids)` | `FAILED` → `QUEUED(NONE)` with `attempt = 0`, `integrityFailures = 0`, `lastError = NULL`; `QUEUED(BACKOFF)` → `nextAttemptAt = NULL` ("Retry now") |
-| `promote(id)` | "Download now": any queued row gets `priority = 200` ("download next"); an `AUTO` row also becomes `MANUAL` with `requireCharging = false` and the metered rule of step 3 (may return `NeedsMeteredDecision`); a `PAUSED` row is also resumed. A row already in flight keeps transferring; if its `AUTO` runner stops, the UIDT job resumes it |
+| `promote(id)` | "Download now": any queued row gets `priority = 200` ("download next"); an `AUTO` row also becomes `MANUAL` with `requireCharging = false` and the metered rule of step 3 (may return `NeedsMeteredDecision`); a `PAUSED` row is also resumed. A row in flight in an `AUTO` runner is handed over ([below](#handover-from-auto-to-uidt)) |
 | `cancel(ids)` | Non-`COMPLETED` rows: in-flight → `StopIntent.Cancel(tombstone = true)`; otherwise delete row and `.part`; tombstone (`downloadDismissedAt = now`) in the same transaction. `COMPLETED` rows are untouched (use `delete`) |
 | `delete(ids, byUser)` | [Deleting a download](#deleting-a-download) |
 | `setAllowMetered(ids, allowed)` | Updates `allowMetered` of non-`COMPLETED` rows; `ensureScheduled` |
 | `pauseAll()`, `resumeAll()` | All lanes; `pauseAll` is also the notification action |
 | `reportFileMissing(id)` | Re-checks the file: gone → `MISSING`, index entry removed; present → no-op |
 
+#### Handover from AUTO to UIDT
+
+When a `request(…, MANUAL, …)` or `promote` turns an `AUTO` row that is in flight in an `AUTO` lane worker into a `MANUAL` row, and the same call scheduled the UIDT job (API 34+, visible), the transfer is stopped with `StopIntent.Requeue(NONE, STOP_HANDOVER)`. No attempt is counted, and the `.part` is kept. The UIDT job claims the row within seconds and resumes from the `.part` outside the job quota. Without a UIDT job (API ≤ 33, or scheduling failed), the transfer simply continues in its current runner.
+
 ### Deleting a download
 
 `delete(ids, byUser)` for each row, in this order:
 
-1. In flight → set `StopIntent.Delete(byUser)`, cancel the transfer and await it; its `finish` then performs steps 2–5.
+1. In flight → set `StopIntent.Delete(byUser)`, cancel the transfer and await it; its `finish` then performs steps 2–6.
 2. `LocalMediaIndexImpl.remove(id)` (before the row disappears, so 06 never resolves a file that is about to vanish).
-3. One write transaction: delete the `download` row; if `byUser`, `EpisodeStateDao.ensure` + `setDismissed(id, now)` (tombstone, [02 User-state writes](02-data-model.md#user-state-writes)).
-4. `ArtworkStore.unpin(episodeArtworkKey, PinReason.DOWNLOAD, ownerId = id)` if it was pinned.
-5. Delete the `.part` and the final file — unless the episode is `play_session.currentEpisodeId` or its root is unavailable, in which case the file goes to `DeferredDeletes` ([Deferral while playing](#deferral-while-playing)).
+3. Journal: add the row's `.part` and final paths to `DeferredDeletes` (one DataStore edit per call, not per row). A process death between the next step and the file deletion then leaves a journal entry instead of an untracked file, which reconcile deletes. Orphan files are never deleted automatically ([Orphans and stale partial files](#orphans-and-stale-partial-files)).
+4. One write transaction: delete the `download` row; if `byUser`, `EpisodeStateDao.ensure` + `setDismissed(id, now)` (tombstone, [02 User-state writes](02-data-model.md#user-state-writes)).
+5. `ArtworkStore.unpin(episodeArtworkKey, PinReason.DOWNLOAD, ownerId = id)` if it was pinned.
+6. Delete the `.part` and the final file, then remove their journal entries — unless the episode is `play_session.currentEpisodeId` or its root is unavailable; then the entries stay in `DeferredDeletes` until [Deferral while playing](#deferral-while-playing) executes them.
 
 `byUser = true`: Downloads screen, episode and podcast actions, bulk delete, `cancel`. `byUser = false`: cleanup, unsubscribe and merge (03), policy changes. Tombstones are written only for user deletions so that automatic cleanup never blocks a later automatic download ([R4.4](../PLAN.md#21-functional-requirements)).
 
@@ -350,7 +367,7 @@ sequenceDiagram
 | 130 | `LocalMediaIndexImpl` initial load (after the database open at 100) |
 | 200 | `download-cleanup` periodic work (`UPDATE`) |
 | 210 | `download-reconcile` one-time work (`KEEP`) |
-| 220 | collectors on `@ApplicationScope`: `IngestionEvents` and `RefreshController.observeStatus()` for the planner, `observeAutoDownload()`, the played-downloads observer, `PlaySessionDao.observeCurrentEpisodeId()` for `DeferredDeletes`, `NetworkMonitor` and charger transitions → `ensureScheduled`, and a `ProcessLifecycleOwner` `ON_START` observer → `ensureScheduled(MANUAL)` and `ensureScheduled(AUTO)` |
+| 310 | collectors on `@ApplicationScope`: `IngestionEvents` and `RefreshController.observeStatus()` for the planner, `observeAutoDownload()`, the played-downloads observer, `PlaySessionDao.observeCurrentEpisodeId()` for `DeferredDeletes`, `NetworkMonitor` and charger transitions → `ensureScheduled`, and a `ProcessLifecycleOwner` observer (added on the main thread) that mirrors visibility into `AppVisibility` and calls `ensureScheduled(MANUAL)` and `ensureScheduled(AUTO)` on `ON_START`. Band 300+ because these only launch collectors and nothing on the cold-start path waits for them ([01 Application start-up](01-foundation.md#application-start-up) reserves 200–299 for enqueueing work) |
 
 ---
 
@@ -401,12 +418,13 @@ stateDiagram-v2
 | `* → FAILED` | permanent HTTP status, `NOT_MEDIA` on a validated network, second integrity failure, YouTube `Unavailable`, `attempt` reaching 8 | user can retry or dismiss |
 | `VERIFYING → QUEUED` | size or magic mismatch, `integrityFailures` becomes 1 | `.part` deleted, restart from 0 immediately |
 | `QUEUED/RESOLVING/DOWNLOADING → PAUSED` | user pause, `pauseAll`, Task Manager stop detected at the next start | never resumed automatically |
+| `QUEUED/PAUSED → FAILED` | reconcile in a build without YouTube downloads (`foss` → `play` cross-grade) | `UNSUPPORTED_STREAM`; [play flavor and cross-grades](#play-flavor-and-cross-grades) |
 | `PAUSED → QUEUED` | `resume`, `resumeAll`, `request` of a paused row | `ensureScheduled` |
 | `FAILED → QUEUED` | `retry`; `requeueChangedEnclosures` after a refresh changed the episode's enclosure URL | `attempt = 0` |
 | `COMPLETED → MISSING` | reconcile finds the file gone or its root unavailable; 06 `reportFileMissing` | `LocalMediaIndex` entry removed |
 | `MISSING → COMPLETED` | reconcile finds the root mounted again and the file intact | only for `lastError = STORAGE_UNAVAILABLE` |
 | `MISSING → QUEUED` | user "Download again", planner still wants it | file fields cleared |
-| row deleted | `delete`, `cancel`, cleanup, planner "no longer wanted", unsubscribe cascade | [Deleting a download](#deleting-a-download) |
+| row deleted | `delete`, `cancel`, cleanup, planner "no longer wanted", unsubscribe cascade, YouTube `Unavailable(UPCOMING or LIVE)` on an `AUTO` row ([YouTube transfers](#youtube-transfers)) | [Deleting a download](#deleting-a-download) |
 
 **Cancellation is a transition, not a state**: the row and its `.part` disappear in one step (with a tombstone when the user cancelled).
 
@@ -417,7 +435,7 @@ Row texts are the English source strings of 08's `DownloadStatusText` ([08 Downl
 | `waitReason` | Meaning | Set when | Cleared when | Row text | Row action |
 |---|---|---|---|---|---|
 | `NONE` | Eligible, waiting for its turn | insert, resume, retry | claim | "Queued" | Download now · Cancel |
-| `NETWORK` | No validated network | offline at claim; connection lost mid-transfer; job stopped for connectivity; HTML received on an unvalidated network | a runner claims it again | "Waiting for a connection" | — |
+| `NETWORK` | No usable network | connection lost mid-transfer; job stopped for connectivity; HTML received on an unvalidated network (captive portal: `nextAttemptAt = now + 1 min`, so the portal is not polled in a loop) | a runner claims it again (claims pause while `NetworkMonitor` reports no connection) | "Waiting for a connection" | — |
 | `UNMETERED_NETWORK` | Row may not use the current metered network | network is metered and `allowMetered = false` | unmetered network | "Waiting for Wi-Fi" | `MANUAL`: "Use mobile data" (`setAllowMetered` or a `request` with `allowMetered = true`); `AUTO`: "Download now" (`promote`) |
 | `CHARGING` | `AUTO` row requires a charger | not charging at claim or unplugged mid-transfer | charging | "Waiting for charging" | "Download now" |
 | `STORAGE` | Not enough free space (`lastError = STORAGE_FULL`) or root unavailable (`STORAGE_UNAVAILABLE`) | free-space check failed, ENOSPC, root unmounted | space freed (delete, cleanup), root back, 30-min re-check | "Waiting for storage space"; ‡ with `STORAGE_UNAVAILABLE`: "Waiting for the SD card" | "Manage storage" |
@@ -458,7 +476,14 @@ Other states: `RESOLVING` and `VERIFYING` show an indeterminate ring; `DOWNLOADI
 
 - **User pause** is persistent: `PAUSED` rows are never claimed, never auto-resumed after a reboot or an app update, and are not removed by the planner (the user touched them).
 - **Runner stops** (job stopped, quota, soft deadline, process death) are not user intent: rows return to `QUEUED(SYSTEM)` and resume automatically.
-- **Task Manager stop** (API 34+ "Stop" on the UIDT entry): the platform kills the process without `onStopJob` and does not reschedule the job ([UIDT](https://developer.android.com/develop/background-work/background-tasks/uidt)). At the next start, `DownloadReconciler` reads `ActivityManager.getHistoricalProcessExitReasons()` (API 30+); if the latest exit after the rows' last update is a user stop, the `MANUAL` rows found in flight become `PAUSED` with `lastStopReason = STOP_USER_TASK_MANAGER` instead of `QUEUED(SYSTEM)`. Unverified: the exact `ApplicationExitInfo` reason a Task Manager stop records (`REASON_USER_REQUESTED`, and on API 35+ possibly `REASON_USER_STOPPED`); the M6 device checklist records it. A Settings "Force stop" is treated the same way.
+- **Task Manager stop** (API 34+ "Stop" on the UIDT entry): the platform kills the process at once, does not call `onStopJob`, and never reschedules the job. If a stop through a system affordance does reach `onStopJob`, its return value is treated as `false` ([UIDT](https://developer.android.com/develop/background-work/background-tasks/uidt), [JobService.onStopJob](https://developer.android.com/reference/android/app/job/JobService)).
+  - At the next start, `ExitReasonProbe` reads `ActivityManager.getHistoricalProcessExitReasons(packageName, 0, 1)`. The process start counts as "after a user stop" only when all three hold:
+    1. the latest exit reason is `REASON_USER_REQUESTED` (10: Force stop, removal from Recents, and — Unverified — the Task Manager "Stop");
+    2. the exit's timestamp is later than the `startedAtMs` in the stale `uidt:` runner token;
+    3. `JobSchedulerFacade.pendingManualJob()` is null. An ordinary kill leaves the persisted job scheduled; a Task Manager stop removes it.
+  - Then only `MANUAL` rows with a stale `uidt:` token become `PAUSED`, with `lastStopReason = STOP_USER_TASK_MANAGER`. Every other stale row becomes `QUEUED(SYSTEM)`. A Settings "Force stop" during a UIDT transfer is treated the same way.
+  - The rule runs only on API 34+. UIDT does not exist below 34, and before API 34 `REASON_USER_REQUESTED` was also recorded for app updates; `REASON_PACKAGE_UPDATED` (16) separates updates from API 34 ([ApplicationExitInfo](https://developer.android.com/reference/android/app/ApplicationExitInfo), checked 2026-10-05).
+  - `REASON_USER_STOPPED` (11) means a stopped secondary *user* and is not a Task Manager signal. The M6 device checklist records the actual reason and the pending-job state after a Task Manager stop.
 
 ---
 
@@ -470,7 +495,7 @@ Serves R4.2, N2. Delivered in M6. Honours [D47](../PLAN.md#3-key-decisions). Mit
 
 | Lane | API 34+ | API 31–33 | API 26–30 |
 |---|---|---|---|
-| `MANUAL` | **UIDT job** `JOB_ID_MANUAL = 1001` in namespace `downloads` (`ManualDownloadJobService`); fallback: `download-lane-MANUAL` | `download-lane-MANUAL`, expedited (`RUN_AS_NON_EXPEDITED_WORK_REQUEST`); `setForeground(dataSync)` when the app is visible at worker start, else runs as a plain job | same as 31–33; expedited work is itself run by WorkManager as a foreground service via `getForegroundInfo()` |
+| `MANUAL` | **UIDT job** `JOB_ID_MANUAL = 1001` in namespace `downloads` (`ManualDownloadJobService`); fallback: `download-lane-MANUAL` | `download-lane-MANUAL`, expedited (`RUN_AS_NON_EXPEDITED_WORK_REQUEST`); `setForeground(dataSync)` when the app is visible at worker start, else runs as a plain job | `download-lane-MANUAL`, expedited **only when enqueued while the app is visible**: below API 31, WorkManager runs expedited work as a foreground service via `getForegroundInfo()`, and D47 allows `dataSync` only for user-started work. Background enqueues (wake work, reconcile, network trigger) are regular work. `setForeground` as in 31–33 |
 | `AUTO` | `download-lane-AUTO`: regular one-time work, never expedited, never foreground, 8-min soft deadline | same | same |
 | Re-arming | `download-wake-MANUAL`, `download-wake-AUTO` ([Wake work](#wake-work)) | same | same |
 
@@ -483,34 +508,62 @@ Why: UIDT jobs are quota-exempt and recommended for user-started transfers but m
 suspend fun ensureScheduled(lane: DownloadLane) = laneMutex(lane).withLock {
     val needs = dao.queuedNeeds(lane, clock.now())        // counts, metered/charging needs, earliest due, remaining bytes
     if (needs.queued == 0) { cancelWake(lane); return@withLock }
+    val c = conditions(); val visible = visibility.isVisible()
+    // UIDT first: only while visible (else schedule() fails), and never while the job runs (schedule() would stop it)
+    val viaUidt = lane == MANUAL && sdk >= 34 && visible && needs.due > 0 &&
+        (registry.uidtRunning || uidt.schedule(needs.dueNeeds) == SCHEDULED)
     when (registry.phase(lane)) {
-        Phase.ACTIVE -> { engine.wake(lane); return@withLock }        // the running drain loop rescans
-        Phase.CLOSING -> { registry.requestReopen(lane); return@withLock }
-        Phase.IDLE -> Unit
+        Phase.ACTIVE -> engine.wake(lane)                             // a draining runner rescans
+        Phase.CLOSING -> registry.requestReopen(lane)                 // the closing runner continues instead
+        Phase.PENDING -> if (lane == MANUAL && sdk < 31 && visible && !registry.pendingExpedited(lane))
+                             enqueueLaneWorker(lane, policy = REPLACE, expedited = true)   // upgrade; not started yet
+        Phase.IDLE -> if (!viaUidt && needs.runnableNow(c)) enqueueLaneWorker(lane)        // KEEP or APPEND_OR_REPLACE
     }
-    val viaUidt = lane == MANUAL && sdk >= 34 && needs.due > 0 &&
-        uidt.schedule(needs.dueNeeds) == SCHEDULED                   // pending job waits for its network itself
-    if (!viaUidt && needs.runnableNow(conditions())) enqueueLaneWorker(lane)   // KEEP, or APPEND_OR_REPLACE (below)
-    armWake(lane, if (viaUidt) needs.notDue() else needs.notRunnableNow(conditions()))
-    if (lane == MANUAL && sdk >= 34 && !viaUidt && !visibility.isVisible() && backgroundLimited()) markNeedsForeground()
+    armWake(lane, if (viaUidt) needs.notDue() else needs.notRunnableNow(c))
+    if (lane == MANUAL && !viaUidt && !visible && backgroundLimited()) markNeedsForeground()
 }
 ```
 
-The UIDT job is scheduled only when some `MANUAL` row is due (`nextAttemptAt ≤ now`); its network request covers the due rows (any network if one of them allows mobile data, else unmetered), so a pending job starts by itself when that network appears. Rows still in backoff are re-armed by the wake work, never by a job that would start only to find nothing claimable.
+The UIDT job is scheduled only when some `MANUAL` row is due (`nextAttemptAt ≤ now`). Its network request covers the due rows: any network if one of them allows mobile data, else unmetered. A pending job therefore starts by itself when that network appears. Rows still in backoff are re-armed by the wake work, never by a job that would start only to find nothing claimable. A visible `MANUAL` call schedules the UIDT job even while a `MANUAL` lane worker drains: the worker stops claiming once the job runs ([Drain loop](#drain-loop)), so user-started rows move to the quota-exempt runner.
 
-Callers: every controller write, the planner, `resumeAll`, the wake worker, the reconcile worker, runner exits, `NetworkMonitor` transitions to connected/unmetered, charger connected, storage freed, and app foreground (`ProcessLifecycleOwner` `ON_START`, registered by an initializer). `runnableNow` = some `QUEUED` row of the lane is due (`nextAttemptAt ≤ now`) and its network and charging needs are met by the current conditions. `backgroundLimited()` = `ActivityManager.isBackgroundRestricted()` (API 28) or standby bucket `RESTRICTED` (`UsageStatsManager.getAppStandbyBucket()`, API 28).
+`enqueueLaneWorker(lane)` makes the request expedited for `MANUAL` (API 31+ always; API 26–30 only when `visible`, [Runner matrix](#runner-matrix)). The policy is `KEEP` for the first enqueue of the lane in this process and `APPEND_OR_REPLACE` afterwards ([below](#lane-registry-and-the-exit-protocol)). The call sets the lane's `pendingWorker` flag.
+
+Callers:
+- every controller write, the planner and `resumeAll`;
+- the wake worker, the reconcile worker and runner exits (including every `finish` that requeues a row);
+- `NetworkMonitor` transitions to connected or unmetered, charger connected, and storage freed;
+- app foreground: the `ProcessLifecycleOwner` `ON_START` observer registered by an initializer.
+
+Definitions:
+- `runnableNow`: some `QUEUED` row of the lane is due (`nextAttemptAt ≤ now`) and the current conditions meet its network and charging needs.
+- `backgroundLimited()`: `ActivityManager.isBackgroundRestricted()` (API 28) or standby bucket `RESTRICTED` (`UsageStatsManager.getAppStandbyBucket()`, API 28); false below API 28.
 
 ### Lane registry and the exit protocol
 
-`LaneRegistry` tracks one `Phase` per lane (`IDLE`, `ACTIVE`, `CLOSING`) and whether a WorkManager runner of the lane has already started in this process. The exit protocol closes the race between "the queue is empty, finish" and "a row was just inserted":
+`LaneRegistry` (one per process, guarded by the lane mutexes) keeps per lane:
+- the live runners (`token → DRAINING | CLOSING`);
+- `pendingWorker`: a lane worker enqueued by this process that has not started yet, and whether that request is expedited;
+- `uidtRunning`: from `onStartJob` until `jobFinished` or `onStopJob`;
+- whether a lane worker has already started in this process.
+
+`phase(lane)` is:
+- `ACTIVE` if any runner is `DRAINING`;
+- else `CLOSING` if any runner is `CLOSING`;
+- else `PENDING` if `pendingWorker` is set;
+- else `IDLE`.
+
+A worker's `doWork` clears `pendingWorker` when it registers. While `PENDING`, `ensureScheduled` enqueues nothing more, because the pending worker drains every row when it starts; without this rule, each tap would append another worker to the chain. The exit protocol closes the race between "the queue is empty, finish" and "a row was just inserted":
 
 1. The drain loop finds nothing to claim and nothing active → takes the lane mutex → re-checks `queuedNeeds.runnableNow`; if runnable, continue draining.
-2. Otherwise phase = `CLOSING`, release the mutex, compute the outcome.
-3. Take the mutex again: if `ensureScheduled` requested a reopen meanwhile → phase = `ACTIVE`, continue draining. Else, for UIDT: `jobFinished(params, false)` **inside** the mutex, then phase = `IDLE`; for a lane worker: phase = `IDLE`, arm the wake work, return `Result.success()`.
+2. Otherwise mark the runner `CLOSING`, release the mutex, compute the outcome.
+3. Take the mutex again: if `ensureScheduled` requested a reopen meanwhile → `DRAINING` again, continue. Else, for UIDT: `jobFinished(params, false)` **inside** the mutex, then unregister and clear `uidtRunning`; for a lane worker: unregister, arm the wake work, return `Result.success()`.
 
-WorkManager cannot report synchronously that a returning worker is gone, so a `KEEP` enqueue right after step 3 could be swallowed by the still-`RUNNING` unique work. Therefore: the **first** enqueue of a lane in a process uses `ExistingWorkPolicy.KEEP` (canonical; it keeps a pending request from an earlier process), and every enqueue after a runner of that lane has started in this process uses `APPEND_OR_REPLACE` (canonical continuation semantics: it runs after the finishing worker, or starts a new chain if none exists). Lane workers are only enqueued when something is runnable now and carry only static constraints, so a pending lane request can never be stuck on stale constraints; everything conditional goes to the wake work.
+WorkManager cannot report synchronously that a returning worker is gone, so a `KEEP` enqueue right after step 3 could be swallowed by the unique work that is still `RUNNING`. Therefore:
+- The **first** enqueue of a lane in a process uses `ExistingWorkPolicy.KEEP` (canonical). It keeps a pending request from an earlier process, which then counts as `PENDING`.
+- Every enqueue after a lane worker of that lane has started in this process uses `APPEND_OR_REPLACE` (canonical continuation semantics): it runs after the finishing worker, or starts a new chain if none exists.
+- Lane workers are only enqueued when something is runnable now and carry only static constraints, so a pending lane request is never stuck on stale constraints. Everything conditional goes to the wake work.
 
-**Never reschedule a running UIDT job**: `JobScheduler.schedule()` with the ID of a running job stops it ([JobScheduler](https://developer.android.com/reference/android/app/job/JobScheduler)). The registry's `ACTIVE`/`CLOSING` phases guard this; while the UIDT job is only pending (scheduled, constraints unmet), `schedule()` replaces it, which is how changed network needs reach a pending job.
+**Never reschedule a running UIDT job**: `JobScheduler.schedule()` with the ID of a running job stops it ([JobScheduler](https://developer.android.com/reference/android/app/job/JobScheduler)). `uidtRunning` guards this. While the job is only pending (scheduled, constraints unmet), a visible `schedule()` replaces it, which is how changed network needs reach a pending job. `schedule()` is never called while invisible: it would return `RESULT_FAILURE`, and whether a failed call disturbs an already pending job is unspecified.
 
 ### UIDT job (API 34+)
 
@@ -540,32 +593,38 @@ class ManualDownloadJobService : JobService() {          // app.neutrodyne.downl
     @Inject lateinit var engine: DownloadEngine
     @Inject lateinit var notifications: DownloadNotifications
     @Inject lateinit var scheduler: DownloadScheduler
+    @Inject lateinit var clock: Clock
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var current: JobParameters? = null             // strong ref: Android 16 abandoned-job stop reason
+    private var token: RunnerToken? = null                 // "uidt:{startedAtMs}", one per job start
 
     override fun onStartJob(params: JobParameters): Boolean {
-        current = params
+        current = params; token = RunnerToken.uidt(startedAtMs = clock.now())
+        scheduler.markUidtRunning(true)
         notifications.ensureChannels()
         setNotification(params, NOTIF_ID_MANUAL_DOWNLOAD, notifications.manualInitial(), JOB_END_NOTIFICATION_POLICY_REMOVE)
         scope.launch {
-            engine.drain(DrainRequest(listOf(MANUAL), RunnerToken.uidt(), softDeadlineElapsed = null,
+            engine.drain(DrainRequest(listOf(MANUAL), token!!, softDeadlineElapsed = null,
                                       reporter = UidtReporter(this@ManualDownloadJobService, params)))
-            // jobFinished is called inside the exit protocol (lane mutex), then current = null
+            // jobFinished is called inside the exit protocol (lane mutex), then current = null, uidtRunning = false
         }
         return true
     }
     override fun onStopJob(params: JobParameters): Boolean {
-        engine.stopRunner(RunnerToken.uidt(), params.stopReason)      // rows → QUEUED(NETWORK or SYSTEM), or PAUSED
+        engine.stopRunner(token!!, params.stopReason)                 // rows → QUEUED(NETWORK or SYSTEM), or PAUSED
         scope.coroutineContext.cancelChildren()
+        scheduler.markUidtRunning(false)
         return params.stopReason != JobParameters.STOP_REASON_USER    // reschedule unless the user stopped it
     }
+    override fun onNetworkChanged(params: JobParameters) { engine.wake(MANUAL) }   // API 34: e.g. now on Wi-Fi
 }
 ```
 
-- `setNotification` is called synchronously in `onStartJob`, well inside the 10-second limit ([JobService](https://developer.android.com/reference/android/app/job/JobService)); `onStartJob`/`onStopJob` return immediately (Android 14 ANR rule).
+- `setNotification` is called synchronously in `onStartJob`, well inside the 10-second limit (missing it → ANR and the job is stopped, [JobService](https://developer.android.com/reference/android/app/job/JobService)); `onStartJob`/`onStopJob` return immediately (Android 14 ANR rule). JobScheduler forgets the notification when the job ends, so every start calls it again.
 - `UidtReporter` calls `updateEstimatedNetworkBytes(params, remaining, 0)` when the `MANUAL` queue changes and `updateTransferredNetworkBytes(params, transferredThisJob, 0)`, both at most once per second.
-- Progress updates go through `NotificationManagerCompat.notify(NOTIF_ID_MANUAL_DOWNLOAD, …)`. Unverified: whether `notify` updates a job's notification or `setNotification` must be called again; M6 tests both on API 34 and 36 and keeps the one that works.
+- Progress updates call `setNotification(params, NOTIF_ID_MANUAL_DOWNLOAD, updated, JOB_END_NOTIFICATION_POLICY_REMOVE)` again, at most once per second. The platform shows the most recently provided notification for an ID ([JobService](https://developer.android.com/reference/android/app/job/JobService)). Unverified: whether a plain `NotificationManagerCompat.notify` with the same ID is equivalent. The M6 checklist compares both on API 34 and 36; `setNotification` stays the default.
 - `onStopJob` maps `STOP_REASON_CONSTRAINT_CONNECTIVITY` → `NETWORK`, `STOP_REASON_USER` → `PAUSED`, anything else → `SYSTEM`; the reason is stored in `lastStopReason`.
+- Transfers use the process default network through 01's DOWNLOAD client; they do not bind to `JobParameters.getNetwork()`. Unverified: whether binding is needed under Data Saver (M6 checklist).
 - **One job, many episodes**: the single job drains the database queue, giving one Task Manager entry and one notification. `JobScheduler.enqueue(JobWorkItem)` is not used (its interplay with UIDT and persisted jobs is unverified).
 
 ### Lane worker
@@ -591,12 +650,12 @@ class DownloadLaneWorker @AssistedInject constructor(@Assisted ctx: Context, @As
 - `manualForegroundInfo()` = `ForegroundInfo(NOTIF_ID_MANUAL_DOWNLOAD, notification, FOREGROUND_SERVICE_TYPE_DATA_SYNC)` (the type argument only on API 29+).
 - `AppVisibility.isVisible()` = `ProcessLifecycleOwner` at least `STARTED` (`lifecycle-process`, requested for `:download:impl` from 01).
 - On `DrainOutcome.DeadlineReached`, the exit protocol enqueues the lane worker again with `APPEND_OR_REPLACE` (a continuation), so the system never times the worker out (frequent timeouts can push the app into the restricted bucket, [optimize battery](https://developer.android.com/develop/background-work/background-tasks/optimize-battery)).
-- A worker stopped by WorkManager (quota, constraints, `STOP_REASON_*`) delivers `CancellationException` to the engine; its rows return to `QUEUED(SYSTEM)` with `lastStopReason = stopReason` (`ListenableWorker.getStopReason()`, WorkManager ≥ 2.9; Unverified exact version), and WorkManager reruns the work by itself.
+- A worker stopped by WorkManager (quota, constraints, `STOP_REASON_*`) delivers `CancellationException` to the engine; its rows return to `QUEUED(SYSTEM)` with `lastStopReason = stopReason` (`ListenableWorker.getStopReason()`, added in WorkManager 2.9.0, [WorkManager releases](https://developer.android.com/jetpack/androidx/releases/work)), and WorkManager reruns the work by itself.
 - A `MANUAL` worker running with `setForeground` has no soft deadline (it is a long-running worker on API ≤ 33, where neither the Android 15 `dataSync` cap nor the Android 16 quota rule exists).
 
 ### Wake work
 
-`download-wake-{lane}` (`DownloadWakeWorker`, one-time, policy `REPLACE`, tag `download`) re-arms a lane when rows wait for a time or a condition. Its `doWork()` only calls `ensureScheduled(lane)`; from the background, `MANUAL` on API 34+ then falls back to `download-lane-MANUAL` because UIDT scheduling fails while invisible.
+`download-wake-{lane}` (`DownloadWakeWorker`, one-time, policy `REPLACE`, tag `download`) re-arms a lane when rows wait for a time or a condition. Its `doWork()` only calls `withContext(NonCancellable) { ensureScheduled(lane) }`. `ensureScheduled` usually re-arms the wake work with `REPLACE`, which cancels the running wake worker itself; `NonCancellable` lets the call finish. From the background, `MANUAL` on API 34+ falls back to `download-lane-MANUAL`, because UIDT is never scheduled while invisible.
 
 `armWake(lane, needs)` over the waiting rows W (those not runnable now):
 
@@ -611,7 +670,7 @@ Because the delay only considers rows whose needs the request already guarantees
 
 | Unique name | Request | Constraints | Policy | Enqueued by |
 |---|---|---|---|---|
-| `download-lane-MANUAL` | one-time, `setExpedited(RUN_AS_NON_EXPEDITED_WORK_REQUEST)`, input `lane=MANUAL`, tag `download`, backoff exponential 30 s | validated network (`CONNECTED`); expedited work accepts only network and storage constraints | first enqueue in a process `KEEP`, then `APPEND_OR_REPLACE` | `ensureScheduled` on API < 34 or UIDT fallback |
+| `download-lane-MANUAL` | one-time, `setExpedited(RUN_AS_NON_EXPEDITED_WORK_REQUEST)` (API 26–30: only when enqueued while visible), input `lane=MANUAL`, tag `download`, backoff exponential 30 s | validated network (`CONNECTED`); expedited work accepts only network and storage constraints | first enqueue in a process `KEEP`, then `APPEND_OR_REPLACE`; `REPLACE` only to upgrade a not-yet-started request to expedited (API 26–30) | `ensureScheduled` on API < 34 or UIDT fallback |
 | `download-lane-AUTO` | one-time, never expedited, input `lane=AUTO`, tag `download` | validated network, `setRequiresBatteryNotLow(true)`, `setRequiresStorageNotLow(true)` | same | `ensureScheduled(AUTO)` |
 | `download-wake-MANUAL`, `download-wake-AUTO` | one-time, `initialDelay` per [Wake work](#wake-work) | per [Wake work](#wake-work) | `REPLACE` | exit protocol, `ensureScheduled` |
 | `download-cleanup` | periodic 24 h, flex 6 h | `setRequiresBatteryNotLow(true)` | `UPDATE` | initializer (order 200) |
@@ -623,14 +682,14 @@ Because the delay only considers rows whose needs the request already guarantees
 ### Fallbacks and mixed networks
 
 - **Mixed-network `MANUAL` queue.** A UIDT job scheduled for "any network" (some rows allow mobile data) drains what the current network allows; rows waiting for Wi-Fi stay `QUEUED(UNMETERED_NETWORK)`. At exit the job is not rescheduled from the background (not visible); `download-wake-MANUAL` with `UNMETERED` re-arms the lane when Wi-Fi arrives (then `download-lane-MANUAL`, quota-bound), and the next app foreground upgrades the lane back to a UIDT job. Rows keep `lane = MANUAL`, so cleanup still treats them as manual downloads.
-- **UIDT scheduling fails** (`RESULT_FAILURE` because the app is not visible — e.g. a notification "Retry" tap, Unverified whether that counts as visible — or `canRunUserInitiatedJobs() == false`): use `download-lane-MANUAL`.
+- **UIDT not available**: the app is not visible (for example a notification "Retry" tap handled by `DownloadActionReceiver`; `schedule()` is not attempted), `canRunUserInitiatedJobs() == false`, or `schedule()` returned `RESULT_FAILURE`. Then use `download-lane-MANUAL`.
 - **`NEEDS_FOREGROUND`**: only when the fallback cannot be expected to progress — the app is background-restricted or in the `RESTRICTED` standby bucket while invisible. Those `MANUAL` rows get `QUEUED(NEEDS_FOREGROUND)` and one `NOTIF_ID_DOWNLOADS_WAITING` notification ("Downloads paused — open Neutrodyne to continue"); the next foreground clears the reason and schedules UIDT.
 - **Promote** ("Download now" on an `AUTO` row) is a visible action, so it always reaches a UIDT job on API 34+.
 - **Data Saver** on and the network metered: background metered traffic is restricted for the app; `DownloadNotice.DATA_SAVER` explains it ([Progress and notifications](#progress-and-notifications)). Unverified: how JobScheduler treats UIDT jobs under Data Saver.
 
 ### Stop reasons and diagnostics
 
-Each runner stop writes `lastStopReason` on the affected rows (platform `STOP_REASON_*` from `JobParameters.getStopReason()` (API 31) or `WorkInfo`, or the negative internal codes). `DownloadDiagnostics` (M11, shown by 09's diagnostics screen) keeps a 50-entry in-memory ring of runner stops (time, runner, reason, rows), plus `UsageStatsManager.getAppStandbyBucket()`, `ActivityManager.isBackgroundRestricted()`, `ConnectivityManager.getRestrictBackgroundStatus()`, and on API 36+ `JobScheduler.getPendingJobReasons(JOB_ID_MANUAL)` (API 37 adds `getPendingJobReasonStats()`, Unverified signature).
+Each runner stop writes `lastStopReason` on the affected rows (platform `STOP_REASON_*` from `JobParameters.getStopReason()` (API 31) or `WorkInfo`, or the negative internal codes). `DownloadDiagnostics` (M11, shown by 09's diagnostics screen) keeps a 50-entry in-memory ring of runner stops (time, runner, reason, rows), plus `UsageStatsManager.getAppStandbyBucket()`, `ActivityManager.isBackgroundRestricted()`, `ConnectivityManager.getRestrictBackgroundStatus()`, and on API 36+ `JobScheduler.getPendingJobReasons(JOB_ID_MANUAL)` and `getPendingJobReasonsHistory(JOB_ID_MANUAL)`, plus on API 37 `getPendingJobReasonStats(JOB_ID_MANUAL): Map<Int, Duration>` (throws `IllegalArgumentException` when the job is not pending; not persisted across reboots; [JobScheduler](https://developer.android.com/reference/android/app/job/JobScheduler), checked 2026-10-05).
 
 ### Reboot and persistence
 
@@ -692,9 +751,14 @@ sealed interface TransferResult {
 ### RSS prepare
 
 1. Refresh the source from the episode: `sourceRef` = current `episode.enclosureUrl` (or its first audio alternate for `isVideo` episodes). A changed URL is accepted silently — tracking prefixes rotate ([03 Column rules on update](03-feeds-and-discovery.md#column-rules-on-update)) — and the existing `.part` is kept; `If-Range` and the `Content-Range` total check below protect against splicing different files.
-2. Resolve the root ([Roots](#roots)); unavailable and the row has no `.part` → reassign `rootId` to `downloads.root_id` if that root is available, else `Wait(STORAGE, STORAGE_UNAVAILABLE, now + 30 min)`.
-3. [Completed-file adoption and torn-tail rule](#transfer-lifecycle-recovery).
-4. Free space ([Free space and allocation](#free-space-and-allocation)); short → `Wait(STORAGE, STORAGE_FULL, now + 30 min)` (not an attempt).
+2. [Completed-file adoption and torn-tail rule](#transfer-lifecycle-recovery) on the row's current root.
+3. Place the transfer on the current root `downloads.root_id` ([Roots](#roots)). If that root is unavailable: `Wait(STORAGE, STORAGE_UNAVAILABLE, now + 30 min)`. If the row's `rootId` differs:
+   - no `.part` → reassign `rootId`;
+   - a `.part` on an available old root → copy it to `<current>/.partial/{id}.part` (256 KiB buffer, `sync()`, length check), delete the source, reassign;
+   - a `.part` on an unavailable old root → start over on the current root. The old `.part` is swept later as unreferenced.
+
+   The new `rootId`/`tempPath` are persisted with the `DOWNLOADING` transition. This is how in-progress downloads follow a root change; `download-move` moves only completed files ([Moving between roots](#moving-between-roots)).
+4. Free space ([Free space and allocation](#free-space-and-allocation)), counting a `.part` to be copied; short → `Wait(STORAGE, STORAGE_FULL, now + 30 min)` (not an attempt).
 5. `offset = part.length()`; `ifRange` = stored `etag` if it does not start with `W/`, else stored `lastModified`, else null; `expectedTotal = totalBytes`.
 
 ### Request
@@ -742,7 +806,7 @@ Before writing the first byte at offset 0, the engine peeks up to 512 bytes (Oki
 | starts (after BOM/whitespace) with `<`, or `{`/`[` with `Content-Type` JSON, or `text/*` / `application/xhtml+xml` without any signature above, or empty body | `NOT_MEDIA` |
 | anything else | `UNKNOWN_BINARY` (accepted; extension from `Content-Type`, then the URL path, then `bin`) |
 
-A media signature wins over a wrong `Content-Type` (servers sending MP3 as `text/plain` still work). `NOT_MEDIA` on a validated network → `Permanent(NOT_MEDIA)`; on an unvalidated network (captive portal) → `Wait(NETWORK)`, not counted. Content-Type extension map: `audio/mpeg` mp3, `audio/mp4`/`audio/x-m4a`/`audio/m4a` m4a, `audio/aac` aac, `audio/ogg` ogg, `audio/opus` opus, `audio/webm` webm, `audio/flac` flac, `audio/wav` wav, `video/mp4` mp4, `video/quicktime` mov, `video/webm` webm.
+A media signature wins over a wrong `Content-Type` (servers sending MP3 as `text/plain` still work). `NOT_MEDIA` on a validated network → `Permanent(NOT_MEDIA)`; on an unvalidated network (captive portal) → `Wait(NETWORK, untilMs = now + 1 min)`, not counted. Content-Type extension map: `audio/mpeg` mp3, `audio/mp4`/`audio/x-m4a`/`audio/m4a` m4a, `audio/aac` aac, `audio/ogg` ogg, `audio/opus` opus, `audio/webm` webm, `audio/flac` flac, `audio/wav` wav, `video/mp4` mp4, `video/quicktime` mov, `video/webm` webm.
 
 ### Redirects and final URLs
 
@@ -776,7 +840,7 @@ Never `ResponseBody.bytes()`/`string()` for media ([Android 17 memory limits](ht
 2. After the third failure: `attempt += 1`; if `attempt ≥ 8` → `FAILED(lastError)`; else `QUEUED(BACKOFF)` with `nextAttemptAt = now + min(30 s · 2^attempt, 6 h) × U(0.8, 1.2)`.
 3. `Restart` truncates the `.part` and starts again at 0 within the same attempt, at most twice per attempt (a third → `Transient(SIZE_MISMATCH)`).
 4. Waits (`Wait` results, storage, gates, pacing, network loss, runner stops, user actions) never increment `attempt`.
-5. A persisted `nextAttemptAt` more than 7.2 h in the future (clock moved backwards) is treated as `now + 6 h`.
+5. A persisted `nextAttemptAt` more than 15 h in the future (clock moved backwards; longer than any wait set here, 6 h × 1.2, or by 04's breaker, ≤ 12 h) is treated as `now + 6 h`.
 
 ### Verification and finalisation
 
@@ -804,16 +868,18 @@ Row shape: `sourceKind = YOUTUBE`, `sourceRef = videoId`, `formatPref = AudioQua
 
 `YouTubeTransferSource`:
 
-1. **Gate and pacing (prepare).** `AUTO` rows: `YouTubeAutoPacer` allows at most 20 `AUTO` YouTube transfer starts per rolling hour (in-memory window; a process restart resets it, the 429 path still protects); over the limit → `Wait(BACKOFF, untilMs = oldest start + 1 h)`, not counted. Claims already exclude YouTube rows while `YouTubeHealth.extractionGate(now)` denies; the engine then writes `QUEUED(BACKOFF)` with `nextAttemptAt = Deny.untilMs` on those rows once (not counted).
-2. **Resolve.** `resolveAudio(videoId, AudioPref(quality = formatPref, preferDrc = youtube.volume_levelling, pinnedItag = resolvedItag, preferredLanguage = app language))`. With a `.part` present, an `itag` or `contentLength` different from the stored `resolvedItag`/`totalBytes` deletes the `.part` and restarts at 0. Persist `resolvedItag`, `totalBytes = contentLength`, `mimeType` with the `DOWNLOADING` transition.
-3. **Chunks.** While `offset < total`: before each chunk call `resolveAudio` again (cache-aware: re-resolves only within 10 min of expiry or after `invalidate`) and re-check the itag/`clen` invariant; request `Range: bytes={offset}-{min(offset + 10 MiB, total) − 1}` on the DOWNLOAD client (no `If-Range`, no auth); accept `206` whose `Content-Range` starts at `offset` with total `== clen`, or `200` only at offset 0 with `Content-Length == clen`; append; then pause a random 0.5–2 s (cancellable). Unknown `contentLength`: take the total from the first `Content-Range`.
+1. **Gate and pacing (prepare).** `AUTO` rows: `YouTubeAutoPacer` allows at most 20 `AUTO` YouTube transfer starts per rolling hour (in-memory window; a process restart resets it, the 429 path still protects); over the limit → `Wait(BACKOFF, untilMs = oldest start + 1 h)`, not counted. Claims already exclude YouTube rows while `YouTubeGateView` reports the gate closed ([Claiming and slots](#claiming-and-slots)). Those rows get `QUEUED(BACKOFF)` with `nextAttemptAt` = the gate's end once, not counted, so the Downloads screen shows 08's "YouTube downloads paused until {time}". After a claim, the resolver's own `extractionGate` call may still deny (half-open trial taken by playback): `Transient(BREAKER_OPEN)` → same wait.
+2. **Resolve.** `resolveAudio(videoId, AudioPref(quality = formatPref, preferDrc = youtube.volume_levelling, pinnedItag = resolvedItag, preferredLanguage = app language))`. With a `.part` present, an `itag`, `contentLength` or `lmt` different from the stored `resolvedItag`/`totalBytes`/`lastModified` deletes the `.part` and restarts at 0. One itag can carry DRC or dubbed variants, so the itag alone does not identify the bytes ([04 Download integration](04-youtube.md#download-integration)). Persist `resolvedItag`, `totalBytes = contentLength`, `mimeType` and `lastModified = lmt` (decimal string) with the `DOWNLOADING` transition.
+3. **Chunks.** While `offset < total`: before each chunk call `resolveAudio` again (cache-aware: re-resolves only within 10 min of expiry or after `invalidate`) and re-check the itag/`clen`/`lmt` invariant; request `Range: bytes={offset}-{min(offset + 10 MiB, total) − 1}` on the DOWNLOAD client (no `If-Range`, no auth); accept `206` whose `Content-Range` starts at `offset` with total `== clen`, or `200` only at offset 0 with `Content-Length == clen`; append; then pause a random 0.5–2 s (cancellable). Unknown `contentLength`: take the total from the first `Content-Range`.
 4. **403/410 on a chunk.** `invalidate(videoId)`, re-resolve (in-memory `RESOLVING`), retry the same chunk; at most 2 re-resolutions per attempt, then `Transient(YT_FORBIDDEN)`. The IP-family hint of [04 IP-family matching](04-youtube.md#ip-family-matching) applies to the DOWNLOAD client automatically.
-5. **Verify.** Size `== clen`; magic `ftyp` at offset 4 for `audio/mp4`, EBML at 0 for `audio/webm`; extension `.m4a` / `.webm`; any other MIME → `FAILED(UNSUPPORTED_STREAM)`. No ID3/MP4 tagging in v1. Same naming and folder as RSS ([D49](../PLAN.md#3-key-decisions)).
+5. **Verify.** Size `== clen` (mismatch: the integrity rule of [Verification and finalisation](#verification-and-finalisation)); magic `ftyp` at offset 4 for `audio/mp4`, EBML at 0 for `audio/webm`, otherwise `FAILED(NOT_MEDIA)`; extension `.m4a` / `.webm`; any other MIME → `FAILED(UNSUPPORTED_STREAM)`. No ID3/MP4 tagging in v1. Same naming and folder as RSS ([D49](../PLAN.md#3-key-decisions)).
 
 | Outcome | Row result | Attempt? | Side effect |
 |---|---|---|---|
 | `Ok` | continue | — | — |
-| `Unavailable(reason)` | `FAILED(YT_UNAVAILABLE)` | — | `YouTubeAvailabilityRecorder.record(id, reason)` |
+| `Unavailable(reason)`, `MANUAL` row | `FAILED(YT_UNAVAILABLE)` | — | `YouTubeAvailabilityRecorder.record(id, reason)` |
+| `Unavailable(UPCOMING or LIVE)`, `AUTO` row | row deleted, `byUser = false`, no tombstone; the planner re-admits the episode once enrichment marks it `AVAILABLE` | — | same |
+| `Unavailable(other)`, `AUTO` row | `FAILED(YT_UNAVAILABLE)` | — | same |
 | `Transient(EXTRACTION)` | `QUEUED(BACKOFF)`, `lastError = YT_EXTRACTION` → `FAILED` at attempt 8 | yes | breaker bookkeeping (resolver) |
 | `Transient(BREAKER_OPEN)`, `Transient(RATE_LIMITED)` | `QUEUED(BACKOFF)`, `nextAttemptAt` = the gate's `untilMs` | no | — |
 | `Transient(NETWORK)`, `Transient(TIMEOUT)` | in-runner retries, then `BACKOFF` with `NETWORK_IO` | yes | — |
@@ -883,7 +949,7 @@ A removed or unmounted card never deletes rows: `COMPLETED` rows on it become `M
 
 ### Sharing a file
 
-"Share file" (episode and Downloads screen overflow) hands `content://${applicationId}.fileprovider/…` to the share sheet ([01 Application element and components](01-foundation.md#application-element-and-components) declares the provider). Paths contributed to `file_paths.xml`: `<external-files-path name="podcasts" path="Podcasts/" />` and `<files-path name="downloads" path="downloads/" />`. Files on removable volumes are not shareable in v1 (no supported FileProvider path type), so the action is hidden for `ext:{uuid}` roots.
+"Share file" (episode and Downloads screen overflow) hands `content://${applicationId}.fileprovider/…` to the share sheet ([01 Application element and components](01-foundation.md#application-element-and-components) declares the provider). Paths contributed to `file_paths.xml`: `<external-files-path name="podcasts" path="Podcasts/" />` and `<files-path name="downloads" path="downloads/" />`. Files on removable volumes are not shareable in v1 (no supported FileProvider path type), so the action is hidden for `ext:{uuid}` roots. The `ACTION_SEND` intent sets the URI as `EXTRA_STREAM` and as `ClipData`, its MIME type from the file extension, and **`FLAG_GRANT_READ_URI_PERMISSION` explicitly**. The intent is then wrapped in `Intent.createChooser`. Android 17 logs implicit `ACTION_SEND` grants, and Android 18 stops granting them ([Android 17 behaviour changes](https://developer.android.com/about/versions/17/behavior-changes-all), checked 2026-10-05).
 
 ### LocalMediaIndex
 
@@ -955,7 +1021,16 @@ The planner never merges scopes itself: `EffectiveSettingsResolver.autoDownload(
 
 ### No backfill watermark
 
-`podcast.autoDownloadEligibleAfter` ([02 podcast](02-data-model.md#podcast)) is the [D67](../PLAN.md#3-key-decisions) watermark, written only by the planner: when a podcast's effective `enabled` is true and the column is null, it is set to `now` — or to `podcast.subscribedAt` if the podcast was subscribed less than 10 minutes ago, so that episodes found by the first refreshes after subscribing under an already-enabled policy still count; it is cleared to null when `enabled` becomes false. The rule needs no in-memory history, so it survives process death. 02's candidate query requires `e.isNew = 1` and `e.firstSeenAt > autoDownloadEligibleAfter`, so:
+`podcast.autoDownloadEligibleAfter` ([02 podcast](02-data-model.md#podcast)) is the [D67](../PLAN.md#3-key-decisions) watermark, written only by the planner. It is maintained by the **watermark pass**, which every planner run performs first, over the full map of `observeAutoDownload()` (every subscribed podcast, not only the triggering ones):
+
+1. `passStart = now`; `baseline = downloads.planner_baseline_at` (`device_settings`, 0 when absent).
+2. Effective `enabled = false` → set the watermark to null.
+3. Effective `enabled = true` and watermark null:
+   - `subscribedAt > baseline` → watermark = `subscribedAt`. The podcast was subscribed after the planner last saw the whole library, so its policy was enabled from the subscription on (D67: episodes first seen after subscribing count).
+   - else → watermark = `now`. The planner saw the podcast disabled before, so the policy has just been enabled (M6 acceptance 4: episodes first seen after enabling).
+4. After the watermark writes commit: `downloads.planner_baseline_at = passStart`.
+
+The pass needs no in-memory history and is correct across process death. If the process dies before step 4, the old baseline is kept and the next pass decides the same way. Its only imprecision is conservative: a policy enabled just before a process death gets `now` at the next start, never an earlier time. 02's candidate query requires `e.isNew = 1` and `e.firstSeenAt > autoDownloadEligibleAfter`, so:
 
 - enabling auto-download (for a podcast, a group or globally) never downloads episodes that already existed — only those first seen by a later refresh;
 - subscribing, importing and restoring never auto-download, because `INITIAL` ingests never set `isNew` ([D66](../PLAN.md#3-key-decisions), [03 isNew and back-catalogue guard](03-feeds-and-discovery.md#isnew-and-back-catalogue-guard));
@@ -969,7 +1044,7 @@ This confirms 02's reading: a **tombstoned episode does not occupy a `keepLatest
 |---|---|---|
 | `IngestionEvents.newEpisodes` with `initialFetch = false` | the event's podcasts | collected by an initializer-launched coroutine on `@ApplicationScope`; events are batched for 5 s (a refresh run emits many). `initialFetch = true` events are ignored |
 | `RefreshController.observeStatus()` running → idle | every podcast with effective `enabled` | catches events lost while no collector existed (the bus has no replay, [03 Events](03-feeds-and-discovery.md#events)) |
-| `observeAutoDownload()` emission, debounced 2 s | podcasts whose effective policy changed | flips the watermark; re-plans; updates `allowMetered`/`requireCharging` of their queued `AUTO` rows |
+| `observeAutoDownload()` emission, debounced 2 s | podcasts whose entry differs from the previous emission (all podcasts for the first emission in a process); every emission runs the watermark pass over all podcasts | re-plans; updates `allowMetered`/`requireCharging` of their queued `AUTO` rows. A new subscription adds a map entry and therefore an emission |
 | `CleanupWorker` daily run, after cleanup | every enabled podcast | also catches slots freed by playing |
 | `DownloadReconcileWorker` at process start | every enabled podcast | — |
 | `requeueChangedEnclosures` after a refresh run | `FAILED` rows whose `sourceRef` differs from the episode's enclosure URL and whose error is `HTTP_NOT_FOUND`, `HTTP_GONE`, `HTTP_CLIENT` or `NOT_MEDIA` | both lanes; `attempt = 0`; `COMPLETED` rows are never re-downloaded because of a URL change ([03 Column rules on update](03-feeds-and-discovery.md#column-rules-on-update)) |
@@ -978,10 +1053,10 @@ This confirms 02's reading: a **tombstoned episode does not occupy a `keepLatest
 
 `AutoDownloadPlanner.plan(podcastIds)` (single flight; `@Dispatcher(IO)`):
 
-1. `eff = resolver.autoDownload(podcastIds)`.
-2. Podcasts with `enabled = false`: clear the watermark; delete their non-`COMPLETED`, non-`PAUSED` `AUTO` rows (in-flight → `StopIntent.Delete(byUser = false)`; `.part` deleted; no tombstone). Completed files stay and follow cleanup.
-3. Podcasts with `enabled = true`: set the watermark if null (nothing is eligible yet), then `wanted = DownloadDao.autoCandidates(podcastId, eligibleAfter, keepLatest, includeVideo, youtubeDownloads = capabilities.downloads)` ([02 Auto-download candidates](02-data-model.md#auto-download-candidates)): the newest `keepLatest` eligible, unplayed, untombstoned, `VISIBLE` and `AVAILABLE` episodes with their download state.
-4. Existing `AUTO` rows of the podcast in `QUEUED` or `FAILED` that are not in `wanted` (played elsewhere, pushed out of the newest N, policy narrowed) are deleted (no tombstone). In-flight rows not wanted are stopped and deleted too. `PAUSED` rows are left alone (the user touched them).
+1. The [watermark pass](#no-backfill-watermark) over all podcasts (`observeAutoDownload()`'s current map, or `resolver.autoDownload(allSubscribedIds)` outside the collector); `eff` = its entries for `podcastIds`.
+2. Podcasts with `enabled = false`: delete their non-`COMPLETED`, non-`PAUSED` `AUTO` rows (in-flight → `StopIntent.Delete(byUser = false)`; `.part` deleted; no tombstone). Completed files stay and follow cleanup.
+3. Podcasts with `enabled = true`: `wanted = DownloadDao.autoCandidates(podcastId, eligibleAfter, keepLatest, includeVideo, youtubeDownloads = capabilities.downloads)` ([02 Auto-download candidates](02-data-model.md#auto-download-candidates)): the newest `keepLatest` eligible, unplayed, untombstoned, `VISIBLE` and `AVAILABLE` episodes with their download state.
+4. Existing `AUTO` rows of the podcast in `QUEUED`, `FAILED` or `MISSING` that are not in `wanted` (played elsewhere, pushed out of the newest N, policy narrowed) are deleted (no tombstone). In-flight rows not wanted are stopped and deleted too. `PAUSED` rows are left alone (the user touched them).
 5. `wanted` episodes whose row is `QUEUED` get `allowMetered = (network == ANY)` and `requireCharging` updated if changed; `MISSING` rows (not `STORAGE_UNAVAILABLE`) go back to `QUEUED`.
 6. `wanted` episodes without a row become insert candidates with their estimate ([Estimates](#estimates)).
 7. **Admission**, round-robin across podcasts: podcasts ordered by their newest candidate's `sortDate` descending, one candidate per podcast per round, newest first within a podcast. With a cap (`downloads.storage_cap_mb > 0`), a candidate is admitted only while `usedBytes + remaining bytes of queued and in-flight AUTO rows + its estimate (150 MB when unknown) ≤ cap`; the first refusal stops admission for this run and sets `StorageUsage.autoBlockedByCap`. Free space is not checked here (the engine checks it per row).
@@ -1028,12 +1103,12 @@ Serves R4.5, N6. Delivered in M6. [PO-12](../PLAN.md#48-further-product-owner-de
 In this order, each with the protected set excluded:
 
 1. **Played downloads past their grace period**, `AUTO` lane first, oldest `playedAt` first ([02 Cleanup candidates](02-data-model.md#cleanup-candidates)), using the podcast's effective `deleteAfterPlayed`: `IMMEDIATELY` → eligible at the next run after `playedAt`; `AFTER_24H` → when `playedAt + 24 h ≤ now`; `NEVER` → never. Applies to `MANUAL` and `AUTO` rows.
-2. **Unplayed `AUTO` downloads beyond `keepLatest`** of podcasts whose effective auto-download is on: per podcast, keep the newest `keepLatest` by `(sortDate, id)` and delete older unplayed `AUTO` downloads that are not in progress. This is the rolling "keep newest N" window; turning auto-download off stops it.
+2. **Unplayed `AUTO` downloads beyond `keepLatest`** of podcasts whose effective auto-download is on: per podcast, keep the newest `keepLatest` completed unplayed `AUTO` downloads by `(sortDate, id)` and delete the older ones. Protected rows (below) count in their place in the window and are never deleted, so a podcast can hold more than `keepLatest` unplayed automatic downloads while some are protected (confirms 02's reading, [02 Cleanup candidates](02-data-model.md#cleanup-candidates)). This is the rolling "keep newest N" window; turning auto-download off stops it.
 3. Nothing else. The cap never deletes unplayed episodes; it only stops admission.
 
 ### Protected set
 
-Never auto-deleted (canonical, enforced in 02's SQL plus Kotlin): favourites (`isFavorite`), the playing episode (`play_session.currentEpisodeId`), the next 3 Up-next items (`:upNextProtected = 3`), unplayed `MANUAL` downloads, and — added here — unplayed `AUTO` downloads that are in progress (`startedAt IS NOT NULL`; 02 is asked to add the predicate). Deleting files of the current episode is additionally deferred ([below](#deferral-while-playing)).
+Never auto-deleted (canonical, enforced in 02's SQL plus Kotlin): favourites (`isFavorite`), the playing episode (`play_session.currentEpisodeId`), the next 3 Up-next items (`:upNextProtected = 3`), unplayed `MANUAL` downloads, and — added here — unplayed `AUTO` downloads that are in progress (`startedAt IS NOT NULL`, already in 02's rolling-window query). Deleting files of the current episode is additionally deferred ([below](#deferral-while-playing)).
 
 ### Tombstones
 
@@ -1043,8 +1118,8 @@ Cleanup deletes with `byUser = false`: no `downloadDismissedAt`, so an episode r
 
 06 may hold an open `Local` pin on the current item's file and re-open it on every seek ([06 EpisodeResolver](06-playback.md#episoderesolver)). Therefore any deletion (user, cleanup, unsubscribe, move source) of a file whose episode is `play_session.currentEpisodeId` — read through `PlaySessionDao.observeCurrentEpisodeId()` (02; `:download:impl` may not depend on `:playback:api`, [01 Dependency rules](01-foundation.md#dependency-rules)) — removes the row and the index entry at once but hands the file to `DeferredDeletes`:
 
-- `DeferredDeletes` persists `"{rootId}|{relativePath}"` entries in `downloads.deferred_deletes` (`device_settings`) and deletes a file when `currentEpisodeId` changes away from its episode.
-- At process start no pin can exist, so reconcile deletes every listed file whose root is available.
+- `DeferredDeletes` persists `"{episodeId}|{rootId}|{path}"` entries in `downloads.deferred_deletes` (`device_settings`) and deletes a file when `currentEpisodeId` changes away from its episode. The same set is the crash journal of every deletion ([Deleting a download](#deleting-a-download)).
+- At process start no pin can exist, so reconcile deletes every listed file whose root is available, unless a live row references the same path (`pathsByRoot()`). A re-download of the same episode writes the same `[e…]` name. An entry for a path that a new `COMPLETED` row now owns is dropped at that commit ([Verification and finalisation](#verification-and-finalisation)).
 - Files on unavailable roots are deferred the same way until the root returns.
 - If the file disappears anyway, 06's recovery re-pins to the stream at the same position and calls `reportFileMissing` ([06 Error recovery](06-playback.md#error-recovery)).
 
@@ -1058,7 +1133,7 @@ During reconcile and the daily cleanup:
 
 - `.part` files in `<root>/.partial/` that no row references → deleted.
 - `.part` files untouched for 14 days → deleted; a referencing `PAUSED`, `QUEUED` or `FAILED` row keeps its state with `downloadedBytes = 0` and cleared validators (it restarts from 0).
-- Completed-looking files under `<root>/* [p…]/` that no row references (DB recovered from a snapshot, failed deletes) are **never deleted automatically**: their size is reported as `orphanBytes` (`ORPHAN_FILES` notice) and `deleteOrphanFiles()` removes them after the user confirms. Re-attaching orphans to episodes is not attempted in v1 (row IDs differ after a recovery).
+- Completed-looking files under `<root>/* [p…]/` that no row references and no journal entry lists (database recreated by [02's corruption recovery](02-data-model.md#error-handling-and-recovery), files copied in by the user) are **never deleted automatically**: their size is reported as `orphanBytes` (`ORPHAN_FILES` notice) and `deleteOrphanFiles()` removes them after the user confirms. Re-attaching orphans to episodes is not attempted in v1 (row IDs differ after a recovery).
 
 ---
 
@@ -1100,23 +1175,28 @@ The update kills the process; WorkManager work and the persisted job survive (Un
 
 ### Restore onto a new phone
 
-`download` rows are never part of a backup or the Auto Backup snapshot (row IDs are device-local, [02 Local row IDs](02-data-model.md#local-row-ids)), so a restore creates no `MISSING` rows: the restored library starts with no downloads, the planner downloads only episodes that arrive after its policies resolve to enabled (watermark set at restore time), and 05's restore report offers "Re-download {n} episodes" from the backup's per-episode download flag ([05 After restore](05-groups-opml-backup.md#after-restore)), which calls `request(ids, MANUAL, null)` from the visible report screen. `downloads.root_id` and `downloads.deferred_deletes` are device-bound and never restored.
+`download` rows are never part of a backup or the Auto Backup snapshot (row IDs are device-local, [02 Local row IDs](02-data-model.md#local-row-ids)), so a restore creates no `MISSING` rows: the restored library starts with no downloads, the planner downloads only episodes that a non-initial refresh finds after the restore (restored podcasts ingest with `initialFetch`, so nothing restored has `isNew`; [No backfill watermark](#no-backfill-watermark)), and 05's restore report offers "Re-download {n} episodes" from the backup's per-episode download flag ([05 After restore](05-groups-opml-backup.md#after-restore)), which calls `request(ids, MANUAL, null)` from the visible report screen. `downloads.root_id`, `downloads.deferred_deletes` and `downloads.planner_baseline_at` are device-bound and never restored.
 
 ### Moving between roots
 
-`changeRoot(rootId, moveExisting)` writes `downloads.root_id`; new rows use the new root at once. With `moveExisting = true` (the settings dialog "Move {n} downloads ({2.3 GB}) to {SD card}?") it enqueues `download-move` with `targetRootId`. `DownloadMoveWorker` (8-min soft deadline, continuation `APPEND_OR_REPLACE`):
+`changeRoot(rootId, moveExisting)` writes `downloads.root_id`. New rows use the new root at once, and queued or paused rows follow it at their next prepare, `.part` included ([RSS prepare](#rss-prepare) step 3; YouTube rows use the same placement step). With `moveExisting = true` (the settings dialog "Move {n} downloads ({2.3 GB}) to {SD card}?"), it also enqueues `download-move` with `targetRootId` for the **completed** files. `DownloadMoveWorker` (8-min soft deadline, continuation `APPEND_OR_REPLACE`):
 
-1. `engine.beginMove(target)`: claims only admit rows already on the target root while the move runs.
-2. For each row on another root that is not in flight (batches of 20, `rowsOnOtherRoots`): skip if its source root is unavailable (counted, reported); check target free space (`file length + 200 MB`); copy the final file or `.part` to `<target>/.partial/{id}.move` (256 KiB buffer), `sync()`, verify the length.
-3. `COMPLETED`: rename `.move` to its final path on the target (same naming and folder reuse); one transaction updates `rootId`, `relativePath`, `finalUri` (re-checking that the row still exists, else the copy is deleted); `LocalMediaIndexImpl.put`; delete the source (deferred if it is the current episode). Rows with a `.part`: rename to `<target>/.partial/{id}.part`, update `rootId`, `tempPath`. Rows without files: update `rootId` only.
-4. Rows in flight on other roots: re-enqueue `download-move` with a 1-minute initial delay until none remain.
-5. `engine.endMove()`; notice `MOVE_IN_PROGRESS` while running.
+1. Take the next batch of 20 rows from `rowsOnOtherRoots(target, 20)` (02: `COMPLETED` rows only; the engine never writes a `COMPLETED` row, so no claim can race the move).
+2. Per row:
+   - source root unavailable → skip the row (counted and reported in the notice);
+   - check target free space (`file length + 200 MB`); short → stop the move with the `STORAGE_LOW` notice;
+   - copy the final file to `<target>/.partial/{id}.move` (256 KiB buffer), `sync()`, verify the length.
+3. Rename `.move` to its final path on the target (same naming and folder reuse). One transaction updates `rootId`, `relativePath` and `finalUri`, re-checking that the row still exists and is `COMPLETED` on the old root; otherwise the copy is deleted.
+4. After the commit:
+   - `LocalMediaIndexImpl.put`;
+   - delete the source through the [deletion journal](#deleting-a-download), deferred if it is the current episode.
+5. Repeat until the query returns nothing or the deadline is reached (continuation). A `.move` left by a process death is an unreferenced file in `.partial/` and is swept.
 
-Playback keeps using the row's current `finalUri`; an open `Local` pin keeps reading the source, which is not deleted while current.
+`MOVE_IN_PROGRESS` shows while the worker runs. Playback keeps using the row's current `finalUri`. An open `Local` pin keeps reading the source, which is not deleted while current.
 
 ### Unsubscribe, merge and retention
 
-03's `UnsubscribeUseCase` and podcast merge call `delete(ids, byUser = false)` before 02's cascade ([03 Unsubscribe and other podcast operations](03-feeds-and-discovery.md#unsubscribe-and-other-podcast-operations)); the current episode's file is deferred and deleted when the cascade clears `currentEpisodeId`. Retention never deletes episodes that have a `download` row ([02 Retention and maintenance](02-data-model.md#retention-and-maintenance)), so an episode that left its feed stays playable offline until its download is deleted.
+03's `UnsubscribeUseCase` calls `delete(ids, byUser = false)` for the podcast's downloads before 02's cascade ([03 Unsubscribe and other podcast operations](03-feeds-and-discovery.md#unsubscribe-and-other-podcast-operations)); the current episode's file is deferred and deleted when the cascade clears `currentEpisodeId`. A podcast merge (03) deletes only the downloads of matched loser episodes whose winner already has one; other `download` rows move to the winner's episodes with their files, which keep their old folder (files are never renamed). Retention never deletes episodes that have a `download` row ([02 Retention and maintenance](02-data-model.md#retention-and-maintenance)), so an episode that left its feed stays playable offline until its download is deleted.
 
 ---
 
