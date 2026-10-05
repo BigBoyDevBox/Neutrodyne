@@ -29,11 +29,11 @@ Never in Room ([D73](../PLAN.md#3-key-decisions), [D76](../PLAN.md#3-key-decisio
 
 | Module | Contents specified here |
 |---|---|
-| `:core:model` (JVM) | Enums of the canonical list plus [new enums](#new-names-introduced-here); `EpisodeRow`; bit constants `YouTubeVariantBits`, `FilterFlagBits` |
-| `:core:database` (Android, `neutrodyne.room`) | `NeutrodyneDatabase`, all entities (`<Table>Entity`), DAOs, DAO projections, `FeedQueryBuilder`, `NeutrodyneConverters`, `EpisodeDescriptionCodec`, `DatabaseOpener`, migrations, `core/database/schemas/` |
-| `:core:data` (Android) | `DbMaintenanceWorker`; entity ↔ `:core:model` mappers; JSON-column codecs (kotlinx.serialization) |
+| `:core:model` (KMP, `commonMain` only) | Enums of the canonical list plus [new enums](#new-names-introduced-here); `EpisodeRow`; bit constants `YouTubeVariantBits`, `FilterFlagBits` |
+| `:core:database` (KMP: `neutrodyne.kmp.library`, `neutrodyne.room` with KSP per target, `kspAndroid` and `kspDesktop`) | `commonMain`: `NeutrodyneDatabase` with `@ConstructedBy(NeutrodyneDatabaseConstructor)`, all entities (`<Table>Entity`), DAOs, DAO projections, `FeedQueryBuilder`, `NeutrodyneConverters`, `DatabaseOpener`, the `DatabaseFactory` contract, `TableRebuild`, `SyncTriggers`, migrations, `expect object EpisodeDescriptionCodec`; `androidMain`: `AndroidDatabaseFactory` and the codec's `actual`; `desktopMain`: `DesktopDatabaseFactory` (file `<data>/neutrodyne.db`, [11 AppDirs](11-desktop.md#appdirs)) and the codec's `actual`; `core/database/schemas/` |
+| `:core:data` (KMP) | `commonMain`: `DbMaintenance` (the maintenance steps), `DiagExportScrub`, `FetchStateBatcher`, entity ↔ `:core:model` mappers, JSON-column codecs (kotlinx.serialization); `androidMain`: `DbMaintenanceWorker`; `desktopMain`: `DesktopMaintenanceLane` (the `maintenance` lane of `DesktopJobRunner`, [11 Background work](11-desktop.md#background-work)) |
 
-Only `:core:data`, `:core:artwork`, `:playback:impl` and `:download:impl` depend on `:core:database` ([PLAN 5.1](../PLAN.md#51-module-graph) rules 2 and 4); `:youtube:ytdlp` does not ([D13](../PLAN.md#3-key-decisions)). The update check lives in `:core:data` but touches no table. Features never see entities or DAOs; they receive `:core:model` types through `:core:domain` interfaces ([D12](../PLAN.md#3-key-decisions)).
+Only `:core:data`, `:core:artwork`, `:download:impl` and `:sync:impl` (shared implementations), `:playback:impl` (Android) and `:playback:desktop` (desktop) depend on `:core:database` ([PLAN 5.1](../PLAN.md#51-module-graph) graph and rules 2, 4 and 6); `:youtube:*`, `:feeds`, `:sync:protocol` and `:sync:server` do not ([D13](../PLAN.md#3-key-decisions), [D94](../PLAN.md#3-key-decisions)). The update check lives in `:core:data` but touches no table. Features never see entities or DAOs; they receive `:core:model` types through `:core:domain` interfaces ([D12](../PLAN.md#3-key-decisions)). `commonMain` of `:core:database` uses no `java.*` or `android.*` API ([D81](../PLAN.md#3-key-decisions), `checkBannedApis`): file paths, file moves and the DEFLATE codec are the platform parts above, and UUIDs come from `kotlin.uuid.Uuid` ([Naming and types](#naming-and-types)).
 
 ### Table write ownership
 
@@ -41,20 +41,24 @@ Only `:core:data`, `:core:artwork`, `:playback:impl` and `:download:impl` depend
 
 | Table | Churn | Writers (doc: class) | Main readers |
 |---|---|---|---|
-| `podcast` | low (fetch state batched) | 03: `FeedRefresher`, `SubscribeUseCase`; 04: YouTube columns via 03's refresh pipeline, channel art and `channelMetadataAt` via `PodcastDao.applyYouTubeChannelMetadata`; 05: `ImportRepository`, `RestoreWorker` (insert), `GroupRepository`/podcast settings (`includeInAll`, `customTitle`, `episodeOrder`); 07: `AutoDownloadPlanner` (`autoDownloadEligibleAfter`) | everyone |
-| `podcast_url_alias`, `credential` | low | 03 (subscribe, moves, merge, `CredentialStore`); 05 (import, restore aliases) | 03, 05, 06, 07 |
-| `podcast_settings`, `podcast_group_settings` | low | 05 settings screens; 05 restore | `EffectiveSettingsResolver` (05) |
-| `podcast_group`, `podcast_group_member` | low | 05 `GroupRepository`, import, restore | 05, 06, 08 |
+| `podcast` | low (fetch state batched) | 03: `FeedRefresher`, `SubscribeUseCase`; 04: YouTube columns via 03's refresh pipeline, channel art and `channelMetadataAt` via `PodcastDao.applyYouTubeChannelMetadata`; 05: `ImportRepository`, `RestoreWorker` (insert), `GroupRepository`/podcast settings (`includeInAll`, `customTitle`, `episodeOrder`); 07: `AutoDownloadPlanner` (`autoDownloadEligibleAfter`); 10: `SyncApplier` (insert as pending, user fields, moves, `syncId` on a redirect) | everyone |
+| `podcast_url_alias`, `credential` | low | 03 (subscribe, moves, merge, `SecretStore` on Android); 05 (import, restore aliases); 10 (`SyncApplier` aliases with reason `SYNC`; `SyncTokenStore` on Android) | 03, 05, 06, 07, 10 |
+| `podcast_settings`, `podcast_group_settings` | low | 05 settings screens; 05 restore; 10 `SyncApplier` (synced override columns only) | `EffectiveSettingsResolver` (05) |
+| `podcast_group`, `podcast_group_member` | low | 05 `GroupRepository`, import, restore; 10 `SyncApplier` | 05, 06, 08, 10 |
 | `episode` and children (`episode_description`, `episode_transcript`, `episode_alt_enclosure`, `person`, `funding`) | low | 03 ingestion; 04 enrichment (`IngestDao.applyYouTubeFacts`: `durationMs`, `availability`, `isShort`; facts from the engine's `YtDlpEnricher`, so only with the engine, from M9a) as part of the refresh pipeline; 04 `YouTubeAvailabilityRecorder` (`EpisodeDao.setAvailability`, called by 06/07 at resolve time); 05 restore (stub rows); 02 retention (delete) | everyone |
 | `chapter` | low | 03 (PSC rows); 06 (other sources) | 06, 08 |
-| `episode_state` | low | 06 (started, played, measured duration); 03/08 via `EpisodeRepository` (favourite, bulk played); 07 (tombstone); 05 (import "treat as played", restore) | lists, 05, 06, 07 |
-| `episode_position` | **high** (every 5 s while playing) | 06 `PositionTracker`; 05 restore | `EpisodeLiveStateSource` (08), 06 |
-| `queue_entry`, `play_session` | medium (every transition) | 06; 05 restore | 06 |
+| `episode_state` | low | 06 (started, played, measured duration); 03/08 via `EpisodeRepository` (favourite, bulk played); 07 (tombstone); 05 (import "treat as played", restore); 10 (`SyncApplier`, `SyncParkedStateApplier`) | lists, 05, 06, 07, 10 |
+| `episode_position` | **high** (every 5 s while playing) | 06 `PositionTracker` (Android and desktop through `:playback:core`'s `PositionSaver`); 05 restore; 10 `SyncApplier` | `EpisodeLiveStateSource` (08), 06, 10 |
+| `queue_entry`, `play_session` | medium (every transition) | 06; 05 restore; 10 `SyncApplier`, `SessionAdopter` | 06, 10 |
 | `download` | low (transitions only, [D17](../PLAN.md#3-key-decisions)) | 07 (episode downloads only) | lists, 06 `LocalMediaIndex` (via 07), 07 |
 | `artwork` | low (batched) | 08 `ArtworkSyncWorker`, `ArtworkStore` | lists, 08 |
 | `import_session`, `import_item` | medium during an import | 05 | 05 |
+| `sync_state` | **high while linked** (the triggers advance `hlc` on every captured write); otherwise none | capture triggers; 10 `SyncEngine`, `LinkFlow`, `SyncApplier` ([Sync bookkeeping](#sync-bookkeeping)) | capture triggers; 10 (one-shot reads, cached in `SyncStateCache`) — never observed |
+| `sync_outbox` | **high while linked** (one coalesced row per changed field; the 5-s position save rewrites one row) | capture triggers, `SyncOutboxDao` captures; 10 `SyncEngine` (acknowledged rows), `SyncApplier` (losing rows) | 10 `OutboxReader`; only 10's `SyncScheduler` observes it ([Observed tables per query](#observed-tables-per-query)) |
+| `sync_clock` | medium during a sync round | 10 `SyncApplier`, `SyncEngine`, `SettingsCapture`; `sync_cap_episode_rekey` | 10 |
+| `sync_parked`, `sync_held` | low | 10 `SyncApplier`, `SyncParkedStateApplier`, `MassChangeGuard`; 02 maintenance (expiry) | 10 |
 
-Exceptions to [D15](../PLAN.md#3-key-decisions) "episode is written only by ingestion" (recorded for a PLAN amendment): restore inserts stub rows that ingestion completes later; retention deletes rows; 04's `YouTubeAvailabilityRecorder` writes only `availability` when a stream resolve proves a video unavailable. None of them writes user state, and none rewrites other feed-derived columns of an existing row. 04's enrichment writes run inside the refresh pipeline and count as ingestion; the engine in `:ytx` only returns facts over Binder, and the main process writes them.
+Exceptions to [D15](../PLAN.md#3-key-decisions) "episode is written only by ingestion" (recorded for a PLAN amendment): restore inserts stub rows that ingestion completes later, and 10's `SyncApplier` inserts the same stubs for queued, in-progress and favourite episodes it cannot match yet ([Restore matching](#restore-matching)); retention deletes rows; 04's `YouTubeAvailabilityRecorder` writes only `availability` when a stream resolve proves a video unavailable. None of them writes user state into `episode`, and none rewrites other feed-derived columns of an existing row. 04's enrichment writes run inside the refresh pipeline and count as ingestion; the engine host (`:ytx` on Android, the CPython child on the desktop) only returns facts, and the app process writes them.
 
 ### New names introduced here
 
@@ -64,7 +68,7 @@ Exceptions to [D15](../PLAN.md#3-key-decisions) "episode is written only by inge
 | `FeedErrorKind` | enum, `:core:model`; values owned by 03, must include `UNKNOWN` | `podcast.lastErrorKind` | 03, 08 |
 | `OwnerType { PODCAST, EPISODE }` | enum, `:core:model` | `person.ownerType`, `funding.ownerType` | 03 |
 | `ImportItemKind { RSS, YOUTUBE }` | enum, `:core:model` | `import_item.kind` | 05 |
-| `AliasReason { SUBSCRIBE_INPUT, REDIRECT, NEW_FEED_URL, IMPORT, RESTORE, MERGE, RENORMALISED }` | enum, `:core:model` | `podcast_url_alias.reason` | 03, 05 |
+| `AliasReason { SUBSCRIBE_INPUT, REDIRECT, NEW_FEED_URL, IMPORT, RESTORE, MERGE, RENORMALISED, SYNC }` | enum, `:core:model`; `SYNC` appended in the scope revision (requested by 10) | `podcast_url_alias.reason`; `SYNC` = an alias received in a podcast record's `feedKeys` | 03, 05, 10 |
 | `YouTubeVariantBits { LONG_FORM = 1, SHORTS = 2, LIVE = 4 }`, `FilterFlagBits { UNPLAYED = 1, DOWNLOADED = 2, IN_PROGRESS = 4 }` | constant objects, `:core:model` | Values of `podcast.youtubeVariants`, `podcast_group.filterFlags`, `play_session.contextFilterFlags` | 04, 05, 06 |
 | `podcast.episodeOrder` | column `FeedOrder?` | Order of the podcast screen; null = `OLDEST_FIRST` when `showType = SERIAL`, else `NEWEST_FIRST` | 05, 08 |
 | `podcast.autoDownloadEligibleAfter` | column `Long?` | D67 watermark: episodes with `firstSeenAt` ≤ it are never auto-download candidates | 07 |
@@ -79,19 +83,25 @@ Exceptions to [D15](../PLAN.md#3-key-decisions) "episode is written only by inge
 | `import_session.finishedAt` | column `Long?` | Start of the 7-day cleanup window | 05 |
 | `EpisodeKeys.candidates(item)`, `EpisodeKeys.keyFor(episode, version)`, `EpisodeKeys.versionOf(key)` | required members of the canonical `EpisodeKeys` (`:feeds`, implemented by 03) | Version-tolerant matching ([Key versions](#key-versions)) | 03, 05 |
 | `ScopeOverrides` | `@Embedded` class, `:core:database` | Guarantees identical columns in both settings tables | 05 |
-| `NeutrodyneConverters`, `EpisodeDescriptionCodec`, `DatabaseOpener`, `OpenResult`, `RecoveryCause`, `DatabaseOpenException`, `TableRebuild`, `ForeignKeysDriver` (only if spike S3 needs it) | classes, `:core:database` | Converters, show-notes storage, open/recovery, migration helper | 01, 03, 05 |
+| `NeutrodyneConverters`, `EpisodeDescriptionCodec` (`expect object`), `DatabaseOpener`, `OpenResult`, `RecoveryCause`, `DatabaseOpenException`, `TableRebuild`, `ForeignKeysDriver` (only if spike S3 needs it) | classes, `:core:database` | Converters, show-notes storage, open/recovery, migration helper | 01, 03, 05, 11 |
+| `NeutrodyneDatabaseConstructor` (`expect object`, generated per target), `DatabaseFactory` (`commonMain` contract), `AndroidDatabaseFactory` (`androidMain`), `DesktopDatabaseFactory` (`desktopMain`) | KMP database construction, `:core:database` | Database file, quarantine directory and builder per platform ([Database builder and connections](#database-builder-and-connections)) | 01, 11 |
+| `podcast.syncId` | column `String`, unique | Sync record ID of a podcast, independent of feed URLs ([Podcast syncId](#podcast-syncid)) | 03, 05, 10 |
+| `podcast_group.orderKey`, `podcast_group_member.orderKey`, `queue_entry.orderKey` | columns `String` (replace `sortOrder` and `ordinal`) | Fractional-index order of groups, members and Up next ([Up next ordering](#up-next-ordering), [Group and member ordering](#group-and-member-ordering)) | 05, 06, 08, 10 |
+| `SyncStateEntity`, `SyncOutboxEntity`, `SyncClockEntity`, `SyncParkedEntity`, `SyncHeldEntity` | entities of `sync_state`, `sync_outbox`, `sync_clock`, `sync_parked`, `sync_held`, `:core:database` | [Sync tables](#sync-tables) | 10 |
+| `SyncTriggers` (`create`, `dropAll`, `recreate`, `ensure`, `sql`, `jsonString`) and the triggers `sync_cap_<table>_<ins\|upd\|del>`, `sync_cap_episode_rekey` | object and SQL triggers, `:core:database` | [Sync capture triggers](#sync-capture-triggers) | 10 |
 | `DiagExportScrub` (with its `KEEP` allow-list) | object, `:core:data` | Scrubs the diagnostics `VACUUM INTO` copy column by column ([db-maintenance worker](#db-maintenance-worker)) | 09 (`DatabaseCopyExporter`) |
+| `DbMaintenance` | class, `:core:data` `commonMain` | The maintenance steps, run by `DbMaintenanceWorker` (Android) and `DesktopMaintenanceLane` (desktop) | 11 |
 | `FetchStateBatcher` | class, `:core:data` | Batches fetch-state-only `podcast` writes ([Refresh selection and fetch-state writes](#refresh-selection-and-fetch-state-writes)) | 03 |
 | `EpisodeRowProjection`, `ContextItem`, `MediaLookupRow`, `ExistingEpisodeKey`, `EpisodeFeedUpdate`, `PodcastFeedMetadata`, `PodcastFetchState`, `DueFeed` (requested by 03), `YouTubeFeedMetadata`, `YouTubeFacts`, `ArtworkSyncResult`, `QueryPlanRow` | DAO projections, `:core:database` | Query results and partial-entity updates | 03, 04, 06, 07, 08 |
-| `PodcastDao`, `EpisodeDao`, `IngestDao`, `FeedDao`, `GroupDao`, `ScopeSettingsDao`, `EpisodeStateDao`, `PositionDao`, `QueueDao`, `PlaySessionDao`, `DownloadDao`, `ArtworkDao`, `ChapterDao`, `CredentialDao`, `ImportDao`, `BackupDao`, `MaintenanceDao` | DAOs, `:core:database` | One DAO per area | impl modules |
+| `PodcastDao`, `EpisodeDao`, `IngestDao`, `FeedDao`, `GroupDao`, `ScopeSettingsDao`, `EpisodeStateDao`, `PositionDao`, `QueueDao`, `PlaySessionDao`, `DownloadDao`, `ArtworkDao`, `ChapterDao`, `CredentialDao`, `ImportDao`, `BackupDao`, `MaintenanceDao`; `SyncStateDao` (with `withApplying`), `SyncOutboxDao` (with `captureLiteral`, `captureAll`, `captureAt`, requested by 10), `SyncClockDao`, `SyncParkedDao`, `SyncHeldDao` | DAOs, `:core:database` | One DAO per area | impl modules, `:sync:impl` |
 | `diagnostics.db_quick_check_failed_at` | `device_settings` key, `Long` | Last failed `PRAGMA quick_check`, shown on the diagnostics screen | 09 |
-| `MigrationInvariants`, `SeedDatabase`, `TestDb`, `SqlEnumLiterals` | test utilities, `:core:database` Android test fixtures (`core/database/src/testFixtures/`, [09 Shared helpers](09-quality-and-release.md#shared-helpers)) | Migration invariants, seeded scale DB, in-memory and temp-file DB factory, enum names used in SQL | 09 |
+| `MigrationInvariants`, `SeedDatabase`, `FeedFixture`, `TestDb`, `SqlEnumLiterals` | test utilities in `:core:testing` (package `ch.lkmc.neutrodyne.core.testing.database`; `commonMain` except `TestDb`'s platform builders), [09 Shared helpers](09-quality-and-release.md#shared-helpers) | Migration invariants, seeded scale DB, in-memory and temp-file DB factory, enum names used in SQL | 09, 10 |
 
 ---
 
 ## Conventions
 
-Serves N1, N9, N11. Delivered in M1.
+Serves N1, N9, N11. Delivered in M1 (M1a), for both platforms.
 
 ### Naming and types
 
@@ -102,10 +112,13 @@ Serves N1, N9, N11. Delivered in M1.
 | Entity classes | `<PascalCaseTable>Entity` (`PodcastGroupMemberEntity`) |
 | Indices | Room default names `index_<table>_<col>[_<col>]` (EXPLAIN tests refer to them) |
 | Primary keys | `Long` `@PrimaryKey(autoGenerate = true)`. Room 3's `algorithm` parameter defaults to `AUTOINCREMENT` (the alternative `ROWID` reuses IDs and is never used here), so deleted IDs are never reused, which keeps `episode:{id}` media IDs, notifications and `[e<id>]` file names unambiguous; `SchemaSmokeTest` asserts `AUTOINCREMENT` in `1.json`. Table rebuilds must preserve the `sqlite_sequence` high-water mark ([Writing migrations](#writing-migrations)). Natural keys where canonical (`artwork.key`, `podcast_url_alias.url`) |
-| Timestamps | `Long` epoch milliseconds UTC from the injected `Clock` (never `System.currentTimeMillis()` in DAOs) |
+| Timestamps | `Long` epoch milliseconds UTC from the injected `Clock` (never `System.currentTimeMillis()` in DAOs). One exception: the hybrid logical clock in `sync_state.hlc` is advanced in SQL from `julianday('now')` by the capture triggers and `SyncOutboxDao` ([Sync capture triggers](#sync-capture-triggers)); it orders changes and is never shown |
 | Booleans | Kotlin `Boolean` → `INTEGER` 0/1 |
 | Enums | `TEXT` holding `Enum.name` via explicit converters ([Type converters](#type-converters)) |
-| UUIDs | `TEXT`, lowercase canonical 8-4-4-4-12 ([D21](../PLAN.md#3-key-decisions)) |
+| UUIDs | `TEXT`, lowercase canonical 8-4-4-4-12 ([D21](../PLAN.md#3-key-decisions)): `podcast.syncId`, `podcast_group.uuid`. Generated in common code with `kotlin.uuid.Uuid.random().toString()` (version 4 from a cryptographically secure generator, `SecureRandom` on the JVM; stable API since Kotlin 2.4, [Uuid.random](https://kotlinlang.org/api/core/kotlin-stdlib/kotlin.uuid/-uuid/-companion/random.html)) |
+| Order keys | `orderKey TEXT NOT NULL`: a base-62 fractional index from `OrderKey` (`:sync:protocol`, [10 Ordered lists](10-sync.md#ordered-lists)); compared with SQLite's default `BINARY` collation, which sorts the digits `0-9A-Za-z` correctly; lists sort `ORDER BY orderKey, <id>`; never `COLLATE NOCASE` and never computed in SQL |
+| Sync record IDs (`rid`) | `TEXT` in the `sync_*` tables: `syncId`, `uuid`, `groupUuid + podcastSyncId`, `podcastSyncId + identityKey`, `current` or a setting key, concatenated without a separator ([10 Record IDs](10-sync.md#record-ids)); never a local row ID |
+| Triggers | Only the sync capture triggers exist: `sync_cap_<table>_<event>` and `sync_cap_episode_rekey`, created and dropped only through `SyncTriggers` ([Sync capture triggers](#sync-capture-triggers)); Room's own temporary invalidation triggers are Room's |
 | Colours | `Int` ARGB (`INTEGER`) |
 | Binary | `ByteArray` → `BLOB` |
 | Large columns | Declared **last** in the entity so SQLite reads hot columns without walking overflow pages (`descriptionHtml`, `categoriesJson`, `snippet`) |
@@ -129,7 +142,7 @@ One class, registered on the database: `@ColumnTypeConverters(NeutrodyneConverte
 | `NetworkPolicy`, `DeleteAfter` | settings tables | `UNMETERED`, `NEVER` (most conservative) |
 | `DownloadState`, `DownloadLane`, `WaitReason` (incl. `YOUTUBE_ENGINE_OFF`), `DownloadError`, `SourceKind` | `download` | `FAILED`, `MANUAL`, `NONE`, `UNKNOWN`, `RSS_ENCLOSURE` |
 | `ImportFormat` (incl. `URL_LIST`), `ImportState`, `ImportItemStatus`, `ImportItemKind` | import tables | `OPML`, `DONE`, `FETCH_FAILED`, `RSS` |
-| `ShowType`, `EpisodeType`, `FeedErrorKind`, `OwnerType`, `AliasReason` | new columns | `null`, `null`, `UNKNOWN`, `EPISODE`, `IMPORT` |
+| `ShowType`, `EpisodeType`, `FeedErrorKind`, `OwnerType`, `AliasReason` (incl. `SYNC`) | new columns | `null`, `null`, `UNKNOWN`, `EPISODE`, `IMPORT` |
 
 ```kotlin
 class NeutrodyneConverters {
@@ -141,11 +154,11 @@ inline fun <reified E : Enum<E>> enumOr(name: String, fallback: E): E =
     enumValues<E>().firstOrNull { it.name == name } ?: fallback
 ```
 
-The stored name is the contract: enum constants of persisted enums are only ever **appended**. Renaming or removing one requires a migration (`UPDATE <table> SET <col> = 'NEW' WHERE <col> = 'OLD'`) and a `ConverterTest` case; R8 does not affect `Enum.name` because `:app` keeps `-dontobfuscate` ([01](01-foundation.md#build-variants-and-abis)). Enum names used as SQL literals in this document (`'COMPLETED'`, `'YOUTUBE_CHANNEL'`, `'PENDING_FIRST_FETCH'`, …) are collected in the test-only list `SqlEnumLiterals`; `ConverterTest` asserts that each still exists in its enum.
+The stored name is the contract: enum constants of persisted enums are only ever **appended**. Renaming or removing one requires a migration (`UPDATE <table> SET <col> = 'NEW' WHERE <col> = 'OLD'`) and a `ConverterTest` case; R8 does not affect `Enum.name` because the Android release build keeps `-dontobfuscate` ([01 Build variants and ABIs](01-foundation.md#build-variants-and-abis), [D96](../PLAN.md#3-key-decisions)), and the desktop JARs are not minified ([D89](../PLAN.md#3-key-decisions)). The same names travel in sync payloads (for example `feedOrder`, `mediaFilter`), so an appended constant reaches older apps as an unknown name and takes the fallback above. Enum names used as SQL literals in this document (`'COMPLETED'`, `'YOUTUBE_CHANNEL'`, `'PENDING_FIRST_FETCH'`, …) are collected in the test-only list `SqlEnumLiterals`; `ConverterTest` asserts that each still exists in its enum.
 
 ### JSON columns and bitmasks
 
-JSON columns are typed `String` in entities. Encoding and decoding happen in `:core:data` mappers with one shared `Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = false }`, so `:core:database` stays ignorant of DTOs owned by 03 and 05. No SQL ever reads inside JSON (no JSON1 functions; see [SQL dialect baseline](#sql-dialect-baseline)).
+JSON columns are typed `String` in entities. Encoding and decoding happen in `:core:data` and `:sync:impl` mappers with one shared `Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = false }`, so `:core:database` stays ignorant of DTOs owned by 03, 05 and 10. No SQL ever reads inside JSON (no JSON1 functions; see [SQL dialect baseline](#sql-dialect-baseline)); the only JSON SQL ever *writes* are the constant literals and the escaped `rid` strings of the capture triggers ([Sync capture triggers](#sync-capture-triggers)).
 
 | Column | Shape | Owner of shape |
 |---|---|---|
@@ -154,6 +167,7 @@ JSON columns are typed `String` in entities. Encoding and decoding happen in `:c
 | `import_item.groupNamesJson` | `List<String>` (trimmed, NFC) | 05 |
 | `import_session.optionsJson`, `.warningsJson` | 05's `ImportOptions` / `List<ImportWarning>` DTOs | 05 |
 | `podcast_group.ruleJson` | Reserved (smart groups), versioned `{ "v": 1, … }`; always `null` in v1 | 05 |
+| `sync_outbox.value`, `sync_clock.clocks`, `sync_parked.record`, `sync_held.batch` and `.summary` | Literal wire values, per-field clocks with redirect and alias entries, received records, staged removals ([Sync tables](#sync-tables)) | 10 |
 
 | Bitmask column | Bits | Notes |
 |---|---|---|
@@ -162,51 +176,81 @@ JSON columns are typed `String` in entities. Encoding and decoding happen in `:c
 
 ### Database builder and connections
 
-`:core:database` exposes a factory; [01 Dependency injection](01-foundation.md#dependency-injection) binds the `SQLiteDriver` (`BundledSQLiteDriver` in production, `AndroidSQLiteDriver` in JVM/Robolectric tests, [D9](../PLAN.md#3-key-decisions)) and calls it through [`DatabaseOpener`](#error-handling-and-recovery).
+`:core:database` exposes the database through a platform `DatabaseFactory`; the app graphs ([01 Dependency injection](01-foundation.md#dependency-injection): `AndroidAppGraph`, `DesktopAppGraph`) bind the factory and the `SQLiteDriver` (`BundledSQLiteDriver` in production on both platforms, `AndroidSQLiteDriver` only in Android Robolectric tests, [D9](../PLAN.md#3-key-decisions)) and open it through [`DatabaseOpener`](#error-handling-and-recovery). Room KMP needs the `@ConstructedBy` constructor object whose `actual` KSP generates per target, and a platform builder: Android passes a `Context`, the JVM only the file name ([Room KMP](https://developer.android.com/kotlin/multiplatform/room)).
 
 ```kotlin
-@Database(entities = [/* the 22 entities of §Tables */], version = NeutrodyneDatabase.VERSION, exportSchema = true)
+// commonMain
+@Database(entities = [/* the 27 entities of §Tables */], version = NeutrodyneDatabase.VERSION, exportSchema = true)
+@ConstructedBy(NeutrodyneDatabaseConstructor::class)
 @ColumnTypeConverters(NeutrodyneConverters::class)
 abstract class NeutrodyneDatabase : RoomDatabase() {
     abstract fun podcastDao(): PodcastDao
     abstract fun episodeDao(): EpisodeDao
     abstract fun ingestDao(): IngestDao
     abstract fun feedDao(): FeedDao
-    // … one accessor per DAO listed in "New names introduced here"
+    // … one accessor per DAO listed in "New names introduced here", including the five Sync*Dao
     companion object {
         const val VERSION = 1
         const val FILE_NAME = "neutrodyne.db"
-        fun build(ctx: Context, driver: SQLiteDriver, io: CoroutineContext, cb: RoomDatabase.Callback) =
-            Room.databaseBuilder<NeutrodyneDatabase>(ctx, ctx.getDatabasePath(FILE_NAME).absolutePath)
+        fun build(factory: DatabaseFactory, driver: SQLiteDriver, io: CoroutineContext, cb: RoomDatabase.Callback) =
+            factory.builder()
                 .setDriver(driver)                                  // wrapped by ForeignKeysDriver only if spike S3 says so
-                .setQueryCoroutineContext(io)                       // @Dispatcher(IO)
+                .setQueryCoroutineContext(io)                       // @Dispatcher(IO): Dispatchers.IO on both platforms
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)    // explicit; WAL is mandatory
                 .addMigrations(*ALL_MIGRATIONS)
-                .addCallback(cb)                                    // suspend onCreate → OpenResult.created + play_session row; suspend onOpen → PRAGMA optimize
+                .addCallback(cb)                                    // onCreate: play_session and sync_state rows, SyncTriggers.create;
+                                                                    // onOpen: PRAGMA optimize, applying reset, SyncTriggers.ensure
                 .build()                                            // never fallbackToDestructiveMigration*()
     }
 }
+@Suppress("KotlinNoActualForExpect")
+expect object NeutrodyneDatabaseConstructor : RoomDatabaseConstructor<NeutrodyneDatabase> {
+    override fun initialize(): NeutrodyneDatabase
+}
+interface DatabaseFactory {                       // platform: path, files and builder; DatabaseOpener stays common
+    val databasePath: String                      // absolute path of neutrodyne.db
+    fun builder(): RoomDatabase.Builder<NeutrodyneDatabase>
+    fun exists(): Boolean
+    fun quarantine(stamp: String)                 // moves neutrodyne.db, -wal, -shm into <quarantine>/<stamp>/
+    fun pruneQuarantine(now: Long)                // keeps only the newest copy, at most 14 days
+    var quarantineMarker: Boolean                 // file "quarantine-requested" beside the database
+}
+// androidMain — databases/ in credential-encrypted storage
+class AndroidDatabaseFactory(private val context: Context) : DatabaseFactory {
+    override val databasePath get() = context.getDatabasePath(NeutrodyneDatabase.FILE_NAME).absolutePath
+    override fun builder() = Room.databaseBuilder<NeutrodyneDatabase>(context = context, name = databasePath)
+    // quarantine directory: databases/quarantine/
+}
+// desktopMain — the data directory of 11's AppDirs (mode 0700 on macOS and Linux)
+class DesktopDatabaseFactory(private val dirs: AppDirs) : DatabaseFactory {
+    override val databasePath get() = dirs.data.resolve(NeutrodyneDatabase.FILE_NAME).toString()
+    override fun builder() = Room.databaseBuilder<NeutrodyneDatabase>(name = databasePath)
+    // quarantine directory: <data>/quarantine/
+}
 ```
 
-- One database instance; only the main process opens it. The `:acra` and `:ytx` processes run no initializers and must never touch the database (01's process guards, [01 Application start-up](01-foundation.md#application-start-up); [D73](../PLAN.md#3-key-decisions) for `:ytx`). Multi-instance invalidation stays off.
+- One database instance per process, opened by exactly one process per platform: the Android main process — the `:acra` and `:ytx` processes run no initializers and must never touch the database (01's process guards, [01 Application start-up](01-foundation.md#application-start-up); [D73](../PLAN.md#3-key-decisions) for `:ytx`) — and the desktop instance that holds `SingleInstanceLock` ([D85](../PLAN.md#3-key-decisions), [11 Single instance and handshake](11-desktop.md#single-instance-and-handshake)); the desktop's CPython engine child never touches it. Multi-instance invalidation stays off on Android and does not exist on the JVM ([Platform constraints](#platform-constraints)).
 - WAL: with `WRITE_AHEAD_LOGGING` and no explicit pool setting, Room's pool has **one writer and four readers**; readers never block the writer and see a consistent snapshot. A caller waits for a pooled connection for at most 30 s and then gets an `SQLiteException`, so no transaction may run anywhere near that long ([Transactions and threading](#transactions-and-threading)). Room itself sets `busy_timeout` (≥ 3 s), `journal_mode` and `synchronous = NORMAL` on each connection. An in-memory database (tests) always uses a single connection, so tests of reader isolation use a temp-file database.
-- **Opening.** Room opens the first connection, runs `BEGIN EXCLUSIVE TRANSACTION` → `onCreate` or the migrations → `END`, then calls the generated `onOpen` and our `Callback.onOpen`; callbacks must use only the `connection` they receive (touching the database instance or a DAO there fails with "Recursive database initialization detected"). Room retries a failing first open once after 500 ms. If the builder offers `allowDataLossOnRecovery()` it is never called: Room would then delete a corrupt file itself, while [`DatabaseOpener`](#error-handling-and-recovery) quarantines it instead.
-- **Foreign keys.** `foreign_keys` must be `ON` on every connection after the database is open, and **`OFF` while migrations run** (see [Writing migrations](#writing-migrations): a table rebuild with foreign keys on cascades deletes into child tables). Room 3's generated `onOpen` executes `PRAGMA foreign_keys = ON` when any entity declares a foreign key, both for the first connection (after migrations) and for every later pooled connection; this matches what we need. Checked in the `androidx-main` sources of `room3-compiler`'s `OpenDelegateWriter` and `room3-runtime`'s `RoomConnectionManager` (2026-10-05); spike S3 ([01 Spikes](01-foundation.md#spikes)) confirms it for 3.0.3 with the bundled driver, including that the bundled SQLite is not compiled with foreign keys on by default (`PRAGMA foreign_keys` = 0 inside `Migration.migrate`). Fallback only if S3 fails: `ForeignKeysDriver(delegate, armed: () -> Boolean)`, a `SQLiteDriver` decorator whose `open()` runs `PRAGMA foreign_keys = ON` once `DatabaseOpener` has armed it after the first successful open. `SchemaSmokeTest` asserts the pragma on the writer and on a reader ([Testing](#testing)).
-- `onOpen`: `PRAGMA optimize=0x10002` with the bundled driver, plain `PRAGMA optimize` with the framework driver; plain `PRAGMA optimize` daily in `db-maintenance` and after a migration that adds an index ([SQLite pragma optimize](https://www.sqlite.org/pragma.html#pragma_optimize): recommended usage since 3.46.0).
+- **Opening.** Room opens the first connection, runs `BEGIN EXCLUSIVE TRANSACTION` → `onCreate` or the migrations → `END`, then calls the generated `onOpen` and our `Callback.onOpen`; callbacks must use only the `connection` they receive (touching the database instance or a DAO there fails with "Recursive database initialization detected"). Room retries a failing first open once after 500 ms. If the builder offers `allowDataLossOnRecovery()` it is never called: Room would then delete a corrupt file itself, while [`DatabaseOpener`](#error-handling-and-recovery) quarantines it instead. The same sequence runs on both platforms; spike S10 ([01 Spikes](01-foundation.md#spikes)) confirms it with the bundled driver on Windows x64, macOS arm64 and Linux x64/arm64.
+- **`Callback.onCreate(connection)`** inserts the singleton rows `play_session` (`id = 0`, [play_session](#play_session)) and `sync_state` (`id = 0`, `enabled = 0`, [sync_state](#sync_state)) and, from MS0, creates the capture triggers (`SyncTriggers.create`, [Sync capture triggers](#sync-capture-triggers)). **`Callback.onOpen(connection)`** runs `PRAGMA optimize` (below), `UPDATE sync_state SET applying = 0 WHERE id = 0 AND applying <> 0` (defensive: `applying` only ever changes inside a transaction that resets it, [applying protocol](#the-applying-protocol)) and, from MS0, `SyncTriggers.ensure(connection)`.
+- **Foreign keys.** `foreign_keys` must be `ON` on every connection after the database is open, and **`OFF` while migrations run** (see [Writing migrations](#writing-migrations): a table rebuild with foreign keys on cascades deletes into child tables). Room 3's generated `onOpen` executes `PRAGMA foreign_keys = ON` when any entity declares a foreign key, both for the first connection (after migrations) and for every later pooled connection; this matches what we need. Checked in the `androidx-main` sources of `room3-compiler`'s `OpenDelegateWriter` and `room3-runtime`'s `RoomConnectionManager` (2026-10-05); spike S3 ([01 Spikes](01-foundation.md#spikes)) confirms it for 3.0.3 with the bundled driver, including that the bundled SQLite is not compiled with foreign keys on by default (`PRAGMA foreign_keys` = 0 inside `Migration.migrate`), and S10 repeats the check on the desktop JVM. Fallback only if S3 fails: `ForeignKeysDriver(delegate, armed: () -> Boolean)`, a `SQLiteDriver` decorator whose `open()` runs `PRAGMA foreign_keys = ON` once `DatabaseOpener` has armed it after the first successful open. `SchemaSmokeTest` asserts the pragma on the writer and on a reader ([Testing](#testing)).
+- `onOpen`: `PRAGMA optimize=0x10002` with the bundled driver, plain `PRAGMA optimize` with the framework driver; plain `PRAGMA optimize` daily in maintenance and after a migration that adds an index ([SQLite pragma optimize](https://www.sqlite.org/pragma.html#pragma_optimize): recommended usage since 3.46.0).
+- Unverified until S10: the Room 3 names and parameters of the two builder functions, taken from the Room KMP documentation, whose examples already use the `room3` compiler artefact.
 
 ### Transactions and threading
 
 | Rule | Detail |
 |---|---|
-| All DAO functions are `suspend`, return `Flow`, or return `PagingSource` | Room 3 requires coroutines; there are no blocking DAO calls and no main-thread queries. Synchronous lookups on the player loader thread use in-memory mirrors (`LocalMediaIndex`, 07; episode source index, 06) |
-| Query context | `@Dispatcher(NeutrodyneDispatchers.IO)` via `setQueryCoroutineContext`; CPU-bound work (parsing, hashing, compression) happens **before** the transaction on `Default` |
+| All DAO functions are `suspend`, return `Flow`, or return `PagingSource` | Room 3 requires coroutines; there are no blocking DAO calls and no main-thread queries (Android main thread; the Swing EDT on the desktop). Synchronous lookups on the player loader thread (Android) or the engine thread (desktop) use in-memory mirrors (`LocalMediaIndex`, 07; episode source index, 06) |
+| Query context | `@Dispatcher(NeutrodyneDispatchers.IO)` (`Dispatchers.IO` on Android and the desktop) via `setQueryCoroutineContext`; CPU-bound work (parsing, hashing, compression, JSON for sync) happens **before** the transaction on `Default` |
 | Multi-statement writes | `db.withWriteTransaction { }` (suspend extension on `RoomDatabase`) or `@Transaction` DAO functions. Write transactions run on the pool's single writer connection, so they serialise all writers and read-then-write logic inside them is race-free (Unverified detail: whether Room 3 opens them as `BEGIN IMMEDIATE`; the single writer makes the result the same) |
-| Consistent multi-query reads | `db.withReadTransaction { }` (suspend extension, exists in Room 3) for backup export and the Auto Backup snapshot |
+| Consistent multi-query reads | `db.withReadTransaction { }` (suspend extension, exists in Room 3) for backup export, the Auto Backup snapshot (Android) and 10's push snapshot (`ChangeBuilder` reads outbox rows and their source rows together) |
+| Capture suppression | A write that must not reach the sync outbox runs inside `SyncStateDao.withApplying { }` within its write transaction ([The applying protocol](#the-applying-protocol)); nothing else changes `sync_state.applying` |
 | No I/O inside transactions | No network, no file copies, no `ContentResolver` calls inside a transaction |
 | Transaction length | Every transaction stays well under 1 s on the reference device (the longest is a large feed's ingest, ≤ 150 ms for 831 items); other callers wait for the single writer and time out after 30 s. `VACUUM` is the only multi-second write and runs under the guards of [db-maintenance worker](#db-maintenance-worker) |
-| Batch sizes | Per-feed ingest: one transaction per fetched document (a feed page holds at most a few thousand items; RFC 5005 older pages are separate documents and separate transactions, 03); import commit: 500 items per transaction; restore: 1,000 episode lines per transaction; retention: 500 episodes per transaction; cleanup: one transaction per deleted file's row; `IN (:ids)` lists chunked at 500 |
+| Batch sizes | Per-feed ingest: one transaction per fetched document (a feed page holds at most a few thousand items; RFC 5005 older pages are separate documents and separate transactions, 03); import commit: 500 items per transaction; restore: 1,000 episode lines per transaction; sync apply: one transaction per pulled page of ≤ 1,000 records (10); retention: 500 episodes per transaction; cleanup: one transaction per deleted file's row; `IN (:ids)` lists chunked at 500 |
 | Cancellation | A cancelled coroutine rolls back its open transaction. Callers use `suspendRunCatching` (rethrows `CancellationException`) |
-| Expected write latency | ≤ 150 ms for an 831-item feed diff; the 5-s position write may wait behind it, which is harmless |
+| Expected write latency | ≤ 150 ms for an 831-item feed diff; the 5-s position write may wait behind it, which is harmless. While linked, the capture triggers add ≤ 1 ms to the position save (MS0 acceptance 3; a probe of the trigger SQL on SQLite 3.45 on a development machine added about 12 µs per save, Unverified on the reference phone until S14) and a sync page of 1,000 records stays within the 1-s rule |
 
 ### DAO rules
 
@@ -216,10 +260,12 @@ abstract class NeutrodyneDatabase : RoomDatabase() {
 4. **Raw queries** (`@RawQuery`) are built only by `FeedQueryBuilder` from enumerated fragments; every value is bound, never concatenated. `observedEntities` must list every table the SQL references.
 5. **Paged and observed list queries** follow [Invalidation hygiene](#invalidation-hygiene).
 6. **Projections** are DAO-local data classes (`EpisodeRowProjection`); `:core:data` maps them to `:core:model` types (`PagingData.map`). Room never maps into `:core:model` classes directly.
+7. **Synced tables are captured, not called.** Writes to `podcast`, `podcast_settings`, `podcast_group`, `podcast_group_settings`, `podcast_group_member`, `episode_state`, `episode_position`, `queue_entry` and `play_session` reach the sync outbox through the triggers, whatever DAO issues them ([Sync capture triggers](#sync-capture-triggers)); no writer calls a sync API for them. A write that must not be captured (sync apply, session adoption, the first-link merge, retention and stub cleanup, a local merge's loser deletion, restore while linked) runs inside `SyncStateDao.withApplying`. The "value differs" predicates of rule 2 matter twice here: an identical write would otherwise advance the clock (the triggers' `WHEN` repeats the comparison as a safety net).
+8. **No `OR REPLACE` on synced tables.** Besides rule 3, synced child tables are never written with `INSERT OR REPLACE` or `OnConflictStrategy.REPLACE`: a replaced row fires no `DELETE` trigger (recursive triggers are off), so a replace would hide a removal from sync.
 
 ### SQL dialect baseline
 
-All SQL must run on **SQLite 3.18** (framework SQLite on API 26), even though production uses the bundled driver. Reason: production must be able to fall back to `AndroidSQLiteDriver` if spike S6 finds the APK-size or 16 KB-alignment cost of `sqlite-bundled` unacceptable ([01 Spikes](01-foundation.md#spikes)). JVM tests use `AndroidSQLiteDriver` on Robolectric's own native SQLite build, whose version is neither 3.18 nor the bundled one (recorded by spike S4), so JVM tests prove correctness but not the 3.18 baseline; the API 26 GMD run with `AndroidSQLiteDriver` does.
+All SQL — queries, migrations and the sync capture triggers — must run on **SQLite 3.18** (framework SQLite on API 26), even though production uses the bundled driver on both platforms. Reason: the SQL is common code, and Android production must be able to fall back to `AndroidSQLiteDriver` if spike S6 finds the APK-size or 16 KB-alignment cost of `sqlite-bundled` unacceptable ([01 Spikes](01-foundation.md#spikes), [D9](../PLAN.md#3-key-decisions)); the desktop always uses the bundled driver. DAO, query and migration tests run in `desktopTest` with the bundled driver (its own, newer SQLite) and Android Robolectric tests use `AndroidSQLiteDriver` on Robolectric's native SQLite build (version recorded by spike S4), so neither proves the 3.18 baseline; the API 26 GMD run with `AndroidSQLiteDriver` does, and it runs `SyncCaptureTest` from MS0.
 
 | Allowed | Forbidden |
 |---|---|
@@ -227,12 +273,13 @@ All SQL must run on **SQLite 3.18** (framework SQLite on API 26), even though pr
 | `CROSS JOIN` to fix join order | SQL `UPSERT … ON CONFLICT DO UPDATE` (3.24) — Room `@Upsert` does not need it |
 | `INSERT OR IGNORE`, `NOT EXISTS`, correlated subqueries with `LIMIT` | `NULLS FIRST/LAST` (3.30, Unverified version), `RETURNING` (3.35), JSON1 functions, generated columns |
 | `PRAGMA optimize` (3.18) | `ALTER TABLE … RENAME COLUMN` / `DROP COLUMN` in hand-written migrations (3.25 / 3.35, Unverified versions) — use the table-rebuild procedure |
+| `CREATE TRIGGER … AFTER INSERT/UPDATE OF …/DELETE … WHEN … BEGIN … END`, `julianday('now')`, multi-argument `max()`, `char()`, `replace()`, `CAST`, `<<` | A conflict clause (`OR REPLACE`, `OR IGNORE`) inside a trigger body that the logic depends on: the conflict policy of the statement that fired the trigger overrides it ([CREATE TRIGGER](https://www.sqlite.org/lang_createtrigger.html)) — trigger bodies delete, then insert ([Sync capture triggers](#sync-capture-triggers)) |
 
 Framework SQLite versions by API (relevant only for the fallback driver; some manufacturers ship other versions): 26 → 3.18, 27 → 3.19, 28 → 3.22, 30 → 3.28, 31–33 → 3.32, 34 → 3.39/3.42, 35 → 3.44, 36.1/37 → 3.50 ([android.database.sqlite](https://developer.android.com/reference/android/database/sqlite/package-summary), re-checked 2026-10-05). SQLite before 3.32 allows only 999 bound variables per statement, hence the 500-ID chunking rule (Unverified: limit value not re-checked).
 
 ### Room 2 to Room 3 mapping
 
-AI sessions tend to emit Room 2 code (risk [T1](../PLAN.md#8-risks-and-mitigations)). Use the right-hand column. Rows without a mark were checked against the Room 3 release notes and the `room3` sources on 2026-10-05; rows marked Unverified are confirmed by spike S2 ([01 Spikes](01-foundation.md#spikes)) and the first DAO/migration written in M1; correct this table if they differ.
+AI sessions tend to emit Room 2 code (risk [T1](../PLAN.md#8-risks-and-mitigations)). Use the right-hand column. Rows without a mark were checked against the Room 3 release notes and the `room3` sources on 2026-10-05; rows marked Unverified are confirmed by spikes S2 and S10 ([01 Spikes](01-foundation.md#spikes)) and the first DAO/migration written in M1; correct this table if they differ.
 
 | Room 2.x | Room 3 (`androidx.room3`, 3.0.3) |
 |---|---|
@@ -242,12 +289,14 @@ AI sessions tend to emit Room 2 code (risk [T1](../PLAN.md#8-risks-and-mitigatio
 | `SupportSQLiteDatabase`, `Cursor`, `query(…)` | `SQLiteConnection` / `SQLiteStatement` via `useReaderConnection` / `useWriterConnection` + `usePrepared` (`room3-sqlite-wrapper` exists; never used here) |
 | `Migration.migrate(SupportSQLiteDatabase)` | `suspend fun migrate(connection: SQLiteConnection)`; already called inside Room's migration transaction (possibly one transaction for all pending migrations) |
 | `setQueryExecutor`, `allowMainThreadQueries()` | `setQueryCoroutineContext(…)`; no `Executor`, no main-thread mode |
-| `Room.databaseBuilder(ctx, Db::class.java, "name")` | `Room.databaseBuilder<Db>(ctx, absolutePath)` + `setDriver(…)` (driver mandatory) |
+| `Room.databaseBuilder(ctx, Db::class.java, "name")` | Android: `Room.databaseBuilder<Db>(context = ctx, name = absolutePath)`; JVM: `Room.databaseBuilder<Db>(name = absolutePath)`; both + `setDriver(…)` (driver mandatory) ([Room KMP](https://developer.android.com/kotlin/multiplatform/room)) |
+| Reflection finds `Db_Impl` | `@ConstructedBy(DbConstructor::class)` on the database and `expect object DbConstructor : RoomDatabaseConstructor<Db>`, whose `actual` KSP generates per target (`kspAndroid`, `kspDesktop`) |
 | `setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)` | unchanged name (`JournalMode.TRUNCATE` / `WRITE_AHEAD_LOGGING`) |
 | `SimpleSQLiteQuery` for `@RawQuery` | `RoomRawQuery(sql) { stmt -> stmt.bindLong(1, …) }` |
 | `room-paging` `PagingSource` return type | `room3-paging` + `@DaoReturnTypeConverters(PagingSourceDaoReturnTypeConverter::class)` on the DAO |
 | `InvalidationTracker.Observer`, `addObserver` | removed; `invalidationTracker.createFlow(vararg tables)` |
-| `MigrationTestHelper(instrumentation, Db::class.java)` | `MigrationTestHelper(instrumentation, databaseClass = Db::class, driver = …, file = …)` (`room3-testing`; parameter names Unverified) |
+| `MigrationTestHelper(instrumentation, Db::class.java)` | Android device tests: `MigrationTestHelper(instrumentation, databaseClass = Db::class, driver = …, file = …)` (parameter names Unverified); JVM (`desktopTest`): `MigrationTestHelper(schemaDirectoryPath: Path, databasePath: Path, driver, databaseClass = Db::class)` with `suspend createDatabase(version): SQLiteConnection` and `suspend runMigrationsAndValidate(version, migrations)` ([jvmMain source](https://github.com/androidx/androidx/blob/androidx-main/room3/room3-testing/src/jvmMain/kotlin/androidx/room3/testing/MigrationTestHelper.jvm.kt), `androidx-main`; 3.0.3 confirmed by S10) |
+| `enableMultiInstanceInvalidation()`, `setQueryCallback`, `setAutoCloseTimeout`, `createFromAsset` | Android-only in Room KMP ([Room KMP](https://developer.android.com/kotlin/multiplatform/room)); none is used here, so the builder code stays common |
 | `@Entity` has no rowid option | `@Entity(withoutRowId = true)` |
 | `@PrimaryKey(autoGenerate = true)` (always `AUTOINCREMENT`) | same, with `algorithm` defaulting to `AUTOINCREMENT` (`ROWID` would reuse IDs; never used) |
 | `Callback.onCreate(db: SupportSQLiteDatabase)` | `override suspend fun onCreate(connection: SQLiteConnection)` (same for `onOpen`, `onDestructiveMigration`) |
@@ -259,18 +308,20 @@ AI sessions tend to emit Room 2 code (risk [T1](../PLAN.md#8-risks-and-mitigatio
 
 | Constraint | Consequence | Source |
 |---|---|---|
-| `sqlite-bundled` ships native `.so` per ABI | 16 KB page alignment checked in CI (09) and by spike S6; with per-ABI APKs ([D77](../PLAN.md#3-key-decisions)) each APK carries one ABI's `.so`, counted in that APK's N5 budget. Unrelated to the SQLite inside the CPython runtime of `:ytx`, which never opens `neutrodyne.db` | [16 KB page sizes](https://developer.android.com/guide/practices/page-sizes), [SQLite drivers](https://developer.android.com/kotlin/multiplatform/sqlite) |
-| The Android `sqlite-bundled` artifact ships `.so` files for Android ABIs only, so it is not expected to load under Robolectric on the host JVM (Unverified until spike S4) | JVM tests inject `AndroidSQLiteDriver`; the bundled driver is exercised by instrumented tests | [SQLite drivers](https://developer.android.com/kotlin/multiplatform/sqlite) |
-| Auto Backup never includes `databases/` (include-only rules, [D34](../PLAN.md#3-key-decisions)) | A reinstall or new phone starts with an empty DB; `onCreate` triggers the snapshot restore of [05 Auto Backup](05-groups-opml-backup.md#auto-backup) | [Auto Backup](https://developer.android.com/identity/data/autobackup) |
-| `hasFragileUserData = true` (07) | A "keep app data" uninstall leaves the DB; a later install may open **any** released schema version, so every released version must keep a migration path | [07 Lifecycle and reconciliation](07-downloads.md#lifecycle-and-reconciliation) |
-| DB lives in credential-encrypted storage | No component touches it before first unlock; nothing is direct-boot aware | — |
-| Android 16 job quotas apply to `db-maintenance` | The worker checkpoints in 500-row chunks and stops at an 8-min soft deadline ([N2](../PLAN.md#22-non-functional-requirements)) | [Android 16 behaviour changes](https://developer.android.com/about/versions/16/behavior-changes-all), [long-running workers](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running) |
+| **Both:** Room KMP offers multi-instance invalidation only on Android | Exactly one process opens the database: Android's main process; on the desktop the instance holding `SingleInstanceLock` ([D85](../PLAN.md#3-key-decisions), risk [T26](../PLAN.md#8-risks-and-mitigations)). A second desktop writer would never see the first one's invalidations and would double-push sync | [Room KMP](https://developer.android.com/kotlin/multiplatform/room) |
+| **Android:** `sqlite-bundled` ships native `.so` per ABI | 16 KB page alignment checked in CI (09) and by spike S6; with per-ABI APKs ([D77](../PLAN.md#3-key-decisions)) each APK carries one ABI's `.so`, counted in that APK's N5 budget. Unrelated to the SQLite inside the CPython runtime of `:ytx`, which never opens `neutrodyne.db` | [16 KB page sizes](https://developer.android.com/guide/practices/page-sizes), [SQLite drivers](https://developer.android.com/kotlin/multiplatform/sqlite) |
+| **Desktop:** `sqlite-bundled-jvm` 2.7.1 ships natives for `windows_x64`, `osx_arm64`, `linux_x64` and `linux_arm64` only (no `windows_arm64`, no `osx_x64`) | Matches the platform matrix of [D88](../PLAN.md#3-key-decisions): Windows on Arm runs the x64 build under emulation ([PO-40](../PLAN.md#48-further-product-owner-decisions)); spike S10 loads the driver on every target. The CPython of the desktop engine child brings its own SQLite and never opens `neutrodyne.db` | [jar contents](https://dl.google.com/android/maven2/androidx/sqlite/sqlite-bundled-jvm/2.7.1/sqlite-bundled-jvm-2.7.1.jar), [11 Platform matrix](11-desktop.md#platform-matrix) |
+| **Android:** the Android `sqlite-bundled` artifact ships `.so` files for Android ABIs only, so it is not expected to load under Robolectric on the host JVM (Unverified until spike S4) | Android Robolectric tests inject `AndroidSQLiteDriver`; DAO, query and migration tests run in `desktopTest` with the bundled JVM driver instead ([D9](../PLAN.md#3-key-decisions)), and Android device tests exercise the bundled Android driver | [SQLite drivers](https://developer.android.com/kotlin/multiplatform/sqlite) |
+| **Android:** Auto Backup never includes `databases/` (include-only rules, [D34](../PLAN.md#3-key-decisions)) | A reinstall or new phone starts with an empty DB, without `sync_state` and without the sync token; `onCreate` triggers the snapshot restore of [05 Auto Backup](05-groups-opml-backup.md#auto-backup) and Settings › Sync offers "Reconnect" ([10 Relinking, reconnecting and copied installations](10-sync.md#relinking-reconnecting-and-copied-installations)). The desktop has no Auto Backup | [Auto Backup](https://developer.android.com/identity/data/autobackup) |
+| **Android:** `hasFragileUserData = true` (07). **Desktop:** an uninstall never deletes the data directory, and a later install of any version finds it ([11 Desktop shell](11-desktop.md#desktop-shell)) | On both platforms a later install may open **any** released schema version, so every released version must keep a migration path; a newer schema than the app knows is quarantined ([Error handling and recovery](#error-handling-and-recovery)) | [07 Lifecycle and reconciliation](07-downloads.md#lifecycle-and-reconciliation) |
+| **Android:** the DB lives in credential-encrypted storage. **Desktop:** in the user's data directory, mode `0700` on macOS and Linux ([11 AppDirs](11-desktop.md#appdirs)) | Android: no component touches it before first unlock; nothing is direct-boot aware. Desktop: no encryption at rest beyond the OS account (disclosed, as for `secrets.json`) | — |
+| **Android:** Android 16 job quotas apply to `db-maintenance` | The worker checkpoints in 500-row chunks and stops at an 8-min soft deadline ([N2](../PLAN.md#22-non-functional-requirements)); the desktop's `maintenance` lane keeps the chunks but has no deadline | [Android 16 behaviour changes](https://developer.android.com/about/versions/16/behavior-changes-all), [long-running workers](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running) |
 
 ---
 
 ## Entity relationship diagram
 
-Solid lines are foreign keys (cascade unless noted in [Tables](#tables)); dotted lines are logical references without FK.
+Solid lines are foreign keys (cascade unless noted in [Tables](#tables)); dotted lines are logical references without FK. Attribute blocks show only the sync-related columns of the scope revision; the `sync_*` tables reference library rows by sync record ID text (`rid`, `podcastSyncId`), never by local row ID ([Sync tables](#sync-tables)).
 
 ```mermaid
 erDiagram
@@ -299,13 +350,54 @@ erDiagram
   podcast }o..o| artwork : artworkKey
   episode }o..o| artwork : artworkKey
   podcast_group |o..o| artwork : "g-uuid mosaic"
+  podcast ||..o{ sync_outbox : "rid starts with syncId"
+  podcast ||..o{ sync_clock : "rid starts with syncId"
+  podcast ||..o{ sync_parked : podcastSyncId
+  podcast_group ||..o{ sync_outbox : "rid starts with uuid"
+  sync_state ||..o{ sync_outbox : "hlc ticks"
+  podcast {
+    TEXT syncId UK "UUIDv4, sync record ID"
+  }
+  podcast_group {
+    TEXT uuid UK "sync record ID"
+    TEXT orderKey "replaces sortOrder"
+  }
+  podcast_group_member {
+    TEXT orderKey "replaces sortOrder"
+  }
+  queue_entry {
+    TEXT orderKey "replaces ordinal"
+  }
+  sync_state {
+    INTEGER id PK "singleton 0"
+    INTEGER enabled
+    INTEGER applying
+    INTEGER hlc
+  }
+  sync_outbox {
+    TEXT coll PK
+    TEXT rid PK
+    TEXT field PK
+    INTEGER hlc
+  }
+  sync_clock {
+    TEXT coll PK
+    TEXT rid PK
+  }
+  sync_parked {
+    INTEGER id PK
+    TEXT podcastSyncId
+  }
+  sync_held {
+    INTEGER id PK
+  }
 ```
 
 ---
 
 ## Tables
 
-Serves N1, R2.3, R3.4, R4.2, R4.8. Delivered in M1: **every table below exists in schema version 1** ([D22](../PLAN.md#3-key-decisions)), even if its first writer arrives later. Each sketch is the complete column list; Room annotations are abbreviated (`CASCADE` = `ForeignKey(…, onDelete = ForeignKey.CASCADE)` on the named column).
+Serves N1, R2.3, R3.4, R4.2, R4.8, R7.1. Delivered in M1 (M1a): **every table below exists in schema version 1** ([D22](../PLAN.md#3-key-decisions)), even if its first writer arrives later — the [sync tables](#sync-tables) included, which stay empty until a device is linked (MS2); the [capture triggers](#sync-capture-triggers) arrive with MS0 and are not part of Room's schema JSON. Each sketch is the complete column list; Room annotations are abbreviated (`CASCADE` = `ForeignKey(…, onDelete = ForeignKey.CASCADE)` on the named column).
 
 ### podcast
 
@@ -313,10 +405,12 @@ One row per subscription (RSS feed or YouTube channel). Previews are never persi
 
 ```kotlin
 @Entity(tableName = "podcast",
-    indices = [Index("feedKey", unique = true), Index("nextRefreshAt"), Index("podcastGuid"), Index("credentialId")],
+    indices = [Index("feedKey", unique = true), Index("syncId", unique = true), Index("nextRefreshAt"), Index("podcastGuid"),
+               Index("credentialId")],
     foreignKeys = [ForeignKey(CredentialEntity::class, ["id"], ["credentialId"], onDelete = ForeignKey.SET_NULL)])
 data class PodcastEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val syncId: String,                                                          // sync record ID (UUIDv4), every insert path
     val sourceType: SourceType, val feedUrl: String, val feedKey: String,          // identity (03; YouTube 04)
     val youtubeChannelId: String? = null, @ColumnInfo(defaultValue = "1") val youtubeVariants: Int = 1,
     val channelMetadataAt: Long? = null,                                         // YouTube art/description fetch (04)
@@ -347,6 +441,7 @@ data class PodcastEntity(
 | Column / rule | Detail |
 |---|---|
 | `feedUrl` | Current fetch URL without userinfo (credentials live in `credential`). For YouTube: `https://www.youtube.com/feeds/videos.xml?channel_id={UC…}` |
+| `syncId` | Random UUIDv4, lowercase, `UNIQUE`; set by subscribe (03), import commit (05), restore (05: the backup's `syncId` when present and unused locally, else a new one) and sync apply (the record's ID, 10); changed only by a sync redirect ([Podcast syncId](#podcast-syncid)) |
 | `feedKey` | `UrlNormalizer.forIdentity(feedUrl)` ([Identity keys](#podcast-feedkey-and-aliases)); rewritten together with `feedUrl` |
 | `title` | Never null. Before the first fetch: OPML/backup title, else the URL host. Display title = `COALESCE(customTitle, title)` |
 | `artworkKey` | Never null: `u-{sha1hex(normalisedUrl)}` of `artworkUrl`, else monogram key `m-{sha1hex(feedKey)}`, computed with 08's `ArtworkKeys` ([08 Artwork pipeline](08-ui-ux.md#artwork-pipeline)). Rewritten in the same statement whenever `artworkUrl` changes |
@@ -359,11 +454,11 @@ data class PodcastEntity(
 
 ```mermaid
 stateDiagram-v2
-  [*] --> PENDING_FIRST_FETCH: import or restore commit, initialFetch = 1
+  [*] --> PENDING_FIRST_FETCH: import, restore or sync apply, initialFetch = 1
   [*] --> ACTIVE: subscribe from in-memory preview, initialFetch = 0
   PENDING_FIRST_FETCH --> PENDING_FIRST_FETCH: fetch failed, failureCount + 1
   PENDING_FIRST_FETCH --> ACTIVE: first successful ingest, initialFetch = 0
-  ACTIVE --> [*]: unsubscribe deletes the row
+  ACTIVE --> [*]: unsubscribe (local or applied from sync) deletes the row
   PENDING_FIRST_FETCH --> [*]: Remove in the import report
 ```
 
@@ -383,31 +478,31 @@ data class PodcastUrlAliasEntity(
 
 ### credential
 
-Basic-auth credentials and a user's Podcast Index key/secret, encrypted with an Android Keystore AES-256-GCM key (key alias and crypto: 03). Never exported, never in backups; the DB itself is never backed up.
+Basic-auth credentials, a user's Podcast Index key/secret and, on Android, the sync token. On Android the secret is encrypted with an Android Keystore AES-256-GCM key (key alias and crypto: 03's `KeystoreCredentialStore`); on the desktop the row carries no secret — `DesktopSecretStore` keeps it by origin ([PO-44](../PLAN.md#48-further-product-owner-decisions), [11 Desktop shell](11-desktop.md#desktop-shell)) — so `podcast.credentialId`, the cascades and the sweeps below work unchanged on both platforms. Never exported, never in backups; the DB itself is never backed up.
 
 ```kotlin
 @Entity(tableName = "credential", indices = [Index("origin")])
 data class CredentialEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val origin: String,          // "https://host[:port]" lowercase, default port omitted; or "podcastindex"
-    val username: String,
-    val secretCipher: ByteArray, // ciphertext + GCM tag
-    val iv: ByteArray,           // 12 bytes
+    val origin: String,           // "https://host[:port]" lowercase, default port omitted; "podcastindex"; "sync:<host>" (Android)
+    val username: String,         // empty for the sync token
+    val secretCipher: ByteArray?, // Android: ciphertext + GCM tag; desktop: null (secret in DesktopSecretStore)
+    val iv: ByteArray?,           // Android: 12 bytes; desktop: null
     val createdAt: Long,
 )
 ```
 
-`CredentialDao.observeAll(): Flow<List<CredentialEntity>>` (`SELECT * FROM credential`) feeds 03's in-memory `CredentialStore` map, so a row deleted by a cascade also leaves the map. A feed credential is deleted in the transaction that removes its last referencing podcast ([Unsubscribe and merge](#unsubscribe-and-merge)); `db-maintenance` sweeps any survivor (`origin <> 'podcastindex' AND id NOT IN (SELECT credentialId FROM podcast WHERE credentialId IS NOT NULL)`), so no secret outlives its feed ([N3](../PLAN.md#22-non-functional-requirements)). `CredentialStore` (03) must drop its in-memory copy on the same events.
+`CredentialDao.observeAll(): Flow<List<CredentialEntity>>` (`SELECT * FROM credential`) feeds 03's in-memory `SecretStore` map, so a row deleted by a cascade also leaves the map (the desktop store also drops the file entry for the origin). A feed credential is deleted in the transaction that removes its last referencing podcast ([Unsubscribe and merge](#unsubscribe-and-merge)); maintenance sweeps any survivor (`origin <> 'podcastindex' AND origin NOT LIKE 'sync:%' AND id NOT IN (SELECT credentialId FROM podcast WHERE credentialId IS NOT NULL)`), so no feed secret outlives its feed ([N3](../PLAN.md#22-non-functional-requirements)). The sync token (origin `sync:<host>`, [10 Token storage](10-sync.md#token-storage)) is referenced by no podcast and is therefore excluded from both deletions; 10's `SyncTokenStore` deletes it on unlink. `SecretStore` (03) must drop its in-memory copy on the same events.
 
 ### podcast_settings
 
-Per-podcast overrides; `null` = inherit ([D20](../PLAN.md#3-key-decisions)). Resolution rules: [05 Effective settings resolution](05-groups-opml-backup.md#effective-settings-resolution). The row is deleted when every override is `null`.
+Per-podcast overrides; `null` = inherit ([D20](../PLAN.md#3-key-decisions)). Resolution rules: [05 Effective settings resolution](05-groups-opml-backup.md#effective-settings-resolution). The row is deleted when every override is `null`. The first five fields sync (`s.<field>` of the podcast or group record); the others are device-local ([10 Per-scope overrides](10-sync.md#per-scope-overrides)): only the five appear in the capture triggers, and `SyncApplier` writes only them, creating or deleting the row by the same all-null rule.
 
 ```kotlin
 data class ScopeOverrides(                                   // @Embedded in both settings tables
-    val playbackSpeed: Float? = null, val skipSilence: Boolean? = null,
-    val boostDb: Float? = null, val introSkipMs: Long? = null, val outroSkipMs: Long? = null,   // reserved v1.x (D65)
-    val autoDownload: Boolean? = null, val autoDownloadKeepLatest: Int? = null,
+    val playbackSpeed: Float? = null, val skipSilence: Boolean? = null,                      // synced
+    val boostDb: Float? = null, val introSkipMs: Long? = null, val outroSkipMs: Long? = null,   // synced; reserved v1.x (D65)
+    val autoDownload: Boolean? = null,                                                       // device-local from here on val autoDownloadKeepLatest: Int? = null,
     val autoDownloadNetwork: NetworkPolicy? = null, val autoDownloadRequireCharging: Boolean? = null,
     val deleteAfterPlayed: DeleteAfter? = null, val includeVideoInAutoDownload: Boolean? = null,
     val notifyNewEpisodes: Boolean? = null, val refreshIntervalMinutes: Int? = null,  // 0 = "Manual only" (PO-21)
@@ -418,17 +513,17 @@ data class PodcastSettingsEntity(@PrimaryKey val podcastId: Long, @Embedded val 
 
 ### podcast_group
 
-User-defined group ([D29](../PLAN.md#3-key-decisions)). All and Ungrouped are virtual `FeedSource`s, never rows.
+User-defined group ([D29](../PLAN.md#3-key-decisions)). All and Ungrouped are virtual `FeedSource`s, never rows. The `uuid` is also the group's sync record ID; `orderKey` orders the groups list ([Group and member ordering](#group-and-member-ordering)).
 
 ```kotlin
 @Entity(tableName = "podcast_group",
-    indices = [Index("uuid", unique = true), Index("nameKey", unique = true), Index("sortOrder")])
+    indices = [Index("uuid", unique = true), Index("nameKey", unique = true), Index("orderKey")])
 data class PodcastGroupEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val uuid: String,                    // random UUID, lowercase; never reused
+    val uuid: String,                    // random UUID, lowercase; never reused; sync record ID (changed only by a sync merge)
     val name: String,                    // GroupNames-normalised, 1–40 code points (05 validates)
     val nameKey: String,                 // GroupNames key (05): NFC(normalized.lowercase(Locale.ROOT))
-    val sortOrder: Int,                  // dense 0..n-1
+    val orderKey: String,                // OrderKey fractional index; list order ORDER BY orderKey, id
     val colorArgb: Int? = null, val iconKey: String? = null,
     @ColumnInfo(defaultValue = "'MANUAL'") val kind: GroupKind = GroupKind.MANUAL,
     @ColumnInfo(defaultValue = "'NEWEST_FIRST'") val feedOrder: FeedOrder = FeedOrder.NEWEST_FIRST,
@@ -437,7 +532,7 @@ data class PodcastGroupEntity(
     @ColumnInfo(defaultValue = "'ALL'") val mediaFilter: MediaFilter = MediaFilter.ALL,
     val hideOlderThanDays: Int? = null,
     @ColumnInfo(defaultValue = "1") val showAsTab: Boolean = true,
-    val lastViewedAt: Long? = null,
+    val lastViewedAt: Long? = null,      // device-local, never synced
     val createdAt: Long, val updatedAt: Long,
     val ruleJson: String? = null,        // reserved (smart groups); null in v1
 )
@@ -450,11 +545,13 @@ data class PodcastGroupEntity(
     indices = [Index("podcastId", "groupId")], foreignKeys = [/* groupId CASCADE, podcastId CASCADE */])
 data class PodcastGroupMemberEntity(
     val groupId: Long, val podcastId: Long,
-    @ColumnInfo(defaultValue = "0") val sortOrder: Int = 0,   // optional manual order inside the group grid
+    val orderKey: String,                // order inside the group grid; OrderKey.after(last) on add
     val addedAt: Long,
     @ColumnInfo(defaultValue = "'MANUAL'") val source: MemberSource = MemberSource.MANUAL,  // RULE reserved
 )
 ```
+
+The membership syncs as a `member` record with `rid` = group `uuid` + podcast `syncId` (`in`, `ok` = `orderKey`, `addedAt`); `source` is device-local. `orderKey` has no default: every insert supplies one ([Group and member ordering](#group-and-member-ordering)).
 
 ### podcast_group_settings
 
@@ -616,9 +713,11 @@ data class EpisodeStateEntity(
 
 "In progress" everywhere means `startedAt IS NOT NULL AND playedAt IS NULL`; this is the low-churn proxy for `episode_position.positionMs > 0` and keeps lists free of `episode_position`. 06 maintains it inside the position-save transaction ([User-state writes](#user-state-writes)).
 
+Sync: `playedAt` (wire `played` and `playedAt`, one clock), `isFavorite` (`fav`), `playCount`, `lastPlayedAt` and `measuredDurationMs` are fields of the `episode` record keyed by podcast `syncId` + `identityKey`; `startedAt` is derived by every receiver from the merged fields ([10 Episode-state rules](10-sync.md#episode-state-rules)); `downloadDismissedAt` and `updatedAt` are device-local.
+
 ### episode_position
 
-High churn ([D41](../PLAN.md#3-key-decisions)): written every 5 s while playing. **Never joined by paged or list queries**; read only through `IN (:ids)` queries and by 06.
+High churn ([D41](../PLAN.md#3-key-decisions)): written every 5 s while playing, on Android and the desktop. **Never joined by paged or list queries**; read only through `IN (:ids)` queries and by 06. Sync carries `positionMs`, `durationMs` and `positionSource` as the `pos` field of the `episode` record; the outbox keeps one row per episode however often it is saved, and 10 pushes it on pause, stop, transition and at most every 60 s.
 
 ```kotlin
 @Entity(tableName = "episode_position", foreignKeys = [/* episodeId CASCADE */])
@@ -633,14 +732,14 @@ data class EpisodePositionEntity(
 
 ### queue_entry
 
-Up next ([D38](../PLAN.md#3-key-decisions)). Ordering rules in [Up next ordering](#up-next-ordering).
+Up next ([D38](../PLAN.md#3-key-decisions)). Ordering rules in [Up next ordering](#up-next-ordering); `orderKey` replaces the earlier `ordinal REAL`, so concurrent moves on different devices merge per item ([D92](../PLAN.md#3-key-decisions)).
 
 ```kotlin
-@Entity(tableName = "queue_entry", indices = [Index("episodeId", unique = true), Index("ordinal")],
+@Entity(tableName = "queue_entry", indices = [Index("episodeId", unique = true), Index("orderKey")],
     foreignKeys = [/* episodeId CASCADE */])
 data class QueueEntryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val episodeId: Long, val ordinal: Double, val addedAt: Long,
+    val episodeId: Long, val orderKey: String, val addedAt: Long,
 )
 ```
 
@@ -671,6 +770,8 @@ data class PlaySessionEntity(
 
 Deleting a group or unsubscribing a podcast clears a context that points at it (`contextType = NULL`) in the same transaction ([Unsubscribe and merge](#unsubscribe-and-merge); group delete: 05).
 
+The row is the `session` record `current` of sync: `currentEpisodeId` travels as an episode reference and the `context*` columns as one `context` field with group `uuid` and podcast `syncId` in place of `contextId` (10 maps them); `generation` and `updatedAt` are device-local. 10's `SessionAdopter` writes an adopted remote session with `applying = 1` and `generation + 1`, only while this device is not playing ([10 Now playing and handoff](10-sync.md#now-playing-and-handoff)).
+
 ### download
 
 One row per episode with a download in any state. `downloadedBytes` is persisted only on state transitions ([D17](../PLAN.md#3-key-decisions)); no stream or CDN URL columns ([D50](../PLAN.md#3-key-decisions)). State semantics: [07 State machine](07-downloads.md#state-machine).
@@ -686,7 +787,7 @@ data class DownloadEntity(
     val requestedAt: Long,
     val sourceKind: SourceKind, val sourceRef: String,   // enclosure URL as in the feed, or YouTube video ID
     val formatPref: String? = null, val resolvedItag: Int? = null,
-    val rootId: String,                        // "ext:primary" | "ext:{volumeUuid}" | "int" (| "saf:…" v1.x)
+    val rootId: String,                        // Android "ext:primary" | "ext:{volumeUuid}" | "int" (| "saf:…" v1.x); desktop: 07's IDs
     val tempPath: String? = null, val relativePath: String? = null, val finalUri: String? = null,
     val totalBytes: Long? = null, @ColumnInfo(defaultValue = "0") val downloadedBytes: Long = 0,
     val estimatedBytes: Long? = null,
@@ -711,7 +812,7 @@ data class ArtworkEntity(
     @PrimaryKey val key: String,               // u-…, m-…, g-… (08)
     val url: String? = null,                   // source descriptor of the stored bytes (08): image URL, or
                                                // nd:monogram:v1:{initials}:{hue} / nd:mosaic:v1:{hash}; null = never synced
-    val localPath: String? = null,             // relative to filesDir/artwork; null = not pinned
+    val localPath: String? = null,             // relative to the artwork root (Android filesDir/artwork, desktop <data>/artwork); null = not pinned
     val width: Int? = null, val height: Int? = null,
     val seedArgb: Int? = null, val avgArgb: Int? = null,   // M10 fills them
     @ColumnInfo(defaultValue = "0") val version: Int = 0,  // bumps when bytes change (memory-key busting)
@@ -728,10 +829,10 @@ data class ArtworkEntity(
 data class ImportSessionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val createdAt: Long, val finishedAt: Long? = null,
-    val sourceName: String? = null,            // OpenableColumns.DISPLAY_NAME
+    val sourceName: String? = null,            // Android OpenableColumns.DISPLAY_NAME; desktop file name
     val sourceFormat: ImportFormat, val state: ImportState,
     @ColumnInfo(defaultValue = "0") val recoveredBySalvage: Boolean = false,
-    val payloadPath: String? = null,           // relative to cacheDir: "import/{id}.bin"
+    val payloadPath: String? = null,           // relative to the cache directory (Android cacheDir, desktop <cache>): "import/{id}.bin"
     val optionsJson: String? = null, val warningsJson: String? = null,
 )
 ```
@@ -752,15 +853,243 @@ data class ImportItemEntity(
 )
 ```
 
+### Sync tables
+
+Serves R7.1, R7.3, R7.4, N1, N6 ([D93](../PLAN.md#3-key-decisions)). Delivered in M1a as part of schema version 1, empty; first written in MS2 when a device links. They hold the client side of Neutrodyne Sync: the clock and link state, the coalescing outbox of local changes, the clocks of records known to sync, received records that cannot be applied yet, and staged removals. What the JSON inside them means, and every algorithm that reads them, is 10's ([10 Client sync engine](10-sync.md#client-sync-engine)); this section owns their DDL and storage rules.
+
+| Rule | Detail |
+|---|---|
+| Inert without a server | With `sync_state.enabled = 0` no statement writes any `sync_*` row except the `sync_state` singleton created in `Callback.onCreate` ([R7.1](../PLAN.md#21-functional-requirements); `SyncInertTest`, M1 acceptance 11, MS0 acceptance 3) |
+| Keys | Records are addressed by their canonical `rid` text, never by local row IDs, so outbox rows survive local re-keys of row IDs and a restore on another device has nothing to translate ([10 Record IDs](10-sync.md#record-ids)) |
+| No foreign keys | `rid` and `podcastSyncId` are text references that may point at records this device does not have; the deletion paths below keep the tables tidy instead |
+| Never travel | Not in backups (the database is never backed up; [D34](../PLAN.md#3-key-decisions)), not in the diagnostics export (`DiagExportScrub` empties them, [db-maintenance worker](#db-maintenance-worker)), not synced themselves |
+| Unlink | `SyncStateDao.unlink()` empties the four tables and resets `sync_state` except `serverUrl` in one transaction ([Sync bookkeeping](#sync-bookkeeping)); the library itself is untouched |
+| Observation | `sync_state` is never observed by a Room `Flow` or `PagingSource` (the triggers write it on every capture); `sync_outbox` only by 10's `SyncScheduler` through `invalidationTracker.createFlow("sync_outbox")`; no list, count, tile, Up next or live-state query references a `sync_*` table ([Invalidation hygiene](#invalidation-hygiene)) |
+
+#### sync_state
+
+Singleton (`id = 0`), inserted by `INSERT OR IGNORE INTO sync_state(id) VALUES (0)` in `Callback.onCreate`, like [play_session](#play_session).
+
+```kotlin
+@Entity(tableName = "sync_state")
+data class SyncStateEntity(
+    @PrimaryKey val id: Int = 0,
+    @ColumnInfo(defaultValue = "0") val enabled: Boolean = false,    // linked and first-link step done: capture on
+    @ColumnInfo(defaultValue = "0") val applying: Boolean = false,   // 1 only inside SyncStateDao.withApplying
+    val serverUrl: String? = null,                                   // base URL of the linked server
+    val accountId: String? = null, val deviceId: String? = null,
+    val cursor: String? = null,                                      // opaque server cursor (10)
+    @ColumnInfo(defaultValue = "0") val hlc: Long = 0,               // packed (ms << 16) | counter of this node
+    val nodeId: String? = null,                                      // 16 lowercase hex digits, new at each link
+    @ColumnInfo(defaultValue = "0") val clockOffsetMs: Long = 0,     // offset correction from serverTime (10)
+    val protocol: Int? = null,                                       // negotiated Neutrodyne-Sync-Protocol
+    val linkedAt: Long? = null, val lastSyncAt: Long? = null,
+    val lastError: String? = null,                                   // SyncErrorCode or SyncProblem name only
+)
+```
+
+The token is not here: it lives in `credential` with origin `sync:<host>` on Android and in `DesktopSecretStore` on the desktop ([credential](#credential), [10 Token storage](10-sync.md#token-storage)). `serverUrl` is the server this database is linked to; the portable setting `sync.server_url` (DataStore) is what a restored install offers to reconnect to. `hlc` is valid as a signed 64-bit value until the year 6429 ([10 Hybrid logical clocks](10-sync.md#hybrid-logical-clocks)).
+
+#### sync_outbox
+
+```kotlin
+@Entity(tableName = "sync_outbox", primaryKeys = ["coll", "rid", "field"], withoutRowId = true,
+    indices = [Index("hlc")])
+data class SyncOutboxEntity(
+    val coll: String,             // podcast, group, member, episode, upnext, session, setting
+    val rid: String,              // canonical record ID text
+    val field: String,            // wire field name, "*" (every field of the record) or "~rekey"
+    val hlc: Long,                // packed clock of the newest local change of this field
+    val value: String? = null,    // null: read the current local value at push time; else literal JSON
+)
+```
+
+- One row per `(coll, rid, field)`: repeated changes coalesce, so a 5-s position save for one episode rewrites one row. Literal values exist only where the source row is gone or the value is an explicit marker: `subscribed` `false`, `deleted` `true`, `in` `false`, `s.<override>` `null` after a settings row was deleted, `pos` `{"ms":0,"reset":true}`, `~rekey` `{"to": …}`, and 10's `captureLiteral` calls.
+- `WITHOUT ROWID` because every access is by the text key (a rowid table would store the key twice); the `hlc` index serves the push order.
+- Rows leave only through 10: acknowledged rows up to the pushed clock, rows whose local change lost against a newer remote value, and `unlink()`.
+
+#### sync_clock
+
+```kotlin
+@Entity(tableName = "sync_clock", primaryKeys = ["coll", "rid"], withoutRowId = true)
+data class SyncClockEntity(
+    val coll: String, val rid: String,
+    val clocks: String,           // JSON: newest known clock per field, plus redirect, alias and settings entries (10)
+)
+```
+
+One row per record this device has synced (≈ one per podcast, group, membership and episode with state). SQL never reads `clocks`; only `sync_cap_episode_rekey` renames a row ([Sync capture triggers](#sync-capture-triggers)). Retention deletes the rows of the episodes it deletes; unsubscribing deletes the rows of the podcast's `episode`, `upnext` and `member` records ([Unsubscribe and merge](#unsubscribe-and-merge), [Retention policy](#retention-policy)).
+
+#### sync_parked
+
+```kotlin
+@Entity(tableName = "sync_parked", indices = [Index("podcastSyncId"), Index("guid"), Index("enclosureKey")])
+data class SyncParkedEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val podcastSyncId: String,
+    val identityKey: String,          // the record's episode key k; "@member:<groupUuid>" for a parked membership
+    val guid: String? = null,         // match hint guid
+    val enclosureKey: String? = null, // UrlNormalizer.forIdentity(match hint enc)
+    val record: String,               // the received record as JSON (10's RecordDto)
+    val receivedAt: Long,
+)
+```
+
+Received `episode`, `upnext` and `member` records that reference a podcast or episode this device does not have yet ([10 Parked state and stubs](10-sync.md#parked-state-and-stubs)). 10's `SyncParkedStateApplier` loads a podcast's rows after each ingest and matches them with the ladder of [Restore matching](#restore-matching). Rows are deleted when applied, with their podcast ([Unsubscribe and merge](#unsubscribe-and-merge)) and after 180 days by maintenance.
+
+#### sync_held
+
+```kotlin
+@Entity(tableName = "sync_held")
+data class SyncHeldEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val batch: String,                // JSON: state (staged in this round, held, deferred while playing) and the removals with their clocks (10)
+    val summary: String,              // JSON for the prompt: device name, podcast titles, group names
+    val heldAt: Long,
+)
+```
+
+Removals staged or held by 10's [mass-change guard](10-sync.md#mass-change-guard), and removals deferred while the affected podcast plays. A handful of rows at most; 10 observes the table for the prompt (low churn, never joined by list queries).
+
+### Sync capture triggers
+
+Serves R7.1, R7.3, R7.4, N1 ([D93](../PLAN.md#3-key-decisions)). Delivered in MS0 (installed everywhere, inert until a device links); spike S14 validates them on both drivers and both platforms, and its fallback — explicit `SyncRecorder` calls in the transaction helpers — is 10's ([10 Spikes](10-sync.md#spikes)). Triggers capture every write path in the transaction that makes the change — the bulk "Mark all as played", restore, import commit and the 5-s position save included — so no writer can forget to record a synced change. They are not part of Room's schema: `SyncTriggers` (`:core:database` `commonMain`) renders them from one declarative spec and installs them ([Installing and changing the triggers](#installing-and-changing-the-triggers)).
+
+#### Trigger set
+
+`rid` sources, by subselect on the parents (`X` = `NEW`, or `OLD` for a delete): podcast `X.syncId`; podcast settings `(SELECT syncId FROM podcast WHERE id = X.podcastId)`; group `X.uuid`; group settings `(SELECT uuid FROM podcast_group WHERE id = X.groupId)`; member `g.uuid || p.syncId` from `podcast_group g, podcast p`; episode and Up next `p.syncId || e.identityKey` from `episode e JOIN podcast p`; session `'current'`. A captured field's `value` is NULL (read at push time) unless a literal is shown.
+
+| Trigger | Fires on | Wire fields captured |
+|---|---|---|
+| `sync_cap_podcast_ins` | `INSERT` | `*` |
+| `sync_cap_podcast_upd` | `UPDATE OF feedUrl, feedKey, podcastGuid, podcastGuidDerived, title, artworkUrl, link, customTitle, includeInAll, episodeOrder, youtubeVariants, credentialId, needsCredentials` | each changed: `feedUrl`; `feedKeys` (`feedKey` changed); `podcastGuid` (only with `podcastGuidDerived = 0`); `title`, `artworkUrl`, `link` (display hints); `customTitle`, `includeInAll`, `episodeOrder`, `youtubeVariants`; `credentialOrigin` and `auth` (`credentialId` changed); `needsCredentials` (`needsCredentials` or `credentialId` changed) |
+| `sync_cap_podcast_del` | `DELETE` | `subscribed` = `false` |
+| `sync_cap_podcast_settings_ins` / `_upd` / `_del` | `INSERT` / `UPDATE OF playbackSpeed, skipSilence, boostDb, introSkipMs, outroSkipMs` / `DELETE` (podcast still present) | `s.playbackSpeed`, `s.skipSilence`, `s.boostDb`, `s.introSkipMs`, `s.outroSkipMs`: non-null / changed / those that were non-null, = `null` |
+| `sync_cap_podcast_group_ins` / `_upd` / `_del` | `INSERT` / `UPDATE OF name, orderKey, colorArgb, iconKey, feedOrder, playOrder, filterFlags, mediaFilter, hideOlderThanDays, showAsTab` / `DELETE` | `*` / each changed: `name`, `ok` (`orderKey`), the others by their own names / `deleted` = `true` |
+| `sync_cap_podcast_group_settings_ins` / `_upd` / `_del` | as for podcast settings (group still present) | as for podcast settings, on the `group` record |
+| `sync_cap_podcast_group_member_ins` / `_upd` / `_del` | `INSERT` / `UPDATE OF orderKey` / `DELETE` (group and podcast still present) | `in`, `ok`, `addedAt` / `ok` / `in` = `false` |
+| `sync_cap_episode_state_ins` / `_upd` | `INSERT` / `UPDATE OF playedAt, isFavorite, playCount, lastPlayedAt, measuredDurationMs` | non-default / changed: `played` (`playedAt`), `fav` (`isFavorite`), `playCount`, `lastPlayedAt`, `measuredDurationMs` |
+| `sync_cap_episode_position_ins` / `_upd` | `INSERT` with `positionMs > 0` / `UPDATE OF positionMs` with a changed value | `pos`; a change from non-zero to 0 writes `pos` = `{"ms":0,"reset":true}` ([User-state writes](#user-state-writes): only an explicit reset or the mark-played and mark-unplayed chains write 0 over non-zero) |
+| `sync_cap_queue_entry_ins` / `_upd` / `_del` | `INSERT` / `UPDATE OF orderKey` / `DELETE` (episode and podcast still present) | `in`, `ok` / `ok` / `in` = `false` |
+| `sync_cap_play_session_upd` | `UPDATE OF currentEpisodeId, contextType, contextId, contextOrder, contextFilterFlags, contextMediaFilter, contextMinSortDate, contextAnchorEpisodeId, contextAnchorSortDate` | `episode` (`currentEpisodeId` changed), `context` (any context column changed) |
+| `sync_cap_episode_rekey` | `UPDATE OF identityKey ON episode`, when the old record is known to sync (a `sync_clock` or `sync_outbox` row exists for its `rid`) | `~rekey` = `{"to": newRid}` under the old `rid`; moves the old record's pending outbox rows and its clock row to the new `rid` ([10 Episode keys, match hints and rekey](10-sync.md#episode-keys-match-hints-and-rekey)) |
+
+Never captured: every device-local column (`podcast` fetch state, validators, scheduling, status, metadata other than the display hints, `autoDownloadEligibleAfter`, `artworkKey`, `syncId`; the device-local override columns; `podcast_group.nameKey`, `kind`, `lastViewedAt`, `updatedAt`, `ruleJson`, `uuid`; `podcast_group_member.source`; `episode_state.startedAt`, `downloadDismissedAt`, `updatedAt`; `play_session.generation`, `updatedAt`), every `DELETE` on `episode_state` and `episode_position` (only cascades and retention delete them; an unsubscribe travels as the podcast's `subscribed = false`), every other write to `episode`, `download`, `artwork`, `chapter`, aliases and import tables, and anything written inside `SyncStateDao.withApplying`.
+
+#### Trigger form
+
+Every trigger follows one shape, which `SyncTriggers.sql()` renders from the spec above:
+
+1. **`WHEN`** = the guard `(SELECT enabled AND NOT applying FROM sync_state WHERE id = 0)`, AND for an `UPDATE` trigger the OR of its fields' change predicates (`NEW.c IS NOT OLD.c`), AND for a child table's `DELETE` the existence of its parent rows. A trigger whose `WHEN` is false does nothing — no clock tick, no write — so batched fetch-state updates of `podcast` or a repeated identical position save cost one singleton read.
+2. **Tick** the clock once ([HLC tick](#hlc-tick)); every field captured by one row change shares that clock (for example `played` and `playCount` of a mark-played).
+3. **Delete, then insert.** `DELETE` the pending outbox rows of the captured fields, then `INSERT` the new rows. A conflict clause inside a trigger body is overridden by the conflict policy of the statement that fired the trigger ([CREATE TRIGGER](https://www.sqlite.org/lang_createtrigger.html)): with `INSERT OR REPLACE` in the body, an outer `INSERT OR IGNORE INTO queue_entry` (Up next "Add") would silently keep a pending `in = false` from an earlier removal and push the removal after the re-add. Verified with SQLite 3.45 on 2026-10-05; the delete-then-insert form is correct under any outer policy.
+4. **`rid` by subselect.** When a parent row is already gone the subselect yields no row and nothing is captured. SQLite deletes the parent row before it runs the `ON DELETE CASCADE` actions, so cascaded child deletes find no parent: an unsubscribe captures only `subscribed = false` (plus a `session` change when the current episode's row is set to NULL), a group delete only `deleted = true` — verified with SQLite 3.45 on 2026-10-05 and re-checked by S14 on the bundled and framework drivers (10 open question 8).
+
+Rendered example (the golden file `core/database/src/desktopTest/resources/sync-triggers.sql` holds all 24):
+
+```sql
+CREATE TRIGGER sync_cap_episode_position_upd
+AFTER UPDATE OF positionMs ON episode_position
+WHEN (SELECT enabled AND NOT applying FROM sync_state WHERE id = 0)
+  AND ((NEW.positionMs > 0 AND NEW.positionMs IS NOT OLD.positionMs)
+    OR (NEW.positionMs = 0 AND OLD.positionMs <> 0))
+BEGIN
+  UPDATE sync_state SET hlc = max(hlc + 1,
+      CAST(((julianday('now') - 2440587.5) * 86400000 + clockOffsetMs) AS INTEGER) << 16) WHERE id = 0;
+  DELETE FROM sync_outbox WHERE coll = 'episode'
+    AND rid = (SELECT p.syncId || e.identityKey FROM episode e JOIN podcast p ON p.id = e.podcastId WHERE e.id = NEW.episodeId)
+    AND field IN (SELECT field FROM (
+          SELECT 'pos' AS field, NULL AS value WHERE NEW.positionMs > 0 AND NEW.positionMs IS NOT OLD.positionMs
+          UNION ALL SELECT 'pos', '{"ms":0,"reset":true}' WHERE NEW.positionMs = 0 AND OLD.positionMs <> 0));
+  INSERT INTO sync_outbox(coll, rid, field, hlc, value)
+    SELECT 'episode', r.rid, f.field, s.hlc, f.value
+    FROM (SELECT p.syncId || e.identityKey AS rid FROM episode e JOIN podcast p ON p.id = e.podcastId
+          WHERE e.id = NEW.episodeId) r,
+         sync_state s,
+         (SELECT 'pos' AS field, NULL AS value WHERE NEW.positionMs > 0 AND NEW.positionMs IS NOT OLD.positionMs
+          UNION ALL SELECT 'pos', '{"ms":0,"reset":true}' WHERE NEW.positionMs = 0 AND OLD.positionMs <> 0) f
+    WHERE s.id = 0;
+END;
+```
+
+The rekey trigger moves rows instead of inserting fields (`<oldRid>` = `(SELECT syncId FROM podcast WHERE id = OLD.podcastId) || OLD.identityKey`, `<newRid>` likewise with `NEW`, `<tick>` = the [HLC tick](#hlc-tick)):
+
+```sql
+CREATE TRIGGER sync_cap_episode_rekey
+AFTER UPDATE OF identityKey ON episode
+WHEN (SELECT enabled AND NOT applying FROM sync_state WHERE id = 0)
+  AND NEW.identityKey IS NOT OLD.identityKey AND NEW.podcastId = OLD.podcastId
+  AND (EXISTS (SELECT 1 FROM sync_clock WHERE coll IN ('episode', 'upnext') AND rid = <oldRid>)
+    OR EXISTS (SELECT 1 FROM sync_outbox WHERE coll IN ('episode', 'upnext') AND rid = <oldRid>))
+BEGIN
+  <tick>;
+  -- pending local changes move to the new rid and replace pending rows already there
+  DELETE FROM sync_outbox WHERE coll IN ('episode', 'upnext') AND rid = <newRid>
+    AND EXISTS (SELECT 1 FROM sync_outbox o WHERE o.coll = sync_outbox.coll AND o.rid = <oldRid>
+                AND o.field = sync_outbox.field);
+  UPDATE sync_outbox SET rid = <newRid> WHERE coll IN ('episode', 'upnext') AND rid = <oldRid>;
+  -- the clock row moves unless the new rid has one; 10's OutboxReader merges a leftover old row
+  -- into it (field-wise maximum, in Kotlin) before it pushes the rekey
+  UPDATE sync_clock SET rid = <newRid> WHERE coll IN ('episode', 'upnext') AND rid = <oldRid>
+    AND NOT EXISTS (SELECT 1 FROM sync_clock c WHERE c.coll = sync_clock.coll AND c.rid = <newRid>);
+  INSERT INTO sync_outbox(coll, rid, field, hlc, value)
+    SELECT 'episode', <oldRid>, '~rekey', s.hlc, '{"to":' || <jsonString(newRid)> || '}'
+    FROM sync_state s WHERE s.id = 0;
+END;
+```
+
+`SyncTriggers.jsonString(x)` renders `'"' || replace(replace(replace(replace(replace(x, '\', '\\'), '"', '\"'), char(10), '\n'), char(13), '\r'), char(9), '\t') || '"'`. That escaping is complete for `rid`s: UUIDs are hex, and identity keys derive from XML text, which cannot contain other control characters (XML 1.0 allows only tab, LF and CR below U+0020). `SyncJsonStringTest` compares it with kotlinx.serialization for every key kind, quotes, backslashes and the three control characters.
+
+#### HLC tick
+
+```sql
+UPDATE sync_state SET hlc = max(hlc + 1,
+    CAST(((julianday('now') - 2440587.5) * 86400000 + clockOffsetMs) AS INTEGER) << 16) WHERE id = 0;
+```
+
+This is the HLC local-event rule of [10 Hybrid logical clocks](10-sync.md#hybrid-logical-clocks) on the packed form: when the corrected wall clock is ahead, the counter restarts at 0; otherwise the counter advances (and carries into the milliseconds on overflow, which keeps order). `julianday('now')` − 2440587.5 days is the Unix epoch; the value is fixed for the duration of one statement step. Millisecond resolution was observed with SQLite 3.45 on 2026-10-05; Unverified on every driver until S14 (10 open question 8). `SyncOutboxDao` uses the same expression for Kotlin-side captures, so SQL and Kotlin never disagree about the clock.
+
+#### The applying protocol
+
+- `SyncStateDao.withApplying(block)` must run inside a write transaction (it checks): it reads `applying`, sets it to 1, runs `block`, and restores the previous value. A nested call therefore keeps capture off for the outer block; a rollback restores the committed value; a crash leaves nothing behind because the flag never commits as 1. `Callback.onOpen` still resets a stray 1 ([Database builder and connections](#database-builder-and-connections)).
+- Users (10's list, [10 Capture rules](10-sync.md#capture-rules)): `SyncApplier` (one page per transaction), `SyncParkedStateApplier`, `SessionAdopter`, `FirstLinkMerger`'s local writes and "Use the server's library on this device", the guard's application of staged removals (`PodcastRepository.unsubscribe(…, origin = SYNC)`, 05's group delete), retention and stub cleanup ([Retention and maintenance](#retention-and-maintenance)), the loser deletion of a local podcast merge ([Unsubscribe and merge](#unsubscribe-and-merge)) and restores while linked, which record their changes explicitly with `captureAt` (05, 10).
+- Because write transactions run on the single writer connection, no other writer's statement can run while `applying = 1`; a user's tap that lands during a sync page waits for the page's transaction and is captured normally.
+
+#### Kotlin-side captures
+
+`SyncOutboxDao` (requested by 10) captures what triggers cannot see. Its methods run inside the caller's transaction, require `enabled = 1` (they write nothing otherwise) and ignore `applying`, because they are explicit:
+
+| Method | SQL |
+|---|---|
+| `captureLiteral(coll, rid, field, json)` | the [HLC tick](#hlc-tick) with `AND enabled = 1`, then `INSERT OR REPLACE INTO sync_outbox(coll, rid, field, hlc, value) SELECT :coll, :rid, :field, hlc, :json FROM sync_state WHERE id = 0 AND enabled = 1` (an outer statement, so `OR REPLACE` applies) — local merges, "Keep mine" |
+| `captureAll(coll, rid)` | the same with `field = '*'` and `value = NULL` — settings (`SettingsCapture`), "Use this device's library everywhere" |
+| `captureAt(coll, rid, field, atMs)` | `atHlc = clamp(atMs, 2020-01-01, now) << 16` in Kotlin; `INSERT OR IGNORE INTO sync_outbox(coll, rid, field, hlc, value) SELECT :coll, :rid, :field, :atHlc, NULL FROM sync_state WHERE id = 0 AND enabled = 1`, then `UPDATE sync_outbox SET hlc = :atHlc, value = NULL WHERE coll = :coll AND rid = :rid AND field = :field AND hlc < :atHlc` — an older stamp never replaces a newer pending change; first link and restore while linked |
+
+#### Installing and changing the triggers
+
+| When | What |
+|---|---|
+| New database (MS0 on) | `Callback.onCreate` calls `SyncTriggers.create(connection)` after creating the singleton rows |
+| MS0 upgrade | `Migration(N, N + 1)` (N = the newest schema version frozen before MS0, normally 1) calls `SyncTriggers.recreate(connection)`: additive, no table rebuild, no entity change, so `N + 1.json` equals `N.json` apart from the version |
+| Every open | `Callback.onOpen` calls `SyncTriggers.ensure(connection)`: it compares `SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'sync\_cap\_%' ESCAPE '\'` with the rendered set and, on any difference, drops and recreates the whole set in one transaction (logged once). A change of the spec alone therefore needs no schema version; the golden file and `SyncCaptureTest` change in the same PR ([PLAN 7.2](../PLAN.md#72-definition-of-done-every-milestone)) |
+| Migrations | A migration that writes to or alters a synced table first calls `SyncTriggers.dropAll(connection)` and never creates triggers; `ensure` installs the current set after the migration transaction, so no trigger ever fires against an intermediate schema. `TableRebuild.run` drops them itself: SQLite (since 3.26) refuses `ALTER TABLE new_x RENAME TO x` while any trigger body names the dropped `x` ("error in trigger …: no such table", observed with SQLite 3.45) |
+| Checks | `UPDATE OF` silently ignores unknown column names ([CREATE TRIGGER](https://www.sqlite.org/lang_createtrigger.html)), so `SyncTriggersTest` asserts that every column of the spec exists (`PRAGMA table_info`) and that the rendered SQL equals the golden file |
+
+#### Cost
+
+- Not linked: one singleton primary-key read per row written to a synced table; nothing else.
+- Linked: per captured row one `sync_state` update, one indexed delete and one insert into `sync_outbox`; the parent subselects are primary-key lookups. A prototype of the trigger set on SQLite 3.45 (development machine, 2026-10-05) took about 12 µs extra per position save and 78 ms for a 5,000-row mark-played (10,000 outbox rows); S14 measures the reference phone against MS0 acceptance 3 (≤ 1 ms per position save).
+- The triggers write only `sync_state`, `sync_outbox` and (rekey) `sync_clock`, which no list query observes, so list invalidation counts are unchanged ([Hygiene tests](#hygiene-tests)).
+
 ### Reserved tables
 
-Not created in v1 (each arrives with a migration): `podcast_group_exclusion` (smart groups), `episode_fts` (FTS4 search, M15; indexes `title` and `snippet` because `episode_description.html` is compressed — see [Open questions](#open-questions)), `sponsor_segment` (SponsorBlock, M14).
+Not created in v1 (each arrives with a migration): `podcast_group_exclusion` (smart groups), `episode_fts` (FTS4 search, M15; indexes `title` and `snippet` because `episode_description.html` is compressed — see [Open questions](#open-questions)), `sponsor_segment` (SponsorBlock, M14). A reserved table that holds user state and syncs later (smart-group rules, for example) also needs entries in `SyncTriggers`' spec and a wire field in 10 in the same change.
 
 ---
 
 ## Identity keys
 
-Serves R1.7, R1.8, R3.4, N1 ([D18](../PLAN.md#3-key-decisions)). Delivered in M1; backup use in M3. 03 owns the computation (`EpisodeKeys`, `UrlNormalizer`, `PodcastGuid` in `:feeds`); this section owns stored formats, versioning and the database-side behaviour.
+Serves R1.7, R1.8, R3.4, R7.3, N1 ([D18](../PLAN.md#3-key-decisions)). Delivered in M1; backup use in M3; sync use in MS2. 03 owns the computation (`EpisodeKeys`, `UrlNormalizer`, `PodcastGuid` in common `:feeds`, which the sync server runs too, [D94](../PLAN.md#3-key-decisions)); 10 owns how records are identified on the wire ([10 Identity mapping](10-sync.md#identity-mapping)); this section owns stored formats, versioning and the database-side behaviour.
 
 ### Episode identityKey
 
@@ -784,6 +1113,7 @@ YouTube episodes always take the `g` branch (`guid = yt:video:{videoId}`). A GUI
   2. Rows that never reappear in the feed keep their old key; that is harmless because restore matching (05) computes `EpisodeKeys.keyFor(localEpisode, kv)` for the backup line's `kv`.
   3. `EpisodeKeys` keeps the code of every released version forever; `versionOf(key)` parses the prefix.
 - Changing `UrlNormalizer.forIdentity` output is a key-version change for `u` keys (and a `feedKey` change, below).
+- **Sync.** Episode records are keyed by podcast `syncId` + `identityKey` with its version prefix, and every episode, Up next and session change carries `kv` among its match hints ([10 Episode keys, match hints and rekey](10-sync.md#episode-keys-match-hints-and-rekey)). Devices on different app versions may therefore hold different keys for one episode: a receiver matches with the same version-tolerant ladder as restore ([Restore matching](#restore-matching)), and a local in-place re-key of a record known to sync is pushed as a `rekey` by `sync_cap_episode_rekey` ([Sync capture triggers](#sync-capture-triggers)). Bumping `EpisodeKeys.VERSION` is therefore also a sync event; the protocol version gates incompatible changes (risk [SR3](../PLAN.md#8-risks-and-mitigations)).
 
 ### Uniqueness and in-place re-keying
 
@@ -800,43 +1130,53 @@ YouTube episodes always take the `g` branch (`guid = yt:video:{videoId}`). A GUI
 
 ### podcastGuid
 
-`podcastGuid` holds the lowercase 8-4-4-4-12 form. `podcastGuidDerived = 1` marks a locally derived UUIDv5 ([podcast:guid spec](https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/tags/guid.md)); derived values are never exported as real and never used for dedupe. The index is **not unique**: an ad-free premium feed may legitimately share the public feed's `podcast:guid`, so a match only prompts "Already subscribed?" (03).
+`podcastGuid` holds the lowercase 8-4-4-4-12 form. `podcastGuidDerived = 1` marks a locally derived UUIDv5 ([podcast:guid spec](https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/tags/guid.md)); derived values are never exported or synced as real and never used for dedupe. The index is **not unique**: an ad-free premium feed may legitimately share the public feed's `podcast:guid`, so a match only prompts "Already subscribed?" (03), and an equal real `podcastGuid` alone never merges synced podcasts either (10).
+
+### Podcast syncId
+
+`podcast.syncId` is a random UUIDv4 in lowercase canonical form, `UNIQUE` (`index_podcast_syncId`), set by every insert path — subscribe (03), import commit (05), restore (05: the backup's optional `syncId` when it is present and no local row uses it, otherwise a new one) and sync apply (the record's ID, 10) — in schema v1 from M1a, whether or not sync is ever used ([D93](../PLAN.md#3-key-decisions)). It is the podcast's sync record ID and the prefix of its episode, Up next and membership `rid`s, independent of the feed URL, so feed moves, renormalisation and merges of `feedKey` never re-identify synced state ([Podcast feedKey and aliases](#podcast-feedkey-and-aliases)). Only a sync redirect changes it (`UPDATE podcast SET syncId = :survivor WHERE id = :id`, with `applying = 1`, after which 10 rewrites the `rid` prefixes in `sync_outbox` and `sync_clock`, [10 Redirects on clients](10-sync.md#redirects-on-clients)). It never appears in media IDs, file names or URIs; backups carry it as an optional field ([D33](../PLAN.md#3-key-decisions)). Without sync it is never read.
+
+No database-side rule derives a `syncId` from feed data: two devices that subscribe to the same feed offline create two IDs, and the server merges them by feed key ([10 Same podcast on two devices](10-sync.md#same-podcast-on-two-devices)).
 
 ### Group uuid and nameKey
 
-`uuid` is a random (version 4) UUID in lowercase canonical form, generated by 05 (`UUID.randomUUID().toString()`), `TEXT UNIQUE`, never reused: notification channel IDs `new_episodes_{groupUuid}`, artwork keys `g-{groupUuid}` and backups depend on it. `nameKey` is computed only by 05's `GroupNames` ([05 Group model and lifecycle](05-groups-opml-backup.md#group-model-and-lifecycle)), `UNIQUE`; a collision inside a write transaction surfaces as `SQLITE_CONSTRAINT_UNIQUE`, which `GroupRepository` maps to `GroupError.NameTaken` (05). Raw SQL never computes `nameKey` (SQLite's `lower()` is ASCII-only).
+`uuid` is a random (version 4) UUID in lowercase canonical form, generated by 05 in common code (`Uuid.random().toString()`, [Naming and types](#naming-and-types)), `TEXT UNIQUE`, never reused: notification channel IDs `new_episodes_{groupUuid}`, artwork keys `g-{groupUuid}`, backups and sync depend on it — it doubles as the group's sync record ID ([D29](../PLAN.md#3-key-decisions)). Only a sync merge of two equally named groups changes it on a device ([10 Groups with equal names](10-sync.md#groups-with-equal-names); 05 re-creates the notification channel). `nameKey` is computed only by 05's `GroupNames` ([05 Group model and lifecycle](05-groups-opml-backup.md#group-model-and-lifecycle)), `UNIQUE`; a collision inside a write transaction surfaces as `SQLITE_CONSTRAINT_UNIQUE`, which `GroupRepository` maps to `GroupError.NameTaken` (05). Raw SQL never computes `nameKey` (SQLite's `lower()` is ASCII-only).
 
 ### Local row IDs
 
-Row IDs are device-local. They appear in media URIs (`neutrodyne://episode/{id}`), media IDs, content and deep-link URIs, notification extras and download file names (`[p<id>]`, `[e<id>]`), but **never** in backups, OPML or exports. After a restore on a new device every ID differs; restored download rows are not carried over (07 re-downloads on request). `AUTOINCREMENT` guarantees an ID is never reused after deletion (retention, unsubscribe).
+Row IDs are device-local. They appear in media URIs (`neutrodyne://episode/{id}`), media IDs, content and deep-link URIs, notification extras, MPRIS track IDs (desktop) and download file names (`[p<id>]`, `[e<id>]`), but **never** in backups, OPML, exports or sync records (which use `syncId`, `uuid` and `identityKey`). After a restore on a new device every ID differs; restored download rows are not carried over (07 re-downloads on request). `AUTOINCREMENT` guarantees an ID is never reused after deletion (retention, unsubscribe).
 
 ---
 
 ## Indices
 
-Serves R2.9, N5. Delivered in M1 (all indices exist in version 1); plans verified in M2.
+Serves R2.9, N5. Delivered in M1 (all indices exist in version 1, the sync ones included); plans verified in M2.
 
 | Table | Index (Room name) | Serves |
 |---|---|---|
 | `podcast` | PK `id`; `index_podcast_feedKey` (unique) | Subscribe/import/restore dedupe |
+| | `index_podcast_syncId` (unique) | Sync record lookup, redirects, parked-state release, restore adopting a backup `syncId` |
 | | `index_podcast_nextRefreshAt` | Due selection |
 | | `index_podcast_podcastGuid` | Dedupe and restore by real GUID |
 | | `index_podcast_credentialId` | FK child index (credential delete) |
 | `podcast_url_alias` | PK `url`; `index_podcast_url_alias_podcastId` | Alias lookup; FK |
 | `credential` | `index_credential_origin` | Same-origin lookup |
-| `podcast_group` | `uuid` (unique), `nameKey` (unique), `sortOrder` | Restore/OPML, name validation, ordered list |
-| `podcast_group_member` | PK `(groupId, podcastId)` WITHOUT ROWID; `index_podcast_group_member_podcastId_groupId` | Group feed `IN (subquery)`; Ungrouped `NOT EXISTS`; "groups of podcast" |
+| `podcast_group` | `uuid` (unique), `nameKey` (unique), `orderKey` | Restore/OPML/sync, name validation, ordered list |
+| `podcast_group_member` | PK `(groupId, podcastId)` WITHOUT ROWID; `index_podcast_group_member_podcastId_groupId` | Group feed `IN (subquery)`; Ungrouped `NOT EXISTS`; "groups of podcast"; member order sorts one group's rows (≤ a few hundred) after the PK prefix search, so `orderKey` has no index |
 | `episode` | `index_episode_podcastId_identityKey` (unique) | Ingest/restore matching; FK |
 | | `index_episode_podcastId_sortDate` | Podcast feed, group feeds, counts, newest-per-podcast subqueries |
 | | `index_episode_sortDate` | All feed ordered scan (the index ends with the rowid `id`, so `ORDER BY sortDate DESC, id DESC` needs no sort) |
 | | `index_episode_firstSeenAt` | "New since" queries, notification digests |
 | `episode_state` | PK; `index_episode_state_playedAt` | LEFT JOINs; history; retention |
-| `queue_entry` | `episodeId` (unique), `ordinal` | Up next order |
+| `queue_entry` | `episodeId` (unique), `orderKey` | Up next order |
 | `play_session` | `currentEpisodeId` | FK child index |
 | `download` | PK; `index_download_state_lane_priority_requestedAt` | Claim; quota; completed lists |
 | `person`, `funding` | `(ownerType, ownerId)` | Owner lookup and deletes |
 | `import_item` | PK; `(sessionId, status)`; `podcastId` | Progress counts; FK |
 | other children | PKs starting with `episodeId` | FK cascades |
+| `sync_outbox` | PK `(coll, rid, field)` WITHOUT ROWID; `index_sync_outbox_hlc` | Trigger coalescing (delete + insert by key); push order |
+| `sync_clock` | PK `(coll, rid)` WITHOUT ROWID | Clock lookup per record; rekey rename |
+| `sync_parked` | PK; `podcastSyncId`, `guid`, `enclosureKey` | Release after ingest; hint matching |
 
 `EXPLAIN QUERY PLAN` expectations (asserted in [Testing](#testing); detail strings differ between SQLite versions, so assertions use tolerant regexes such as `SCAN (TABLE )?episode( AS e)?`):
 
@@ -856,7 +1196,7 @@ Serves R2.9, N5. Delivered in M1 (all indices exist in version 1); plans verifie
 
 ## Key queries
 
-Serves R2.3, R2.5, R2.6, R2.8, R2.9, R4.4, R4.5, R4.8, R1.3, R1.7. Each subsection names the DAO function, the milestone and the document that owns the semantics. `VISIBLE` below is this fragment (v1 implementation of PO-9 defaults; which flags hide an episode is owned by [04 Content flags and filtering](04-youtube.md#content-flags-and-filtering), and changing it is a code change, not a migration):
+Serves R2.3, R2.5, R2.6, R2.8, R2.9, R4.4, R4.5, R4.8, R1.3, R1.7, R7.3. Each subsection names the DAO function, the milestone and the document that owns the semantics. Every query is common code and runs unchanged on Android and the desktop; the sync capture triggers do not change any of them. `VISIBLE` below is this fragment (v1 implementation of PO-9 defaults; which flags hide an episode is owned by [04 Content flags and filtering](04-youtube.md#content-flags-and-filtering), and changing it is a code change, not a migration):
 
 ```sql
 NOT (e.isShort = 1 AND (p.youtubeVariants & 2) = 0)
@@ -1073,19 +1413,34 @@ The mapper picks the first `http(s)` URI from `audioAlternateSourcesJson` (JSON 
 
 ### Up next ordering
 
-`QueueDao` (M4, semantics 06). `ordinal` is a `REAL`: reordering writes one row.
+`QueueDao` (M4, semantics 06). Each entry carries an `orderKey` (fractional index, [D92](../PLAN.md#3-key-decisions)), so a move writes one row and two devices that reorder different items concurrently both keep their moves after sync; keys are computed in Kotlin by `OrderKey` (`:sync:protocol`, [10 Ordered lists](10-sync.md#ordered-lists)) inside the write transaction, which serialises all writers, so reading the neighbours and writing the key is race-free.
 
 | Operation | SQL / rule |
 |---|---|
-| Observe | `SELECT q.id AS entryId, q.ordinal, q.episodeId, <row columns as in Feed pages> FROM queue_entry q JOIN episode e ON e.id = q.episodeId JOIN podcast p ON p.id = e.podcastId <ROW_JOINS> ORDER BY q.ordinal, q.id` |
-| Add last | `INSERT OR IGNORE INTO queue_entry(episodeId, ordinal, addedAt) VALUES (:id, COALESCE((SELECT MAX(ordinal) FROM queue_entry), 0) + 1, :now)` |
-| Add next (front) | Same with `COALESCE((SELECT MIN(ordinal) FROM queue_entry), 1) - 1` |
-| Move between neighbours `a < b` | `ordinal = (a + b) / 2`; at the ends `first − 1` / `last + 1` |
-| Renormalise | When `b − a < 1e-9`: in one write transaction read IDs ordered and set `ordinal = index + 1.0` |
+| Observe | `SELECT q.id AS entryId, q.orderKey, q.episodeId, <row columns as in Feed pages> FROM queue_entry q JOIN episode e ON e.id = q.episodeId JOIN podcast p ON p.id = e.podcastId <ROW_JOINS> ORDER BY q.orderKey, q.id` |
+| Add last | `last = SELECT orderKey FROM queue_entry ORDER BY orderKey DESC, id DESC LIMIT 1`; `INSERT OR IGNORE INTO queue_entry(episodeId, orderKey, addedAt) VALUES (:id, :key, :now)` with `key = OrderKey.after(last)` (`OrderKey.between(null, null)` for an empty list) |
+| Add next (front) | `first = SELECT orderKey FROM queue_entry ORDER BY orderKey, id LIMIT 1`; same insert with `OrderKey.before(first)` |
+| Move between neighbours `a` and `b` | `UPDATE queue_entry SET orderKey = :key WHERE id = :entryId AND orderKey <> :key` with `key = OrderKey.between(a.orderKey, b.orderKey)`; at the ends `before(first)` / `after(last)` |
+| Rewrite | When the new key would be longer than 64 characters, or the neighbours carry equal keys (possible after concurrent inserts on two devices; ties sort by `id` locally): in one write transaction read the entries `ORDER BY orderKey, id`, assign `OrderKey.rewrite(n)` and update only the rows whose key changes (captured as a burst of `ok` changes; MS0 acceptance 4) |
 | Remove | `DELETE FROM queue_entry WHERE episodeId IN (:ids)` (also part of every mark-played path, below) |
 | Clear | `DELETE FROM queue_entry` |
 
-Up next rows show positions through [Live row state](#live-row-state), never by joining `episode_position`.
+Up next rows show positions through [Live row state](#live-row-state), never by joining `episode_position`. Sync captures add, move and remove through the `queue_entry` triggers; `SyncApplier` writes remote entries with their own keys, and an effectively played episode is never inserted ([10 Episode-state rules](10-sync.md#episode-state-rules)).
+
+### Group and member ordering
+
+`GroupDao` (M2, semantics [05 Group model and lifecycle](05-groups-opml-backup.md#group-model-and-lifecycle)) uses the same `OrderKey` rules as Up next:
+
+| Operation | SQL / rule |
+|---|---|
+| Groups in order (`observeGroups()`, `Flow`) | `SELECT * FROM podcast_group ORDER BY orderKey, id` (index `orderKey`) |
+| Create a group | `orderKey = OrderKey.after(SELECT orderKey FROM podcast_group ORDER BY orderKey DESC, id DESC LIMIT 1)` in the inserting transaction |
+| Reorder a group | `UPDATE podcast_group SET orderKey = :key, updatedAt = :now WHERE id = :id AND orderKey <> :key` — one row (M2 acceptance 14, `GroupOrderTest`) |
+| Members of a group in order | `SELECT m.podcastId, m.orderKey FROM podcast_group_member m WHERE m.groupId = :g ORDER BY m.orderKey, m.podcastId` (PK prefix search, then a sort of the group's rows) |
+| Add a member | `orderKey = OrderKey.after(SELECT MAX(orderKey) FROM podcast_group_member WHERE groupId = :g)` (`MAX` uses `BINARY` order, the same as `ORDER BY`), then `INSERT OR IGNORE INTO podcast_group_member(groupId, podcastId, orderKey, addedAt, source) VALUES (…)` |
+| Reorder a member | `UPDATE podcast_group_member SET orderKey = :key WHERE groupId = :g AND podcastId = :p AND orderKey <> :key` |
+| Rewrite | As for Up next, per list (the groups list or one group's members) |
+| Backup rank | 05 writes `sortOrder` as each item's rank in this order for older readers ([D33](../PLAN.md#3-key-decisions)); on restore it assigns fresh keys in the backup's order when a line has no `orderKey` |
 
 ### Live row state
 
@@ -1146,6 +1501,8 @@ Column-scoped statements ([DAO rules](#dao-rules)); semantics owned by 06 (playe
 ```
 
 **Mark played, every path** (06's player rule, 03's `EpisodeRepository.setPlayed`/`markFeedPlayed`, 05's import option): one `withWriteTransaction`, IDs chunked at 500, running `ensureAll(ids)`, `markPlayed(ids)`, `PositionDao.reset(ids)` and `QueueDao` "Remove" for the same IDs. **Mark unplayed** (user): `markUnplayed(ids)` + `PositionDao.reset(ids)`. Re-listening (06) calls `markUnplayed` for the one episode at its first `isPlaying`. `playCount` therefore counts transitions to played by any path.
+
+**Sync capture** (from MS0, while linked; [Sync capture triggers](#sync-capture-triggers)): none of these statements changes. The mark-played chain captures, per episode and in its own transaction, `played` and `playCount`, the `pos` reset literal (only when a non-zero position existed) and `upnext.in = false` (only when the episode was queued), so the receiving devices see played, reset and removal with clocks from one transaction ([10 Episode-state rules](10-sync.md#episode-state-rules)); mark unplayed captures `played` and the reset; a position save captures `pos` once per changed value; `markStarted` captures nothing (`startedAt` is derived on every device). `SyncApplier` writes remote state with column-scoped statements inside `withApplying`, never with the local chains (whose `playCount + 1` and Up next removal are local actions): `EpisodeStateDao.applyRemote(id, playedAt, startedAt, playCount, lastPlayedAt, isFavorite, measuredDurationMs, now)` = `ensure` + `UPDATE episode_state SET playedAt = :playedAt, startedAt = :startedAt, playCount = max(playCount, :playCount), lastPlayedAt = CASE WHEN lastPlayedAt IS NULL OR :lastPlayedAt > lastPlayedAt THEN :lastPlayedAt ELSE lastPlayedAt END, isFavorite = :isFavorite, measuredDurationMs = COALESCE(:measuredDurationMs, measuredDurationMs), updatedAt = :now WHERE episodeId = :id AND (<any value differs>)` with the values derived by 10's episode-state rules; a winning reset through `PositionDao.reset`; a winning non-zero position through `PositionDao.applyRemote(id, pos, dur, src, now)` = `insertIfAbsent` + `UPDATE episode_position SET positionMs = :pos, durationMs = COALESCE(:dur, durationMs), positionSource = :src, updatedAt = :now WHERE episodeId = :id AND :pos > 0 AND positionMs IS NOT :pos`. A 0 therefore never replaces a position without an explicit reset (N1), and a playing device's own newer saves win by clock (10).
 
 **Bulk "Mark all as played"** ([R2.6](../PLAN.md#21-functional-requirements), M2; 05's `markFeedPlayed(source, sortDateBefore)`): inside one write transaction, first `FeedDao.unplayedIds(query)` = the `countUnplayed` query of [Feed counts](#feed-counts) selecting `e.id` instead of `COUNT(*)` (any `FeedSource`, `VISIBLE`, optional `e.sortDate < :before`), then the mark-played chain over those IDs. The confirmation count and the number of rows marked are therefore the same predicate.
 
@@ -1302,7 +1659,7 @@ JOIN episode e ON e.id = d.episodeId
 JOIN episode_state s ON s.episodeId = d.episodeId
 WHERE d.state = 'COMPLETED' AND s.playedAt IS NOT NULL AND s.isFavorite = 0
   AND d.episodeId NOT IN (SELECT currentEpisodeId FROM play_session WHERE currentEpisodeId IS NOT NULL)
-  AND d.episodeId NOT IN (SELECT q.episodeId FROM queue_entry q ORDER BY q.ordinal LIMIT :upNextProtected)
+  AND d.episodeId NOT IN (SELECT q.episodeId FROM queue_entry q ORDER BY q.orderKey, q.id LIMIT :upNextProtected)
 ORDER BY (d.lane = 'AUTO') DESC, s.playedAt ASC
 ```
 
@@ -1313,7 +1670,7 @@ SELECT d.episodeId, d.totalBytes, d.rootId, d.relativePath, d.finalUri, e.podcas
        (s.startedAt IS NOT NULL                                              -- in progress (07)
         OR COALESCE(s.isFavorite, 0) = 1
         OR d.episodeId IN (SELECT currentEpisodeId FROM play_session WHERE currentEpisodeId IS NOT NULL)
-        OR d.episodeId IN (SELECT q.episodeId FROM queue_entry q ORDER BY q.ordinal LIMIT :upNextProtected)
+        OR d.episodeId IN (SELECT q.episodeId FROM queue_entry q ORDER BY q.orderKey, q.id LIMIT :upNextProtected)
        ) AS protected
 FROM download d
 JOIN episode e ON e.id = d.episodeId
@@ -1326,7 +1683,7 @@ Kotlin skips the first `keepLatest` rows per podcast and deletes the remaining r
 
 ### Unsubscribe and merge
 
-`PodcastDao.deleteCascade(podcastId)` ([D24](../PLAN.md#3-key-decisions), M1). The caller (03 `PodcastRepository.unsubscribe`) first asks 07 to delete the podcast's download files (`DownloadController.delete(ids, byUser = false)`, M6+) and flushes the fetch-state batcher.
+`PodcastDao.deleteCascade(podcastId)` ([D24](../PLAN.md#3-key-decisions), M1). The caller (03 `PodcastRepository.unsubscribe`) first asks 07 to delete the podcast's download files (`DownloadController.delete(ids, byUser = false)`, M6+) and flushes the fetch-state batcher. While linked, the `podcast` delete trigger records the unsubscribe as `subscribed = false` and the cascades capture nothing else ([Sync capture triggers](#sync-capture-triggers)); an unsubscribe applied *from* sync (`origin = SYNC`, 10) runs the same transaction inside `withApplying`.
 
 ```sql
 -- one write transaction
@@ -1336,9 +1693,14 @@ DELETE FROM funding WHERE (ownerType = 'PODCAST' AND ownerId = :pid)
                        OR (ownerType = 'EPISODE' AND ownerId IN (SELECT id FROM episode WHERE podcastId = :pid));
 UPDATE play_session SET contextType = NULL, contextId = NULL, contextAnchorEpisodeId = NULL, contextAnchorSortDate = NULL,
        generation = generation + 1, updatedAt = :now WHERE contextType = 'PODCAST' AND contextId = :pid;
-DELETE FROM credential WHERE origin <> 'podcastindex'
+DELETE FROM credential WHERE origin <> 'podcastindex' AND origin NOT LIKE 'sync:%'
    AND id = (SELECT credentialId FROM podcast WHERE id = :pid)
    AND NOT EXISTS (SELECT 1 FROM podcast o WHERE o.credentialId = credential.id AND o.id <> :pid);
+-- sync housekeeping (no-ops while unlinked): parked records and the clocks of the podcast's
+-- episode, upnext and member records; the podcast's own clock row stays with its tombstone
+DELETE FROM sync_parked WHERE podcastSyncId = (SELECT syncId FROM podcast WHERE id = :pid);
+DELETE FROM sync_clock WHERE ((coll IN ('episode', 'upnext') AND substr(rid, 1, 36) = (SELECT syncId FROM podcast WHERE id = :pid))
+                           OR (coll = 'member' AND substr(rid, 37, 36) = (SELECT syncId FROM podcast WHERE id = :pid)));
 DELETE FROM podcast WHERE id = :pid;
 -- FK cascades: episode (+ description, transcript, alt_enclosure, chapter, episode_state, episode_position,
 -- queue_entry, download), podcast_url_alias, podcast_settings, podcast_group_member;
@@ -1349,29 +1711,31 @@ DELETE FROM podcast WHERE id = :pid;
 
 **Merge** of podcast `loser` into `winner` (03 decides when, [03 Ingestion and diff](03-feeds-and-discovery.md#podcast-dedupe-and-merge); 05's import report shows `MERGED`). Before the transaction 03 deletes, through `DownloadController`, only the download files of **matched** loser episodes whose winner episode already has a `download` row (step 4 keeps the winner's row); unmatched loser episodes keep their downloads, because step 5 re-parents them. Matching runs in Kotlin on both podcasts' `IngestDao.existing()` lists: `identityKey`, then normalised enclosure URL. Then one write transaction:
 
-1. `INSERT OR IGNORE INTO podcast_group_member(groupId, podcastId, sortOrder, addedAt, source) SELECT groupId, :winner, sortOrder, addedAt, source FROM podcast_group_member WHERE podcastId = :loser`.
+1. `INSERT OR IGNORE INTO podcast_group_member(groupId, podcastId, orderKey, addedAt, source) SELECT groupId, :winner, orderKey, addedAt, source FROM podcast_group_member WHERE podcastId = :loser` (the winner takes the loser's place in each group it was not in).
 2. `UPDATE OR IGNORE podcast_url_alias SET podcastId = :winner WHERE podcastId = :loser`; `INSERT OR IGNORE` the loser's `feedKey` as alias (`MERGE`); `DELETE FROM podcast_url_alias WHERE url = (SELECT feedKey FROM podcast WHERE id = :winner)` (an alias never equals a `feedKey`).
 3. Settings: if the winner has no `podcast_settings` row, `INSERT INTO podcast_settings SELECT :winner, <override columns> FROM podcast_settings WHERE podcastId = :loser`; otherwise the winner's row stays. `includeInAll` = winner's; `customTitle` = winner's, else loser's.
 4. Matched pairs `(l, w)`: user state merged with 05's Merge-restore rules (played = OR with the later `playedAt`, newer position wins, favourite and tombstone = OR, `INSERT OR IGNORE` + guarded `UPDATE`s of [User-state writes](#user-state-writes)); `UPDATE OR IGNORE queue_entry SET episodeId = :w WHERE episodeId = :l`; `UPDATE OR IGNORE download SET episodeId = :w WHERE episodeId = :l` (the winner keeps its own row if present; `relativePath` still finds the file); `UPDATE play_session SET currentEpisodeId = :w WHERE currentEpisodeId = :l`.
 5. Unmatched loser episodes are re-parented, so their played state and positions survive ([N1](../PLAN.md#22-non-functional-requirements)): `UPDATE episode SET podcastId = :winner, inFeed = 0 WHERE id IN (:unmatched)` (cannot violate `UNIQUE(podcastId, identityKey)`, because none of their keys exists in the winner); retention ages them out later. Their `person`/`funding` rows keep `ownerId` (episode IDs do not change).
 6. `UPDATE play_session SET contextId = :winner WHERE contextType = 'PODCAST' AND contextId = :loser`; `UPDATE import_item SET podcastId = :winner WHERE podcastId = :loser`.
-7. `deleteCascade(loser)` (now only the matched loser rows and the loser's own metadata remain).
+7. `deleteCascade(loser)` (now only the matched loser rows and the loser's own metadata remain). While linked (MS2), steps 1–6 are captured normally — they are real changes of the winner's records — but step 7 runs inside `SyncStateDao.withApplying` after `SyncOutboxDao.captureLiteral` has recorded the loser's move instead of an unsubscribe: `feedUrl` = the winner's URL and `feedKeys` = the loser's keys plus the winner's, under the loser's `syncId` ([10 Feed moves](10-sync.md#feed-moves)). A captured unsubscribe would make other devices drop the loser's episodes instead of merging them; the server merges the two records by feed key and every device follows the redirect.
 
 ### Import commit
 
 `ImportDao.commitChunk(...)` (M3, pipeline [05 OPML import](05-groups-opml-backup.md#opml-import)). Each chunk of ≤ 500 items is one write transaction:
 
-1. Create missing groups: `INSERT OR IGNORE INTO podcast_group(uuid, name, nameKey, sortOrder, createdAt, updatedAt, …)` with `sortOrder = (SELECT COALESCE(MAX(sortOrder), -1) + 1 FROM podcast_group)` and `uuid`/`nameKey` from 05; an ignored insert (Room returns `-1`) means a group with that `nameKey` exists: `SELECT id FROM podcast_group WHERE nameKey = :nameKey` and reuse it. A plain `INSERT` would abort the whole chunk on the unique index.
-2. For new items: `INSERT OR IGNORE INTO podcast(sourceType, feedUrl, feedKey, title, customTitle, artworkKey, credentialId, status, initialFetch, subscribedAt, nextRefreshAt, includeInAll, youtubeChannelId, youtubeVariants) VALUES (…, 'PENDING_FIRST_FETCH', 1, :now, :now, 1, …)` (`customTitle` and `credentialId` as 05 supplies them, usually null), with `title` from the file (else the URL host) and the monogram `artworkKey` `m-{sha1hex(feedKey)}`. An ignored insert means the `feedKey` was subscribed meanwhile: `SELECT id FROM podcast WHERE feedKey = :feedKey` and continue as "already subscribed"; if that finds nothing the insert failed for another reason, which is a bug (throw, the chunk rolls back).
+1. Create missing groups: `INSERT OR IGNORE INTO podcast_group(uuid, name, nameKey, orderKey, createdAt, updatedAt, …)` with `orderKey = OrderKey.after(<current last key>)` computed in Kotlin inside the chunk's transaction ([Group and member ordering](#group-and-member-ordering)) and `uuid`/`nameKey` from 05; an ignored insert (Room returns `-1`) means a group with that `nameKey` exists: `SELECT id FROM podcast_group WHERE nameKey = :nameKey` and reuse it. A plain `INSERT` would abort the whole chunk on the unique index.
+2. For new items: `INSERT OR IGNORE INTO podcast(syncId, sourceType, feedUrl, feedKey, title, customTitle, artworkKey, credentialId, status, initialFetch, subscribedAt, nextRefreshAt, includeInAll, youtubeChannelId, youtubeVariants) VALUES (:newUuid, …, 'PENDING_FIRST_FETCH', 1, :now, :now, 1, …)` (`customTitle` and `credentialId` as 05 supplies them, usually null), with `title` from the file (else the URL host) and the monogram `artworkKey` `m-{sha1hex(feedKey)}`. An ignored insert means the `feedKey` was subscribed meanwhile: `SELECT id FROM podcast WHERE feedKey = :feedKey` and continue as "already subscribed"; if that finds nothing the insert failed for another reason, which is a bug (throw, the chunk rolls back).
 3. Aliases: `INSERT OR IGNORE INTO podcast_url_alias(url, podcastId, reason, addedAt) VALUES (:normalised, :pid, 'IMPORT', :now)` (skipped when equal to any `podcast.feedKey`).
-4. Memberships, also for already-subscribed podcasts ([R1.2](../PLAN.md#21-functional-requirements)): `INSERT OR IGNORE INTO podcast_group_member(groupId, podcastId, sortOrder, addedAt, source) VALUES (…, 'MANUAL')`.
+4. Memberships, also for already-subscribed podcasts ([R1.2](../PLAN.md#21-functional-requirements)): `INSERT OR IGNORE INTO podcast_group_member(groupId, podcastId, orderKey, addedAt, source) VALUES (…, 'MANUAL')` with `orderKey = OrderKey.after(<the group's last key>)`, in file order.
 5. `UPDATE import_item SET status = 'QUEUED', podcastId = :pid WHERE sessionId = :sid AND ordinal = :ord`.
+
+While linked, the triggers capture each new podcast (`*`), group (`*`) and membership (`in`, `ok`, `addedAt`) of the chunk; a 300-feed import is about 1,000 outbox rows ([10 Outbox and coalescing](10-sync.md#outbox-and-coalescing)).
 
 Progress: `ImportDao.observeProgress(sid)` = `SELECT status, COUNT(*) FROM import_item WHERE sessionId = :sid GROUP BY status` (observed). Preview and report lists: `ImportDao.pagedItems(sessionId, statuses: List<ImportItemStatus>): PagingSource<Int, ImportItemEntity>` = `SELECT * FROM import_item WHERE sessionId = :sid AND status IN (:statuses) ORDER BY ordinal` (index `(sessionId, status)`; observes `import_item`; 05 passes every status for "all"). Session cleanup: `ImportDao.expiredSessions(cutoff)` = `SELECT id, payloadPath FROM import_session WHERE state IN ('DONE','CANCELLED','PREVIEW') AND COALESCE(finishedAt, createdAt) < :cutoff` and `deleteSession(id)` (items cascade), called by `AutoSnapshotWorker` in M3–M10 and by `db-maintenance` from M11 (05's rule).
 
 ### Backup export
 
-`BackupDao` (M3, archive format [05 Full backup and restore](05-groups-opml-backup.md#full-backup-and-restore)). `observeLibraryShape(): Flow<LibraryShape>` = `SELECT (SELECT COUNT(*) FROM podcast) AS podcasts, (SELECT COUNT(*) FROM podcast_group_member) AS memberships` drives 05's snapshot library watcher. The whole export runs inside **one read transaction**, so the archive is a point-in-time snapshot (WAL readers are isolated from concurrent writes). Library rows (podcasts with aliases and settings, groups with settings, memberships, queue, session) are small and read in full. Episodes are streamed in keyset chunks of 1,000 and written line by line to `episodes.jsonl`:
+`BackupDao` (M3, archive format [05 Full backup and restore](05-groups-opml-backup.md#full-backup-and-restore)). `observeLibraryShape(): Flow<LibraryShape>` = `SELECT (SELECT COUNT(*) FROM podcast) AS podcasts, (SELECT COUNT(*) FROM podcast_group_member) AS memberships` drives 05's snapshot library watcher. The whole export runs inside **one read transaction**, so the archive is a point-in-time snapshot (WAL readers are isolated from concurrent writes). Library rows (podcasts with aliases and settings, groups with settings, memberships, queue, session) are small and read in full, including `podcast.syncId` and the `orderKey`s, which 05 writes as the optional backup fields ([D33](../PLAN.md#3-key-decisions)); nothing from the `sync_*` tables is exported. Episodes are streamed in keyset chunks of 1,000 and written line by line to `episodes.jsonl`:
 
 ```sql
 SELECT p.feedKey, e.id, e.identityKey, e.guid, e.title, e.pubDate, e.enclosureUrl, e.enclosureType, e.durationMs,
@@ -1407,10 +1771,11 @@ ORDER BY rank, id LIMIT 1;
 -- 2. real podcast:guid
 SELECT id FROM podcast WHERE podcastGuid = :guid AND podcastGuidDerived = 0 ORDER BY id LIMIT 1;
 -- 3. otherwise insert as in Import commit (status PENDING_FIRST_FETCH, initialFetch = 1) plus the backup's artworkUrl,
---    customTitle and credentialId; aliases with reason RESTORE
+--    customTitle and credentialId; syncId = the backup's when present and
+--    NOT EXISTS (SELECT 1 FROM podcast WHERE syncId = :backupSyncId), else a new UUID; aliases with reason RESTORE
 ```
 
-Groups: `SELECT id FROM podcast_group WHERE uuid = :uuid`, else `WHERE nameKey = :nameKey`, else insert.
+Groups: `SELECT id FROM podcast_group WHERE uuid = :uuid`, else `WHERE nameKey = :nameKey`, else insert (with the backup's `orderKey`, else a fresh key after the last group, [Group and member ordering](#group-and-member-ordering)).
 
 Episodes, per podcast, in chunks of 1,000 lines: load `SELECT id, identityKey, guid, enclosureUrl, title, pubDate, link FROM episode WHERE podcastId = :pid` into maps (the extra columns feed `EpisodeKeys.keyFor`; an `h:` key additionally needs the description head, decoded from `episode_description` only on demand); for each line match by key (computing local keys with `EpisodeKeys.keyFor(local, kv)` when the line's `kv` differs from the stored version; a `kv` newer than the app's `EpisodeKeys.VERSION` skips key matching), then normalised enclosure URL, then `guid`. Unmatched lines with an enclosure URL or YouTube ID become **stubs** (`INSERT OR IGNORE`; an ignored stub is looked up by `(podcastId, identityKey)` and treated as matched):
 
@@ -1422,6 +1787,8 @@ VALUES (:pid, :k, :guid, :title, :pubDate, MIN(COALESCE(:pubDate, :now), :now + 
 ```
 
 `contentHash = 0` guarantees that the next refresh's diff updates the stub's feed columns when it matches it. State merge statements are the column-scoped writes of [User-state writes](#user-state-writes) with 05's rules (played = OR with `playedAt = max`; position with the newer `updatedAt`, via `INSERT OR IGNORE` then `UPDATE episode_position … WHERE episodeId = ? AND updatedAt < :posAt`; favourite and tombstone = OR).
+
+**Reuse by sync** (10, MS2). The same ladder serves three sync paths, so one matching implementation covers restore and sync: `EpisodeMatcher` resolves an incoming `episode`, `upnext` or `session` reference by `syncId` (`SELECT id FROM podcast WHERE syncId = :syncId`, after redirects) and then by the episode steps above, the record's `kv` and match hints standing in for a backup line's fields; `SyncApplier` inserts the stub above for an unmatched queued, in-progress or favourite record whose hints include an enclosure URL or YouTube ID; `SyncParkedStateApplier` loads `SyncParkedDao.forPodcast(syncId)` after an ingest and matches each parked row the same way. A same-feed collision of an incoming podcast record uses the podcast steps 1–2 ([10 Same podcast on two devices](10-sync.md#same-podcast-on-two-devices)). **Restore while linked** (05's [Restore while linked](05-groups-opml-backup.md#restore-while-linked)) runs these transactions inside `withApplying` and records what it changed with `SyncOutboxDao.captureAt`, using the backup's own timestamps.
 
 ### Artwork references
 
@@ -1452,9 +1819,40 @@ UPDATE artwork SET pinCount = <refCount> WHERE pinCount <> <refCount>;
 | `PodcastDao.observeArtworkKey(podcastId)` | `SELECT artworkKey FROM podcast WHERE id = :podcastId` (`Flow`; key for 08's `ArtworkRepository.observeColors(key, fallbackPodcastId)`) |
 | `pinnedIndex()` | `SELECT key, localPath FROM artwork WHERE localPath IS NOT NULL` |
 
+### Sync bookkeeping
+
+DAOs over the [sync tables](#sync-tables) for 10's engine (MS0: `SyncOutboxDao` captures; MS2: the rest). Algorithms and the JSON they read are 10's ([10 Client sync engine](10-sync.md#client-sync-engine)); every function runs inside the caller's transaction where 10 says so. None is observed except `SyncHeldDao.observeAll()`.
+
+| Function | SQL / behaviour |
+|---|---|
+| `SyncStateDao.get()` | `SELECT * FROM sync_state WHERE id = 0` (one-shot; 10 caches it) |
+| `SyncStateDao.link(serverUrl, accountId, deviceId, nodeId, protocol, now)` | `UPDATE sync_state SET serverUrl = :serverUrl, accountId = :accountId, deviceId = :deviceId, nodeId = :nodeId, protocol = :protocol, linkedAt = :now, cursor = NULL, hlc = 0, clockOffsetMs = 0, lastError = NULL WHERE id = 0` — `enabled` stays 0 until the first-link step ends |
+| `SyncStateDao.enable(cursor, hlc)` | `UPDATE sync_state SET enabled = 1, cursor = :cursor, hlc = max(hlc, :hlc) WHERE id = 0` (first-link step 4, 10) |
+| `SyncStateDao.setCursor(cursor, now)` | `UPDATE sync_state SET cursor = :cursor, lastSyncAt = :now, lastError = NULL WHERE id = 0`, in the page's apply transaction |
+| `SyncStateDao.raiseHlc(remote)` | `UPDATE sync_state SET hlc = :remote WHERE id = 0 AND hlc < :remote` (receive rule) |
+| `SyncStateDao.setClockOffset(ms)`, `clampHlc(max)` | `UPDATE sync_state SET clockOffsetMs = :ms WHERE id = 0`; `UPDATE sync_state SET hlc = :max WHERE id = 0 AND hlc > :max` |
+| `SyncStateDao.setError(code)` | `UPDATE sync_state SET lastError = :code WHERE id = 0 AND lastError IS NOT :code` |
+| `SyncStateDao.withApplying(block)` | [The applying protocol](#the-applying-protocol): `SELECT applying …`, `UPDATE sync_state SET applying = 1 WHERE id = 0`, `block`, `UPDATE sync_state SET applying = :previous WHERE id = 0` |
+| `SyncStateDao.unlink()` | One write transaction: `DELETE FROM sync_outbox`; `DELETE FROM sync_clock`; `DELETE FROM sync_parked`; `DELETE FROM sync_held`; `UPDATE sync_state SET enabled = 0, applying = 0, accountId = NULL, deviceId = NULL, cursor = NULL, hlc = 0, nodeId = NULL, clockOffsetMs = 0, protocol = NULL, linkedAt = NULL, lastSyncAt = NULL, lastError = NULL WHERE id = 0` (`serverUrl` kept for a quick re-link, [10 Unlink and Delete my data](10-sync.md#unlink-and-delete-my-data)) |
+| `SyncOutboxDao.captureLiteral`, `captureAll`, `captureAt` | [Kotlin-side captures](#kotlin-side-captures) |
+| `SyncOutboxDao.firstRecords(limit)` | `SELECT coll, rid, MIN(hlc) AS firstHlc FROM sync_outbox GROUP BY coll, rid ORDER BY firstHlc, coll, rid LIMIT :limit` (push batches of ≤ 1,000 records) |
+| `SyncOutboxDao.rowsFor(coll, rids)` | `SELECT * FROM sync_outbox WHERE coll = :coll AND rid IN (:rids)` (all rows of the batch's records) |
+| `SyncOutboxDao.deleteAcked(coll, rid, field, hlc)` | `DELETE FROM sync_outbox WHERE coll = :coll AND rid = :rid AND field = :field AND hlc <= :hlc` — a change made during the round stays |
+| `SyncOutboxDao.deleteIfUnchanged(coll, rid, field, hlc)` | `DELETE FROM sync_outbox WHERE coll = :coll AND rid = :rid AND field = :field AND hlc = :hlc` (a pending local change that lost to a newer remote value; 10 compares clocks in Kotlin) |
+| `SyncOutboxDao.restampAbove(max, hlc)` | `UPDATE sync_outbox SET hlc = :hlc WHERE hlc > :max` (after a clock-offset correction, 10) |
+| `SyncOutboxDao.hasPushWorthy()` | `SELECT EXISTS (SELECT 1 FROM sync_outbox WHERE field <> 'pos' AND coll <> 'session')` (10's push scheduling) |
+| `SyncOutboxDao.pendingCounts()` | `SELECT coll, COUNT(*) AS n FROM sync_outbox GROUP BY coll` (diagnostics) |
+| `SyncClockDao.get(coll, rid)`, `getMany(coll, rids)`, `put(coll, rid, clocks)` | `SELECT … WHERE coll = :coll AND rid = :rid` / `rid IN (:rids)`; `INSERT OR REPLACE INTO sync_clock(coll, rid, clocks) VALUES (…)` (`sync_clock` has no triggers) |
+| `SyncOutboxDao.moveRecord(coll, from, to)`, `SyncClockDao.moveRecord(coll, from, to)` | Kotlin in the caller's transaction: read both `rid`s' rows, keep per field the larger clock, write them under `to`, delete `from` (redirects, 10) |
+| `SyncOutboxDao.ridsWithPodcastPrefix(syncId)`, `SyncClockDao.ridsWithPodcastPrefix(syncId)` | `SELECT coll, rid FROM <table> WHERE (coll IN ('episode', 'upnext') AND substr(rid, 1, 36) = :syncId) OR (coll = 'member' AND substr(rid, 37, 36) = :syncId)` — a scan, acceptable for the rare podcast redirect (≈ 30,000 clock rows at the N5 scale) |
+| `SyncClockDao.deleteRids(coll, rids)` | `DELETE FROM sync_clock WHERE coll = :coll AND rid IN (:rids)` (retention) |
+| `SyncParkedDao.park(row)`, `forPodcast(syncId)`, `delete(ids)` | `@Insert`; `SELECT * FROM sync_parked WHERE podcastSyncId = :syncId ORDER BY id`; `DELETE FROM sync_parked WHERE id IN (:ids)` |
+| `SyncParkedDao.expire(before)`, `count()` | `DELETE FROM sync_parked WHERE receivedAt < :before` (maintenance, 180 days); `SELECT COUNT(*) FROM sync_parked` |
+| `SyncHeldDao.observeAll()`, `upsert(row)`, `delete(id)` | `SELECT * FROM sync_held ORDER BY heldAt` (`Flow`, the held-changes prompt); `@Upsert`; `DELETE FROM sync_held WHERE id = :id` |
+
 ## Invalidation hygiene
 
-Serves R2.9, N5 ([D16](../PLAN.md#3-key-decisions), [D17](../PLAN.md#3-key-decisions), risk [T5](../PLAN.md#8-risks-and-mitigations)). Delivered in M2 (tests), rules apply from M1.
+Serves R2.9, N5 ([D16](../PLAN.md#3-key-decisions), [D17](../PLAN.md#3-key-decisions), risk [T5](../PLAN.md#8-risks-and-mitigations)). Delivered in M2 (tests), rules apply from M1 on both platforms; MS0 extends the tests to the sync capture triggers.
 
 ### How Room invalidates
 
@@ -1463,6 +1861,7 @@ Room installs `AFTER INSERT/UPDATE/DELETE` row triggers per observed table and n
 - Invalidation is table-granular, not row- or column-granular. Joining a table written every 5 s makes every open feed re-query every 5 s.
 - Statements that change zero rows (ignored inserts, guarded updates that do not match) fire no trigger and cause no invalidation.
 - N writes in one transaction cause one notification; N transactions cause up to N.
+- Room's tracking triggers are temporary triggers per observed table; writes made by our capture triggers fire them only for the tables those triggers write (`sync_state`, `sync_outbox`, `sync_clock`), so a captured position save still invalidates nothing a list observes.
 
 ```mermaid
 sequenceDiagram
@@ -1493,6 +1892,8 @@ sequenceDiagram
 | `PositionDao.observeFor`, `DownloadDao.observeLiveFor`, `EpisodeStateDao.observeFor` | `Flow`, `IN (:ids)` | one table each | High churn by design; ≤ 200 IDs |
 | `PlaySessionDao.observeCurrentEpisodeId`, `ArtworkDao.observe` | `Flow` | one table each | |
 | `ImportDao.observeProgress`, `ImportDao.pagedItems` | `Flow`, `PagingSource` | `import_item` | Medium churn only while an import runs |
+| 10's `SyncScheduler` outbox flow (`invalidationTracker.createFlow("sync_outbox")`, debounced 1–2 s) | `Flow` (tables only, no query) | `sync_outbox` | High churn while linked (every capture); used only to schedule pushes, then `hasPushWorthy()` one-shot |
+| `SyncHeldDao.observeAll` | `Flow` | `sync_held` | Low churn; the held-changes prompt |
 
 ### Write rules
 
@@ -1502,6 +1903,8 @@ sequenceDiagram
 4. `ArtworkSyncWorker` writes artwork rows in one transaction per batch (8 images).
 5. `episode_state.startedAt` is written once per episode (guarded update), not on every position tick.
 6. Ingestion updates feed columns only for rows whose `contentHash` changed; a body with an unchanged SHA-256 writes nothing but fetch state.
+7. The capture triggers write only `sync_state`, `sync_outbox` and (rekey) `sync_clock`; no paged, count, tile, Up next or live-state query and no `observedEntities` list names a `sync_*` table, and `sync_state` is observed by nothing at all ([Sync tables](#sync-tables)).
+8. `SyncApplier` writes one transaction per pulled page (≤ 1,000 records), so a page invalidates each touched table once, like an import chunk.
 
 ### Rules for new tables
 
@@ -1511,12 +1914,13 @@ sequenceDiagram
 
 ### Hygiene tests
 
-`InvalidationHygieneTest` (Robolectric, M2; M2 acceptance criterion 3):
+`InvalidationHygieneTest` (`desktopTest` with the bundled driver, plus one GMD run on Android; M2; M2 acceptance criterion 3):
 
 1. For each `FeedSource` (All, Ungrouped, Group, Podcast), create the `PagingSource`, load the first page and register `registerInvalidatedCallback` counting invalidations.
 2. Perform 100 position saves with 06's sequence (`insertIfAbsent` + `updateGuarded` + `ensure` + `markStarted`, one transaction each, pos > 0, same and different episodes), 20 `PlaySessionDao` updates and 20 Up next reorders.
 3. Assert zero invalidations after the first save of each episode (that save creates the `episode_state` row and sets `startedAt`, one invalidation by design). Positive control: one mark-played transaction causes exactly one invalidation.
 4. `RefreshBatchingTest`: 300 simulated 304 outcomes through the batching writer cause ≤ 15 invalidations of an open All `PagingSource`.
+5. From MS0 (MS0 acceptance 3): steps 1–4 run a second time with the capture triggers installed and `sync_state.enabled = 1`; the invalidation counts must equal those of the first run, and a flow on `sync_outbox` must see the captures (positive control).
 
 ---
 
