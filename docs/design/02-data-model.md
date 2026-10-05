@@ -1,6 +1,6 @@
 # 02 — Data model
 
-> Status: Draft v1, 2026-10-04 · Implements: R1.3, R1.7, R1.8, R2.3, R2.5, R2.8, R2.9, R3.4, R4.2, R4.4, R4.5, R4.8 / N1, N5, N6, N9 · Milestones: M1, M2, M3, M4, M5, M6, M11 · Honours: D9, D15, D16, D17, D18, D19, D20, D21, D22, D23, D24, D29, D30, D33, D38, D41, D50 · Owns: the Room 3 schema (every entity, column, index and key SQL statement), identity-key storage, invalidation rules, retention, migrations and schema tests
+> Status: Draft v1, 2026-10-04; revised 2026-10-05 for the owner decisions (YouTube engine and external mode, in-app updater) · Implements: R1.3, R1.7, R1.8, R2.3, R2.5, R2.8, R2.9, R3.4, R3.7 (query side), R4.2, R4.4, R4.5, R4.8 / N1, N5, N6, N9 · Milestones: M1, M2, M3, M4, M5, M6, M9a, M11b · Honours: D9, D15, D16, D17, D18, D19, D20, D21, D22, D23, D24, D29, D30, D33, D38, D41, D50, D73, D77, D78 · Owns: the Room 3 schema (every entity, column, index and key SQL statement), identity-key storage, invalidation rules, retention, migrations and schema tests
 
 Contents: [Scope](#scope) · [Conventions](#conventions) · [Entity relationship diagram](#entity-relationship-diagram) · [Tables](#tables) · [Identity keys](#identity-keys) · [Indices](#indices) · [Key queries](#key-queries) · [Invalidation hygiene](#invalidation-hygiene) · [Retention and maintenance](#retention-and-maintenance) · [Migrations and schema testing](#migrations-and-schema-testing) · [Error handling and recovery](#error-handling-and-recovery) · [Testing](#testing) · [Delivery by milestone](#delivery-by-milestone) · [Open questions](#open-questions) · [Sources](#sources)
 
@@ -22,6 +22,8 @@ Room is the single source of truth ([D14](../PLAN.md#3-key-decisions)). This doc
 | Retention (D23) and the `db-maintenance` worker | Backup archive format and merge rules — [05 Full backup and restore](05-groups-opml-backup.md#full-backup-and-restore) |
 | Room 3 usage conventions, migration policy, schema tests | Hilt bindings and start-up order — [01 Dependency injection](01-foundation.md#dependency-injection); CI wiring — [09 CI pipelines](09-quality-and-release.md#ci-pipelines) |
 
+Never in Room ([D73](../PLAN.md#3-key-decisions), [D76](../PLAN.md#3-key-decisions), [D78](../PLAN.md#3-key-decisions)): the YouTube engine's state (`noBackupFilesDir/ytdlp/` with `active.json`, installed versions and staging; yt-dlp's player-JS cache in `cacheDir/yt-dlp/`; [04 Engine updates](04-youtube.md#engine-updates)), the in-app updater's downloaded APKs (`noBackupFilesDir/updates/`; [09 In-app updater](09-quality-and-release.md#in-app-updater)) and their settings (`youtube.engine_*`, `youtube.breaker_engine_version`, `updates.*` in the DataStore files `settings` and `device_settings`). The `:ytx` process never opens the database (01's `YtxProcessStartTest`); engine results reach Room only through main-process writers (04's enrichment, channel metadata and `YouTubeAvailabilityRecorder`). The updater writes no `download` rows: its APK transfer is not an episode download and does not use 07's engine.
+
 ### Module placement
 
 | Module | Contents specified here |
@@ -30,7 +32,7 @@ Room is the single source of truth ([D14](../PLAN.md#3-key-decisions)). This doc
 | `:core:database` (Android, `neutrodyne.room`) | `NeutrodyneDatabase`, all entities (`<Table>Entity`), DAOs, DAO projections, `FeedQueryBuilder`, `NeutrodyneConverters`, `EpisodeDescriptionCodec`, `DatabaseOpener`, migrations, `core/database/schemas/` |
 | `:core:data` (Android) | `DbMaintenanceWorker`; entity ↔ `:core:model` mappers; JSON-column codecs (kotlinx.serialization) |
 
-Only `:core:data`, `:core:artwork`, `:playback:impl` and `:download:impl` depend on `:core:database` ([PLAN 5.1](../PLAN.md#51-module-graph) rules 2 and 4). Features never see entities or DAOs; they receive `:core:model` types through `:core:domain` interfaces ([D12](../PLAN.md#3-key-decisions)).
+Only `:core:data`, `:core:artwork`, `:playback:impl` and `:download:impl` depend on `:core:database` ([PLAN 5.1](../PLAN.md#51-module-graph) rules 2 and 4); `:youtube:ytdlp` and `:update:impl` do not ([D13](../PLAN.md#3-key-decisions)). Features never see entities or DAOs; they receive `:core:model` types through `:core:domain` interfaces ([D12](../PLAN.md#3-key-decisions)).
 
 ### Table write ownership
 
@@ -38,20 +40,20 @@ Only `:core:data`, `:core:artwork`, `:playback:impl` and `:download:impl` depend
 
 | Table | Churn | Writers (doc: class) | Main readers |
 |---|---|---|---|
-| `podcast` | low (fetch state batched) | 03: `FeedRefresher`, `SubscribeUseCase`; 04: YouTube columns via 03's engine, channel art and `channelMetadataAt` via `PodcastDao.applyYouTubeChannelMetadata`; 05: `ImportRepository`, `RestoreWorker` (insert), `GroupRepository`/podcast settings (`includeInAll`, `customTitle`, `episodeOrder`); 07: `AutoDownloadPlanner` (`autoDownloadEligibleAfter`) | everyone |
+| `podcast` | low (fetch state batched) | 03: `FeedRefresher`, `SubscribeUseCase`; 04: YouTube columns via 03's refresh pipeline, channel art and `channelMetadataAt` via `PodcastDao.applyYouTubeChannelMetadata`; 05: `ImportRepository`, `RestoreWorker` (insert), `GroupRepository`/podcast settings (`includeInAll`, `customTitle`, `episodeOrder`); 07: `AutoDownloadPlanner` (`autoDownloadEligibleAfter`) | everyone |
 | `podcast_url_alias`, `credential` | low | 03 (subscribe, moves, merge, `CredentialStore`); 05 (import, restore aliases) | 03, 05, 06, 07 |
 | `podcast_settings`, `podcast_group_settings` | low | 05 settings screens; 05 restore | `EffectiveSettingsResolver` (05) |
 | `podcast_group`, `podcast_group_member` | low | 05 `GroupRepository`, import, restore | 05, 06, 08 |
-| `episode` and children (`episode_description`, `episode_transcript`, `episode_alt_enclosure`, `person`, `funding`) | low | 03 ingestion; 04 enrichment (`IngestDao.applyYouTubeFacts`: `durationMs`, `availability`, `isShort`) as part of the refresh pipeline; 04 `YouTubeAvailabilityRecorder` (`EpisodeDao.setAvailability`, called by 06/07 at resolve time); 05 restore (stub rows); 02 retention (delete) | everyone |
+| `episode` and children (`episode_description`, `episode_transcript`, `episode_alt_enclosure`, `person`, `funding`) | low | 03 ingestion; 04 enrichment (`IngestDao.applyYouTubeFacts`: `durationMs`, `availability`, `isShort`; facts from the engine's `YtDlpEnricher`, so only with the engine, from M9a) as part of the refresh pipeline; 04 `YouTubeAvailabilityRecorder` (`EpisodeDao.setAvailability`, called by 06/07 at resolve time); 05 restore (stub rows); 02 retention (delete) | everyone |
 | `chapter` | low | 03 (PSC rows); 06 (other sources) | 06, 08 |
 | `episode_state` | low | 06 (started, played, measured duration); 03/08 via `EpisodeRepository` (favourite, bulk played); 07 (tombstone); 05 (import "treat as played", restore) | lists, 05, 06, 07 |
 | `episode_position` | **high** (every 5 s while playing) | 06 `PositionTracker`; 05 restore | `EpisodeLiveStateSource` (08), 06 |
 | `queue_entry`, `play_session` | medium (every transition) | 06; 05 restore | 06 |
-| `download` | low (transitions only, [D17](../PLAN.md#3-key-decisions)) | 07 | lists, 06 `LocalMediaIndex` (via 07), 07 |
+| `download` | low (transitions only, [D17](../PLAN.md#3-key-decisions)) | 07 (episode downloads only; never the in-app updater, [D78](../PLAN.md#3-key-decisions)) | lists, 06 `LocalMediaIndex` (via 07), 07 |
 | `artwork` | low (batched) | 08 `ArtworkSyncWorker`, `ArtworkStore` | lists, 08 |
 | `import_session`, `import_item` | medium during an import | 05 | 05 |
 
-Exceptions to [D15](../PLAN.md#3-key-decisions) "episode is written only by ingestion" (recorded for a PLAN amendment): restore inserts stub rows that ingestion completes later; retention deletes rows; 04's `YouTubeAvailabilityRecorder` writes only `availability` when a stream resolve proves a video unavailable. None of them writes user state, and none rewrites other feed-derived columns of an existing row. 04's enrichment writes run inside the refresh pipeline and count as ingestion.
+Exceptions to [D15](../PLAN.md#3-key-decisions) "episode is written only by ingestion" (recorded for a PLAN amendment): restore inserts stub rows that ingestion completes later; retention deletes rows; 04's `YouTubeAvailabilityRecorder` writes only `availability` when a stream resolve proves a video unavailable. None of them writes user state, and none rewrites other feed-derived columns of an existing row. 04's enrichment writes run inside the refresh pipeline and count as ingestion; the engine in `:ytx` only returns facts over Binder, and the main process writes them.
 
 ### New names introduced here
 
@@ -66,8 +68,9 @@ Exceptions to [D15](../PLAN.md#3-key-decisions) "episode is written only by inge
 | `podcast.episodeOrder` | column `FeedOrder?` | Order of the podcast screen; null = `OLDEST_FIRST` when `showType = SERIAL`, else `NEWEST_FIRST` | 05, 08 |
 | `podcast.autoDownloadEligibleAfter` | column `Long?` | D67 watermark: episodes with `firstSeenAt` ≤ it are never auto-download candidates | 07 |
 | `podcast.pendingNewFeedUrl`, `podcast.lastFullFetchAt` | columns | Lazy `itunes:new-feed-url` adoption; time of the last 200 response with a parsed body (weekly unconditional fetch rule) | 03 |
-| `podcast.channelMetadataAt` | column `Long?` (requested by 04) | Last YouTube channel-page or extractor metadata fetch (avatar, banner, description); null = never. Drives 04's 30-day avatar refresh and lazy banner | 04 |
+| `podcast.channelMetadataAt` | column `Long?` (requested by 04) | Last YouTube channel-page or engine-lookup (`YtDlpChannelLookup`) metadata fetch (avatar, banner, description); null = never. Drives 04's 30-day avatar refresh and lazy banner | 04 |
 | `ImportFormat.URL_LIST` | constant appended to the canonical `ImportFormat` (requested by 04) | Plain list of URLs, `UC…` IDs or handles; stored as `TEXT`, so no migration | 04, 05 |
+| `WaitReason.YOUTUBE_ENGINE_OFF` | constant appended to the canonical `WaitReason` (requested by 04/07, M9a) | A queued YouTube download waits because the engine is off or unusable (`ExternalReason` `DISABLED_BY_USER`, `ENGINE_FAILED`, `NOT_YET_AVAILABLE`); meaning and texts owned by [07 Wait reasons](07-downloads.md#wait-reasons). Stored as `TEXT`, so no migration; a build that predates it reads `NONE` | 04, 07, 08 |
 | `podcast_url_alias.reason`, `podcast_url_alias.addedAt` | columns | Why and when an alias was recorded | 03, 05 |
 | `episode_alt_enclosure.codecs`, `episode_alt_enclosure.isDefault` | columns | Podcasting 2.0 `alternateEnclosure@codecs`, `@default` | 03, 06 |
 | `play_session.contextMediaFilter`, `contextMinSortDate`, `contextAnchorSortDate` | columns | Full context filter set; keyset anchor that survives deletion of the anchor row | 05, 06 |
@@ -123,7 +126,7 @@ One class, registered on the database: `@ColumnTypeConverters(NeutrodyneConverte
 | `PositionSource` | `episode_position.positionSource` | `STREAM` |
 | `ContextType` | `play_session.contextType` | `null` (no context) |
 | `NetworkPolicy`, `DeleteAfter` | settings tables | `UNMETERED`, `NEVER` (most conservative) |
-| `DownloadState`, `DownloadLane`, `WaitReason`, `DownloadError`, `SourceKind` | `download` | `FAILED`, `MANUAL`, `NONE`, `UNKNOWN`, `RSS_ENCLOSURE` |
+| `DownloadState`, `DownloadLane`, `WaitReason` (incl. `YOUTUBE_ENGINE_OFF`), `DownloadError`, `SourceKind` | `download` | `FAILED`, `MANUAL`, `NONE`, `UNKNOWN`, `RSS_ENCLOSURE` |
 | `ImportFormat` (incl. `URL_LIST`), `ImportState`, `ImportItemStatus`, `ImportItemKind` | import tables | `OPML`, `DONE`, `FETCH_FAILED`, `RSS` |
 | `ShowType`, `EpisodeType`, `FeedErrorKind`, `OwnerType`, `AliasReason` | new columns | `null`, `null`, `UNKNOWN`, `EPISODE`, `IMPORT` |
 
@@ -137,7 +140,7 @@ inline fun <reified E : Enum<E>> enumOr(name: String, fallback: E): E =
     enumValues<E>().firstOrNull { it.name == name } ?: fallback
 ```
 
-The stored name is the contract: enum constants of persisted enums are only ever **appended**. Renaming or removing one requires a migration (`UPDATE <table> SET <col> = 'NEW' WHERE <col> = 'OLD'`) and a `ConverterTest` case; R8 does not affect `Enum.name` because `:app` keeps `-dontobfuscate` ([01](01-foundation.md#build-flavors)). Enum names used as SQL literals in this document (`'COMPLETED'`, `'YOUTUBE_CHANNEL'`, `'PENDING_FIRST_FETCH'`, …) are collected in the test-only list `SqlEnumLiterals`; `ConverterTest` asserts that each still exists in its enum.
+The stored name is the contract: enum constants of persisted enums are only ever **appended**. Renaming or removing one requires a migration (`UPDATE <table> SET <col> = 'NEW' WHERE <col> = 'OLD'`) and a `ConverterTest` case; R8 does not affect `Enum.name` because `:app` keeps `-dontobfuscate` ([01](01-foundation.md#build-variants-and-abis)). Enum names used as SQL literals in this document (`'COMPLETED'`, `'YOUTUBE_CHANNEL'`, `'PENDING_FIRST_FETCH'`, …) are collected in the test-only list `SqlEnumLiterals`; `ConverterTest` asserts that each still exists in its enum.
 
 ### JSON columns and bitmasks
 
@@ -184,7 +187,7 @@ abstract class NeutrodyneDatabase : RoomDatabase() {
 }
 ```
 
-- One database instance per process; only the main process opens it. The `:acra` process guard ([01](01-foundation.md#architecture-patterns)) must skip DB initialisation. Multi-instance invalidation stays off.
+- One database instance; only the main process opens it. The `:acra` and `:ytx` processes run no initializers and must never touch the database (01's process guards, [01 Application start-up](01-foundation.md#application-start-up); [D73](../PLAN.md#3-key-decisions) for `:ytx`). Multi-instance invalidation stays off.
 - WAL: with `WRITE_AHEAD_LOGGING` and no explicit pool setting, Room's pool has **one writer and four readers**; readers never block the writer and see a consistent snapshot. A caller waits for a pooled connection for at most 30 s and then gets an `SQLiteException`, so no transaction may run anywhere near that long ([Transactions and threading](#transactions-and-threading)). Room itself sets `busy_timeout` (≥ 3 s), `journal_mode` and `synchronous = NORMAL` on each connection. An in-memory database (tests) always uses a single connection, so tests of reader isolation use a temp-file database.
 - **Opening.** Room opens the first connection, runs `BEGIN EXCLUSIVE TRANSACTION` → `onCreate` or the migrations → `END`, then calls the generated `onOpen` and our `Callback.onOpen`; callbacks must use only the `connection` they receive (touching the database instance or a DAO there fails with "Recursive database initialization detected"). Room retries a failing first open once after 500 ms. If the builder offers `allowDataLossOnRecovery()` it is never called: Room would then delete a corrupt file itself, while [`DatabaseOpener`](#error-handling-and-recovery) quarantines it instead.
 - **Foreign keys.** `foreign_keys` must be `ON` on every connection after the database is open, and **`OFF` while migrations run** (see [Writing migrations](#writing-migrations): a table rebuild with foreign keys on cascades deletes into child tables). Room 3's generated `onOpen` executes `PRAGMA foreign_keys = ON` when any entity declares a foreign key, both for the first connection (after migrations) and for every later pooled connection; this matches what we need. Checked in the `androidx-main` sources of `room3-compiler`'s `OpenDelegateWriter` and `room3-runtime`'s `RoomConnectionManager` (2026-10-05); spike S3 ([01 Spikes](01-foundation.md#spikes)) confirms it for 3.0.3 with the bundled driver, including that the bundled SQLite is not compiled with foreign keys on by default (`PRAGMA foreign_keys` = 0 inside `Migration.migrate`). Fallback only if S3 fails: `ForeignKeysDriver(delegate, armed: () -> Boolean)`, a `SQLiteDriver` decorator whose `open()` runs `PRAGMA foreign_keys = ON` once `DatabaseOpener` has armed it after the first successful open. `SchemaSmokeTest` asserts the pragma on the writer and on a reader ([Testing](#testing)).
@@ -255,7 +258,7 @@ AI sessions tend to emit Room 2 code (risk [T1](../PLAN.md#8-risks-and-mitigatio
 
 | Constraint | Consequence | Source |
 |---|---|---|
-| `sqlite-bundled` ships native `.so` per ABI | 16 KB page alignment checked in CI (09) and by spike S6; APK size budget includes it | [16 KB page sizes](https://developer.android.com/guide/practices/page-sizes), [SQLite drivers](https://developer.android.com/kotlin/multiplatform/sqlite) |
+| `sqlite-bundled` ships native `.so` per ABI | 16 KB page alignment checked in CI (09) and by spike S6; with per-ABI APKs ([D77](../PLAN.md#3-key-decisions)) each APK carries one ABI's `.so`, counted in that APK's N5 budget. Unrelated to the SQLite inside the CPython runtime of `:ytx`, which never opens `neutrodyne.db` | [16 KB page sizes](https://developer.android.com/guide/practices/page-sizes), [SQLite drivers](https://developer.android.com/kotlin/multiplatform/sqlite) |
 | The Android `sqlite-bundled` artifact ships `.so` files for Android ABIs only, so it is not expected to load under Robolectric on the host JVM (Unverified until spike S4) | JVM tests inject `AndroidSQLiteDriver`; the bundled driver is exercised by instrumented tests | [SQLite drivers](https://developer.android.com/kotlin/multiplatform/sqlite) |
 | Auto Backup never includes `databases/` (include-only rules, [D34](../PLAN.md#3-key-decisions)) | A reinstall or new phone starts with an empty DB; `onCreate` triggers the snapshot restore of [05 Auto Backup](05-groups-opml-backup.md#auto-backup) | [Auto Backup](https://developer.android.com/identity/data/autobackup) |
 | `hasFragileUserData = true` (07) | A "keep app data" uninstall leaves the DB; a later install may open **any** released schema version, so every released version must keep a migration path | [07 Lifecycle and reconciliation](07-downloads.md#lifecycle-and-reconciliation) |
@@ -952,7 +955,7 @@ fun groupNewestFirst(groupId: Long, minSortDate: Long, unplayedOnly: Boolean, do
 
 ### Feed counts
 
-`FeedDao.observeGroupCounts(sinceMs, nowMs)` backs `FeedRepository.observeGroupCounts(sinceMs)` ([R2.8](../PLAN.md#21-functional-requirements)); window and "new" semantics: [05 Group feeds](05-groups-opml-backup.md#group-feeds). Delivered in M2. Groups without counted episodes return no row (the repository fills zeros). Counted = `VISIBLE` **and** `availability = 'AVAILABLE'` (greyed, unplayable YouTube items never inflate badges) in both flavors; YouTube episodes count in `play` too (04's answer: opening one in YouTube marks it played).
+`FeedDao.observeGroupCounts(sinceMs, nowMs)` backs `FeedRepository.observeGroupCounts(sinceMs)` ([R2.8](../PLAN.md#21-functional-requirements)); window and "new" semantics: [05 Group feeds](05-groups-opml-backup.md#group-feeds). Delivered in M2. Groups without counted episodes return no row (the repository fills zeros). Counted = `VISIBLE` **and** `availability = 'AVAILABLE'` (greyed, unplayable YouTube items never inflate badges) with and without the engine; in external mode YouTube episodes count too (04's answer: opening one in YouTube marks it played).
 
 ```sql
 SELECT g.id AS groupId,
@@ -1038,7 +1041,7 @@ LIMIT :k
 
 - `:anchorSortDate`/`:anchorId` come from `play_session.contextAnchorSortDate`/`contextAnchorEpisodeId`, so the tail works even if the anchor row was deleted. The anchor is excluded by the strict comparison. **Null anchor** (05 start rule 2: Up next head is playing) = "from the beginning of the order": `FeedQueryBuilder` omits the row-value predicate. The current item is not excluded in SQL: 06 queries `k + 1` rows and drops the current one ([06 Queue and play context](06-playback.md#queue-and-play-context)).
 - `:minSortDate` is bound as `0` when `contextMinSortDate` is null (all `sortDate`s are after 1990, 03).
-- `youtubePlayable` = `YouTubeCapabilities.inAppPlayback` (false in `play`, [R3.7](../PLAN.md#21-functional-requirements)).
+- `youtubePlayable` = `YouTubeCapabilitiesSource.capabilities.value.inAppPlayback` (false in external mode, [R3.7](../PLAN.md#21-functional-requirements), [D77](../PLAN.md#3-key-decisions)). Capabilities change at run time (engine switched off or on, engine start failures, M9a), and the bound value is not a table Room observes, so callers (06's `QueueProjector`, 05's `PlayContextResolver`) re-run their context-tail and start-item queries when `capabilities` emits a different `inAppPlayback`.
 - **Start item** ("Play group" without a chosen episode): the null-anchor form with `LIMIT 1`. For `GROUP` with `OLDEST_FIRST` and `boundStartBySubscription`, the first attempt adds `AND e.sortDate >= p.subscribedAt` and a second attempt runs without it (05 start rule 4).
 - **Auto browse lists** (06, M5): `FeedDao.contextList(query: RoomRawQuery)` is the same builder output with `LIMIT :limit OFFSET :offset` and the [Feed pages](#feed-pages) row columns, one-shot (not observed); completed downloads use the `DOWNLOADS` source; podcasts by title use `observeLibraryTiles`' columns as a one-shot `PodcastDao.listForBrowse()` sorted in Kotlin; Assistant search: `EpisodeDao.searchTitles(pattern, limit)` = `… WHERE (e.title LIKE :pattern ESCAPE '\' OR p.title LIKE :pattern ESCAPE '\' OR p.customTitle LIKE :pattern ESCAPE '\') AND <VISIBLE> ORDER BY e.sortDate DESC, e.id DESC LIMIT :limit` with `%`/`_`/`\` in the user text escaped (a full scan of `episode`, acceptable for an explicit voice search; FTS arrives in M15).
 
@@ -1191,9 +1194,9 @@ The diff algorithm is 03's ([03 Ingestion and diff](03-feeds-and-discovery.md#in
 | `touchSeen(podcastId, now)` | `UPDATE episode SET lastSeenAt = :now WHERE podcastId = :pid AND inFeed = 1 AND lastSeenAt < :now - 86400000` (after the flips). Day granularity is enough for the 90-day retention clock and avoids rewriting every row of a large feed on each refresh |
 | `replaceChildren(episodeId, description, transcripts, altEnclosures, persons, funding, pscChapters)` | Delete-and-insert per child table, only for changed episodes; persons/funding by `(ownerType, ownerId)` |
 | `applyFeedMetadata(PodcastFeedMetadata)` | Partial update of 03-owned metadata, validators and scheduling columns of `podcast`; never `customTitle`, `includeInAll`, `episodeOrder`, `autoDownloadEligibleAfter`, `youtubeVariants`, `channelMetadataAt`; for `YOUTUBE_CHANNEL` rows a second partial class (`YouTubeFeedMetadata`) also omits `artworkUrl`, `artworkKey`, `bannerUrl`, `descriptionHtml`, `link`, `youtubeChannelId` (04) |
-| `applyYouTubeFacts(rows: List<YouTubeFacts>)` (04, M9) | `@Update(entity = EpisodeEntity::class)` with partial class `YouTubeFacts(id, durationMs, availability, isShort)`; 04 passes only rows whose values changed; one transaction per channel, inside the refresh run |
-| `EpisodeDao.youtubeEnrichmentCandidates(podcastId, now)` (04, M9) | `SELECT id, externalMediaId, durationMs, availability, isShort FROM episode WHERE podcastId = :pid AND externalMediaId IS NOT NULL AND ((durationMs IS NULL AND availability = 'AVAILABLE' AND firstSeenAt > :now - 604800000) OR (availability IN ('UPCOMING','LIVE') AND firstSeenAt > :now - 2592000000))` (index `podcastId` prefix) |
-| `EpisodeDao.setAvailability(id, availability)` (04's `YouTubeAvailabilityRecorder`, M9) | `UPDATE episode SET availability = :a WHERE id = :id AND availability <> :a` — the only `episode` write outside the refresh pipeline besides restore stubs and retention |
+| `applyYouTubeFacts(rows: List<YouTubeFacts>)` (04, M9a) | `@Update(entity = EpisodeEntity::class)` with partial class `YouTubeFacts(id, durationMs, availability, isShort)`, mapped by 04 from the engine's yt-dlp fields (`YtDlpEnricher`); 04 passes only rows whose values changed; one transaction per channel, inside the refresh run; never called without the engine |
+| `EpisodeDao.youtubeEnrichmentCandidates(podcastId, now)` (04, M9a) | `SELECT id, externalMediaId, durationMs, availability, isShort FROM episode WHERE podcastId = :pid AND externalMediaId IS NOT NULL AND ((durationMs IS NULL AND availability = 'AVAILABLE' AND firstSeenAt > :now - 604800000) OR (availability IN ('UPCOMING','LIVE') AND firstSeenAt > :now - 2592000000))` (index `podcastId` prefix) |
+| `EpisodeDao.setAvailability(id, availability)` (04's `YouTubeAvailabilityRecorder`, M9a) | `UPDATE episode SET availability = :a WHERE id = :id AND availability <> :a` — the only `episode` write outside the refresh pipeline besides restore stubs and retention |
 | `PodcastDao.applyYouTubeChannelMetadata(id, artworkUrl, artworkKey, bannerUrl, descriptionHtml, channelMetadataAt)` (04, M8) | `UPDATE podcast SET artworkUrl = COALESCE(:artworkUrl, artworkUrl), artworkKey = CASE WHEN :artworkUrl IS NULL THEN artworkKey ELSE :artworkKey END, bannerUrl = COALESCE(:bannerUrl, bannerUrl), descriptionHtml = COALESCE(:descriptionHtml, descriptionHtml), channelMetadataAt = :channelMetadataAt WHERE id = :id`; 04 calls it only after a successful fetch, and a field the page did not provide (null) keeps its stored value |
 
 ### Downloads
@@ -1210,7 +1213,7 @@ The diff algorithm is 03's ([03 Ingestion and diff](03-feeds-and-discovery.md#in
 ```
 
 ```sql
--- candidates(..., offset): pages of 20 rows; the engine picks the first whose host and YouTube slots are free and
+-- candidates(..., offset): pages of 20 rows; 07's download engine picks the first whose host and YouTube slots are free and
 -- pages on (offset 20, 40, …) when every row of a page waits for a busy host (07 Claiming and slots)
 SELECT * FROM download
 WHERE state = 'QUEUED' AND lane IN (:lanes)
@@ -1233,9 +1236,11 @@ WHERE episodeId = :id AND state = 'QUEUED';
 | Storage used (quota) | `SELECT COALESCE(SUM(totalBytes), 0) FROM download WHERE state = 'COMPLETED'` |
 | `observeEntries()` (Downloads screen, `Flow`) | `SELECT d.*, e.title, e.sortDate, e.podcastId, COALESCE(p.customTitle, p.title) AS podcastTitle, COALESCE(e.artworkKey, p.artworkKey) AS artworkKey, COALESCE(a.version, 0) AS artworkVersion, s.playedAt, COALESCE(s.isFavorite, 0) AS isFavorite FROM download d JOIN episode e ON e.id = d.episodeId JOIN podcast p ON p.id = e.podcastId LEFT JOIN episode_state s ON s.episodeId = d.episodeId LEFT JOIN artwork a ON a.key = COALESCE(e.artworkKey, p.artworkKey)` (sorted and grouped in Kotlin; ≈ 2,000 rows at most) |
 | `observePlayedCompletedIds()` (`Flow`) | `SELECT d.episodeId FROM download d JOIN episode_state s ON s.episodeId = d.episodeId WHERE d.state = 'COMPLETED' AND s.playedAt IS NOT NULL` |
-| `queuedNeeds(lane, now)` (runner scheduling, one row) | `SELECT COUNT(*) AS queued, SUM(CASE WHEN nextAttemptAt IS NULL OR nextAttemptAt <= :now THEN 1 ELSE 0 END) AS due, MAX(allowMetered) AS anyMeteredAllowed, MIN(CASE WHEN allowMetered = 0 THEN 1 ELSE 0 END) AS allNeedUnmetered, MIN(requireCharging) AS allNeedCharging, MIN(CASE WHEN nextAttemptAt > :now THEN nextAttemptAt END) AS earliestRetry, MIN(CASE WHEN nextAttemptAt > :now AND allowMetered = 1 THEN nextAttemptAt END) AS earliestRetryMetered, MIN(CASE WHEN nextAttemptAt > :now AND requireCharging = 0 THEN nextAttemptAt END) AS earliestRetryNoCharging, SUM(MAX(COALESCE(totalBytes, estimatedBytes, 157286400) - downloadedBytes, 0)) AS remainingBytes FROM download WHERE state = 'QUEUED' AND lane = :lane` (aggregates are NULL when no row matches) |
+| `queuedNeeds(lane, now)` (runner scheduling, one row) | `SELECT COUNT(*) AS queued, SUM(CASE WHEN nextAttemptAt IS NULL OR nextAttemptAt <= :now THEN 1 ELSE 0 END) AS due, MAX(allowMetered) AS anyMeteredAllowed, MIN(CASE WHEN allowMetered = 0 THEN 1 ELSE 0 END) AS allNeedUnmetered, MIN(requireCharging) AS allNeedCharging, MIN(CASE WHEN nextAttemptAt > :now THEN nextAttemptAt END) AS earliestRetry, MIN(CASE WHEN nextAttemptAt > :now AND allowMetered = 1 THEN nextAttemptAt END) AS earliestRetryMetered, MIN(CASE WHEN nextAttemptAt > :now AND requireCharging = 0 THEN nextAttemptAt END) AS earliestRetryNoCharging, SUM(MAX(COALESCE(totalBytes, estimatedBytes, 157286400) - downloadedBytes, 0)) AS remainingBytes FROM download WHERE state = 'QUEUED' AND lane = :lane AND waitReason <> 'YOUTUBE_ENGINE_OFF'` (aggregates are NULL when no row matches; M9a: rows waiting for the YouTube engine are not runnable, so they count neither as queued nor as due and never arm a runner, [07 Engine absent or disabled](07-downloads.md#engine-absent-or-disabled)) |
 | `markWait(ids, reason, nextAttemptAt)` | `UPDATE download SET waitReason = :reason, nextAttemptAt = :next WHERE episodeId IN (:ids) AND state = 'QUEUED' AND (waitReason IS NOT :reason OR nextAttemptAt IS NOT :next)` (writes only changed rows) |
 | `clearStorageWaits()` | `UPDATE download SET waitReason = 'NONE' WHERE state = 'QUEUED' AND waitReason = 'STORAGE'` |
+| `markYouTubeEngineWaits()` / `clearYouTubeEngineWaits()` (M9a; 07 calls them when `YouTubeCapabilities.downloads` turns false with reason `DISABLED_BY_USER`, `ENGINE_FAILED` or `NOT_YET_AVAILABLE`, and when it turns true again; the claim already skips these rows through `youtubeAllowed = 0`) | `UPDATE download SET waitReason = 'YOUTUBE_ENGINE_OFF' WHERE state = 'QUEUED' AND sourceKind = 'YOUTUBE' AND waitReason <> 'YOUTUBE_ENGINE_OFF'` / `UPDATE download SET waitReason = 'NONE' WHERE state = 'QUEUED' AND waitReason = 'YOUTUBE_ENGINE_OFF'` (both write only changed rows; `nextAttemptAt` is kept) |
+| `failYouTubeRowsWithoutEngine()` (M9a; 07 `DownloadReconciler`, only for `ExternalReason.NOT_IN_THIS_APK`: the `armeabi-v7a` APK or a no-engine build) | One write transaction: `SELECT episodeId, rootId, tempPath FROM download WHERE sourceKind = 'YOUTUBE' AND state IN ('QUEUED','PAUSED','RESOLVING','DOWNLOADING','VERIFYING')`, then for those IDs `UPDATE download SET state = 'FAILED', waitReason = 'NONE', lastError = 'UNSUPPORTED_STREAM', nextAttemptAt = NULL, runnerToken = NULL, downloadedBytes = 0, tempPath = NULL WHERE episodeId IN (:ids)`; 07 deletes the returned `.part` files after commit. `COMPLETED` and `MISSING` rows are untouched (their files stay, listed with Delete and Share) |
 | `requeueChangedEnclosures(now)` | One write transaction: `SELECT d.episodeId, d.rootId, d.tempPath FROM download d JOIN episode e ON e.id = d.episodeId WHERE d.state = 'FAILED' AND d.sourceKind = 'RSS_ENCLOSURE' AND d.lastError IN ('HTTP_NOT_FOUND','HTTP_GONE','HTTP_CLIENT','NOT_MEDIA') AND e.enclosureUrl IS NOT NULL AND d.sourceRef <> e.enclosureUrl`, then for those IDs `UPDATE download SET state = 'QUEUED', waitReason = 'NONE', attempt = 0, nextAttemptAt = NULL, lastError = NULL, lastHttpStatus = NULL, downloadedBytes = 0, etag = NULL, lastModified = NULL, tempPath = NULL, sourceRef = (SELECT e.enclosureUrl FROM episode e WHERE e.id = download.episodeId) WHERE episodeId IN (:ids)`; 07 deletes the returned `.part` files after commit |
 | `rowsOnOtherRoots(target, limit)` (`download-move`) | `SELECT episodeId, rootId, relativePath, finalUri, totalBytes FROM download WHERE state = 'COMPLETED' AND rootId <> :target ORDER BY episodeId LIMIT :limit` |
 | `pathsByRoot()` (orphan-file scan) | `SELECT rootId, relativePath, tempPath FROM download WHERE relativePath IS NOT NULL OR tempPath IS NOT NULL` |
@@ -1262,11 +1267,11 @@ ORDER BY e.sortDate DESC, e.id DESC
 LIMIT :keepLatest
 ```
 
-Rows already downloaded or queued count towards `keepLatest`; the planner inserts `QUEUED(AUTO)` rows for returned episodes without a `download` row. Tombstoned episodes are skipped and do not occupy a slot (confirmed by [07 Auto-download policy](07-downloads.md#auto-download-policy)).
+Rows already downloaded or queued count towards `keepLatest`; the planner inserts `QUEUED(AUTO)` rows for returned episodes without a `download` row. `:youtubeDownloads` is `YouTubeCapabilities.downloads` at call time, so in external mode no YouTube episode is a candidate ([R3.7](../PLAN.md#21-functional-requirements)). Tombstoned episodes are skipped and do not occupy a slot (confirmed by [07 Auto-download policy](07-downloads.md#auto-download-policy)).
 
 ### Download all candidates
 
-`FeedDao.downloadAllCandidates(query)` and `FeedDao.downloadAllCount(query)` (M6) back 05's `downloadAllEstimate(source)` ([05 Group feeds](05-groups-opml-backup.md#group-feeds)). `FeedQueryBuilder.downloadAll(spec, youtubeDownloads)` reuses the play-context source predicate and carried filters of [Play context](#play-context) without an anchor:
+`FeedDao.downloadAllCandidates(query)` and `FeedDao.downloadAllCount(query)` (M6) back 05's `downloadAllEstimate(source)` ([05 Group feeds](05-groups-opml-backup.md#group-feeds)). `FeedQueryBuilder.downloadAll(spec, youtubeDownloads)` (`youtubeDownloads` = `YouTubeCapabilities.downloads`) reuses the play-context source predicate and carried filters of [Play context](#play-context) without an anchor:
 
 ```sql
 SELECT e.id, e.enclosureLength, COALESCE(s.measuredDurationMs, e.durationMs) AS durationMs
@@ -1516,7 +1521,7 @@ sequenceDiagram
 
 ## Retention and maintenance
 
-Serves N1, N5 ([D23](../PLAN.md#3-key-decisions)). Delivered in M11 (`db-maintenance`); `PRAGMA optimize` on open from M1.
+Serves N1, N5 ([D23](../PLAN.md#3-key-decisions)). Delivered in M11b (`db-maintenance`); `PRAGMA optimize` on open from M1.
 
 ### Retention policy
 
@@ -1643,7 +1648,7 @@ Manual migration rules:
 - `MigrateAllTest`: create version 1 from `testFixtures/resources/db/v1-fixture.sql` (rows in **every** table, including edge values: null optionals, max lengths, emoji, a position of 1 ms), migrate to the current version, validate, compare invariants, then open with `NeutrodyneDatabase.build` and call one read function of every DAO.
 - `RebuildProcedureTest` (M1, before any real rebuild exists): the shared `TableRebuild.run(connection, table, newDdl, columnMap)` helper that every manual migration uses is applied to `podcast` and `episode` of the v1 fixture inside a `BEGIN EXCLUSIVE` transaction on a raw driver connection; asserts every child table keeps its row count and `sqlite_sequence` is unchanged, and that the helper refuses to run when `foreign_keys = 1`. Whether Room's own migration transaction runs with foreign keys off is spike S3's assertion.
 - Drivers: JVM/Robolectric with `AndroidSQLiteDriver`; instrumented (GMD API 26 and API 36) with both `BundledSQLiteDriver` and `AndroidSQLiteDriver`.
-- M11 acceptance criterion 6: migrate the frozen schema of the first tester build to the 1.0 schema with `MigrateAllTest`, and upgrade a device from the last beta keeping all data.
+- M11 acceptance criterion 9: migrate the frozen schema of the first tester build to the 1.0 schema with `MigrateAllTest`, and upgrade a device from the last beta through the in-app updater keeping all data (the updater replaces only the APK; the database, `noBackupFilesDir` and DataStore files stay in place).
 
 ---
 
@@ -1710,7 +1715,7 @@ Serves N1, N5, N9. Test infrastructure, runners and CI wiring are owned by [09 T
 | Test | Env | Asserts | Milestone |
 |---|---|---|---|
 | `SchemaSmokeTest` | JVM + GMD | DB opens, every DAO read works on an empty DB; the `play_session` row `id = 0` exists right after `onCreate` and `observeCurrentEpisodeId()` emits `null`; `PRAGMA foreign_keys` = 1 on the writer and on a reader connection (both drivers); `1.json` declares `AUTOINCREMENT` for every `autoGenerate` key | M1 |
-| `ConverterTest` | JVM | Every enum round-trips; unknown names map to the documented fallback; every `SqlEnumLiterals` name exists; bit constants | M1 |
+| `ConverterTest` | JVM | Every enum round-trips; unknown names map to the documented fallback; every `SqlEnumLiterals` name exists; bit constants; appended constants (`ImportFormat.URL_LIST`, `WaitReason.YOUTUBE_ENGINE_OFF` from M9a) round-trip; each persisted enum still contains every name of a committed golden list (append-only rule) | M1, M9a |
 | `DescriptionCodecTest` | JVM | Round trip of ASCII, emoji, 1 MB HTML; < 512 bytes stored raw; corrupt header handled | M1 |
 | `IdentityStorageTest` | JVM | Duplicate `(podcastId, identityKey)` aborts the whole transaction; `rekey` keeps `episode_state`, `episode_position`, `download`, `queue_entry` rows | M1 |
 | `UnsubscribeCascadeTest` | JVM + GMD | `deleteCascade` removes every dependent row incl. person/funding and an unshared credential (a shared one survives); `play_session.currentEpisodeId` → NULL; `import_item.podcastId` → NULL | M1 |
@@ -1724,11 +1729,11 @@ Serves N1, N5, N9. Test infrastructure, runners and CI wiring are owned by [09 T
 | `FeedQueryTimingTest` | GMD + reference device | Seeded DB: group first page (count + 80 rows) ≤ 60 ms, All ≤ 100 ms, page loads ≤ 20 ms (R2.9); median of 20 runs recorded by CI | M2 |
 | `ImportCommitTest`, `BackupExportTest`, `RestoreMatchingTest` | JVM (`BackupExportTest` on `TestDb.file()`) | Chunking; an existing `nameKey`/`feedKey` is reused, not an aborted chunk; memberships for already-subscribed podcasts; export snapshot unaffected by a concurrent write on another connection; every `EpisodeLineV1` field filled; precedence key > alias > real GUID (derived GUID ignored); episode match by `k` (incl. older `kv`), enclosure, guid; stub fields and `contentHash = 0`; expired-session query | M3 |
 | `PositionGuardTest` | JVM | A 0 save after 1234 keeps 1234; `reset` sets 0; `startedAt` written once; no write when `playedAt ≥ pinStartedAt`; mark-played chain resets the position and removes the Up next entry; `markUnplayed` clears `startedAt` | M4 |
-| `ContextTailTest` | JVM | Keyset across equal `sortDate`s; excludes played, queued, current, unavailable, `play`-flavour YouTube; OLDEST_FIRST; anchor row deleted; DOWNLOADS scope | M4 |
+| `ContextTailTest` | JVM | Keyset across equal `sortDate`s; excludes played, queued, current, unavailable, external-mode YouTube (`youtubePlayable = 0`); flipping `youtubePlayable` changes only the YouTube rows; OLDEST_FIRST; anchor row deleted; DOWNLOADS scope | M4 |
 | `UpNextOrdinalTest` | JVM | 60 inserts between the same neighbours trigger renormalisation and keep order | M4 |
 | `DownloadClaimTest` | JVM + GMD | Two concurrent claimers: exactly one wins; priority/requestedAt order; metered, charging, YouTube, `nextAttemptAt` filters | M6 |
 | `AutoDownloadCandidatesTest`, `CleanupCandidatesTest`, `DownloadAllCandidatesTest` | JVM | D67 watermark and `isNew`; tombstones; protected set (favourite, current, next 3 Up next, unplayed MANUAL, in-progress AUTO) and its place in the keep-N window; download-all excludes `QUEUED`…`COMPLETED` rows and tombstones, caps at 200 with a correct total | M6 |
-| `DownloadDaoTest` | JVM | Reconcile with live tokens (`QUEUED`/`SYSTEM` and Task Manager `PAUSED`); `markWait` writes only changed rows (zero invalidations on repeat); `requeueChangedEnclosures`; `queuedNeeds` aggregates on an empty and a mixed lane | M6 |
+| `DownloadDaoTest` | JVM | Reconcile with live tokens (`QUEUED`/`SYSTEM` and Task Manager `PAUSED`); `markWait` writes only changed rows (zero invalidations on repeat); `requeueChangedEnclosures`; `queuedNeeds` aggregates on an empty and a mixed lane; (M9a) `queuedNeeds` ignores `YOUTUBE_ENGINE_OFF` rows (a lane holding only such rows reports `queued = 0` and `due` NULL); `markYouTubeEngineWaits`/`clearYouTubeEngineWaits` touch only queued YouTube rows and write nothing on repeat; `failYouTubeRowsWithoutEngine` fails every non-completed YouTube row, returns its `.part` path and leaves `COMPLETED`, `MISSING` and RSS rows untouched | M6, M9a |
 | `ArtworkReferencesTest` | JVM | Referenced keys from podcasts, completed downloads and groups; garbage list; `recountPins` writes only changed rows | M4 |
 | `RetentionTest` | JVM | Each protection rule individually; newest-per-podcast watermark; 500-row batches; person/funding/credential orphan sweeps | M11 |
 | `DiagExportScrubTest` | JVM | A seeded private-feed fixture whose token appears in every URL-bearing column (feed, enclosure, alias, artwork, chapters, chapter image and link, transcript, person, funding, links, show notes): after the scrub the copy has no `credential` rows and no `TEXT` column of any table contains the token or a URL path, query or userinfo; every `KEEP` entry names an existing column of the exported schema JSON; primary keys and unique indices still hold | M11 |
@@ -1754,10 +1759,10 @@ Fixtures (`core/database/src/testFixtures/`, consumed with `testImplementation(t
 | [M4](../PLAN.md#m4-playback-core) | `QueueDao`, `PlaySessionDao`, `PositionDao` with both guards, context tail (anchored and null-anchor) and start item, `mediaInfo`/`observeMediaInfo`, position live query, `ArtworkDao` (sync candidates, batches, fallback, observe, pinned index, references, recount) |
 | [M5](../PLAN.md#m5-playback-features-and-system-surfaces) | `ChapterDao` writes for P2.0 JSON, ID3, MP4 and YouTube-description sources; measured-duration write-back; audio-alternate columns of the media lookup; Auto browse lists and title search |
 | [M6](../PLAN.md#m6-downloads) | `DownloadDao` (claim, transitions, reconcile, `LocalMediaIndex` load, quota, entries, `queuedNeeds`, `markWait`, storage waits, changed enclosures, roots, paths), `PlaySessionDao.observeCurrentEpisodeId`, `EpisodeDao.downloadSources`, auto-download, download-all and cleanup candidate queries, tombstones, `autoDownloadEligibleAfter`, download live query |
-| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | No schema change: YouTube columns exist since version 1; `PodcastDao.applyYouTubeChannelMetadata`, the YouTube variant of `applyFeedMetadata`; the `VISIBLE` fragment and the `youtubePlayable` parameter become meaningful |
-| [M9](../PLAN.md#m9-youtube-playback-and-downloads-in-foss) | No schema change ([D50](../PLAN.md#3-key-decisions)): YouTube download rows use `sourceKind = 'YOUTUBE'`, `formatPref`, `resolvedItag`; `IngestDao.applyYouTubeFacts`, `EpisodeDao.youtubeEnrichmentCandidates`, `EpisodeDao.setAvailability` |
+| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | No schema change: YouTube columns exist since version 1; `PodcastDao.applyYouTubeChannelMetadata`, the YouTube variant of `applyFeedMetadata`; the `VISIBLE` fragment and the `youtubePlayable` parameter become meaningful (`youtubePlayable = 0` on every APK until M9a) |
+| [M9](../PLAN.md#m9-youtube-playback-and-downloads-via-the-embedded-yt-dlp-engine) | M9a: no schema change ([D50](../PLAN.md#3-key-decisions)): YouTube download rows use `sourceKind = 'YOUTUBE'`, `formatPref`, `resolvedItag`; `IngestDao.applyYouTubeFacts`, `EpisodeDao.youtubeEnrichmentCandidates`, `EpisodeDao.setAvailability`; `WaitReason.YOUTUBE_ENGINE_OFF` appended (`TEXT`, no migration) with `markYouTubeEngineWaits`/`clearYouTubeEngineWaits` and `failYouTubeRowsWithoutEngine` for 07's engine-absent rules; context-tail callers re-query when capabilities change. M9b: nothing in Room — engine updates live in `noBackupFilesDir/ytdlp/` and DataStore ([Scope](#scope)) |
 | [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) | No schema change: `artwork.seedArgb`/`avgArgb` are populated |
-| [M11](../PLAN.md#m11-release-hardening-and-v10) | `DbMaintenanceWorker` (retention, orphan sweeps incl. credentials, import cleanup taken over from 05, optimize, quick_check, vacuum, stats), diagnostics export scrub, `RetentionTest`, size measurement against the budget, migration test from the first tester schema to 1.0 |
+| [M11](../PLAN.md#m11-release-hardening-and-v10) | M11a: no schema change — the in-app updater keeps its state in DataStore and `noBackupFilesDir/updates/` and writes no `download` rows ([D78](../PLAN.md#3-key-decisions)). M11b: `DbMaintenanceWorker` (retention, orphan sweeps incl. credentials, import cleanup taken over from 05, optimize, quick_check, vacuum, stats), diagnostics export scrub, `RetentionTest`, size measurement against the budget (PB14), migration test from the first tester schema to 1.0 including an upgrade through the in-app updater (M11 acceptance 9) |
 | M12–M15 | Migrations for `episode_fts` (M15), `sponsor_segment` (M14), boost/intro/outro columns already reserved (M12) |
 
 ---
@@ -1774,6 +1779,7 @@ Fixtures (`core/database/src/testFixtures/`, consumed with `testImplementation(t
 8. Resolved by 07 (07 open question 7): protected rows count in their place in the rolling window and are never deleted; video episodes with an audio alternate are not accepted (PO-12 follow-up (a)).
 9. Spike S2 results may change the [Room 2 to Room 3 mapping](#room-2-to-room-3-mapping) rows marked Unverified (Gradle extension name, `MigrationTestHelper` parameter names, `@AutoMigration`, `BEGIN IMMEDIATE` for write transactions).
 10. Resolved: PLAN M2 acceptance 1 now names `QueryPlanTest`, with the GMD run on the bundled driver authoritative and the JVM run asserting rows and "no full scan" only.
+11. Resolved in 07 ([07 Engine absent or disabled](07-downloads.md#engine-absent-or-disabled)): with `:youtubeDownloads = 0` the [auto-download candidates](#auto-download-candidates) contain no YouTube episode, but for the waiting reasons (`DISABLED_BY_USER`, `ENGINE_FAILED`, `NOT_YET_AVAILABLE`) 07's planner neither deletes, updates nor adds that podcast's `AUTO` rows and keeps its watermark; queued `AUTO` and `MANUAL` YouTube rows wait as `YOUTUBE_ENGINE_OFF`, which `queuedNeeds` ignores. Only `NOT_IN_THIS_APK` ends them (`failYouTubeRowsWithoutEngine()`; non-completed `AUTO` rows of such podcasts are deleted).
 
 ## Sources
 

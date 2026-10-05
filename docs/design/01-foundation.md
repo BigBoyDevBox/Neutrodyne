@@ -1,8 +1,8 @@
 # 01 — Foundation
 
-> Status: Draft v1, 2026-10-04 · Implements: N1 / N2 / N3 / N7 / N8 / N10 / N11 (foundation parts) · Milestones: M0 (primary), M1–M11 (incremental foundation work per [Delivery by milestone](#delivery-by-milestone)) · Honours: D2, D3, D4, D5, D6, D7, D8, D9, D10, D12, D13, D14, D28, D35, D43, D60, D61; PO-1, PO-7, PO-8, PO-13, PO-18 defaults · Owns: toolchain and version catalog, convention plugins, modules and dependency rules, architecture and coroutine conventions, DI graph, Nav3 wiring, build flavors, networking baseline, Android 14–17 compliance checklist, merged manifest, licence policy, M0 scaffold and spikes
+> Status: Draft v1, 2026-10-04; revised 2026-10-05 for the product owner's decisions (no flavors, per-ABI APKs, yt-dlp engine, in-app updater, no GPL) · Implements: R3.7 (build side), R6.2–R6.3 (manifest side), N1 / N2 / N3 / N7 / N8 / N10 / N11 (foundation parts) · Milestones: M0 (primary), M1–M11 (incremental foundation work per [Delivery by milestone](#delivery-by-milestone)) · Honours: D2 (amended), D3 (amended), D4, D5, D6, D7, D8, D9, D10, D12, D13 (amended), D14, D28, D35, D43, D60, D61, D62, D63, D72–D80; PO-1, PO-2, PO-5, PO-8 resolved; PO-3, PO-7, PO-13, PO-18, PO-35 defaults · Owns: toolchain and version catalog, convention plugins, modules and dependency rules, architecture and coroutine conventions, processes (main, `:ytx`, `:acra`) and start-up, DI graph and the YouTube bindings, Nav3 wiring, build variants and ABI splits, Chaquopy build integration, networking baseline, Android 10–17 compliance checklist, merged manifest, licence policy (Gradle, Python and native components), M0 scaffold and spikes
 
-Contents: [Scope](#scope) · [Toolchain and versions](#toolchain-and-versions) · [Module layout](#module-layout) · [Dependency rules](#dependency-rules) · [Architecture patterns](#architecture-patterns) · [Dependency injection](#dependency-injection) · [Navigation](#navigation) · [Build flavors](#build-flavors) · [Networking baseline](#networking-baseline) · [Platform compliance](#platform-compliance) · [Manifest and permissions](#manifest-and-permissions) · [Licensing and dependency policy](#licensing-and-dependency-policy) · [M0 scaffold checklist](#m0-scaffold-checklist) · [Spikes](#spikes) · [Testing](#testing) · [Delivery by milestone](#delivery-by-milestone) · [New names introduced here](#new-names-introduced-here) · [Open questions](#open-questions) · [Sources](#sources)
+Contents: [Scope](#scope) · [Toolchain and versions](#toolchain-and-versions) · [Module layout](#module-layout) · [Dependency rules](#dependency-rules) · [Architecture patterns](#architecture-patterns) · [Dependency injection](#dependency-injection) · [Navigation](#navigation) · [Build variants and ABIs](#build-variants-and-abis) · [Networking baseline](#networking-baseline) · [Platform compliance](#platform-compliance) · [Manifest and permissions](#manifest-and-permissions) · [Licensing and dependency policy](#licensing-and-dependency-policy) · [M0 scaffold checklist](#m0-scaffold-checklist) · [Spikes](#spikes) · [Testing](#testing) · [Delivery by milestone](#delivery-by-milestone) · [New names introduced here](#new-names-introduced-here) · [Open questions](#open-questions) · [Sources](#sources)
 
 ---
 
@@ -17,17 +17,17 @@ This document is the build-and-architecture contract every other design document
 | Every library and tool version; `gradle/libs.versions.toml`; `settings.gradle.kts`; `gradle.properties` | [Toolchain and versions](#toolchain-and-versions) |
 | `build-logic` convention plugins (`neutrodyne.*`) | [Toolchain and versions](#convention-plugins) |
 | Module creation, packages, per-module plugins and dependencies | [Module layout](#module-layout) |
-| Module-graph assertion rules and the `play` classpath ban | [Dependency rules](#dependency-rules) |
-| UDF/MVVM rules, `UiState`, events, paging in ViewModels, use-case rule, `Outcome`, `suspendRunCatching`, `Clock`, logging and redaction, coroutine/threading model, app start-up, DataStore files and typed setting keys | [Architecture patterns](#architecture-patterns) |
-| Hilt components, scopes, flavor bindings, test overrides | [Dependency injection](#dependency-injection) |
+| Module-graph assertion rules and the licence bans (`verifyDependencyPolicy`, Licensee, `checkPythonLicences`) | [Dependency rules](#dependency-rules) |
+| UDF/MVVM rules, `UiState`, events, paging in ViewModels, use-case rule, `Outcome`, `suspendRunCatching`, `Clock`, logging and redaction, coroutine/threading model, processes and app start-up, DataStore files and typed setting keys | [Architecture patterns](#architecture-patterns) |
+| Hilt components, scopes, YouTube bindings, test overrides | [Dependency injection](#dependency-injection) |
 | Nav3 mechanics: installers, per-tab back stacks, decorators, scene strategies, intent routing | [Navigation](#navigation) (behaviour: [08 Navigation](08-ui-ux.md#navigation)) |
-| Flavors, build types, `BuildConfig`, flavor source sets | [Build flavors](#build-flavors) (YouTube capability semantics: [04 Flavor matrix](04-youtube.md#flavor-matrix)) |
+| Build types, ABI splits, `BuildConfig`, the no-engine switch, Chaquopy build integration | [Build variants and ABIs](#build-variants-and-abis) (YouTube capability semantics: [04 Capability matrix](04-youtube.md#capability-matrix); engine design: [04 YouTube engine](04-youtube.md#youtube-engine)) |
 | Shared `OkHttpClient`, derived clients, interceptors, network security config, network error taxonomy | [Networking baseline](#networking-baseline) |
-| Android 11–17 rules → mechanism → owner | [Platform compliance](#platform-compliance) |
+| Android 10–17 rules → mechanism → owner | [Platform compliance](#platform-compliance) |
 | Merged manifest: every permission and component with its declaring module | [Manifest and permissions](#manifest-and-permissions) |
-| Licensee allow-list, SPDX rule, AboutLibraries, packaging, About licence statements, contribution rule | [Licensing and dependency policy](#licensing-and-dependency-policy) |
+| Licensee allow-list, SPDX rule, Python component lockfile and licence check, APK content scan input, AboutLibraries, packaging, About licence statement, contribution rule | [Licensing and dependency policy](#licensing-and-dependency-policy) |
 
-**Not covered here:** schema, SQL and Room usage conventions ([02 Conventions](02-data-model.md#conventions)); feature behaviour ([03](03-feeds-and-discovery.md)–[07](07-downloads.md)); screens, theming and the `PlayerSheet` ([08](08-ui-ux.md)); CI workflows, test infrastructure, static-analysis gates, signing and release ([09](09-quality-and-release.md) — this document only defines the Gradle-side tasks those workflows call).
+**Not covered here:** schema, SQL and Room usage conventions ([02 Conventions](02-data-model.md#conventions)); feature behaviour ([03](03-feeds-and-discovery.md)–[07](07-downloads.md)); the YouTube engine's runtime design — `:ytx` lifecycle, Binder API, OkHttp bridge, engine updates ([04 YouTube engine](04-youtube.md#youtube-engine), [04 Engine updates](04-youtube.md#engine-updates)); screens, theming and the `PlayerSheet` ([08](08-ui-ux.md)); CI workflows, test infrastructure, static-analysis gates, signing, release assets and the in-app updater's design ([09](09-quality-and-release.md) — this document only defines the Gradle-side tasks those workflows call, and the manifest entries the updater needs).
 
 ---
 
@@ -37,7 +37,7 @@ Serves N7, N11. Delivered in M0 (catalog grows by milestone; versions never diff
 
 ### Version table
 
-All verified 2026-10-04 (sources in [Sources](#sources)). This is the only document that lists every version.
+All verified 2026-10-04; the YouTube-engine, signature and CI-action rows on 2026-10-05 (sources in [Sources](#sources)). This is the only document that lists every version.
 
 | Area | Item | Version | Notes |
 |---|---|---|---|
@@ -73,11 +73,13 @@ All verified 2026-10-04 (sources in [Sources](#sources)). This is the only docum
 | | kotlinx.coroutines (`core`, `android`, `guava`, `test`) | 1.11.0 | `-guava` for Media3 futures |
 | | kotlinx-collections-immutable | 0.5.2 | |
 | | jsoup | 1.23.2 | MIT |
-| Media | Media3 (`exoplayer`, `session`, `datasource-okhttp`, `ui-compose`, `common-ktx`, `inspector`, `test-utils`, `test-utils-robolectric`) | 1.11.1 | `@UnstableApi` opt-in module-wide only in `:playback:impl` (lint config, [Convention plugins](#convention-plugins)); `ui-compose` unused until M14 ([06 UI boundary](06-playback.md#ui-boundary)); `media3-cast` v1.x `play` only |
-| YouTube (`foss`) | NewPipe Extractor `com.github.teamnewpipe:NewPipeExtractor` | v0.26.5 | JitPack, exclusive-content repository; GPL-3.0-or-later; M9 |
-| | Rhino (`org.mozilla:rhino`, `rhino-engine`) | 1.8.1, strict | Extractor-tested; 1.9 needs minSdk ≥ 26 and is untested by the extractor |
-| | `com.android.tools:desugar_jdk_libs_nio` | 2.1.5 | Extractor needs it below API 33; enabled in M9 ([Build flavors](#core-library-desugaring)) |
-| | android-youtube-player | 13.0.0 | v1.x, optional, `play` only |
+| Media | Media3 (`exoplayer`, `session`, `datasource-okhttp`, `ui-compose`, `common-ktx`, `inspector`, `test-utils`, `test-utils-robolectric`) | 1.11.1 | `@UnstableApi` opt-in module-wide only in `:playback:impl` (lint config, [Convention plugins](#convention-plugins)); `ui-compose` unused until M14 ([06 UI boundary](06-playback.md#ui-boundary)); no `media3-cast` (Chromecast not planned, [PO-6](../PLAN.md#po-6-chromecast)) |
+| YouTube engine (`:youtube:ytdlp` only, [D72](../PLAN.md#3-key-decisions)) | Chaquopy Gradle plugin and runtime (`com.chaquo.python:gradle`, plugin ID `com.chaquo.python`) | 17.0.0 (latest release on Maven Central, 2025-11-30); S7 may switch to a newer release or a self-built master 17.1.0 | MIT. Its published documentation names AGP 7.3–9.2 and allows the plugin in one module per app; master carries the AGP 9.x updates up to 9.4.1 and target API 37 → [S7](#s7-chaquopy-under-agp-941) |
+| | CPython runtime (Chaquopy `com.chaquo.python:target`) | 3.14.0-0 (fallback 3.13.9-0) | PSF-2.0; Python ≥ 3.12 exists only for `arm64-v8a` and `x86_64` ([D77](../PLAN.md#3-key-decisions)). Build-time `.pyc` compilation needs a build-host Python of the same minor version (`buildPython`): 3.14 in CI via `actions/setup-python`, and in 09's release container `python:3.14-slim-trixie` ([09 release.yml](09-quality-and-release.md#releaseyml); Debian trixie's own `python3` is 3.13). Bundled native libraries per [Python and native components](#python-and-native-components) |
+| | yt-dlp (official zipimport release asset `yt-dlp`, incl. yt-dlp-ejs 0.8.0) | 2026.08.19 | Unlicense; vendored under `youtube/ytdlp/engine/`, not Gradle-managed and not a Renovate dependency: bumped only to canary-approved versions by `scripts/engine/bump-ytdlp.sh` ([04 Engine updates](04-youtube.md#engine-updates)); no optional extras (never `mutagen`) |
+| | Tink (`com.google.crypto.tink:tink-android`) | 1.23.0 | Apache-2.0; M9b: Ed25519 verification of the engine manifest below API 33 (`java.security.Signature` supports Ed25519 from API 33) |
+| | quickjs-kt (`io.github.dokar3:quickjs-kt-android`) | 1.0.15 | Apache-2.0, bundles QuickJS (MIT); M9b **only if** the JS challenge provider passes the M9a spike ([D75](../PLAN.md#3-key-decisions)), else M14 |
+| | OpenPGP verification of yt-dlp's `SHA2-256SUMS.sig` | — (no library) | 04's `OpenPgpDetachedVerifier` and build-logic's `verifyBundledYtDlp` parse the v4 signature packet and verify it with the JDK's `Signature("SHA512withRSA")` against the pinned key; Bouncy Castle and PGPainless are not added |
 | Quality | JUnit 4 / TestParameterInjector / Truth / Turbine / MockK | 4.13.2 / 1.24 / 1.4.5 / 1.2.1 / 1.14.11 | MockK never in `androidTest` |
 | | Robolectric | 4.17 (pin `sdk=36`) | Force 4.17 and `okhttp-bom` 5.5.0 over Media3 test-utils' 4.16 / MockWebServer 4.12 |
 | | Roborazzi | 1.76.0 | [D59](../PLAN.md#3-key-decisions) |
@@ -89,15 +91,15 @@ All verified 2026-10-04 (sources in [Sources](#sources)). This is the only docum
 | Tooling | Spotless / ktlint / compose-rules | 8.10.3 / 1.8.0 / 0.6.7 | blocking |
 | | detekt | 2.0.0-alpha.6 | non-blocking |
 | | Licensee / module-graph-assertion | 1.14.1 / 2.9.1 | |
-| | Gradle Play Publisher | 4.1.1 | M11, only if PO-2 approves Play |
-| | ACRA (`acra-mail`, `acra-dialog`) | 5.14.2 | [D62](../PLAN.md#3-key-decisions) |
-| CI (09) | actions/checkout, setup-java, gradle/actions, upload-artifact, action-gh-release, codeql-action | v7.0.1, v6.0.1, v6.4.0, v7.0.1, v3.0.3, v4.38.2 (SHA-pinned) | android-emulator-runner v2.38.0 as GMD fallback |
+| | ACRA (`acra-mail`, `acra-dialog`) | 5.14.2 | [D62](../PLAN.md#3-key-decisions); never installed in `:ytx` |
+| CI (09) | actions/checkout, setup-java, gradle/actions, upload-artifact, codeql-action | v7.0.1, v6.0.1, v6.4.0, v7.0.1, v4.38.2 (SHA-pinned) | android-emulator-runner v2.38.0 as GMD fallback; no release action: `release.yml` publishes with the runner's preinstalled `gh` CLI ([09 release.yml](09-quality-and-release.md#releaseyml)) |
+| | actions/setup-python, actions/attest, actions/deploy-pages | v7.0.0, v4.2.2, v5.0.1 (SHA-pinned; checked 2026-10-05) | host CPython 3.14 for `.pyc` compilation and `shimTest`; provenance attestations ([D79](../PLAN.md#3-key-decisions)); engine manifest on GitHub Pages ([D76](../PLAN.md#3-key-decisions)) |
 
-**Banned** (enforced by [`verifyDependencyPolicy`](#gradle-side-policy-tasks) and plugin guards): `org.jetbrains.kotlin.android`, `kotlin-kapt` / `org.jetbrains.kotlin.kapt`, `androidx.compose.material:material-icons-extended`, `androidx.palette:*`, `com.materialkolor:material-kolor*` (Compose artifact), OkHttp `Cache`, any `com.google.android.gms`, `com.google.firebase`, `com.google.android.play`, `com.crashlytics`, `io.sentry` artifact in any v1.0 configuration (Cast arrives in v1.x as `playImplementation` only), `androidx.security:security-crypto` (deprecated; Keystore directly).
+**Banned** (enforced by [`verifyDependencyPolicy`](#gradle-side-policy-tasks) and plugin guards): `org.jetbrains.kotlin.android`, `kotlin-kapt` / `org.jetbrains.kotlin.kapt`, `androidx.compose.material:material-icons-extended`, `androidx.palette:*`, `com.materialkolor:material-kolor*` (Compose artifact), OkHttp `Cache`, any `com.google.android.gms`, `com.google.firebase`, `com.google.android.play`, `com.crashlytics`, `io.sentry` artifact in any configuration (there is one build and it carries no proprietary SDK, [D62](../PLAN.md#3-key-decisions)), `androidx.security:security-crypto` (deprecated; Keystore directly), and every GPL/LGPL/AGPL component named in [D3](../PLAN.md#3-key-decisions): NewPipe Extractor (`com.github.teamnewpipe`, `com.github.TeamNewPipe`), Rhino (`org.mozilla:rhino*`), any `*youtubedl-android*` coordinate, `com.android.tools:desugar_jdk_libs*` (core-library desugaring existed only for NewPipe Extractor; `java.time` is native from API 26, and AGP's AAR-metadata check fails the M0 build if any other dependency still demands desugaring). The `com.chaquo.python` plugin is allowed only in `:youtube:ytdlp` ([common Android configuration](#common-android-configuration)).
 
 ### `gradle/libs.versions.toml`
 
-Complete catalog. Coordinates marked `# M9` / `# v1.x` are declared now so Renovate tracks them; nothing references them until that milestone.
+Complete catalog. Coordinates marked `# M9b` / `# v1.x` are declared now so Renovate tracks them; nothing references them until that milestone. yt-dlp is not in the catalog (vendored file, [Python and native components](#python-and-native-components)).
 
 ```toml
 [versions]
@@ -133,10 +135,9 @@ kotlinxCoroutines = "1.11.0"
 kotlinxCollectionsImmutable = "0.5.2"
 jsoup = "1.23.2"
 media3 = "1.11.1"
-newpipeExtractor = "v0.26.5"        # M9, foss only
-rhino = "1.8.1"                     # M9, strict
-desugarJdkLibsNio = "2.1.5"         # M9
-androidYoutubePlayer = "13.0.0"     # v1.x, play only
+chaquopy = "17.0.0"                 # :youtube:ytdlp only; S7 may change it (newer release, or "17.1.0" from a local build of master)
+tink = "1.23.0"                     # M9b
+quickjsKt = "1.0.15"                # M9b, only if the JS challenge provider ships (D75)
 acra = "5.14.2"
 junit4 = "4.13.2"
 testParameterInjector = "1.24"
@@ -160,7 +161,6 @@ composeRules = "0.6.7"
 detekt = "2.0.0-alpha.6"
 licensee = "1.14.1"
 moduleGraphAssert = "2.9.1"
-playPublisher = "4.1.1"
 ```
 
 ```toml
@@ -249,12 +249,9 @@ androidx-media3-common-ktx = { module = "androidx.media3:media3-common-ktx", ver
 androidx-media3-inspector = { module = "androidx.media3:media3-inspector", version.ref = "media3" }
 androidx-media3-test-utils = { module = "androidx.media3:media3-test-utils", version.ref = "media3" }
 androidx-media3-test-utils-robolectric = { module = "androidx.media3:media3-test-utils-robolectric", version.ref = "media3" }
-# YouTube, foss only (M9)
-newpipe-extractor = { module = "com.github.teamnewpipe:NewPipeExtractor", version.ref = "newpipeExtractor" }
-rhino = { module = "org.mozilla:rhino", version.ref = "rhino" }
-rhino-engine = { module = "org.mozilla:rhino-engine", version.ref = "rhino" }
-desugar-jdk-libs-nio = { module = "com.android.tools:desugar_jdk_libs_nio", version.ref = "desugarJdkLibsNio" }
-android-youtube-player = { module = "com.pierfrancescosoffritti.androidyoutubeplayer:core", version.ref = "androidYoutubePlayer" } # v1.x
+# YouTube engine, :youtube:ytdlp only (the Chaquopy runtime comes through its plugin, not the catalog)
+tink-android = { module = "com.google.crypto.tink:tink-android", version.ref = "tink" }                 # M9b
+quickjs-kt-android = { module = "io.github.dokar3:quickjs-kt-android", version.ref = "quickjsKt" }      # M9b, conditional (D75)
 # Crash reporting
 acra-mail = { module = "ch.acra:acra-mail", version.ref = "acra" }
 acra-dialog = { module = "ch.acra:acra-dialog", version.ref = "acra" }
@@ -289,6 +286,7 @@ spotless-gradlePlugin = { module = "com.diffplug.spotless:com.diffplug.spotless.
 licensee-gradlePlugin = { module = "app.cash.licensee:app.cash.licensee.gradle.plugin", version.ref = "licensee" }
 moduleGraphAssert-gradlePlugin = { module = "com.jraska.module.graph.assertion:com.jraska.module.graph.assertion.gradle.plugin", version.ref = "moduleGraphAssert" }
 aboutlibraries-gradlePlugin = { module = "com.mikepenz.aboutlibraries.plugin:com.mikepenz.aboutlibraries.plugin.gradle.plugin", version.ref = "aboutlibraries" }
+chaquopy-gradlePlugin = { module = "com.chaquo.python:gradle", version.ref = "chaquopy" }   # same classloader as AGP (catalog rule 3)
 
 [bundles]
 unit-test = ["junit4", "truth", "turbine", "kotlinx-coroutines-test", "testParameterInjector"]
@@ -308,7 +306,7 @@ room3 = { id = "androidx.room3", version.ref = "room3" }
 detekt = { id = "dev.detekt", version.ref = "detekt" }            # Unverified: 2.0 plugin id (1.x was io.gitlab.arturbosch.detekt)
 roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
 baselineprofile = { id = "androidx.baselineprofile", version.ref = "benchmark" }
-play-publisher = { id = "com.github.triplet.play", version.ref = "playPublisher" }
+# com.chaquo.python has no entry: it is on the build-logic classpath and applied by bare id (catalog rule 3)
 # convention plugins (no version: provided by the included build)
 neutrodyne-android-application = { id = "neutrodyne.android.application" }
 neutrodyne-android-library = { id = "neutrodyne.android.library" }
@@ -325,8 +323,8 @@ neutrodyne-quality = { id = "neutrodyne.quality" }
 Rules for the catalog:
 
 1. Every external coordinate lives here; build files never hard-code a version. `resolutionStrategy { failOnDynamicVersions(); failOnChangingVersions() }` is applied by every convention plugin.
-2. Module build files apply plugins only by `alias(libs.plugins.neutrodyne-*)` or by bare `id("…")` for plugins already on the build-logic classpath; versioned `alias(...)` is used only for tooling plugins not on that classpath (`detekt`, `roborazzi`, `baselineprofile`, `play-publisher`, `android-test`).
-3. Rhino gets a strict constraint in `:youtube:streams`: `constraints { implementation(libs.rhino) { version { strictly("1.8.1") } } }` (same for `rhino-engine`).
+2. Module build files apply plugins only by `alias(libs.plugins.neutrodyne-*)` or by bare `id("…")` for plugins already on the build-logic classpath; versioned `alias(...)` is used only for tooling plugins not on that classpath (`detekt`, `roborazzi`, `baselineprofile`, `android-test`).
+3. The Chaquopy plugin (`chaquopy-gradlePlugin`) is an `implementation` dependency of `build-logic/convention`, so it loads in the same classloader as AGP, and `:youtube:ytdlp` applies it by bare `id("com.chaquo.python")`. Unverified: that Chaquopy needs AGP's classloader (its documentation applies it with a versioned `plugins {}` entry); S7 records which form works. No other module may apply it ([common Android configuration](#common-android-configuration)). Its runtime artifacts (`com.chaquo.python:target`, runtime AARs) resolve from Maven Central, or from the local repository of S7's self-built fallback.
 4. BOM-managed artifacts (Compose, OkHttp, Coil) are declared without a version, so their platform must be on the same configuration. `neutrodyne.android.library`, `neutrodyne.android.application` and `neutrodyne.jvm.library` add `platform(okhttp-bom)` and `platform(coil-bom)` to `implementation`, `testImplementation` and (Android) `androidTestImplementation` of every module (a platform adds constraints only, no artifact); `neutrodyne.android.compose` does the same for `compose-bom`. A module that exposes a BOM-managed artifact as `api` (`:core:network` → `okhttp`, `:core:navigation` → `compose-runtime`) also declares `api(platform(...))`.
 5. Plugin classes in `build-logic` have no type-safe `libs` accessor. They read the catalog with `val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")` and `libs.findLibrary("okhttp-bom").get()` / `libs.findVersion("kotlin").get().requiredVersion`. Module build scripts use the type-safe accessors.
 
@@ -347,10 +345,8 @@ dependencyResolutionManagement {
     repositories {
         google { content { includeGroupByRegex("com\\.android.*"); includeGroupByRegex("com\\.google.*"); includeGroupByRegex("androidx.*") } }
         mavenCentral()
-        exclusiveContent {                       // JitPack serves ONLY these groups, and these groups come ONLY from JitPack
-            forRepository { maven("https://jitpack.io") }
-            filter { includeGroup("com.github.teamnewpipe"); includeGroup("com.github.TeamNewPipe") }
-        }
+        // Only if S7 falls back to a self-built Chaquopy master: a local repository that alone serves com.chaquo.python
+        // exclusiveContent { forRepository { maven(uri("third_party/chaquopy-maven")) }; filter { includeGroupByRegex("com\\.chaquo\\.python.*") } }
     }
 }
 rootProject.name = "Neutrodyne"
@@ -359,13 +355,14 @@ include(":core:model", ":core:common", ":core:domain", ":core:navigation", ":cor
         ":core:network", ":core:data", ":core:artwork", ":core:designsystem", ":core:ui", ":core:testing")
 include(":feeds")
 include(":playback:api", ":playback:impl", ":download:api", ":download:impl")
-include(":youtube:api", ":youtube:impl", ":youtube:streams")
+include(":youtube:api", ":youtube:impl", ":youtube:ytdlp")
+include(":update:api", ":update:impl")
 include(":feature:feeds", ":feature:library", ":feature:groups", ":feature:podcast", ":feature:episode", ":feature:player",
         ":feature:queue", ":feature:downloads", ":feature:discover", ":feature:importexport", ":feature:settings")
-// M6: include(":benchmark")   v1.x: include(":playback:cast", ":feature:widgets")
+// M6: include(":benchmark")   v1.x: include(":feature:widgets")
 ```
 
-`com.github.TeamNewPipe` is the group of the extractor's `nanojson` dependency. Both spellings are listed because JitPack group IDs follow the GitHub owner's case.
+`:youtube:ytdlp` stays included in the emergency build without the engine; only `:app`'s dependency on it is dropped ([Emergency build without the engine](#emergency-build-without-the-engine)), so CI keeps compiling and testing it. Every repository serves immutable releases; the same repositories, minus the commented fallback, are declared for `pluginManagement` above and for `build-logic`.
 
 ```properties
 # gradle.properties (committed; never contains secrets)
@@ -383,33 +380,38 @@ kotlin.daemon.jvmargs=-Xmx3g
 neutrodyne.versionName=0.1.0-beta.1
 neutrodyne.versionCode=10001
 neutrodyne.repoUrl=https://github.com/OWNER/Neutrodyne
-# Committed so GitHub's APK and F-Droid's rebuild read the same value (empty until PO-10 names the mailbox):
+# Approved YouTube-engine manifest on GitHub Pages (D76; 04 Engine updates):
+neutrodyne.engineManifestUrl=https://OWNER.github.io/Neutrodyne/engine/ytdlp-approved.json
+# false = emergency build without :youtube:ytdlp (Build variants and ABIs; risk L1):
+neutrodyne.youtubeEngine=true
+# Committed so every build of a tag reads the same value (empty until PO-10 names the mailbox):
 neutrodyne.acraMailto=
-# Read with providers.gradleProperty(...).orElse(""), supplied only via -P to play builds (PO-3, never to foss):
+# Read with providers.gradleProperty(...).orElse(""); supplied via -P only by release.yml to release builds, and only after
+# Podcast Index has granted written permission (PO-3, D26); never committed:
 #   neutrodyne.podcastIndexKey, neutrodyne.podcastIndexSecret
 ```
 
-`OWNER` is replaced when PO-18 names the GitHub owner (M0 blocker only for the About link, not for the build). Gradle logic never reads git (F-Droid builds without `.git` history), never embeds timestamps, and never reads environment variables except the `NEUTRODYNE_KEYSTORE*` signing variables ([09 Versioning and signing](09-quality-and-release.md#versioning-and-signing)).
+`OWNER` is replaced when PO-18 names the GitHub owner (M0 blocker only for the About link and the update and engine-manifest URLs, not for the build); `BuildInfo` derives the update-manifest and Atom URLs from `neutrodyne.repoUrl` ([Build variants and ABIs](#build-variants-and-abis)). Gradle logic never reads git, never embeds timestamps (the nightly reproducibility report, [09 Reproducible builds](09-quality-and-release.md#reproducible-builds)), and never reads environment variables except the `NEUTRODYNE_KEYSTORE*` signing variables ([09 Versioning and signing](09-quality-and-release.md#versioning-and-signing)).
 
 Root `build.gradle.kts` contains only `plugins { alias(libs.plugins.neutrodyne.quality); alias(libs.plugins.detekt) apply false }`.
 
-**Gradle dependency verification (decision):** enabled **only for JitPack-hosted artifacts**. `gradle/verification-metadata.xml` stores SHA-256 checksums for `com.github.teamnewpipe` / `com.github.TeamNewPipe` artifacts and trusts everything else with a negative-lookahead rule (`<trust group="^(?!com\.github\.[Tt]eam[Nn]ew[Pp]ipe$).*$" regex="true"/>`). Rationale: JitPack builds from mutable Git state and is the only repository without signed, immutable releases; full verification would make every Renovate PR fail until someone regenerates metadata locally. Regenerate with `./gradlew --write-verification-metadata sha256 :app:assembleFossRelease` on every extractor bump (the Renovate fast lane PR template says so, [09 Dependency updates](09-quality-and-release.md#dependency-updates)). Unverified: that Gradle honours the lookahead trust regex as intended — checked in M9 when JitPack is first resolved; if it does not, drop verification and rely on exact tags plus the exclusive-content filter.
+**Gradle dependency verification (decision):** not enabled. Google Maven, Maven Central and the Gradle Plugin Portal serve immutable releases, and full verification would make every Renovate PR fail until someone regenerates metadata locally. The one artifact outside Gradle's resolution — the vendored yt-dlp — is checked by [`verifyBundledYtDlp`](#python-and-native-components) against yt-dlp's signed checksums; a self-built Chaquopy (S7 fallback) is pinned by commit and its local repository is reviewed like source.
 
 ### Convention plugins
 
-`build-logic/settings.gradle.kts` declares its own repositories (`dependencyResolutionManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }`, with the same `google { content { … } }` filter as the root) and reuses the root catalog (`versionCatalogs { create("libs") { from(files("../gradle/libs.versions.toml")) } }`). `build-logic/convention/build.gradle.kts` applies `kotlin-dsl` and declares as **`implementation`** (not `compileOnly`, see [S1](#s1-kgp-2420-under-agp-941)): `android-gradlePlugin`, `kotlin-gradlePlugin`, `kotlin-composeGradlePlugin`, `kotlin-serializationGradlePlugin`, `ksp-gradlePlugin`, `hilt-gradlePlugin`, `room3-gradlePlugin`, `spotless-gradlePlugin`, `licensee-gradlePlugin`, `moduleGraphAssert-gradlePlugin`, `aboutlibraries-gradlePlugin`. Plugin classes live in `build-logic/convention/src/main/kotlin/` and are registered under the canonical IDs.
+`build-logic/settings.gradle.kts` declares its own repositories (`dependencyResolutionManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }`, with the same `google { content { … } }` filter as the root) and reuses the root catalog (`versionCatalogs { create("libs") { from(files("../gradle/libs.versions.toml")) } }`). `build-logic/convention/build.gradle.kts` applies `kotlin-dsl` and declares as **`implementation`** (not `compileOnly`, see [S1](#s1-kgp-2420-under-agp-941)): `android-gradlePlugin`, `kotlin-gradlePlugin`, `kotlin-composeGradlePlugin`, `kotlin-serializationGradlePlugin`, `ksp-gradlePlugin`, `hilt-gradlePlugin`, `room3-gradlePlugin`, `spotless-gradlePlugin`, `licensee-gradlePlugin`, `moduleGraphAssert-gradlePlugin`, `aboutlibraries-gradlePlugin`, `chaquopy-gradlePlugin` (catalog rule 3). Plugin classes live in `build-logic/convention/src/main/kotlin/` and are registered under the canonical IDs.
 
 | Plugin ID | Applied to | Configures |
 |---|---|---|
-| `neutrodyne.android.application` | `:app` | `com.android.application`; [common Android config](#common-android-configuration); `applicationId`, version from `gradle.properties`; flavors and build types ([Build flavors](#build-flavors)); `androidResources.generateLocaleConfig = true`; `dependenciesInfo { includeInApk = false; includeInBundle = false }`; `bundle.language.enableSplit = false` (Unverified necessity for per-app language with AABs; harmless); applies `app.cash.licensee`, `com.jraska.module.graph.assertion`, `com.mikepenz.aboutlibraries.plugin`; registers [`verifyDependencyPolicy`, `verifyManifestPermissions`](#gradle-side-policy-tasks); applies `neutrodyne.android.lint` and `neutrodyne.android.testing` |
-| `neutrodyne.android.library` | every Android library | `com.android.library`; common Android config; `namespace` derived from the path; `consumerProguardFiles("consumer-rules.pro")` when present; no `buildFeatures` lines (AGP 9 already defaults `buildConfig`, `aidl`, `resValues` and `shaders` to off; only `:app` turns `buildConfig` on); applies `neutrodyne.android.lint` and `neutrodyne.android.testing` |
+| `neutrodyne.android.application` | `:app` | `com.android.application`; [common Android config](#common-android-configuration); `applicationId`, version from `gradle.properties`; build types, ABI splits and the engine switch ([Build variants and ABIs](#build-variants-and-abis)); `androidResources.generateLocaleConfig = true`; `dependenciesInfo { includeInApk = false; includeInBundle = false }` (no Google-encrypted dependency block in a GitHub APK); applies `app.cash.licensee`, `com.jraska.module.graph.assertion`, `com.mikepenz.aboutlibraries.plugin`; registers [`verifyDependencyPolicy`, `verifyManifestPermissions`](#gradle-side-policy-tasks); applies `neutrodyne.android.lint` and `neutrodyne.android.testing` |
+| `neutrodyne.android.library` | every Android library | `com.android.library`; common Android config; `namespace` derived from the path; `consumerProguardFiles("consumer-rules.pro")` when present; no `buildFeatures` lines (AGP 9 already defaults `buildConfig`, `aidl`, `resValues` and `shaders` to off; only `:app` turns `buildConfig` on, and `:youtube:ytdlp`'s own build file turns `aidl` on for `IYtxEngine`); applies `neutrodyne.android.lint` and `neutrodyne.android.testing` |
 | `neutrodyne.android.compose` | `:app`, `:core:designsystem`, `:core:ui`, features | `org.jetbrains.kotlin.plugin.compose`; `buildFeatures.compose = true`; `platform(compose-bom)` on `implementation`, `androidTestImplementation`, `testImplementation`; `ui-tooling-preview`; `debugImplementation(ui-tooling, ui-test-manifest)`; `composeCompiler { stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf")); if (-PcomposeReports) reportsDestination/metricsDestination = build/compose }`. Adds `-opt-in=androidx.compose.material3.ExperimentalMaterial3Api` **only** when the project path is `:core:designsystem`; `Nd*` wrappers therefore must not expose experimental Material 3 types in their public signatures ([08 Theming and colour](08-ui-ux.md#theming-and-colour)) |
 | `neutrodyne.android.feature` | `:feature:*` | applies `neutrodyne.android.library`, `neutrodyne.android.compose`, `neutrodyne.hilt`; adds `:core:{domain, model, common, designsystem, ui, navigation}`, `lifecycle-runtime-compose`, `lifecycle-viewmodel-compose`, `lifecycle-viewmodel-navigation3`, `hilt-lifecycle-viewmodel-compose`, `navigation3-runtime`, `adaptive-navigation3`, `paging-compose`, `kotlinx-collections-immutable`. `:*:api` modules are added explicitly per feature |
 | `neutrodyne.android.testing` | applied by application/library plugins | Hook only; content owned by [09 Test infrastructure](09-quality-and-release.md#test-infrastructure) (Robolectric `sdk=36`, JDK 21, `de_DE` + `America/St_Johns`, golden switch, `okhttp-bom` and Robolectric forcing, orchestrator, GMD definitions). Adds `testImplementation(project(":core:testing"))` except in `:core:testing` itself |
 | `neutrodyne.android.lint` | all modules (JVM modules via `com.android.lint`) | Gates owned by [09 Static analysis](09-quality-and-release.md#static-analysis) (`warningsAsErrors`, baseline, SARIF, `checkDependencies` in `:app`). One foundation rule: Media3's `@UnstableApi` is an AndroidX `RequiresOptIn` marker enforced by Lint (`UnsafeOptInUsageError`), not by the Kotlin compiler, so the module-wide opt-in is a lint config: when the project path is `:playback:impl`, `lint { lintConfig = file("lint.xml") }` with `<issue id="UnsafeOptInUsageError"><ignore regexp='\(markerClass = androidx\.media3\.common\.util\.UnstableApi\.class\)' /></issue>` ([UnstableApi](https://developer.android.com/reference/androidx/media3/common/util/UnstableApi)). Everywhere else an unstable Media3 call stays a lint error |
 | `neutrodyne.hilt` | modules using DI | Android: `com.google.devtools.ksp` + `com.google.dagger.hilt.android`, `implementation(hilt-android)`, `ksp(hilt-compiler)`. JVM: `com.google.devtools.ksp`, `implementation(dagger)`, `ksp(dagger-compiler)` (generates `_Factory` classes for `@Inject` constructors; no Hilt modules in JVM modules). Modules with `@HiltWorker` additionally declare `implementation(androidx-hilt-work)` + `ksp(androidx-hilt-compiler)` |
 | `neutrodyne.room` | `:core:database` | `androidx.room3` + KSP; `room3 { schemaDirectory("$projectDir/schemas") }` (→ `core/database/schemas/`; Unverified extension name — Room 2's is `room { }`; S2 confirms); `api(room3-runtime)`, `api(room3-paging)`, `api(paging-common)`, `implementation(sqlite-bundled)`, `ksp(room3-compiler)`, `testImplementation(room3-testing, sqlite-framework)`, `androidTestImplementation(room3-testing, sqlite-framework)` (02 runs migration tests on GMD with both drivers); `MigrationTestHelper` needs the exported JSON as test assets: the Room Gradle plugin is expected to wire that (Unverified for `androidx.room3`; S4 checks it, fallback `sourceSets["androidTest"].assets.srcDir("$projectDir/schemas")` and the same for `test`). Room usage conventions: [02 Conventions](02-data-model.md#conventions) |
-| `neutrodyne.jvm.library` | `:core:model`, `:core:common`, `:core:domain`, `:feeds`, `:*:api` | `org.jetbrains.kotlin.jvm`; no toolchain provisioning: Kotlin `jvmTarget = 17` plus `-Xjdk-release=17`, `JavaCompile.options.release = 17`; `com.android.lint`; JUnit 4 test deps; calls 09's `configureNeutrodyneTestTasks()`. Test fixtures (`java-test-fixtures` in `:core:common`; `android { testFixtures { enable = true } }` in `:core:database`, `:core:navigation` and `:youtube:streams`) per [09 Shared helpers](09-quality-and-release.md#shared-helpers) |
+| `neutrodyne.jvm.library` | `:core:model`, `:core:common`, `:core:domain`, `:feeds`, `:*:api` | `org.jetbrains.kotlin.jvm`; no toolchain provisioning: Kotlin `jvmTarget = 17` plus `-Xjdk-release=17`, `JavaCompile.options.release = 17`; `com.android.lint`; JUnit 4 test deps; calls 09's `configureNeutrodyneTestTasks()`. Test fixtures (`java-test-fixtures` in `:core:common`; `android { testFixtures { enable = true } }` in `:core:database` and `:core:navigation`) per [09 Shared helpers](09-quality-and-release.md#shared-helpers) |
 | `neutrodyne.quality` | root only | Spotless (ktlint 1.8.0 + compose-rules 0.6.7 for `**/*.kt` and `**/*.kts`; settings in `.editorconfig`, owned by 09); registers [`checkSpdxHeaders` and `checkBannedApis`](#gradle-side-policy-tasks) and wires them into `check` |
 
 #### Common Android configuration
@@ -429,6 +431,10 @@ internal fun Project.configureAndroidCommon(ext: CommonExtension) {
     }
     pluginManager.withPlugin("org.jetbrains.kotlin.android") { error("kotlin-android is banned: AGP 9 built-in Kotlin") }
     pluginManager.withPlugin("org.jetbrains.kotlin.kapt") { error("kapt is banned: use KSP") }
+    pluginManager.withPlugin("com.chaquo.python") {                           // Chaquopy allows one module per app (D72)
+        check(path == ":youtube:ytdlp") { "com.chaquo.python is allowed only in :youtube:ytdlp" }
+    }
+    afterEvaluate { check(!ext.compileOptions.isCoreLibraryDesugaringEnabled) { "core-library desugaring is not used (D3)" } }
     configurations.configureEach { resolutionStrategy { failOnDynamicVersions(); failOnChangingVersions() } }
 }
 // targetSdk is set explicitly in the application plugin (AGP 9 defaults it to compileSdk if unset):
@@ -445,13 +451,14 @@ These run in `check`; CI (09) only invokes Gradle.
 | Task | Project | Fails when |
 |---|---|---|
 | `assertModuleGraph` | `:app` (module-graph-assertion plugin) | any edge violates [Dependency rules](#dependency-rules) |
-| `licenseeFossRelease`, `licenseePlayRelease` | `:app` | a runtime dependency's licence is not allowed ([allow-list](#licensee-allow-list)) |
-| `verifyDependencyPolicy` | `:app` | `playReleaseRuntimeClasspath` contains `project :youtube:streams`, `com.github.teamnewpipe:*`, `com.github.TeamNewPipe:*`, `org.mozilla:rhino*`, or any artifact whose Licensee report SPDX is GPL/LGPL/AGPL/MPL (except `desugar_jdk_libs*`); **either** release classpath contains a banned artifact (list above); `fossReleaseRuntimeClasspath` contains Google Play services / Firebase / Play Core / Crashlytics / Sentry; any `*AndroidTestRuntimeClasspath` contains `io.mockk` (09: no MockK on devices) |
-| `verifyManifestPermissions` | `:app` | the merged manifest of `fossRelease` or `playRelease` (`SingleArtifact.MERGED_MANIFEST`) declares a `uses-permission` not listed in `app/policy/permissions.txt`, or lacks one listed there |
-| `checkSpdxHeaders` | root | a `*.kt`/`*.java`/`*.kts` under `youtube/streams/` lacks `// SPDX-License-Identifier: GPL-3.0-or-later` as its first line, or any `*.kt`/`*.java`/`*.kts` file elsewhere contains `SPDX-License-Identifier: (A\|L)?GPL` or `MPL` (Markdown and other docs are not scanned) |
-| `checkBannedApis` | root | scans only the `src/main/**` Kotlin sources and manifests of root-build modules (not `build-logic/`; tests may build their own clients): source outside `core/designsystem/` contains `ExperimentalMaterial3Api` or `ExperimentalMaterial3ExpressiveApi`; source outside `playback/impl/` contains `UnstableApi`; any source contains `okhttp3.Cache(`, `.cache(Cache(`, `OkHttpClient()` or `OkHttpClient.Builder()` outside `core/network/`, `GlobalScope`, `override fun onBackPressed`, `collectAsState()` in `feature/`, or `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`; a `Text("` string literal in `feature/**/src/main` (hard-coded UI text, [09 String conventions](09-quality-and-release.md#string-conventions)) |
+| `licenseeRelease` | `:app` | a runtime dependency's licence is not allowed ([allow-list](#licensee-allow-list)) |
+| `verifyDependencyPolicy` | `:app` | `releaseRuntimeClasspath` contains a banned artifact ([list above](#version-table)) or any artifact whose Licensee report SPDX is GPL, LGPL, AGPL or MPL (no exceptions, [D3](../PLAN.md#3-key-decisions)); `debugRuntimeClasspath` contains Google Play services / Firebase / Play Core / Crashlytics / Sentry; any `*AndroidTestRuntimeClasspath` contains `io.mockk` (09: no MockK on devices) |
+| `verifyManifestPermissions` | `:app` | the merged manifest of `release` (`SingleArtifact.MERGED_MANIFEST`) declares a `uses-permission` not listed in `app/policy/permissions.txt`, or lacks one listed there |
+| `checkSpdxHeaders` | root | any `*.kt`/`*.java`/`*.kts`/`*.py`/`*.aidl` file contains an `SPDX-License-Identifier` naming GPL, LGPL, AGPL or MPL (any version or suffix); a file listed as copied or ported in `THIRD_PARTY_NOTICES.md` lacks its original `SPDX-License-Identifier` line or credit header ([contribution rule](#copied-code-and-contributions)). Markdown and other docs are not scanned |
+| `checkBannedApis` | root | scans only the `src/main/**` Kotlin sources and manifests of root-build modules (not `build-logic/`; tests may build their own clients): source outside `core/designsystem/` contains `ExperimentalMaterial3Api` or `ExperimentalMaterial3ExpressiveApi`; source outside `playback/impl/` contains `UnstableApi`; source outside `youtube/ytdlp/` contains `com.chaquo.python` or a manifest declares `android:process`; source outside `update/impl/` contains `PackageInstaller`; any source contains `okhttp3.Cache(`, `.cache(Cache(`, `OkHttpClient()` or `OkHttpClient.Builder()` outside `core/network/`, `api.github.com`, `DexClassLoader`, `InMemoryDexClassLoader`, `System.load(`, `ProcessBuilder(`, `Runtime.getRuntime().exec`, `GlobalScope`, `override fun onBackPressed`, `collectAsState()` in `feature/`, or `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`; a `Text("` string literal in `feature/**/src/main` (hard-coded UI text, [09 String conventions](09-quality-and-release.md#string-conventions)) |
+| `:youtube:ytdlp:checkPythonLicences`, `:youtube:ytdlp:verifyBundledYtDlp` | `:youtube:ytdlp` | the Python and native component lockfile or the vendored yt-dlp fails its checks ([Python and native components](#python-and-native-components)) |
 
-`checkBannedApis` is a plain text scan (fast, configuration-cache safe); false positives are fixed by rewording, never by suppression lists. `verifyDependencyPolicy` and `verifyManifestPermissions` must also stay configuration-cache safe: they take their inputs as providers (`configurations.named("playReleaseRuntimeClasspath").flatMap { it.incoming.resolutionResult.rootComponent }`, the Licensee JSON report file of the same variant, and the variant's `SingleArtifact.MERGED_MANIFEST` from `androidComponents.onVariants`), never by resolving configurations at configuration time. Both check release variants only (debug merges LeakCanary and test-only entries).
+`checkBannedApis` is a plain text scan (fast, configuration-cache safe); false positives are fixed by rewording, never by suppression lists. Its exec and `System.load` bans keep engine code in-process ([Platform compliance](#platform-compliance) P33–P35); fallback A2 of [S7](#s7-chaquopy-under-agp-941) would need a reviewed exception for its launcher in `youtube/ytdlp/`. `verifyDependencyPolicy` and `verifyManifestPermissions` must also stay configuration-cache safe: they take their inputs as providers (`configurations.named("releaseRuntimeClasspath").flatMap { it.incoming.resolutionResult.rootComponent }`, the Licensee JSON report file of the same variant, and the variant's `SingleArtifact.MERGED_MANIFEST` from `androidComponents.onVariants`), never by resolving configurations at configuration time. Both check the `release` variant only (debug merges LeakCanary and test-only entries). `:youtube:ytdlp:shimTest` (host `python -m pytest`) is deliberately not part of `check`: it needs a host CPython of the target minor version, which CI's `unit` job provides ([09 CI pipelines](09-quality-and-release.md#ci-pipelines)).
 
 ---
 
@@ -459,11 +466,11 @@ These run in `check`; CI (09) only invokes Gradle.
 
 Serves N11. Delivered in M0 (stubs), content by milestone per the "Content from" column of the canonical module list ([D13](../PLAN.md#3-key-decisions)).
 
-Every module except `:benchmark` (M6), `:playback:cast` and `:feature:widgets` (v1.x) is created in M0 as a compiling stub: `build.gradle.kts`, the package directory, one `internal` placeholder declaration and one placeholder test. Packages and AGP namespaces follow `ch.lkmc.neutrodyne` + path (`:youtube:streams` → `ch.lkmc.neutrodyne.youtube.streams`).
+Every module except `:benchmark` (M6) and `:feature:widgets` (v1.x) is created in M0 as a compiling stub: `build.gradle.kts`, the package directory, one `internal` placeholder declaration and one placeholder test. Packages and AGP namespaces follow `ch.lkmc.neutrodyne` + path (`:youtube:ytdlp` → `ch.lkmc.neutrodyne.youtube.ytdlp`; its code that runs in the `:ytx` process lives in the subpackage `ch.lkmc.neutrodyne.youtube.ytdlp.ytx`).
 
 | Module | Plugins | Project dependencies (main) | External dependencies | Content from |
 |---|---|---|---|---|
-| `:app` | `neutrodyne.android.application`, `.android.compose`, `.hilt` | every feature; `:core:{model, common, domain, navigation, database, datastore, network, data, artwork, designsystem, ui}`; `:playback:{api, impl}`; `:download:{api, impl}`; `:youtube:{api, impl}`; `fossImplementation(:youtube:streams)` | appcompat, activity-compose, core-ktx, core-splashscreen, navigation3-runtime/-ui, adaptive-navigation3, material3-adaptive-navigation-suite, lifecycle-viewmodel-navigation3, hilt-lifecycle-viewmodel-compose, androidx-hilt-work, work-runtime, coil-core, coil-compose, kotlinx-coroutines-android, acra-mail, acra-dialog; `debugImplementation(leakcanary)`; M9: `coreLibraryDesugaring(desugar-jdk-libs-nio)` | M0 |
+| `:app` | `neutrodyne.android.application`, `.android.compose`, `.hilt` | every feature; `:core:{model, common, domain, navigation, database, datastore, network, data, artwork, designsystem, ui}`; `:playback:{api, impl}`; `:download:{api, impl}`; `:youtube:{api, impl}`; `:youtube:ytdlp` (absent with `-Pneutrodyne.youtubeEngine=false`); `:update:{api, impl}` | appcompat, activity-compose, core-ktx, core-splashscreen, navigation3-runtime/-ui, adaptive-navigation3, material3-adaptive-navigation-suite, lifecycle-viewmodel-navigation3, hilt-lifecycle-viewmodel-compose, androidx-hilt-work, work-runtime, coil-core, coil-compose, kotlinx-coroutines-android, acra-mail, acra-dialog; `debugImplementation(leakcanary)`; no `coreLibraryDesugaring` | M0 |
 | `:core:model` | `neutrodyne.jvm.library` | — | — | M0 |
 | `:core:common` | `.jvm.library`, `.hilt` | — | coroutines-core, dagger (for `javax.inject`) | M0 |
 | `:core:domain` | `.jvm.library`, `.hilt` | `api`: `:core:{model, common}`, `:playback:api`, `:download:api`, `:youtube:api` | `api(paging-common)`, coroutines-core | M0 |
@@ -475,15 +482,17 @@ Every module except `:benchmark` (M6), `:playback:cast` and `:feature:widgets` (
 | `:core:artwork` | `.android.library`, `.hilt` | `:core:{model, common, database, network}`, `:youtube:api` | coil-core, coil-network-okhttp, work-runtime, androidx-hilt-work (+ compiler); M10: material-color-utilities | M1 (Coil components), M4 (store) |
 | `:core:designsystem` | `.android.library`, `.android.compose` | `:core:model` | compose-core bundle, material3-adaptive-navigation-suite, graphics-shapes, coil-compose, kotlinx-collections-immutable; M10: material-color-utilities | M0 |
 | `:core:ui` | `.android.library`, `.android.compose` | `:core:{designsystem, model, common}`, `:download:api` (08's `DownloadRequestHandler` maps its `RequestResult`, M6) | coil-compose, kotlinx-collections-immutable, reorderable (M4) | M1 |
-| `:core:testing` | `.android.library`, `.hilt` | `:core:{domain, model, common}`, `:playback:api`, `:download:api`, `:youtube:api` | `api`: junit4, truth, turbine, coroutines-test, coil-test, hilt-android-testing | M0 |
+| `:core:testing` | `.android.library`, `.hilt` | `:core:{domain, model, common}`, `:playback:api`, `:download:api`, `:youtube:api`, `:update:api` | `api`: junit4, truth, turbine, coroutines-test, coil-test, hilt-android-testing | M0 |
 | `:feeds` | `.jvm.library`, `kotlin.plugin.serialization` | — | jsoup, kotlinx-serialization-json; `compileOnly` + `testImplementation(kxml2)` | M1 |
 | `:playback:api` | `.jvm.library`, `.hilt` (JVM: `@Inject`/qualifiers only) | `:core:{model, common}` | coroutines-core | M0 |
 | `:playback:impl` | `.android.library`, `.hilt` | `:playback:api`, `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}` | media3-exoplayer, -session, -datasource-okhttp, -common-ktx, -inspector (M5), kotlinx-coroutines-guava, lifecycle-process (`PlayerConnection`), kotlinx-serialization-json (06) | M4 |
 | `:download:api` | `.jvm.library`, `.hilt` (JVM) | `:core:{model, common}` | coroutines-core | M0 |
 | `:download:impl` | `.android.library`, `.hilt` | `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}` | work-runtime, androidx-hilt-work (+ compiler), okhttp-coroutines, lifecycle-process (07's `AppVisibility`) | M6 |
-| `:youtube:api` | `.jvm.library`, `.hilt` (JVM) | `:core:{model, common}` | coroutines-core | M2 (`YouTubeCapabilities`), M3 (classifier), M4 (`YouTubeStreamResolver` contract), M8 (rest); see [Flavor modules](#flavor-modules) |
-| `:youtube:impl` | `.android.library`, `.hilt` | `:youtube:api`, `:core:{model, common, network}` | okhttp-coroutines, kotlinx-serialization-json, jsoup | M4 (`ExternalOnlyYouTubeStreamResolver` only), M8 |
-| `:youtube:streams` | `.android.library`, `.hilt` — **GPL-3.0-or-later** | `:youtube:api`, `:core:{model, common, network}` | M9: newpipe-extractor, rhino + rhino-engine (strict 1.8.1) | M9 (M0 stub) |
+| `:youtube:api` | `.jvm.library`, `.hilt` (JVM) | `:core:{model, common}` | coroutines-core | M2 (`YouTubeCapabilities`, `YouTubeCapabilitiesSource`), M3 (classifier), M4 (`YouTubeStreamResolver` contract), M8 (rest), M9a (engine contracts: `YouTubeEngine`, `EngineStatus`, …); see [YouTube bindings](#youtube-bindings) |
+| `:youtube:impl` | `.android.library`, `.hilt` | `:youtube:api`, `:core:{model, common, network}` | okhttp-coroutines, kotlinx-serialization-json, jsoup | M2 (`StaticYouTubeCapabilitiesSource`), M4 (`ExternalOnlyYouTubeStreamResolver`), M8 (layer A and the other external-only implementations), M9a (`AbsentYouTubeEngine`) |
+| `:youtube:ytdlp` | `.android.library`, `.hilt`, `com.chaquo.python` (the only module with it, [D72](../PLAN.md#3-key-decisions)); `buildFeatures.aidl = true` | `:youtube:api`, `:core:{model, common, network, datastore}` | Chaquopy runtime (via its plugin; CPython 3.14), work-runtime, androidx-hilt-work (+ compiler), okhttp-coroutines, kotlinx-serialization-json; M9b: tink-android, quickjs-kt-android (only if the JS provider ships) | M0 stub (Chaquopy hello-world `selftest` if [S7](#s7-chaquopy-under-agp-941) is go), M9a, M9b ([04 YouTube engine](04-youtube.md#youtube-engine)) |
+| `:update:api` | `.jvm.library`, `.hilt` (JVM) | `:core:{model, common}` | coroutines-core | M0 stub, M11a (`AppUpdater`, `UpdateState`, `UpdateNotices`, …) |
+| `:update:impl` | `.android.library`, `.hilt` | `:update:api`, `:playback:api`, `:download:api`, `:core:{model, common, network, datastore}` | work-runtime, androidx-hilt-work (+ compiler), okhttp-coroutines, kotlinx-serialization-json | M0 stub, M11a ([09 In-app updater](09-quality-and-release.md#in-app-updater)) |
 | `:feature:feeds` | `neutrodyne.android.feature` | + `:playback:api`, `:download:api`, `:youtube:api` | — | M1 (All), M2 |
 | `:feature:library` | feature | + `:playback:api`, `:download:api`, `:youtube:api` (group-tile actions: Play, Download all) | — | M1 |
 | `:feature:groups` | feature | + `:youtube:api` (`YouTubeCapabilities` in Group settings) | reorderable | M2 |
@@ -494,12 +503,12 @@ Every module except `:benchmark` (M6), `:playback:cast` and `:feature:widgets` (
 | `:feature:downloads` | feature | + `:download:api`, `:playback:api` (`playDownloads`), `:youtube:api` (`YouTubeHealth.retryNow`) | — | M6 |
 | `:feature:discover` | feature | + `:youtube:api` | — | M1 (add by URL), M7 |
 | `:feature:importexport` | feature | + `:playback:api` (pause before Replace), `:download:api` (re-download offer), `:youtube:api` (`YouTubeCapabilities`) | — | M3 |
-| `:feature:settings` | feature | + `:youtube:api` | aboutlibraries-core | M0 |
+| `:feature:settings` | feature | + `:youtube:api` (`YouTubeEngine` rows in Settings › YouTube, M9a), `:update:api` (Settings › Updates, Install & updates help, M11a) | aboutlibraries-core | M0 |
 | `:benchmark` | `com.android.test`, `androidx.baselineprofile` (from M10) | `targetProjectPath = ":app"` | uiautomator (M6 system tests), benchmark-macro-junit4 (M10) | M6 ([09 Out-of-process system tests](09-quality-and-release.md#out-of-process-system-tests)) |
 
 **`api` vs `implementation`:** a module exposes a dependency as `api` only when its types appear in that module's public signatures (`:core:domain` → `:core:model`, `paging-common`; `:core:network` → `okhttp`; `:core:database` → `room3-runtime`, `room3-paging`); everything else is `implementation`. Implementation classes in impl modules are `internal`; only Hilt modules, `@AndroidEntryPoint` components and the public API are `public`.
 
-**External-library placement:** Room only through `:core:database`; DataStore only in `:core:datastore`; OkHttp clients only constructed in `:core:network`; Media3 player/session only in `:playback:impl`; WorkManager workers only in `:core:data`, `:core:artwork`, `:download:impl` (configuration in `:app`); images are rendered only through `:core:designsystem`/`:core:ui` composables ([08 Artwork pipeline](08-ui-ux.md#artwork-pipeline)).
+**External-library placement:** Room only through `:core:database`; DataStore only in `:core:datastore`; OkHttp clients only constructed in `:core:network`; Media3 player/session only in `:playback:impl`; WorkManager workers only in `:core:data`, `:core:artwork`, `:download:impl`, `:youtube:ytdlp` (`EngineUpdateWorker`, M9b) and `:update:impl` (M11a) (configuration in `:app`); Chaquopy, Python code, AIDL and anything that runs in the `:ytx` process only in `:youtube:ytdlp`; `PackageInstaller` only in `:update:impl`; images are rendered only through `:core:designsystem`/`:core:ui` composables ([08 Artwork pipeline](08-ui-ux.md#artwork-pipeline)).
 
 ---
 
@@ -509,19 +518,19 @@ Serves N11, N8. Delivered in M0 (enforced from the first commit). Rules 1–9 ex
 
 | # | Rule |
 |---|---|
-| 1 | `:app` → anything. Nothing → `:app`. Only `:app` has product flavors. `:youtube:streams` is added only as `fossImplementation`; `:playback:cast` (v1.x) only as `playImplementation`. |
-| 2 | `:feature:*` → `:core:{domain, model, common, designsystem, ui, navigation}`, `:playback:api`, `:download:api`, `:youtube:api`. Never feature → feature; never → `:core:{data, database, datastore, network, artwork}`, `*:impl`, `:youtube:streams`. |
+| 1 | `:app` → anything. Nothing → `:app`. No module has product flavors ([D2](../PLAN.md#3-key-decisions)). Only `:app` depends on `:youtube:ytdlp` (plain `implementation`, dropped by `-Pneutrodyne.youtubeEngine=false`) and on `:update:impl`. |
+| 2 | `:feature:*` → `:core:{domain, model, common, designsystem, ui, navigation}`, `:playback:api`, `:download:api`, `:youtube:api`, `:update:api`. Never feature → feature; never → `:core:{data, database, datastore, network, artwork}`, `*:impl`, `:youtube:ytdlp`. |
 | 3 | `:core:domain` → `:core:{model, common}`, `:playback:api`, `:download:api`, `:youtube:api`, `paging-common`. |
 | 4 | `:core:data` → `:core:{domain, model, common, database, datastore, network, artwork}`, `:feeds`, `:youtube:api`. |
 | 5 | `:core:artwork` → `:core:{model, common, database, network}`, `:youtube:api`. |
-| 6 | `:playback:impl` → `:playback:api`, `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}`. `:download:impl` → `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}`. `:youtube:impl` and `:youtube:streams` → `:youtube:api`, `:core:{model, common, network}`. No impl → `:core:data`, no impl → another impl. YouTube Atom feeds are fetched and parsed by the generic refresh engine in `:core:data` ([03](03-feeds-and-discovery.md#refresh-scheduling)) using `:youtube:api` helpers; no YouTube module parses Atom. |
+| 6 | `:playback:impl` → `:playback:api`, `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}`. `:download:impl` → `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}`. `:youtube:impl` → `:youtube:api`, `:core:{model, common, network}`. `:youtube:ytdlp` → `:youtube:api`, `:core:{model, common, network, datastore}`. `:update:impl` → `:update:api`, `:playback:api`, `:download:api`, `:core:{model, common, network, datastore}`. `:youtube:ytdlp` and `:update:impl` count as implementation modules: no impl → `:core:data`, no impl → another impl. YouTube Atom feeds are fetched and parsed by the generic refresh engine in `:core:data` ([03](03-feeds-and-discovery.md#refresh-scheduling)) using `:youtube:api` helpers; no YouTube module parses Atom. |
 | 7 | `:core:designsystem` → `:core:model` only. `:core:ui` → `:core:{designsystem, model, common}`, `:download:api`. `:core:navigation` → nothing project-internal. |
-| 8 | JVM-only: `:core:model`, `:core:common`, `:core:domain`, `:feeds`, `:*:api`. `:feeds` depends on nothing project-internal. |
-| 9 | `:core:testing` → `:core:{domain, model, common}`, `:*:api`. |
-| 10 ⊕ | `:playback:api`, `:download:api`, `:youtube:api` → `:core:{model, common}`. |
+| 8 | JVM-only: `:core:model`, `:core:common`, `:core:domain`, `:feeds`, `:*:api` (including `:update:api`). `:feeds` depends on nothing project-internal. |
+| 9 | `:core:testing` → `:core:{domain, model, common}`, `:*:api` (including `:update:api`). |
+| 10 ⊕ | `:playback:api`, `:download:api`, `:youtube:api`, `:update:api` → `:core:{model, common}`. |
 | 11 ⊕ | `:core:database`, `:core:datastore`, `:core:network` → `:core:{model, common}`. |
 | 12 ⊕ | `:core:model` and `:core:common` → nothing project-internal. |
-| 13 ⊕ | `testImplementation`/`androidTestImplementation` edges are not asserted; Android modules' tests may use `:core:testing` (an Android library); pure-JVM modules use the `:core:common` test fixtures (`TestClock`, `MainDispatcherRule`, `Goldens`, which `:core:testing` re-exports) and test fixtures of `:core:database`, `:core:navigation` and `:youtube:streams` serve their consumers ([09 Shared helpers](09-quality-and-release.md#shared-helpers)). The [Gradle-side tasks](#gradle-side-policy-tasks) check runtime classpaths. |
+| 13 ⊕ | `testImplementation`/`androidTestImplementation` edges are not asserted; Android modules' tests may use `:core:testing` (an Android library); pure-JVM modules use the `:core:common` test fixtures (`TestClock`, `MainDispatcherRule`, `Goldens`, which `:core:testing` re-exports) and test fixtures of `:core:database` and `:core:navigation` serve their consumers ([09 Shared helpers](09-quality-and-release.md#shared-helpers)); `:youtube:ytdlp` needs no Gradle test fixtures: `FakeYtDlpClient` and the Python `RecordingRH`/`ReplayRH` are its own test doubles (04; how the E7 release smoke test selects `ReplayRH` in `:ytx` is 09's). The [Gradle-side tasks](#gradle-side-policy-tasks) check runtime classpaths. |
 
 Consequences implementers must design for:
 
@@ -531,24 +540,24 @@ Consequences implementers must design for:
 
 ```mermaid
 flowchart TB
-  app[":app (foss, play)"]
+  app[":app"]
   feat[":feature:*"]
   ui[":core:ui"]
   ds[":core:designsystem"]
   nav[":core:navigation"]
   dom[":core:domain"]
-  apis[":playback:api<br/>:download:api<br/>:youtube:api"]
+  apis[":playback:api<br/>:download:api<br/>:youtube:api<br/>:update:api"]
   data[":core:data"]
   pimpl[":playback:impl"]
   dimpl[":download:impl"]
   yimpl[":youtube:impl"]
-  ys[":youtube:streams<br/>GPL-3.0-or-later"]
+  yd[":youtube:ytdlp<br/>Chaquopy, process :ytx"]
+  upi[":update:impl"]
   art[":core:artwork"]
   infra[":core:database<br/>:core:datastore<br/>:core:network"]
   feeds[":feeds"]
   base[":core:model<br/>:core:common"]
-  app --> feat & data & pimpl & dimpl & yimpl & art & infra
-  app -.->|fossImplementation| ys
+  app --> feat & data & pimpl & dimpl & yimpl & yd & upi & art & infra
   feat --> ui & ds & nav & dom & apis & base
   ui --> ds & base & apis
   ds --> base
@@ -558,12 +567,13 @@ flowchart TB
   pimpl --> dom & apis & infra & art
   dimpl --> dom & apis & infra & art
   yimpl --> apis & infra
-  ys --> apis & infra
+  yd --> apis & infra
+  upi --> apis & infra
   art --> infra & apis
   infra --> base
 ```
 
-(`yimpl`/`ys` → `infra` means `:core:network` only; `ui` → `apis` means `:download:api` only; `:core:testing` omitted.)
+(`yimpl` → `infra` means `:core:network` only; `yd` and `upi` → `infra` mean `:core:network` and `:core:datastore`; `yd` → `apis` means `:youtube:api` only, `upi` → `apis` means `:update:api`, `:playback:api` and `:download:api`; `dom` → `apis` excludes `:update:api`; `ui` → `apis` means `:download:api` only; `:core:testing` omitted. `app` → `yd` is absent in the no-engine build.)
 
 ### Module-graph assertion configuration
 
@@ -572,32 +582,35 @@ Applied to `:app` by `neutrodyne.android.application` and, with the same rules, 
 ```kotlin
 moduleGraphAssert {
     maxHeight = 5
-    configurations += setOf("api", "implementation", "fossImplementation", "playImplementation")
+    configurations += setOf("api", "implementation")
     allowed = arrayOf(
         ":app -> .*",
         ":feature:[a-z]+ -> :core:(domain|model|common|designsystem|ui|navigation)",
-        ":feature:[a-z]+ -> :(playback|download|youtube):api",
+        ":feature:[a-z]+ -> :(playback|download|youtube|update):api",
         ":core:domain -> :core:(model|common)", ":core:domain -> :(playback|download|youtube):api",
         ":core:data -> :core:(domain|model|common|database|datastore|network|artwork)", ":core:data -> :feeds", ":core:data -> :youtube:api",
         ":core:artwork -> :core:(model|common|database|network)", ":core:artwork -> :youtube:api",
         ":playback:impl -> :(playback|download|youtube):api", ":playback:impl -> :core:(domain|model|common|database|datastore|network|artwork)",
         ":download:impl -> :(download|youtube):api", ":download:impl -> :core:(domain|model|common|database|datastore|network|artwork)",
-        ":youtube:(impl|streams) -> :youtube:api", ":youtube:(impl|streams) -> :core:(model|common|network)",
+        ":youtube:impl -> :youtube:api", ":youtube:impl -> :core:(model|common|network)",
+        ":youtube:ytdlp -> :youtube:api", ":youtube:ytdlp -> :core:(model|common|network|datastore)",
+        ":update:impl -> :(update|playback|download):api", ":update:impl -> :core:(model|common|network|datastore)",
         ":core:designsystem -> :core:model", ":core:ui -> :core:(designsystem|model|common)", ":core:ui -> :download:api",
-        ":core:testing -> :core:(domain|model|common)", ":core:testing -> :(playback|download|youtube):api",
-        ":(playback|download|youtube):api -> :core:(model|common)",
+        ":core:testing -> :core:(domain|model|common)", ":core:testing -> :(playback|download|youtube|update):api",
+        ":(playback|download|youtube|update):api -> :core:(model|common)",
         ":core:(database|datastore|network) -> :core:(model|common)",
     )
     restricted = arrayOf(
         ":feature:.* -X> :feature:.*",
-        ":(?!app).* -X> :youtube:streams",
+        ":(?!app).* -X> :youtube:ytdlp",
+        ":(?!app).* -X> :update:impl",
         ":.* -X> :app",
-        ":(playback|download|youtube):(impl|streams) -X> :core:data",
+        ":(playback|download|youtube|update):(impl|ytdlp) -X> :core:data",
     )
 }
 ```
 
-Unverified: the exact 2.9.1 DSL property names (`configurations`, `maxHeight`) and whether the plugin distinguishes flavored configurations — confirmed in M0 step 23; the "`:youtube:streams` only in `foss`" half of rule 1 is in any case enforced by `verifyDependencyPolicy`, not by the graph plugin.
+Unverified: the exact 2.9.1 DSL property names (`configurations`, `maxHeight`) — confirmed in M0 step 23. With no product flavors, the graph plugin sees every main edge, including rule 1's "only `:app` → `:youtube:ytdlp`" (the `restricted` entry).
 
 ---
 
@@ -747,7 +760,17 @@ interface AppInitializer {
 }
 ```
 
-`NeutrodyneApplication` runs every `@IntoSet AppInitializer` sequentially, sorted by `order` and then by fully qualified class name (deterministic ties), on `@Dispatcher(Default)`; each is wrapped in `suspendRunCatching` and a failure is logged without stopping the rest. Initializers receive database-backed dependencies lazily ([Dependency injection](#components-and-scopes) rule 7), because the whole set is constructed before the first one runs. Bands:
+**Processes** ([D73](../PLAN.md#3-key-decisions)): the app runs in up to three processes, and `NeutrodyneApplication` decides per process what to start.
+
+| Process | Name (release) | Started by | Runs |
+|---|---|---|---|
+| main | `ch.lkmc.neutrodyne` | launcher, notifications, services, receivers, jobs, WorkManager | everything below: ACRA, logging, initializers, database, DataStore, WorkManager, playback, downloads, the updater |
+| `:ytx` | `ch.lkmc.neutrodyne:ytx` | `YtDlpClient` binding `YtxService` (`android:process=":ytx"`; from M0 while S7 is go, answering only `ping` and `selftest` and bound only by the smoke test; the engine methods and `YtDlpClient` from M9a; 04 owns its lifecycle) | `Log` only, then the service: one CPython interpreter, `PyHttp`. **No** `AppInitializer`, no Room database, no DataStore (DataStore is single-process; the main process passes locale, User-Agent and IP family in each call), no WorkManager, no ACRA (engine crashes are recorded by the main process as engine health, [D62](../PLAN.md#3-key-decisions)). Content providers declared without `android:process` (`ArtworkProvider`, `FileProvider`, `androidx.startup`) are instantiated only in the main process |
+| `:acra` | `ch.lkmc.neutrodyne:acra` | ACRA's sender service after a crash (09) | ACRA's dialog and mail sender only |
+
+The debug build's processes carry the `ch.lkmc.neutrodyne.debug` prefix. `ProcessRole` (`:app`) classifies the current process once, before Hilt is touched: `Application.getProcessName()` on API 28+, the first NUL-terminated token of `/proc/self/cmdline` on API 26–27; a name ending in `:ytx` is `YTX`, one ending in `:acra` is `ACRA` (the process `ACRA.isACRASenderServiceProcess()` reports; matching the name avoids calling ACRA before it is installed), anything else is `MAIN`.
+
+`NeutrodyneApplication` (main process) runs every `@IntoSet AppInitializer` sequentially, sorted by `order` and then by fully qualified class name (deterministic ties), on `@Dispatcher(Default)`; each is wrapped in `suspendRunCatching` and a failure is logged without stopping the rest. Initializers receive database-backed dependencies lazily ([Dependency injection](#components-and-scopes) rule 7), because the whole set is constructed before the first one runs. Bands:
 
 | Band | Meaning | Hard rule |
 |---|---|---|
@@ -760,17 +783,18 @@ Registrations known today (each owning document defines its initializer; this ta
 
 | Order | Initializer | Module | Owner | From |
 |---|---|---|---|---|
-| 10 | Static notification channels and the `grp_new_episodes` group: `playback`, `alerts` (06 `PlaybackChannels`), `downloads`, `download_errors` (07), `new_episodes`, `import_backup` (03, 05); posting code also calls the idempotent `ensureChannels()` | `:playback:impl`, `:download:impl`, `:core:data` | 06, 07, 03, 05 | M2–M6 |
+| 10 | Static notification channels and the `grp_new_episodes` group: `playback`, `alerts` (06 `PlaybackChannels`), `downloads`, `download_errors` (07), `new_episodes`, `import_backup` (03, 05), `updates` (09, "App updates", LOW); posting code also calls the idempotent `ensureChannels()` | `:playback:impl`, `:download:impl`, `:core:data`, `:update:impl` | 06, 07, 03, 05, 09 | M2–M6, M11a (`updates`) |
 | 20 | Mirror `privacy.crash_reports` into ACRA's `acra` SharedPreferences (`acra.enable`) and on every change ([09 Settings](09-quality-and-release.md#settings)) | `:app` | 09 | M0 |
 | 100 | `DatabaseOpener.awaitOpen()` on IO: opens the database, runs migrations or recovery, fires Room `onCreate` on a fresh install ([02 Error handling and recovery](02-data-model.md#error-handling-and-recovery)) | `:core:database` | 02 | M1 |
 | 110 | `FirstLaunchRestoreInitializer` (fresh DB + `files/backup/auto-snapshot.zip`) | `:core:data` | 05 | M3 |
 | 120 | `CredentialStore.awaitLoaded()` (decrypt credentials into memory) | `:core:data` | 03 | M1 |
 | 130 | `LocalMediaIndex` initial load | `:download:impl` | 07 | M6 |
 | 140 | Per-group `new_episodes_{groupUuid}` channel sync (reads groups, so it cannot run at 10) | `:core:data` | 05 | M2 |
-| 200 | Unique periodic work: `refresh-periodic` (03), `backup-auto-snapshot` (05; the same initializer starts 05's library watcher on `BackupDao.observeLibraryShape()`), `download-cleanup` (07), `db-maintenance` (02), all `UPDATE` | owning modules | 03, 05, 07, 02 | M1, M3, M6, M11 |
-| 210 | `download-reconcile` one-time `KEEP` | `:download:impl` | 07 | M6 |
+| 150 | `YtDlpEngine` capability load: `youtube.engine_enabled` and the start-failure count from DataStore, `noBackupFilesDir/ytdlp/active.json`; publishes `YouTubeCapabilitiesSource` and `EngineStatus` (does not start `:ytx`) | `:youtube:ytdlp` | 04 | M9a |
+| 200 | Unique periodic work: `refresh-periodic` (03), `backup-auto-snapshot` (05; the same initializer starts 05's library watcher on `BackupDao.observeLibraryShape()`), `download-cleanup` (07), `db-maintenance` (02), `engine-update` (04; only with the engine bundled and its policy not Off), `app-update-check` (09; not in debug builds, with mode Off or with another installer of record), all `UPDATE` | owning modules | 03, 05, 07, 02, 04, 09 | M1, M3, M6, M9b, M11 (M11a: `app-update-check`) |
+| 210 | `download-reconcile` one-time `KEEP` (07); `engine-prepare` one-time `KEEP` with a 30 s initial delay, only with the engine bundled and its bundled version not yet compiled for this app version (04) | `:download:impl`, `:youtube:ytdlp` | 07, 04 | M6, M9a |
 | 220 | `RefreshForegroundObserver` added to `ProcessLifecycleOwner` on the main thread ([03 Triggers](03-feeds-and-discovery.md#triggers)) | `:core:data` | 03 | M1 |
-| 300 | `PlaybackPrefs` warm-up and `PlayerConnection` registration (06), `ExportFilesCleaner` (05), one `artwork-sync` request per process (08) | owning modules | 06, 05, 08 | M3, M4 |
+| 300 | `PlaybackPrefs` warm-up and `PlayerConnection` registration (06), `ExportFilesCleaner` (05), one `artwork-sync` request per process (08); in the emergency no-engine build only, `AbsentYouTubeEngine`'s one-time removal of leftover engine files (04, [Emergency build without the engine](#emergency-build-without-the-engine)) | owning modules; `app/src/noYouTubeEngine/` | 06, 05, 08, 04 | M3, M4, M9a |
 | 310 | `:download:impl` collectors on `@ApplicationScope` and its `ProcessLifecycleOwner` observer ([07 Start-up hooks](07-downloads.md#start-up-hooks)) | `:download:impl` | 07 | M6 |
 
 ```mermaid
@@ -782,16 +806,18 @@ sequenceDiagram
   participant S as ApplicationScope
   participant M as MainActivity
   Z->>A: attachBaseContext
-  A->>A: install ACRA if ACRA_MAILTO is set
-  Z->>P: ContentProvider.onCreate (no Hilt access here)
+  A->>A: ProcessRole, then install ACRA if ACRA_MAILTO is set and the role is not YTX
+  Z->>P: ContentProvider.onCreate (main process only, no Hilt access here)
   Z->>A: onCreate
   A->>H: super.onCreate injects dagger.Lazy fields only
   alt ACRA sender process
     A-->>Z: return immediately
+  else ytx process (YouTube engine)
+    A->>A: Log.install, then return (no initializers, database, DataStore, WorkManager or ACRA)
   else main process
     A->>A: Log.install, StrictMode in debug
     A->>S: launch initializers in order
-    S->>S: 10 channels, 100 database open, 110 to 140 data, 200 to 210 work, 300 warm-ups
+    S->>S: 10 channels, 100 database open, 110 to 150 data, 200 to 210 work, 300 warm-ups
   end
   Z->>M: onCreate (launcher, notification or deep link)
   M->>M: installSplashScreen, keep until device_settings loaded and database open, at most 400 ms
@@ -805,14 +831,18 @@ class NeutrodyneApplication : Application(), Configuration.Provider, SingletonIm
     @Inject lateinit var initializers: dagger.Lazy<Set<@JvmSuppressWildcards AppInitializer>>
     @Inject @field:ApplicationScope lateinit var appScope: dagger.Lazy<CoroutineScope>
 
+    private lateinit var role: ProcessRole
+
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(base)
-        if (BuildConfig.ACRA_MAILTO.isNotEmpty()) installAcra(this)        // config owned by 09
+        role = ProcessRole.current(this)                                   // getProcessName() on 28+, /proc/self/cmdline on 26–27
+        if (role != ProcessRole.YTX && BuildConfig.ACRA_MAILTO.isNotEmpty()) installAcra(this)   // config owned by 09; never in :ytx (D62)
     }
     override fun onCreate() {
         super.onCreate()
-        if (ACRA.isACRASenderServiceProcess()) return                      // :acra process: no Hilt graph use, no WorkManager, no session
+        if (role == ProcessRole.ACRA) return                               // :acra process: no Hilt graph use, no WorkManager, no session
         Log.install(LogcatSink(if (BuildConfig.DEBUG) LogLevel.DEBUG else LogLevel.WARN))
+        if (role == ProcessRole.YTX) return                                // :ytx: YtxService alone, no initializers (D73)
         if (BuildConfig.DEBUG) enableStrictMode()
         appScope.get().launch { runInitializers(initializers.get()) }
     }
@@ -836,9 +866,9 @@ class NeutrodyneApplication : Application(), Configuration.Provider, SingletonIm
 4. Nothing in start-up waits for the network or a snapshot restore; restore progress is shown by 05's flow after the gate opens.
 5. Before M1 (no database) `database` starts as `Ready`.
 
-**Framework components constructed on the main thread before the gate.** The start-up gate protects UI only. Services, receivers and job services (`NeutrodynePlaybackService`, `ManualDownloadJobService`, `DownloadActionReceiver`) can be created by the system right after `Application.onCreate` — for example the resumption card after a reboot — while the database is still opening, and Hilt injects them on the main thread, where 02's `requireDatabase()` throws. Rule: such classes, and every class they inject eagerly (for example the `MediaLibrarySession` callback), receive anything that reaches `NeutrodyneDatabase` (DAOs, repositories, `EpisodeResolver`, controllers) as `dagger.Lazy<…>` or `Provider<…>` and dereference it only inside a coroutine on IO after `DatabaseOpener.awaitOpen()`; constructors of repositories and DAOs never touch the database. Session and player creation in `Service.onCreate` therefore needs no database. 06 and 07 apply this rule to their components; the [Testing](#testing) start-up test enforces it.
+**Framework components constructed on the main thread before the gate.** The start-up gate protects UI only. Services, receivers and job services (`NeutrodynePlaybackService`, `ManualDownloadJobService`, `DownloadActionReceiver`, `YouTubeAlertActionReceiver`, `UpdateStatusReceiver`) can be created by the system right after `Application.onCreate` — for example the resumption card after a reboot — while the database is still opening, and Hilt injects them on the main thread, where 02's `requireDatabase()` throws. Rule: such classes, and every class they inject eagerly (for example the `MediaLibrarySession` callback), receive anything that reaches `NeutrodyneDatabase` (DAOs, repositories, `EpisodeResolver`, controllers) as `dagger.Lazy<…>` or `Provider<…>` and dereference it only inside a coroutine on IO after `DatabaseOpener.awaitOpen()`; constructors of repositories and DAOs never touch the database. Session and player creation in `Service.onCreate` therefore needs no database. 06, 07 and 09 apply this rule to their components; the [Testing](#testing) start-up test enforces it. `YtxService` is the stricter case: it runs in `:ytx` and never reaches the database at all ([process model](#application-start-up)).
 
-**Process model:** single main process plus ACRA's `:acra`. No component is `directBootAware`; media-button events before first unlock are ignored by the platform, which is acceptable.
+**Process model:** the main process, `:ytx` and ACRA's `:acra` ([Processes](#application-start-up) table above). Rules for `:ytx`: only `:youtube:ytdlp` code runs there (`YtxService` and the `…youtube.ytdlp.ytx` subpackage); `YtxService` is `@AndroidEntryPoint` but injects nothing database- or DataStore-backed (its graph reaches `@HttpClient(YOUTUBE)`, `BuildInfo` and `Clock` only, [Networking baseline](#one-client-family)); `:ytx` dies with the engine (idle stop, kill on hang, Python crash) without affecting playback in the main process ([04 YouTube engine](04-youtube.md#youtube-engine)). `YtxProcessStartTest` ([Testing](#testing)) enforces these rules. No component is `directBootAware`; media-button events before first unlock are ignored by the platform, which is acceptable.
 
 ### DataStore files and typed setting keys
 
@@ -882,9 +912,9 @@ sealed interface SettingsError {
 
 Rules:
 
-1. Key names match `^(appearance|feeds|discover|groups|playback|downloads|youtube|backup|privacy|diagnostics|ui)\.[a-z0-9_]+$`; `ui.*` keys must be `DEVICE`. A unit test iterates `AllSettingKeys.list` and asserts the pattern, uniqueness and the `ui.*` rule.
+1. Key names match `^(appearance|feeds|discover|groups|playback|downloads|youtube|updates|backup|privacy|diagnostics|ui)\.[a-z0-9_]+$` (`updates.*`: 09's updater keys, M11a); `ui.*` keys must be `DEVICE`. A unit test iterates `AllSettingKeys.list` and asserts the pattern, uniqueness and the `ui.*` rule.
 2. Keys are never renamed or re-typed; a replacement key gets a new name and a `DataMigration` in the store copies the value once.
-3. Exactly one `DataStore` per file: `@Singleton` providers in `:core:datastore` qualified `@SettingsDataStore(SettingsFile.PORTABLE|DEVICE)`, created with `PreferenceDataStoreFactory.create(corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() }, scope = appScope + IO, produceFile = { context.preferencesDataStoreFile(name) })`. Corruption resets that file to defaults and logs WARN.
+3. Exactly one `DataStore` per file: `@Singleton` providers in `:core:datastore` qualified `@SettingsDataStore(SettingsFile.PORTABLE|DEVICE)`, created with `PreferenceDataStoreFactory.create(corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() }, scope = appScope + IO, produceFile = { context.preferencesDataStoreFile(name) })`. Corruption resets that file to defaults and logs WARN. DataStore is single-process: only the main process opens either file; `:ytx` never injects a store and receives the values it needs with each call ([D73](../PLAN.md#3-key-decisions)).
 4. `SettingsStore` (portable) and `DeviceSettingsStore` (device) wrap the two files; `SettingsRepository`'s implementation in `:core:data` routes by `key.file`. Impl modules may inject the stores directly.
 5. Secrets never go to DataStore; they go through `CredentialStore` into the `credential` table ([03](03-feeds-and-discovery.md#feed-moves-auth-and-paging)). Fresh-install detection uses Room's `onCreate` callback, never a DataStore flag ([05 Auto Backup](05-groups-opml-backup.md#auto-backup)).
 
@@ -898,7 +928,7 @@ Serves N11. Delivered in M0 (graph skeleton), extended per milestone. Honours [D
 
 | Binding | Declared in | Component | Scope |
 |---|---|---|---|
-| `@Dispatcher(IO)`, `@Dispatcher(Default)`, `@ApplicationScope CoroutineScope` (`SupervisorJob() + Default + handler`), `Clock` → `DeviceClock`, `BuildInfo` (from `BuildConfig`, `R.string.licence_statement` and the injected `Distribution`) | `:app` `CoreModule` (JVM modules declare no Hilt modules) | Singleton | `@Singleton` |
+| `@Dispatcher(IO)`, `@Dispatcher(Default)`, `@ApplicationScope CoroutineScope` (`SupervisorJob() + Default + handler`), `Clock` → `DeviceClock`, `BuildInfo` (from `BuildConfig`, `Build` and `Process`, [Build variants and ABIs](#build-variants-and-abis)) | `:app` `CoreModule` (JVM modules declare no Hilt modules) | Singleton | `@Singleton` |
 | Base `OkHttpClient`, `@HttpClient(kind)` derived clients, `UserAgentInterceptor`, `AuthInterceptor`, `NetErrorClassifier`, `NetworkMonitor` → `ConnectivityNetworkMonitor` | `:core:network` `NetworkModule` | Singleton | `@Singleton` |
 | `CredentialLookup` | M0: `:core:data` stub binds `CredentialLookup.None`; M1: `CredentialStore` (03) | Singleton | `@Singleton` |
 | `DnsFamilyHints` | `:core:network` (`@Inject` class) | Singleton | `@Singleton` |
@@ -910,13 +940,16 @@ Serves N11. Delivered in M0 (graph skeleton), extended per milestone. Honours [D
 | `DownloadController`, `LocalMediaIndex`, `DownloadProgressSource` | `:download:impl` | Singleton | `@Singleton` |
 | `ArtworkStore`, `NeutrodyneImageLoaderFactory` | `:core:artwork` | Singleton | `@Singleton` |
 | `YouTubeUrlClassifier` (pure `@Inject` class), `YouTubeChannelResolver` | `:youtube:api` / `:youtube:impl` | Singleton | `@Singleton` |
-| `Distribution`, `YouTubeCapabilities`, `YouTubeStreamResolver`, `YouTubeEnricher`, `YouTubeChannelSearch`, `ExtractorChannelLookup` | `:app/src/{foss,play}/…/FlavorModule.kt` only ([Flavor modules](#flavor-modules)) | Singleton | `@Singleton` |
+| `YouTubeCapabilitiesSource`, `YouTubeEngine`, `YouTubeStreamResolver`, `YouTubeEnricher`, `YouTubeChannelSearch`, `ExtractorChannelLookup` | `:app`'s `YouTubeBindingsModule` only ([YouTube bindings](#youtube-bindings)) | Singleton | `@Singleton` |
+| `:youtube:ytdlp` internals (`YtDlpClient`, `EngineStore`, …) | `:youtube:ytdlp` `YtDlpModule` (never binds `:youtube:api` interfaces) | Singleton (per process) | `@Singleton` |
+| `AppUpdater`, `UpdateNotices` | `:update:impl` `UpdateModule` (M11a) | Singleton | `@Singleton` |
 | `Set<AppInitializer>` | each owning module, `@IntoSet` | Singleton | unscoped elements |
 | `Set<EntryProviderInstaller>` | each feature, `@IntoSet` | `ActivityRetainedComponent` | unscoped |
 | ViewModels | features, `@HiltViewModel` | `ViewModelComponent` | per Nav entry ([decorator](#viewmodels-per-entry)) |
 | `MainActivity`, `ExternalImportActivity` | `:app`, `@AndroidEntryPoint` | `ActivityComponent` | — |
 | `NeutrodynePlaybackService`, `ManualDownloadJobService` | `:playback:impl`, `:download:impl`, `@AndroidEntryPoint` | `ServiceComponent` | — |
-| `DownloadActionReceiver` | `:download:impl`, `@AndroidEntryPoint` | — | — |
+| `YtxService` (runs in `:ytx`; injects nothing database- or DataStore-backed) | `:youtube:ytdlp`, `@AndroidEntryPoint` (M9a) | `ServiceComponent` | — |
+| `DownloadActionReceiver`, `YouTubeAlertActionReceiver`, `UpdateStatusReceiver` | `:download:impl`, `:core:data` (M9a; 04's breaker notice actions), `:update:impl` (M11a), `@AndroidEntryPoint` | — | — |
 | Workers | `@HiltWorker` + `HiltWorkerFactory` via `WorkEntryPoint` | — | — |
 | `ArtworkProvider` | `:core:artwork`, `@EntryPoint ArtworkProviderEntryPoint`, resolved lazily in `openFile` | — | — |
 
@@ -927,54 +960,60 @@ Rules:
 3. **JVM modules** use `javax.inject` annotations (`@Inject`, `@Qualifier`, `@Singleton`) and the plain Dagger processor for factories; their interfaces are bound by Hilt modules in Android modules.
 4. **Cross-module objects of external types** are bound by the impl module under a qualifier annotation declared in its JVM `:*:api` module. v1.0 has none: 06 keeps every Media3 type out of features ([06 UI boundary](06-playback.md#ui-boundary)); M14 uses this pattern to hand the session `Player` to `:feature:player` for `PlayerSurface` ([06 Video](06-playback.md#video)).
 5. **Empty multibindings are declared:** `CoreModule` declares `@Multibinds abstract fun initializers(): Set<AppInitializer>`, so the graph compiles before any module contributes (Hilt fails on an undeclared empty set).
-6. **No Hilt module binds the same interface in both `main` and a flavor source set.** Interfaces whose implementation differs per flavor are bound only in the two `FlavorModule`s, and `:youtube:streams` may ship Hilt modules for its internal wiring (`OkHttpNpeDownloader`) but never binds `:youtube:api` interfaces itself.
+6. **`:youtube:api` interfaces are bound only in `:app`'s `YouTubeBindingsModule`** (one file; from M9a its engine and no-engine versions live in two source directories of which a build compiles exactly one, [YouTube bindings](#youtube-bindings)). `:youtube:ytdlp` ships `YtDlpModule` for its internal wiring only and never binds `:youtube:api` interfaces itself; `:update:impl` binds its own `:update:api` interfaces in `UpdateModule`.
 7. **Database-backed dependencies of framework components are lazy** (`dagger.Lazy`/`Provider`, dereferenced on IO after `DatabaseOpener.awaitOpen()`), per [Application start-up](#application-start-up). The same applies to **every** `AppInitializer`: `initializers.get()` constructs the whole set before initializer 100 opens the database, so an eager DAO or repository in any initializer's constructor would block on `requireDatabase()` before the open has started.
 8. **Multibound function types need `@JvmSuppressWildcards`** at the injection site: `Set<@JvmSuppressWildcards EntryProviderInstaller>`; otherwise Kotlin's `Function1<? super …>` wildcard makes Dagger report a missing binding.
 
-### Flavor modules
+### YouTube bindings
+
+Every `:youtube:api` interface is bound in exactly one Hilt module, `YouTubeBindingsModule` in `:app` ([D2](../PLAN.md#3-key-decisions), [D77](../PLAN.md#3-key-decisions)). There are no flavors: what a device can do with YouTube is a **runtime capability** read from `YouTubeCapabilitiesSource` (shape, reasons and every consumer: [04 Capability matrix](04-youtube.md#capability-matrix)). Until M9a the module lives in `app/src/main/`; from M9a it exists twice and the [engine switch](#emergency-build-without-the-engine) adds exactly one directory to `main`'s Kotlin sources:
+
+| Source directory | Compiled when | Binds |
+|---|---|---|
+| `app/src/main/kotlin/ch/lkmc/neutrodyne/youtube/` | M2–M8 (before M9a) | external-only implementations, reason `NOT_YET_AVAILABLE` |
+| `app/src/youtubeEngine/kotlin/ch/lkmc/neutrodyne/youtube/` | `neutrodyne.youtubeEngine=true` (default), from M9a | engine-backed implementations from `:youtube:ytdlp` |
+| `app/src/noYouTubeEngine/kotlin/ch/lkmc/neutrodyne/youtube/` | `-Pneutrodyne.youtubeEngine=false`, from M9a | external-only implementations, reason `NOT_IN_THIS_APK` |
 
 ```kotlin
-// :app/src/foss/kotlin/ch/lkmc/neutrodyne/flavor/FlavorModule.kt   (M9 state; before M9 it is identical to the play module below
-// except for Distribution.FOSS)
+// app/src/youtubeEngine/kotlin/ch/lkmc/neutrodyne/youtube/YouTubeBindingsModule.kt   (default build, from M9a)
 @Module @InstallIn(SingletonComponent::class)
-internal abstract class FlavorModule {
-    @Binds abstract fun streamResolver(impl: NpeYouTubeStreamResolver): YouTubeStreamResolver      // :youtube:streams
-    @Binds abstract fun enricher(impl: NpeEnricher): YouTubeEnricher
-    @Binds abstract fun channelSearch(impl: NpeChannelSearch): YouTubeChannelSearch
-    @Binds abstract fun extractorLookup(impl: InnertubeChannelResolver): ExtractorChannelLookup
-    companion object {
-        @Provides fun distribution(): Distribution = Distribution.FOSS
-        @Provides @Singleton fun youTubeCapabilities(): YouTubeCapabilities = YouTubeCapabilities(
-            inAppPlayback = true, downloads = true, channelSearch = true, enrichment = true, backCatalogue = true)
-    }
+internal abstract class YouTubeBindingsModule {
+    @Binds abstract fun capabilities(impl: YtDlpEngine): YouTubeCapabilitiesSource   // :youtube:ytdlp; @Singleton, so both
+    @Binds abstract fun engine(impl: YtDlpEngine): YouTubeEngine                     // bindings share one instance
+    @Binds abstract fun streamResolver(impl: YtDlpStreamResolver): YouTubeStreamResolver
+    @Binds abstract fun enricher(impl: YtDlpEnricher): YouTubeEnricher
+    @Binds abstract fun channelSearch(impl: YtDlpChannelSearch): YouTubeChannelSearch
+    @Binds abstract fun extractorLookup(impl: YtDlpChannelLookup): ExtractorChannelLookup
 }
 
-// :app/src/play/kotlin/ch/lkmc/neutrodyne/flavor/FlavorModule.kt
+// app/src/noYouTubeEngine/kotlin/ch/lkmc/neutrodyne/youtube/YouTubeBindingsModule.kt   (-Pneutrodyne.youtubeEngine=false;
+// before M9a the same file, minus the YouTubeEngine binding and with reason NOT_YET_AVAILABLE, is app/src/main's)
 @Module @InstallIn(SingletonComponent::class)
-internal abstract class FlavorModule {
+internal abstract class YouTubeBindingsModule {
     @Binds abstract fun streamResolver(impl: ExternalOnlyYouTubeStreamResolver): YouTubeStreamResolver   // :youtube:impl
     @Binds abstract fun enricher(impl: NoOpYouTubeEnricher): YouTubeEnricher
     @Binds abstract fun channelSearch(impl: UnsupportedYouTubeChannelSearch): YouTubeChannelSearch
     @Binds abstract fun extractorLookup(impl: NoExtractorChannelLookup): ExtractorChannelLookup
+    @Binds abstract fun engine(impl: AbsentYouTubeEngine): YouTubeEngine            // status NOT_IN_THIS_APK; prewarm is a no-op
     companion object {
-        @Provides fun distribution(): Distribution = Distribution.PLAY
-        @Provides @Singleton fun youTubeCapabilities(): YouTubeCapabilities = YouTubeCapabilities(
-            inAppPlayback = false, downloads = false, channelSearch = false, enrichment = false, backCatalogue = false)
+        @Provides @Singleton fun capabilities(): YouTubeCapabilitiesSource =
+            StaticYouTubeCapabilitiesSource(ExternalReason.NOT_IN_THIS_APK)          // all five capabilities false
     }
 }
 ```
 
-`YouTubeCapabilities`' shape, the implementation classes and every consumer are owned by [04 Flavor matrix](04-youtube.md#flavor-matrix). A binding must exist from the milestone of its **first consumer**, or Hilt fails to compile; until M9 both flavors bind the `play` column:
+In the default build the engine-backed bindings serve **every** APK and state: `YtDlpEngine` computes capabilities at runtime from `BuildInfo.youTubeEngineBundled` (false on the `armeabi-v7a` APK and in any 32-bit process), `youtube.engine_enabled` and the start-failure count, and reports `NOT_IN_THIS_APK`, `DISABLED_BY_USER` or `ENGINE_FAILED` accordingly; each engine-backed implementation then answers exactly like its external-only counterpart ([04 Capability matrix](04-youtube.md#capability-matrix)). Feature code never reads the ABI, `BuildConfig` or the build switch — only capabilities. `StaticYouTubeCapabilitiesSource` and `AbsentYouTubeEngine` are the external-only `YouTubeCapabilitiesSource` and `YouTubeEngine` of `:youtube:impl` (names proposed here; 04 owns the classes).
 
-| From | Added to both `FlavorModule`s | First consumer |
+A binding must exist from the milestone of its **first consumer**, or Hilt fails to compile:
+
+| From | Added to `YouTubeBindingsModule` | First consumer |
 |---|---|---|
-| M0 | `Distribution` | `BuildInfo`, About |
-| M2 | `YouTubeCapabilities` (all `false`) | 05 `EffectiveSettingsResolver` (auto-download capability) |
+| M2 | `YouTubeCapabilitiesSource` → `StaticYouTubeCapabilitiesSource(NOT_YET_AVAILABLE)` | 05 `EffectiveSettingsResolver` (auto-download capability) |
 | M4 | `YouTubeStreamResolver` → `ExternalOnlyYouTubeStreamResolver` (this one class lands in `:youtube:impl` ahead of the rest of the module) | 06 `EpisodeResolver` YouTube branch |
-| M8 | `YouTubeEnricher` → `NoOpYouTubeEnricher`, `YouTubeChannelSearch` → `UnsupportedYouTubeChannelSearch`, `ExtractorChannelLookup` → `NoExtractorChannelLookup`; 08's `YouTubeFlavorTexts` (flavor-specific bindings from M8: YouTube download and background wording exists only in `:app/src/foss/res`) | 03 YouTube source adapter, 04 channel resolver, 08 YouTube rows and Downloads texts |
-| M9 | `foss` only: the four `Npe*`/`Innertube*` bindings and all-`true` capabilities above | — |
+| M8 | `YouTubeEnricher` → `NoOpYouTubeEnricher`, `YouTubeChannelSearch` → `UnsupportedYouTubeChannelSearch`, `ExtractorChannelLookup` → `NoExtractorChannelLookup` (YouTube texts are ordinary string resources in 08's modules, no binding) | 03 YouTube source adapter, 04 channel resolver, 08 YouTube rows and Downloads texts |
+| M9a | the module moves into the two directories above: engine-backed bindings (`YtDlpEngine` as `YouTubeCapabilitiesSource` and `YouTubeEngine`, `YtDlpStreamResolver`, `YtDlpEnricher`, `YtDlpChannelSearch`, `YtDlpChannelLookup`) and the no-engine set with `AbsentYouTubeEngine` and reason `NOT_IN_THIS_APK` | 06 `QueueProjector` pre-warm, 08 Settings › YouTube engine rows |
 
-The `:youtube:api` interfaces and `YouTubeCapabilities` therefore also land early (M2/M4), as compiling contracts. [04's emergency patch](04-youtube.md#licensing-and-legal) reverts the `foss` module to the `play` column while keeping `Distribution.FOSS`.
+The `:youtube:api` interfaces and `YouTubeCapabilitiesSource` therefore land early (M2/M4), as compiling contracts. `:update:impl` needs no switch: its `UpdateModule` binds `AppUpdater` and `UpdateNotices` in every build (the updater itself reports `Disabled(DEBUG_BUILD)` in debug builds, 09).
 
 ### Test overrides
 
@@ -1000,6 +1039,8 @@ Serves R2.4, R5.7, N7. Delivered in M0 (mechanics), screens per milestone. Honou
 @Serializable data object DiscoverKey : TopLevelKey
 @Serializable data class PodcastKey(val podcastId: Long) : NavKey
 // ... all keys of the canonical key table, created in M0 so cross-feature navigation compiles from day one
+// M11a (08's signatures): InstallHelpKey(val section: String = ""), UpdateBlockedKey(val reason: String /* InstallBlockReason.name */),
+//        VerificationNoticeKey (data object), WhatsNewKey(val versionCode: Long)
 
 typealias EntryProviderInstaller = EntryProviderScope<NavKey>.() -> Unit
 
@@ -1125,31 +1166,40 @@ sealed interface Route {
 | `…/open/downloads` | no | `Navigate(DownloadsKey, [])` |
 | `…/open/player` | no | `ExpandPlayer` |
 | `…/open/import/{sessionId}` | no | `Navigate(LibraryKey, [ImportKey(sessionId)])` |
-| `…/open/settings/{page}` | no | `Push(SettingsKey(SettingsPage.valueOf(page.uppercase(Locale.ROOT))))` |
+| `…/open/settings/{page}` (e.g. `…/open/settings/updates` → `SettingsPage.UPDATES`, M11a) | no | `Push(SettingsKey(SettingsPage.valueOf(page.uppercase(Locale.ROOT))))` |
+| `…/open/help/install` (M11a) | no | `Push(InstallHelpKey())` (all sections collapsed) |
 | `…/open/diagnostics` | no | `Push(DiagnosticsKey)` |
 | anything else, malformed IDs, unknown pages | — | `None` (logged at WARN, redacted) |
 
-Target tabs above are defaults; [08 Navigation](08-ui-ux.md#navigation) owns them. Security rules: `MainActivity` is exported, so any app can send it any of these intents; therefore **routes only navigate** — they never subscribe, play, delete or write without a confirming user action on the destination screen. The router reads at most 4 KB of text, lowercases the scheme before matching (intent-filter scheme matching is case-sensitive), ignores unknown extras, and never trusts `EXTRA_REFERRER`. Notification `PendingIntent`s target `MainActivity` explicitly with `FLAG_IMMUTABLE`. OPML/backup files arrive at `ExternalImportActivity`, which copies the payload and then routes to `ImportKey(sessionId)` through an explicit intent ([05 Receiving files](05-groups-opml-backup.md#receiving-files)).
+Target tabs above are defaults; [08 Navigation](08-ui-ux.md#navigation) owns them. Security rules: `MainActivity` is exported, so any app can send it any of these intents; therefore **routes only navigate** — they never subscribe, play, delete or write without a confirming user action on the destination screen. The router reads at most 4 KB of text, lowercases the scheme before matching (intent-filter scheme matching is case-sensitive), ignores unknown extras, and never trusts `EXTRA_REFERRER`. Notification `PendingIntent`s target `MainActivity` explicitly with `FLAG_IMMUTABLE` (the one mutable `PendingIntent` in the app is `:update:impl`'s explicit one to `UpdateStatusReceiver`, which `PackageInstaller` must fill in, 09). The update dialogs and sheets (`VerificationNoticeKey`, `WhatsNewKey`, `UpdateBlockedKey`) are not routes: `:app`'s root pushes the first two when `UpdateNotices` (`:update:api`) has one pending, and Settings › Updates pushes the third ([08 Navigation](08-ui-ux.md#navigation)); the `updates` notification opens `…/open/settings/updates`. OPML/backup files arrive at `ExternalImportActivity`, which copies the payload and then routes to `ImportKey(sessionId)` through an explicit intent ([05 Receiving files](05-groups-opml-backup.md#receiving-files)).
 
 ---
 
-## Build flavors
+## Build variants and ABIs
 
-Serves R3.5–R3.7, N8. Delivered in M0 (both flavors built and tested by CI from the first commit, PLAN PO-2). Honours [D2](../PLAN.md#3-key-decisions), [D3](../PLAN.md#3-key-decisions), [D61](../PLAN.md#3-key-decisions).
+Serves R3.5–R3.7, N5, N7, N8. Delivered in M0 (build types, ABI splits and Chaquopy per [S7](#s7-chaquopy-under-agp-941), CI builds all three APKs from the first commit), M9a (engine switch with its two binding directories). Honours [D2](../PLAN.md#3-key-decisions), [D61](../PLAN.md#3-key-decisions), [D63](../PLAN.md#3-key-decisions), [D72](../PLAN.md#3-key-decisions), [D77](../PLAN.md#3-key-decisions).
 
-| Item | `foss` | `play` |
-|---|---|---|
-| Dimension | `distribution` | `distribution` |
-| Channels | GitHub Releases (+ Obtainium), IzzyOnDroid, F-Droid | Google Play (publication gated by [PO-2](../PLAN.md#po-2-distribution-channels-and-youtube-per-flavor)) |
-| Binary licence | GPL-3.0-or-later from M9 (contains `:youtube:streams`); Unlicense + permissive before M9 | No GPL-3.0 code: Unlicense + permissive dependencies, plus possibly the GPL-2.0-with-Classpath-Exception desugaring runtime ([below](#core-library-desugaring)) |
-| `:youtube:streams` | `fossImplementation` | absent (`verifyDependencyPolicy`) |
-| YouTube | layers A + B ([04 Flavor matrix](04-youtube.md#flavor-matrix)) | layer A only |
-| Proprietary SDKs | none | none in v1.0 (Cast in v1.x, PO-6) |
-| Self-update, links to the other flavor | none | none; the About screen links only to the repository root, never to releases or APKs |
-| `applicationId` | `ch.lkmc.neutrodyne` | `ch.lkmc.neutrodyne` (same; [PO-8](../PLAN.md#48-further-product-owner-decisions), [D61](../PLAN.md#3-key-decisions)) |
+One product, **no product flavors**: GitHub Releases is the only channel ([PO-2](../PLAN.md#po-2-distribution-channels)), so nothing differs per channel, and every YouTube difference is a runtime capability ([YouTube bindings](#youtube-bindings)).
+
+| Build type | `applicationId` | Code shrinking | Signed with | Used for |
+|---|---|---|---|---|
+| `debug` | `ch.lkmc.neutrodyne.debug` (`applicationIdSuffix ".debug"`, `versionNameSuffix "-debug"`) | none | debug key | development, PR artifacts, instrumented tests; ACRA (`ACRA_MAILTO` forced empty) and the in-app updater (`Disabled(DEBUG_BUILD)`) are off |
+| `release` | `ch.lkmc.neutrodyne` (frozen before the first public APK, [D61](../PLAN.md#3-key-decisions)) | R8 (`optimization { enable = true }`) | the release key when the `NEUTRODYNE_KEYSTORE*` variables exist (v2 + v3 signatures, v1 off; [09 Versioning and signing](09-quality-and-release.md#versioning-and-signing)); unsigned otherwise | GitHub releases and tester builds; the nightly minified instrumented run |
+| `benchmarkRelease`, `nonMinifiedRelease` | as the baseline-profile plugin derives them from `release` (Unverified suffixes) | plugin defaults | debug key | Macrobenchmarks and profile generation (M11, [09 Macrobenchmark and profiles](09-quality-and-release.md#macrobenchmark-and-profiles)) |
+
+Release APKs are split per ABI with AGP's ABI splits ([D77](../PLAN.md#3-key-decisions)); the release workflow renames the outputs to the asset names (09):
+
+| Release asset | ABI | YouTube engine | Budget (N5) |
+|---|---|---|---|
+| `neutrodyne-{v}-arm64-v8a.apk` | `arm64-v8a` | bundled | < 40 MB (PB12) |
+| `neutrodyne-{v}-x86_64.apk` | `x86_64` | bundled | < 40 MB (PB12) |
+| `neutrodyne-{v}-armeabi-v7a.apk` | `armeabi-v7a` | not bundled: Chaquopy publishes no 32-bit runtime for Python ≥ 3.12 ([Chaquopy docs](https://chaquo.com/chaquopy/doc/current/android.html)); YouTube runs in external mode (`NOT_IN_THIS_APK`) | < 30 MB (PB13) |
+
+There is **no universal APK** (it would carry two engines, ≈ 45–60 MB). All three APKs share one `versionCode` ([D63](../PLAN.md#3-key-decisions)); the in-app updater picks the entry for `Build.SUPPORTED_ABIS[0]` and Obtainium filters by ABI (09). An arm64 device that installed the `armeabi-v7a` APK runs it as a 32-bit process, so it too is in external mode; 08's "Get the 64-bit version" hint covers it.
 
 ```kotlin
 // :app/build.gradle.kts (what neutrodyne.android.application sets, plus app-specific lines)
+val youtubeEngine = providers.gradleProperty("neutrodyne.youtubeEngine").orElse("true").get().toBoolean()
 android {
     namespace = "ch.lkmc.neutrodyne"
     defaultConfig {
@@ -1159,91 +1209,133 @@ android {
         versionName = providers.gradleProperty("neutrodyne.versionName").get()
         fun prop(name: String) = providers.gradleProperty(name).orElse("").get()
         buildConfigField("String", "REPO_URL", "\"${prop("neutrodyne.repoUrl")}\"")
+        buildConfigField("String", "ENGINE_MANIFEST_URL", "\"${prop("neutrodyne.engineManifestUrl")}\"")
+        buildConfigField("boolean", "YOUTUBE_ENGINE", youtubeEngine.toString())
         buildConfigField("String", "ACRA_MAILTO", "\"${prop("neutrodyne.acraMailto")}\"")
         buildConfigField("String", "PODCASTINDEX_KEY", "\"${prop("neutrodyne.podcastIndexKey")}\"")
         buildConfigField("String", "PODCASTINDEX_SECRET", "\"${prop("neutrodyne.podcastIndexSecret")}\"")
     }
     buildFeatures { buildConfig = true }
-    flavorDimensions += "distribution"
-    productFlavors {
-        create("foss") { dimension = "distribution" }
-        create("play") { dimension = "distribution" }
+    splits {
+        abi {                                    // Unverified: exact names under AGP 9's new DSL (S7 records them)
+            isEnable = true
+            reset()
+            include("arm64-v8a", "x86_64", "armeabi-v7a")
+            isUniversalApk = false
+        }
     }
+    // From M9a: exactly one binding directory joins main (YouTube bindings). Unverified DSL under built-in Kotlin.
+    sourceSets.getByName("main").kotlin.srcDir(if (youtubeEngine) "src/youtubeEngine/kotlin" else "src/noYouTubeEngine/kotlin")
     buildTypes {
         debug { applicationIdSuffix = ".debug"; versionNameSuffix = "-debug" }
         release {
             optimization { enable = true }   // AGP 9.3+ DSL: R8 code + resource optimization; includes the platform default
                                              // keep rules equivalent to proguard-android-optimize.txt. No proguardFiles(...) calls:
-                                             // keep rules come from the keepRules source sets (below)
-            // signingConfig only when NEUTRODYNE_KEYSTORE* env vars exist; reproducibility hygiene (crunchPngs, vcsInfo, ART profile): 09
+                                             // keep rules come from the keepRules source set (below)
+            // signingConfig only when NEUTRODYNE_KEYSTORE* env vars exist (v1 off, v2 + v3 on); reproducibility hygiene: 09
         }
     }
+    packaging { jniLibs { useLegacyPackaging = false } }   // S7 decides: true compresses the .so files (≈ 6 MB less per
+                                                          // 64-bit APK) and is required by fallback A2's exec'd launcher
 }
-dependencies { "fossImplementation"(project(":youtube:streams")) }
+dependencies { if (youtubeEngine) implementation(project(":youtube:ytdlp")) }
 ```
 
-- **`BuildConfig` never contains timestamps or git data** (reproducible builds, [09 Reproducible builds](09-quality-and-release.md#reproducible-builds)). Secrets are empty strings unless supplied by `-P`; PO-3 default B means `PODCASTINDEX_*` stay empty in every build until written permission arrives.
-- **`BuildInfo`** (`:core:model`) is how non-`:app` modules read build facts without seeing `BuildConfig`: `versionName`, `versionCode`, `distribution`, `isDebug`, `repoUrl`, `licenceStatementResId` (an `@StringRes Int` from `:app`'s flavor resources, resolved by `:feature:settings` at runtime), `shippedLocales` (generated from `app/policy/locales.txt` for 08's language picker, [09 Shipped locales and per-app language](09-quality-and-release.md#shipped-locales-and-per-app-language)), `podcastIndexKey`, `podcastIndexSecret` (empty in every `foss` build, PO-3). Its `toString()` omits the two secrets.
-- **Flavor source sets** contain only: `FlavorModule.kt`, `res/values/strings_flavor.xml` (string `licence_statement`, same name in both flavors so `CoreModule` in `main` can reference `R.string.licence_statement`), `keepRules/foss.keep` (`foss` only), and (09) fastlane overrides. Feature code never branches on flavor; it reads `YouTubeCapabilities` or `BuildInfo.distribution`.
-- **Keep rules** (AGP 9.3+ `keepRules` source set, files ending in `.keep`, [shrink-code](https://developer.android.com/build/shrink-code)): `app/src/main/keepRules/app.keep` holds `-dontobfuscate` (allowed only in the app; AGP 9 forbids global options in library consumer rules) and app-wide keeps; `app/src/foss/keepRules/foss.keep` holds the F-Droid reproducibility keeps for kotlinx.coroutines ([09 Reproducible builds](09-quality-and-release.md#reproducible-builds)). Unverified: that a flavor-named `keepRules` source set is honoured like `src/main/keepRules` — checked once in M0 ([verification log](#verification-log)): `app.keep` temporarily adds `-printconfiguration build/outputs/r8-config.txt`, and the `fossRelease` output must contain the `foss.keep` rules while `playRelease`'s must not; fallback: `productFlavors.foss { proguardFile("keepRules/foss.keep") }` (legacy DSL, still supported). Library modules ship consumer rules as `consumer-rules.pro` via `consumerProguardFiles` (applied by `neutrodyne.android.library` when the file exists); Rhino's ship in `youtube/streams/consumer-rules.pro` (`-keep class org.mozilla.javascript.** { *; }`, `-keep class org.mozilla.classfile.ClassFileWriter`, `-dontwarn org.mozilla.javascript.tools.**`), so they reach only `foss`. With `android.r8.strictFullModeForKeepRules=true`, `-keep class A` no longer keeps constructors: write `-keep class A { <init>(...); }` explicitly.
-- **Tests per flavor:** AGP 9 creates unit tests only for the tested build type; flavor-specific code stays in `:app` and `:youtube:streams`, so library tests run once.
+```kotlin
+// youtube/ytdlp/build.gradle.kts (M0 stub with S7's outcome; content: 04)
+plugins { alias(libs.plugins.neutrodyne.android.library); alias(libs.plugins.neutrodyne.hilt); id("com.chaquo.python") }
+android {
+    buildFeatures { aidl = true }                                          // IYtxEngine, IYtxCallback (04 Binder API)
+    defaultConfig { ndk { abiFilters += setOf("arm64-v8a", "x86_64") } }  // Python ≥ 3.12 is 64-bit only. Unverified under
+}                                                                          // the app's ABI splits: S7 measures what each split gets
+chaquopy {
+    defaultConfig {
+        version = "3.14"                 // fallback "3.13" (S7)
+        // buildPython("python3.14")     // only if auto-detection fails; must match the app's minor version
+        pip { }                          // empty: no pip packages in v1 (no yt-dlp extras, so never mutagen); a package needs a lockfile entry
+    }
+}
+// Python sources: src/main/python/neutrodyne_ytx/ (shim, Unlicense, .pyc compiled at build time).
+// Vendored yt-dlp: engine/yt-dlp + engine/bundled.json packaged as assets; unpacking and on-device .pyc: 04.
+```
 
-### Core library desugaring
+- **`BuildConfig` never contains timestamps or git data** (the report-only nightly reproducibility check, [09 Reproducible builds](09-quality-and-release.md#reproducible-builds)). Secrets are empty strings unless supplied by `-P`; PO-3 default B means `PODCASTINDEX_*` stay empty in every build until Podcast Index grants written permission, after which `release.yml` passes them to `assembleRelease` only ([D26](../PLAN.md#3-key-decisions)).
+- **`BuildInfo`** (`:core:model`) is how non-`:app` modules read build facts without seeing `BuildConfig`: `versionName`, `versionCode`, `isDebug`, `repoUrl`, `apkAbi` (runtime: the first entry of `Build.SUPPORTED_64_BIT_ABIS` if `Process.is64Bit()`, else of `Build.SUPPORTED_32_BIT_ABIS` — the ABI of the installed APK), `youTubeEngineBundled` (`BuildConfig.YOUTUBE_ENGINE && Process.is64Bit()`), `updateManifestUrl` (`$repoUrl/releases/latest/download/neutrodyne-update.json`), `releasesAtomUrl` (`$repoUrl/releases.atom`), `engineManifestUrl`, `shippedLocales` (generated from `app/policy/locales.txt` for 08's language picker, [09 Shipped locales and per-app language](09-quality-and-release.md#shipped-locales-and-per-app-language)), `podcastIndexKey`, `podcastIndexSecret`. Its `toString()` omits the two secrets. There is no `distribution` field and no per-build licence statement ([About statements](#about-statements)).
+- **Source sets:** `main` and `debug` (LeakCanary) only; from M9a `app/src/youtubeEngine/kotlin` or `app/src/noYouTubeEngine/kotlin` joins `main` ([YouTube bindings](#youtube-bindings)). Feature code never branches on the build; it reads `YouTubeCapabilitiesSource` or `BuildInfo`.
+- **Keep rules** (AGP 9.3+ `keepRules` source set, files ending in `.keep`, [shrink-code](https://developer.android.com/build/shrink-code)): `app/src/main/keepRules/app.keep` holds `-dontobfuscate` (allowed only in the app; AGP 9 forbids global options in library consumer rules) and app-wide keeps; kotlinx.coroutines keeps for byte-identical rebuilds are added there only if 09's report-only `repro` job shows they matter. Library modules ship consumer rules as `consumer-rules.pro` via `consumerProguardFiles` (applied by `neutrodyne.android.library` when the file exists). `youtube/ytdlp/consumer-rules.pro` keeps what Python reaches through Chaquopy's Java interop, which R8 cannot see: `-keep class ch.lkmc.neutrodyne.youtube.ytdlp.ytx.PyHttp { public <init>(...); public *; }` and its request/response holder classes, the same for `…ytx.QuickJsEngine` when the JS provider ships, and `-keep class ch.lkmc.neutrodyne.youtube.ytdlp.YtxTestHooks { *; }` (04's test hook, which 09's minified E7 smoke test sets; it holds only a nullable directory); Unverified: whether Chaquopy's runtime AAR brings its own consumer rules (S7's minified `release` build runs `selftest` to find out). With `android.r8.strictFullModeForKeepRules=true`, `-keep class A` no longer keeps constructors: write `-keep class A { <init>(...); }` explicitly.
+- **Tests:** one variant. AGP 9 creates unit tests only for the tested build type (`debug`); the minified `release` APK runs the nightly instrumented suite and the E7 YouTube smoke test through `:ytx` (09).
 
-NewPipe Extractor needs `desugar_jdk_libs_nio` below API 33. `isCoreLibraryDesugaringEnabled` is a module-level `compileOptions` switch, not a flavor property, so **from M9 it is enabled in `:app` for both flavors** (`coreLibraryDesugaring(libs.desugar.jdk.libs.nio)`); M0–M8 builds do not enable it. Consequence: `playRelease` may contain desugared-library classes (`j$.*`, GPL-2.0-only WITH Classpath-exception-2.0). At M9 the release check records whether R8 leaves any `j$.` class in the `play` dex (our own code does not use the affected `java.nio.file` APIs, so none are expected — Unverified). Licence handling: `coreLibraryDesugaring` is a separate configuration, not part of `<variant>RuntimeClasspath`, so Licensee and AboutLibraries probably never see it (Unverified; the scoped Licensee entry in the [allow-list](#licensee-allow-list) covers the case where they do). Because the L8-compiled `j$` classes ship in the `foss` dex (and possibly `play`'s), `:app` adds a manual AboutLibraries definition for `desugar_jdk_libs_nio` with the GPL-2.0-with-Classpath-Exception text ([AboutLibraries](#aboutlibraries-and-the-licences-screen)), in both flavors unless the M9 check proves `play` free of `j$` classes. [D3](../PLAN.md#3-key-decisions)'s "no GPL-3.0 code in `play`" holds either way; its "permissively licensed dependencies" wording is an open item ([Open questions](#open-questions)).
+### Emergency build without the engine
+
+Risk L1: if a legal demand forces YouTube extraction out of the app, a release without the engine must ship the same day ([04 Licensing and legal](04-youtube.md#licensing-and-legal)). It is a Gradle switch, not a flavor and not a patch:
+
+- `./gradlew assembleRelease -Pneutrodyne.youtubeEngine=false` (for a tagged release, the release branch commits `neutrodyne.youtubeEngine=false` so the tag reproduces it). `:app` then drops its dependency on `:youtube:ytdlp` — no Chaquopy, CPython, yt-dlp, `YtxService` or engine assets in any APK — compiles `app/src/noYouTubeEngine/` and sets `BuildConfig.YOUTUBE_ENGINE = false`.
+- Behaviour: every APK reports `ExternalReason.NOT_IN_THIS_APK`; subscriptions and Layer A stay; YouTube episodes become external episodes; queued YouTube downloads end `FAILED(UNSUPPORTED_STREAM)` and completed files keep Delete and Share ([04 Engine absent or disabled](04-youtube.md#engine-absent-or-disabled)); engine updates stop because nothing schedules `engine-update`; `app/src/noYouTubeEngine/` contributes an `AppInitializer` (order 300) through which `AbsentYouTubeEngine` deletes `noBackupFilesDir/ytdlp/` and `cacheDir/yt-dlp/` once if they exist (engine files left by an earlier APK with the engine; idempotent, on IO, in the housekeeping band; a later APK with the engine re-extracts its bundled version).
+- The engine's manual Licences entries live in their own AboutLibraries config subdirectory that `:app` includes only when the switch is on (Unverified mechanism for AboutLibraries 15.x; checked in M9a; fallback: keep the entries and mark them "not included in this build").
+- It cannot rot: 09's nightly `no-engine-build` job (blocking) assembles it and runs the Hilt graph test of [Testing](#testing) with the switch off; `verifyManifestPermissions` passes unchanged because `:youtube:ytdlp` declares no permission.
+- The `armeabi-v7a` APK of a normal build is not this build: it contains `:youtube:ytdlp`'s Kotlin code but no Python runtime, and reaches the same reason at runtime.
 
 ---
 
 ## Networking baseline
 
-Serves N3, N6, N7, N9. Delivered in M0 (base client), M1 (feed client, auth), M4 (media), M6 (download), M7 (API), M9 (YouTube). Honours [D10](../PLAN.md#3-key-decisions), [D28](../PLAN.md#3-key-decisions), PO-13 default.
+Serves N3, N6, N7, N9. Delivered in M0 (base client), M1 (feed client, auth), M4 (media), M6 (download), M7 (API), M9a (YouTube engine in `:ytx`), M9b and M11a (engine and app updates). Honours [D10](../PLAN.md#3-key-decisions), [D28](../PLAN.md#3-key-decisions), [D74](../PLAN.md#3-key-decisions), PO-13 default.
 
 ### One client family
 
-All HTTP goes through one base `OkHttpClient` built in `:core:network`; purpose-specific clients are derived with `newBuilder()` so they share the dispatcher, connection pool and interceptors. **No OkHttp `Cache` anywhere** ([D10](../PLAN.md#3-key-decisions)); feeds keep their own validators ([03 Fetch pipeline](03-feeds-and-discovery.md#fetch-pipeline)), Coil its own disk cache, Media3 its `SimpleCache`, search an in-memory LRU. Constructing `OkHttpClient()` or `OkHttpClient.Builder()` outside `:core:network` is banned.
+All HTTP goes through one client family built in `:core:network`: a credential-free core client and the base client derived from it, from which purpose-specific clients are derived with `newBuilder()` so they share the dispatcher, connection pool and interceptors. That includes yt-dlp's HTTP: in `:ytx`, 04's `PyHttp` executes every request of yt-dlp's `NeutrodyneOkHttpRH` on the YOUTUBE client ([D74](../PLAN.md#3-key-decisions)), and the shim leaves no other yt-dlp request handler registered ([04 Networking bridge](04-youtube.md#networking-bridge)); Python's own OpenSSL never carries network traffic. **No OkHttp `Cache` anywhere** ([D10](../PLAN.md#3-key-decisions)); feeds keep their own validators ([03 Fetch pipeline](03-feeds-and-discovery.md#fetch-pipeline)), Coil its own disk cache, Media3 its `SimpleCache`, search an in-memory LRU. Constructing `OkHttpClient()` or `OkHttpClient.Builder()` outside `:core:network` is banned.
 
 ```kotlin
 // :core:network
 enum class HttpClientKind { FEED, API, IMAGE, MEDIA, DOWNLOAD, YOUTUBE }
 @Qualifier @Retention(AnnotationRetention.BINARY) annotation class HttpClient(val kind: HttpClientKind)
 
+@Qualifier @Retention(AnnotationRetention.BINARY) internal annotation class CredentialFreeCore
+
 @Module @InstallIn(SingletonComponent::class)
 internal object NetworkModule {
-    @Provides @Singleton fun base(ua: UserAgentInterceptor, auth: AuthInterceptor, lanGuard: LocalNetworkGuardInterceptor,
-                                  hints: DnsFamilyHints): OkHttpClient =
-        OkHttpClient.Builder()
+    @Provides @Singleton @CredentialFreeCore fun core(ua: UserAgentInterceptor, lanGuard: LocalNetworkGuardInterceptor,
+                                                      hints: DnsFamilyHints): OkHttpClient =
+        OkHttpClient.Builder()                      // the only OkHttpClient.Builder() in the code base
             .dispatcher(Dispatcher().apply { maxRequests = 64; maxRequestsPerHost = 8 })
             .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
             .dns(LocalNetworkGuardDns(FamilyHintDns(Dns.SYSTEM, hints)))   // outermost: LAN guard; inner: 04's IP-family hints
             .addInterceptor(lanGuard)               // first application interceptor: IP-literal and .local hosts (Dns is skipped for IP literals)
             .addInterceptor(ua)                     // application interceptor: once per call, kept on redirects
-            .addNetworkInterceptor(auth)            // network interceptor: re-evaluated on every redirect hop
             .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).writeTimeout(30, TimeUnit.SECONDS)
             .build()                                // followRedirects/followSslRedirects/retryOnConnectionFailure: OkHttp defaults (true)
+    @Provides @Singleton fun base(@CredentialFreeCore core: OkHttpClient, auth: AuthInterceptor): OkHttpClient =
+        core.newBuilder().addNetworkInterceptor(auth).build()   // network interceptor: re-evaluated on every redirect hop
     @Provides @Singleton @HttpClient(HttpClientKind.FEED) fun feed(b: OkHttpClient) = b.newBuilder().callTimeout(120, TimeUnit.SECONDS).build()
     @Provides @Singleton @HttpClient(HttpClientKind.API) fun api(b: OkHttpClient) = b.newBuilder().callTimeout(8, TimeUnit.SECONDS).build()
     @Provides @Singleton @HttpClient(HttpClientKind.IMAGE) fun image(b: OkHttpClient) = b.newBuilder().readTimeout(20, TimeUnit.SECONDS).callTimeout(60, TimeUnit.SECONDS).build()
     @Provides @Singleton @HttpClient(HttpClientKind.MEDIA) fun media(b: OkHttpClient) = b.newBuilder().addInterceptor(IdentityEncodingInterceptor).build()
     @Provides @Singleton @HttpClient(HttpClientKind.DOWNLOAD) fun download(b: OkHttpClient) =
         b.newBuilder().readTimeout(60, TimeUnit.SECONDS).addInterceptor(IdentityEncodingInterceptor).build()
-    @Provides @Singleton @HttpClient(HttpClientKind.YOUTUBE) fun youtube(b: OkHttpClient) = b.newBuilder().callTimeout(60, TimeUnit.SECONDS).build()
+    // Derived from the credential-free core, so the graph that :ytx builds for PyHttp never reaches CredentialLookup or Room
+    @Provides @Singleton @HttpClient(HttpClientKind.YOUTUBE) fun youtube(@CredentialFreeCore core: OkHttpClient) =
+        core.newBuilder().callTimeout(60, TimeUnit.SECONDS).build()
 }
+
+/** :ytx per-call IP-family pinning (D74): same pool and dispatcher; every host resolves to [family]'s records only
+ *  (all records when it has none). Cached per family. */
+fun OkHttpClient.pinnedToFamily(family: IpFamily): OkHttpClient
 ```
 
 | Kind | Consumer (owner) | Timeouts (connect / read / call) | Extras |
 |---|---|---|---|
 | FEED | `FeedFetcher` (03) | 15 s / 30 s / 120 s | 32 MB cap and streaming SHA-256 in 03; no `Accept-Encoding` override (OkHttp gzip) |
-| API | Apple, fyyd, Podcast Index search (03); small JSON calls such as oEmbed (04) and Podcasting 2.0 chapters JSON (06) | 15 s / 30 s (inherited) / 8 s | the 8 s call timeout caps the whole call and equals the canonical per-provider timeout |
+| API | Apple, fyyd, Podcast Index search (03); small JSON calls such as oEmbed (04) and Podcasting 2.0 chapters JSON (06); the approved engine manifest, its signature and yt-dlp's `SHA2-256SUMS`/`.sig` (04 `EngineUpdateWorker`, M9b); `neutrodyne-update.json` and `releases.atom` (09 `GitHubUpdateSource`, M11a; never `api.github.com`) | 15 s / 30 s (inherited) / 8 s | the 8 s call timeout caps the whole call and equals the canonical per-provider timeout |
 | IMAGE | Coil `OkHttpNetworkFetcherFactory` (08) | 15 s / 20 s / 60 s | Coil disk cache only |
 | MEDIA | Media3 `OkHttpDataSource.Factory` (06) | 15 s / 30 s / none | `Accept-Encoding: identity` (byte-exact ranges, `SimpleCache` keys) |
-| DOWNLOAD | `RssTransferSource`, `YouTubeTransferSource` (07) | 15 s / 60 s / none | `Accept-Encoding: identity`; 07 asserts it in tests |
-| YOUTUBE | `OkHttpNpeDownloader` (04, `foss`, M9) | 15 s / 30 s / 60 s | IP-family matching runs through the shared resolver chain (`DnsFamilyHints`, below), not a separate client |
+| DOWNLOAD | `RssTransferSource`, `YouTubeTransferSource` (07); the `yt-dlp` engine file, ≤ 10 MB (04, M9b); update APKs through the updater's own resumable transfer (09 `UpdateDownloadWorker`, M11a — not 07's episode engine) | 15 s / 60 s / none | `Accept-Encoding: identity`; 07 asserts it in tests |
+| YOUTUBE | `PyHttp` in `:ytx` (04, M9a): every request yt-dlp makes (InnerTube, watch page) | 15 s / 30 s / 60 s | derived from the credential-free core (no `AuthInterceptor`); per call `pinnedToFamily(family)` with the family the main process passes ([D74](../PLAN.md#3-key-decisions)); cancellation of a call cancels its OkHttp `Call`s (04) |
 
 `IdentityEncodingInterceptor` is an application interceptor that sets `Accept-Encoding: identity`, so OkHttp's bridge neither adds gzip nor decompresses. Dispatcher note: `executeAsync()`, Media3's `OkHttpDataSource` and Coil all go through the dispatcher's async queue; 64 global / 8 per host leaves headroom above the per-area semaphores (feeds 6/2, downloads 3/2, YouTube 1) owned by 03 and 07.
 
 ### Interceptors
 
-**`UserAgentInterceptor`** sets `User-Agent: Neutrodyne/<versionName> (Android <Build.VERSION.RELEASE>; +<REPO_URL>)` **only when the request has none**, so NewPipe Extractor's per-request browser UA and any 04-mandated UA survive. Non-ASCII characters are replaced with `?` (OkHttp rejects non-ASCII header values). Some hosts reject generic UAs, so the UA is never empty or the OkHttp default.
+**`UserAgentInterceptor`** sets `User-Agent: Neutrodyne/<versionName> (Android <Build.VERSION.RELEASE>; +<REPO_URL>)` **only when the request has none**, so the client-specific User-Agents that yt-dlp sets per request (passed through `PyHttp` unchanged) and any 04-mandated UA survive. Non-ASCII characters are replaced with `?` (OkHttp rejects non-ASCII header values). Some hosts reject generic UAs, so the UA is never empty or the OkHttp default.
 
 **`AuthInterceptor`** (Basic auth for private feeds and their same-origin enclosures, [03](03-feeds-and-discovery.md#feed-moves-auth-and-paging)):
 
@@ -1277,7 +1369,7 @@ Contract: credentials are attached **only when the hop's origin (scheme, host, p
 - Below API 37 both are pass-throughs (LAN feeds keep working there). Loopback (`127.0.0.0/8`, `::1`) always passes.
 - Unverified: the exact address set Android 17 treats as "local network" (the page names local addresses and `.local` without listing ranges; a LAN DNS server on port 53 is exempt); adjust the range list when device tests show otherwise.
 
-**`DnsFamilyHints` / `FamilyHintDns`** (requested by [04 IP-family matching](04-youtube.md#ip-family-matching)): `DnsFamilyHints` (`@Singleton`, `:core:network`) holds `hostSuffix → IpFamily?` pairs in memory (`set(hostSuffix: String, family: IpFamily?)`, `null` clears). `FamilyHintDns` returns only the A (`V4`) or only the AAAA (`V6`) records for a host equal to or ending in `.` + a hinted suffix, and all records when that family has none or no hint exists. `IpFamily` is 04's enum; it is declared in `:core:model` (not `:youtube:api`) so that `:core:network` can read it under rule 11. All derived clients inherit the chain, so MEDIA and DOWNLOAD requests to `googlevideo.com` follow the hint.
+**`DnsFamilyHints` / `FamilyHintDns`** (requested by [04 IP-family matching](04-youtube.md#ip-family-matching)): `DnsFamilyHints` (`@Singleton`, `:core:network`) holds `hostSuffix → IpFamily?` pairs in memory (`set(hostSuffix: String, family: IpFamily?)`, `null` clears). `FamilyHintDns` returns only the A (`V4`) or only the AAAA (`V6`) records for a host equal to or ending in `.` + a hinted suffix, and all records when that family has none or no hint exists. `IpFamily` is 04's enum; it is declared in `:core:model` (not `:youtube:api`) so that `:core:network` can read it under rule 11. All derived clients inherit the chain, so MEDIA and DOWNLOAD requests to `googlevideo.com` follow the hint. Both processes build the chain ([D74](../PLAN.md#3-key-decisions)): in the main process 04's resolver sets the `googlevideo.com` hint from the `ip=` of each resolved URL; in `:ytx`, whose `DnsFamilyHints` stays empty, `PyHttp` pins each call with `pinnedToFamily(family)` instead, because two concurrent calls may ask for different families. Fallback when the bridge is unavailable (A2 host): yt-dlp's own urllib handler with `source_address` forcing the family (04).
 
 ### Network error taxonomy
 
@@ -1350,11 +1442,11 @@ interface NetworkMonitor { val status: StateFlow<NetworkStatus> }
 
 ## Platform compliance
 
-Serves N2, N7. Delivered in M0 (checklist and manifest), verified in M11. Honours [D43](../PLAN.md#3-key-decisions), [D5](../PLAN.md#3-key-decisions). Every rule that binds an app with minSdk 26 / targetSdk 37, mapped to Neutrodyne's mechanism and the owning document.
+Serves N2, N7. Delivered in M0 (checklist and manifest), verified in M11. Honours [D43](../PLAN.md#3-key-decisions), [D5](../PLAN.md#3-key-decisions). Every rule that binds an app with minSdk 26 / targetSdk 37, mapped to Neutrodyne's mechanism and the owning document. Row IDs P1–P39 are platform-compliance rows, cited elsewhere as "01 Pn"; they are unrelated to PLAN's risk IDs P3–P9, which every document cites as "risk Pn" ([PLAN 8](../PLAN.md#8-risks-and-mitigations)).
 
 | # | Rule (platform version, scope) | Neutrodyne mechanism | Owner |
 |---|---|---|---|
-| P1 | Play: new apps and updates must target API 36 from 2026-08-31 (extension to 2026-11-01) | targetSdk 37 | 01 |
+| P1 | No store enforces a target API any more (GitHub-only), but the target still decides behaviour: A15 refuses to install apps with `targetSdkVersion` < 24 ([A15 all apps](https://developer.android.com/about/versions/15/behavior-changes-all)), and an installer's own target decides how developer-verification failures reach it (P39) | keep targeting the newest API: targetSdk 37, raised with each platform release | 01, 09 |
 | P2 | A15 (target 35) edge-to-edge enforced; A16 (target 36) opt-out removed | `enableEdgeToEdge()` in `MainActivity`; never `windowOptOutEdgeToEdgeEnforcement`; insets per [08 Adaptive layouts](08-ui-ux.md#adaptive-layouts) | 01, 08 |
 | P3 | A16 (target 36) predictive back on by default; `onBackPressed()` not called, `KEYCODE_BACK` not dispatched | Nav3 back; `NavigationBackHandler`/`PredictiveBackHandler`; `android:enableOnBackInvokedCallback="true"` for Android 13–15 devices (Unverified necessity at target 37); `onBackPressed` overrides banned | 01, 08 |
 | P4 | A16 (target 36, sw ≥ 600 dp) orientation/resizability/aspect locks ignored; A17 (target 37) opt-out removed | no `screenOrientation`, `resizeableActivity="false"`, `maxAspectRatio`, `minAspectRatio`; designed layouts per [08](08-ui-ux.md#adaptive-layouts) | 01, 08 |
@@ -1373,25 +1465,32 @@ Serves N2, N7. Delivered in M0 (checklist and manifest), verified in M11. Honour
 | P17 | User-installed CAs not trusted since target 24 | release trusts system CAs only; debug-overrides add user CAs | 01 |
 | P18 | A17 (all apps) RAM-based per-app memory limits | bounded Coil memory cache and sized decodes ([08](08-ui-ux.md#artwork-pipeline)); streaming parse, no whole-feed strings ([03](03-feeds-and-discovery.md#parser)) | 08, 03 |
 | P19 | A17 (target 37) widget `RemoteViews` bitmap memory cap | v1.x widgets pass artwork as content-URI icons | 08 |
-| P20 | A17 (target 37) reflection on `static final` fields blocked; lock-free `MessageQueue` | our code uses neither; library impact checked by the API 37 instrumented smoke run (M0) and the minified `fossRelease` YouTube smoke test (M9). Unverified: impact on Rhino and on LeakCanary (debug only) | 01, 04, 09 |
-| P21 | 16 KB page sizes required for apps targeting 35+ with native code; Play blocks non-compliant updates from 2027-02-01 | only native code is `sqlite-bundled`; [S6](#s6-sqlite-bundled-16-kb-alignment-and-size); CI `zipalign -c -P 16` ([09](09-quality-and-release.md#ci-pipelines)) | 01, 09 |
+| P20 | A17 (target 37) reflection on `static final` fields blocked; lock-free `MessageQueue` | our code uses neither; library impact checked by the API 37 instrumented smoke run (M0, including Chaquopy's `selftest` in `:ytx` when S7 is go) and the minified `release` YouTube smoke test through `:ytx` (M9a). Unverified: impact on Chaquopy's Java interop and on LeakCanary (debug only) | 01, 04, 09 |
+| P21 | 16 KB page sizes (devices since A15): on a 16 KB device an app whose native libraries are not 16 KB-aligned runs only in a compatibility mode with a warning (A16+) ([page sizes](https://developer.android.com/guide/practices/page-sizes)) | native code: `sqlite-bundled` ([S6](#s6-sqlite-bundled-16-kb-alignment-and-size)); in the 64-bit APKs CPython's `libpython`, `libcrypto`, `libssl`, `libsqlite3`, Chaquopy's JNI libraries and the `lib-dynload` extension modules that Chaquopy extracts from assets ([S7](#s7-chaquopy-under-agp-941)); quickjs-kt's `.so` if shipped. CI `zipalign -c -P 16` plus `llvm-readelf -l` over every `.so`, including those inside Chaquopy's asset zips (`check-apk.sh`, [09](09-quality-and-release.md#ci-pipelines)) | 01, 04, 09 |
 | P22 | A13 `POST_NOTIFICATIONS` runtime permission; media-session notifications exempt; FGS start does not need it | requested contextually (first download, first new-episode opt-in), never at launch ([03](03-feeds-and-discovery.md#new-episode-notifications), [07](07-downloads.md#progress-and-notifications)) | 03, 07 |
 | P23 | A13 per-app language (`localeConfig`); AppCompat backport | `generateLocaleConfig = true`, `res/resources.properties` (`unqualifiedResLocale=en-US`), `MainActivity : AppCompatActivity` with an AppCompat theme, `AppLocalesMetadataHolderService` (`autoStoreLocales`) for API ≤ 32; picker UI per [09 Localisation](09-quality-and-release.md#localisation) | 01, 09 |
 | P24 | A12 `android:exported` required on components with intent filters; `PendingIntent` mutability flag required | every component declares `exported`; all `PendingIntent`s `FLAG_IMMUTABLE` with explicit components (Unverified source: not re-checked in this research) | 01 |
 | P25 | A14 (target 34) implicit intents reach only exported components; mutable `PendingIntent`s with implicit intents throw; runtime receivers need an export flag | internal intents explicit; `ContextCompat.registerReceiver(…, RECEIVER_NOT_EXPORTED)` (Unverified source: not re-checked in this research) | 01 |
-| P26 | A11 package visibility | no `queryIntentActivities`/`resolveActivity` probing: `startActivity` + catch `ActivityNotFoundException`; only `<queries>` entry is ACRA's `mailto` (Unverified need); no `<queries>` for YouTube helper apps in `play` ([04](04-youtube.md#licensing-and-legal)) | 01 |
+| P26 | A11 package visibility | no `queryIntentActivities`/`resolveActivity` probing: `startActivity` + catch `ActivityNotFoundException` ("Watch on YouTube" included); `<queries>` entries: ACRA's `mailto` (Unverified need) and, from M11a, Obtainium's two package names so that `getInstallSourceInfo()` can name the installer of record (Unverified both IDs and whether the name needs visibility; M11a check, [09 In-app updater](09-quality-and-release.md#in-app-updater)); never `QUERY_ALL_PACKAGES` | 01, 09 |
 | P27 | A16 Safer Intents opt-in (`android:intentMatchingFlags="enforceIntentFilter"`), planned to become default | not adopted in v1 (internal explicit intents carry `neutrodyne://open/…` data that matches no filter); see [Open questions](#open-questions) | 01 |
 | P28 | Auto Backup: 25 MB cap; `<include>` disables defaults; A16 QPR2 `cross-platform-transfer` element | include-only rules, no cross-platform section ([05 Auto Backup](05-groups-opml-backup.md#auto-backup), D34) | 05 |
-| P29 | Play policy: no direct battery-optimisation exemption request for podcast apps; exact alarms not needed | no `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM`; diagnostics links to `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` only (N2) | 01, 09 |
-| P30 | A14/A15 background-activity-launch hardening for `PendingIntent` senders and creators; A17 adds further BAL hardening (`MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE`; Unverified details) | activities start only from a user tap on a notification (sent by the system) or from a visible activity (`ExternalImportActivity` → `MainActivity`); our code never calls `PendingIntent.send()` for an activity and uses no full-screen intents | 01 |
+| P29 | No direct battery-optimisation exemption request (N2); exact alarms not needed | no `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM`; diagnostics links to `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` only (N2) | 01, 09 |
+| P30 | A14/A15 background-activity-launch hardening for `PendingIntent` senders and creators; A17 adds further BAL hardening (`MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE`; Unverified details) | activities start only from a user tap on a notification (sent by the system) or from a visible activity (`ExternalImportActivity` → `MainActivity`); our code never calls `PendingIntent.send()` for an activity and uses no full-screen intents. `PackageInstaller`'s `STATUS_PENDING_USER_ACTION` confirmation intent is started directly only while an activity of ours is visible; received in the background (worker, `UpdateStatusReceiver`) it becomes the "Tap to finish updating" notification on channel `updates` (09) | 01, 09 |
 | P31 | A17 (target 37) Encrypted Client Hello used when the networking library supports it | OkHttp's ECH stays off in v1 ([Network security config](#network-security-config)) | 01 |
 | P32 | A17 (target 37) no longer relies on implicit URI read grants for `content://` extras of `ACTION_SEND` (Unverified scope) | every share intent sets `FLAG_GRANT_READ_URI_PERMISSION` and `ClipData` explicitly (05 OPML/backup share, 07 "Share file") | 05, 07 |
+| P33 | A10 (target 29+) untrusted apps cannot `execve()` files in their home directory ([A10 behaviour changes](https://developer.android.com/about/versions/10/behavior-changes-10)); A12+ limits child ("phantom") processes | the engine runs in-process in `:ytx` through Chaquopy, with no child process and no exec ([D72](../PLAN.md#3-key-decisions)); `checkBannedApis` bans `ProcessBuilder`/`Runtime.exec`. Only fallback A2 would exec, and only a launcher installed into `nativeLibraryDir` from `jniLibs` (`useLegacyPackaging = true`) | 01, 04 |
+| P34 | A14 (target 34) dynamically loaded DEX/JAR/APK files must be read-only ([A14 behaviour changes](https://developer.android.com/about/versions/14/behavior-changes-14)) | no DEX/JAR/APK is ever loaded at runtime (`DexClassLoader` banned); engine updates are pure Python, compiled to `.pyc` on the device and made read-only anyway ([D76](../PLAN.md#3-key-decisions), [04 Engine updates](04-youtube.md#engine-updates)) | 01, 04 |
+| P35 | A17 (target 37) native files loaded with `System.load()` must be read-only, else `UnsatisfiedLinkError` ([A17 behaviour changes](https://developer.android.com/about/versions/17/behavior-changes-17)) | our code never calls `System.load`; Chaquopy loads the extension modules it extracts from assets, and its master (17.1.0) marks them read-only for target 37 — S7 verifies on the API 37 image; engine updates never download native code | 01, 04 |
+| P36 | A8 (API 26) installing APKs needs `REQUEST_INSTALL_PACKAGES` and the user's per-source "install unknown apps" grant (`canRequestPackageInstalls()`, `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` with a `package:` URI) ([Settings](https://developer.android.com/reference/android/provider/Settings)) | `:update:impl` declares the permission (M11a); before its first session the updater checks the grant and shows 08's rationale before opening the settings page; a grant given to the browser does not cover Neutrodyne | 09, 08 |
+| P37 | A12 (API 31) `SessionParams.setRequireUserAction(USER_ACTION_NOT_REQUIRED)` with the normal permission `UPDATE_PACKAGES_WITHOUT_USER_ACTION` allows a self-update without confirmation when Android's conditions hold (installer of record or updating itself; recent enough target of the new APK) ([SessionParams](https://developer.android.com/reference/android/content/pm/PackageInstaller.SessionParams)) | `SelfInstaller` requests it on API 31+ and always handles `STATUS_PENDING_USER_ACTION`; the system confirmation on API 26–30 | 09 |
+| P38 | A14 (API 34) `commitSessionAfterInstallConstraintsAreMet` with `InstallConstraints.GENTLE_UPDATE` waits until the app is not interacting (playing audio or video, transferring data, being visible to the user) ([InstallConstraints](https://developer.android.com/reference/android/content/pm/PackageInstaller.InstallConstraints.Builder)), and throws `SecurityException` unless the caller is the app's installer of record ([PackageInstaller](https://developer.android.com/reference/android/content/pm/PackageInstaller)) | used on API 34+ only for unattended installs once Neutrodyne is its own installer of record; "Install now" commits directly; other unattended commits wait until no activity is started; `InstallIdleGate` holds every commit while audio plays or a download runs on every API level (never interrupts playback, [D78](../PLAN.md#3-key-decisions), [09 Installing](09-quality-and-release.md#installing)) | 09 |
+| P39 | A16 QPR2 (API 36.1) developer verification: a session can end in `STATUS_FAILURE_ABORTED` with `EXTRA_DEVELOPER_VERIFICATION_FAILURE_REASON` (`DEVELOPER_BLOCKED`, `NETWORK_UNAVAILABLE`, `UNKNOWN`) ([PackageInstaller](https://developer.android.com/reference/android/content/pm/PackageInstaller)); per AOSP an installer targeting > 36 gets no bypass prompt for a blocking result ([PackageInstallerSession](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android16-qpr2-release/services/core/java/com/android/server/pm/PackageInstallerSession.java)) | targetSdk 37 puts Neutrodyne in that group; `VerificationFailureMapper` turns the result into 08's "Update blocked by Android" sheet with "Download in browser" ([D80](../PLAN.md#3-key-decisions), [09 Developer verification](09-quality-and-release.md#developer-verification)). Unverified on an enforcing device: how an unregistered app with the advanced flow on is reported | 09, 08 |
 
 ---
 
 ## Manifest and permissions
 
-Serves N2, N7, N3. Delivered in M0 (app shell), extended in M1, M3, M4, M5, M6, M9. Each module declares what its own code needs (even if a library also merges it), so removing a library never silently drops a permission. `app/policy/permissions.txt` holds the exact expected merged set; [`verifyManifestPermissions`](#gradle-side-policy-tasks) fails on any difference.
+Serves N2, N7, N3, R6.2–R6.3. Delivered in M0 (app shell), extended in M1, M3, M4, M5, M6, M9a (`YtxService`), M11a (updater). Each module declares what its own code needs (even if a library also merges it), so removing a library never silently drops a permission. `app/policy/permissions.txt` holds the exact expected merged set; [`verifyManifestPermissions`](#gradle-side-policy-tasks) fails on any difference.
 
 ### Permissions
 
@@ -1407,8 +1506,12 @@ Serves N2, N7, N3. Delivered in M0 (app shell), extended in M1, M3, M4, M5, M6, 
 | `RUN_USER_INITIATED_JOBS` | `:download:impl` | M6 | UIDT manual downloads (API 34+) |
 | `RECEIVE_BOOT_COMPLETED` | `:download:impl` (+ merged by WorkManager) | M6 | persisted UIDT job (`setPersisted(true)`); WorkManager reschedules — never starts an FGS |
 | `${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` | merged by `androidx.core` (declared `signature`-level and used by the app itself) | M0 | `ContextCompat.registerReceiver(…, RECEIVER_NOT_EXPORTED)` on API < 33 (P25). Unverified exact merged name; the first `verifyManifestPermissions` run in M0 shows it, and `permissions.txt` lists it with the release `applicationId` (`ch.lkmc.neutrodyne.…`) |
+| `REQUEST_INSTALL_PACKAGES` | `:update:impl` | M11a | `PackageInstaller` sessions of the in-app updater; `canRequestPackageInstalls()` and the per-source grant (P36, [D78](../PLAN.md#3-key-decisions)) |
+| `UPDATE_PACKAGES_WITHOUT_USER_ACTION` | `:update:impl` | M11a | normal permission (API 31+): silent self-update via `setRequireUserAction(USER_ACTION_NOT_REQUIRED)` where Android allows it (P37) |
 
-**Explicitly not requested** (adding any requires a PLAN amendment): `ACCESS_LOCAL_NETWORK` (v1.x, D28), `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM`, `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_AUDIO`, `MANAGE_EXTERNAL_STORAGE` (downloads use app-specific storage, D48), `FOREGROUND_SERVICE_SPECIAL_USE`, `BLUETOOTH_CONNECT`, `QUERY_ALL_PACKAGES`, `SYSTEM_ALERT_WINDOW`, any location permission, `com.google.android.gms.permission.AD_ID`. A library that merges one of these is fixed with `tools:node="remove"` in `:app` and a comment.
+The set is closed (N7, amended 2026-10-05 for the two updater permissions); `permissions.txt` gains them in M11a. `:youtube:ytdlp` declares no permission: `:ytx` uses the app's `INTERNET`.
+
+**Explicitly not requested** (adding any requires a PLAN amendment): `ACCESS_LOCAL_NETWORK` (v1.x, D28), `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM`, `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_AUDIO`, `MANAGE_EXTERNAL_STORAGE` (downloads use app-specific storage, D48), `FOREGROUND_SERVICE_SPECIAL_USE`, `BLUETOOTH_CONNECT`, `QUERY_ALL_PACKAGES`, `INSTALL_PACKAGES` (privileged), `REQUEST_DELETE_PACKAGES`, `SYSTEM_ALERT_WINDOW`, any location permission, `com.google.android.gms.permission.AD_ID`. A library that merges one of these is fixed with `tools:node="remove"` in `:app` and a comment.
 
 ### Application element and components
 
@@ -1417,6 +1520,9 @@ Serves N2, N7, N3. Delivered in M0 (app shell), extended in M1, M3, M4, M5, M6, 
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
   <queries>  <!-- :app (09): ACRA mail sender; Unverified need -->
     <intent><action android:name="android.intent.action.SENDTO" /><data android:scheme="mailto" /></intent>
+    <!-- :update:impl (M11a): installer-of-record name visibility for "Managed by Obtainium"; Unverified both IDs (M11a check) -->
+    <package android:name="dev.imranr.obtainium" />
+    <package android:name="dev.imranr.obtainium.fdroid" />
   </queries>
   <application
       android:name=".NeutrodyneApplication"
@@ -1449,6 +1555,11 @@ Serves N2, N7, N3. Delivered in M0 (app shell), extended in M1, M3, M4, M5, M6, 
     <service android:name="androidx.work.impl.foreground.SystemForegroundService"
              android:foregroundServiceType="dataSync" tools:node="merge" />                       <!-- :download:impl (M6) -->
     <receiver android:name="ch.lkmc.neutrodyne.download.impl.DownloadActionReceiver" android:exported="false" />  <!-- :download:impl (M6) -->
+    <receiver android:name="ch.lkmc.neutrodyne.core.data.youtube.YouTubeAlertActionReceiver" android:exported="false" />  <!-- :core:data (M9a); breaker notice actions: 04 -->
+
+    <service android:name="ch.lkmc.neutrodyne.youtube.ytdlp.ytx.YtxService" android:process=":ytx"
+             android:exported="false" />           <!-- :youtube:ytdlp (M0 while S7 is go: ping/selftest only; engine M9a); bound only by YtDlpClient and tests; lifecycle: 04 -->
+    <receiver android:name="ch.lkmc.neutrodyne.update.impl.UpdateStatusReceiver" android:exported="false" />  <!-- :update:impl (M11a); PackageInstaller status: 09 -->
 
     <provider android:name="ch.lkmc.neutrodyne.core.artwork.ArtworkProvider" android:authorities="${applicationId}.artwork"
               android:exported="true" />                       <!-- :core:artwork (M4); read-only contract: 08 -->
@@ -1480,68 +1591,137 @@ Attribute decisions:
 | `launchMode` | `singleTop` | notification and deep-link intents arrive in `onNewIntent` |
 | `directBootAware` | not set | not supported |
 | `intentMatchingFlags` | not set | P27 |
+| `android:process` | only `YtxService` (`:ytx`); ACRA's sender declares `:acra` itself | [Application start-up](#application-start-up); `checkBannedApis` rejects any other declaration in our manifests |
+| `extractNativeLibs` / `jniLibs.useLegacyPackaging` | per [S7](#s7-chaquopy-under-agp-941): default packaging keeps `.so` files stored, page-aligned and loaded from the APK; legacy packaging compresses them (≈ 6 MB less per 64-bit APK) at the cost of extraction on install, and is required if fallback A2 execs a launcher | 01, recorded in [D77](../PLAN.md#3-key-decisions) if it deviates |
+| `<queries>` | ACRA `mailto`, Obtainium's two package IDs (M11a) | P26 |
 
 ---
 
 ## Licensing and dependency policy
 
-Serves N8. Delivered in M0 (allow-list, About/Licences, contribution rule), M9 (GPL module obligations). Honours [D3](../PLAN.md#3-key-decisions), [PO-1](../PLAN.md#po-1-licensing-of-shipped-binaries) default A; mitigates risks L2, L4. YouTube-specific legal analysis, source offer and F-Droid anti-feature text: [04 Licensing and legal](04-youtube.md#licensing-and-legal).
+Serves N8. Delivered in M0 (allow-list, Python component lockfile and its check, About/Licences, contribution rule), M9a (engine stack complete in the lockfile, Licences screen and `THIRD_PARTY_NOTICES.md`). Honours [D3](../PLAN.md#3-key-decisions), [D60](../PLAN.md#3-key-decisions), [PO-1](../PLAN.md#po-1-licensing-of-shipped-binaries) (resolved: no GPL anywhere); mitigates risks L2, L4. YouTube-specific legal analysis and the engine's licence boundary: [04 Licensing and legal](04-youtube.md#licensing-and-legal).
 
 ### Licence structure
 
 | Artefact | Licence |
 |---|---|
-| Repository (everything except `youtube/streams/`) | Unlicense (`LICENSE` at the root) |
-| `youtube/streams/` | GPL-3.0-or-later: `youtube/streams/LICENSE` (GPL text) and `README.md` from M9; every source file starts with `// SPDX-License-Identifier: GPL-3.0-or-later` from the M0 stub on |
-| `foss` APK | from M9: GPL-3.0-or-later as a whole (corresponding source = the public tag `vX.Y.Z`); before M9: Unlicense code + permissive dependencies |
-| `play` APK | Unlicense code + permissive dependencies (+ possibly the desugaring runtime, [Build flavors](#core-library-desugaring)) |
+| The repository and every shipped artefact — the three release APKs (from any build, including the emergency build) and every YouTube-engine update | Own code (Kotlin, the Python shim `neutrodyne_ytx`, scripts, build logic) under the Unlicense (`LICENSE` at the root), plus third-party components under permissive licences only: Apache-2.0, MIT, BSD-2/3-Clause, ISC, 0BSD, PSF-2.0, Zlib, bzip2-1.0.6, public domain; MPL-2.0 only for unmodified data files (the CA certificate bundle). **No GPL, LGPL or AGPL code anywhere** — no module exception, no build exception, no corresponding-source obligation |
+
+Three independent checks enforce it, each in CI's `static` job ([09 CI pipelines](09-quality-and-release.md#ci-pipelines)): Licensee for Gradle dependencies ([below](#licensee-allow-list)), `checkPythonLicences` for everything Gradle cannot see ([Python and native components](#python-and-native-components)), and 09's `check-apk.sh` content scan of the built APKs. `verifyDependencyPolicy`, `checkSpdxHeaders` and the [contribution rule](#copied-code-and-contributions) keep GPL code out of the source tree.
 
 ### Licensee allow-list
 
-Applied in `:app`, run as `licenseeFossRelease` and `licenseePlayRelease` (part of `check`).
+Applied in `:app`, run as `licenseeRelease` (part of `check`; there is one variant).
 
 ```kotlin
 licensee {
     allow("Apache-2.0"); allow("MIT"); allow("BSD-2-Clause"); allow("BSD-3-Clause"); allow("Unlicense"); allow("CC0-1.0")
-    // Scoped exceptions — never a global allow() for these licences:
-    allowDependency("com.android.tools", "desugar_jdk_libs_nio", "2.1.5") { because("GPL-2.0-only WITH Classpath-exception-2.0; linking permitted (M9); only evaluated if Licensee sees coreLibraryDesugaring") }
-    allowDependency("com.github.teamnewpipe", "NewPipeExtractor", "v0.26.5") { because("GPL-3.0-or-later; foss only via :youtube:streams (PO-1)") }
-    allowDependency("org.mozilla", "rhino", "1.8.1") { because("MPL-2.0; NewPipe Extractor dependency, foss only") }
-    allowDependency("org.mozilla", "rhino-engine", "1.8.1") { because("MPL-2.0; NewPipe Extractor dependency, foss only") }
-    // nanojson (com.github.TeamNewPipe): add a scoped allowDependency at M9 once its POM licence is read (Unverified metadata)
+    // No GPL, LGPL, AGPL or MPL artifact is ever allowed, not even scoped (D3).
     // allowUrl(...) entries only for artifacts whose POM names a known licence by URL, each with because(...)
 }
 ```
 
-Licensee is per-project, not per-variant, so the GPL/MPL entries are dependency-scoped and `verifyDependencyPolicy` separately proves they never reach `playReleaseRuntimeClasspath`. Any new licence (e.g. ISC, EPL) needs a reviewed PR adding a scoped `allowDependency`, never a global `allow`. Bumping an allow-listed GPL/MPL artifact's version requires updating its `allowDependency` line (deliberate friction on the fast lane).
+Any further permissive licence on a Gradle dependency (e.g. ISC; a weak-copyleft licence such as EPL-2.0 needs a [D3](../PLAN.md#3-key-decisions) amendment first) needs a reviewed PR adding a scoped `allowDependency(...) { because(...) }`, never a global `allow`. Tink and quickjs-kt are Apache-2.0; Unverified: whether Chaquopy's runtime reaches `releaseRuntimeClasspath` as Maven artifacts with a POM licence (S7 records it) — if not, it is covered by the lockfile below.
+
+### Python and native components
+
+`youtube/ytdlp/python-components.lock` lists every component that ships in an APK or an engine update but is not a Gradle dependency with a POM: the CPython runtime and the libraries it bundles, Chaquopy's runtime, the vendored yt-dlp with yt-dlp-ejs, the shim, data files, and native code inside Gradle artifacts that their POM does not describe (QuickJS inside quickjs-kt). It is edited by hand in the PR that changes a component and reviewed like code; the allow-list lives in build-logic (`PythonLicencePolicy.kt`), not in the lockfile, so widening it is a visible build-logic change, never a side effect of a lockfile edit.
+
+```toml
+# youtube/ytdlp/python-components.lock  (sketch; versions as planned, Unverified until S7 reads them from the runtime)
+schema = 1
+chaquopy = "17.0.0"          # must equal libs.versions.chaquopy
+python = "3.14.0"            # must equal the runtime Chaquopy packages for chaquopy.defaultConfig.version
+pip = []                     # must equal the chaquopy { pip { } } requirements: none in v1
+
+[[component]]
+name = "CPython"
+version = "3.14.0"
+origin = "maven:com.chaquo.python:target:3.14.0-0"
+licence = "Python-2.0"        # PSF-2.0 with the BeOpen, CNRI and CWI terms of CPython's LICENSE
+kind = "runtime"             # runtime | native | python | data
+aboutLibrariesId = "cpython"  # entry text: CPython's full LICENSE incl. "Licenses and Acknowledgements for Incorporated Software"
+
+[[component]]
+name = "zstd"
+version = "bundled with CPython 3.14.0"
+origin = "maven:com.chaquo.python:target:3.14.0-0"
+licence = "BSD-3-Clause OR GPL-2.0-only"
+elected = "BSD-3-Clause"     # an OR expression is accepted only with an elected, allowed alternative
+kind = "native"
+aboutLibrariesId = "zstd"
+
+[[component]]
+name = "CA certificate bundle (certifi cacert.pem)"
+licence = "MPL-2.0"
+kind = "data"                # MPL-2.0 is accepted only for kind = "data", unmodified
+aboutLibrariesId = "certifi-cacert"
+# … one entry per row of the inventory below
+```
+
+Allow-list (`PythonLicencePolicy.kt`): `Unlicense`, `MIT`, `ISC`, `Apache-2.0`, `Apache-2.0 WITH LLVM-exception`, `BSD-2-Clause`, `BSD-3-Clause`, `0BSD`, `PSF-2.0`, `Python-2.0` (because CPython is distributed under the whole PSF/BeOpen/CNRI/CWI stack, not PSF-2.0 alone), `Unicode-3.0` (because CPython's `unicodedata` and `str` carry an extract of the Unicode Character Database under the Unicode License v3), `Zlib`, `bzip2-1.0.6`, `blessing` (SQLite's public-domain dedication) and `LicenseRef-PublicDomain`; `MPL-2.0` only for `kind = "data"`. Anything containing `GPL` (GPL, LGPL, AGPL) fails, also inside an `OR` expression unless an allowed alternative is `elected`.
+
+Inventory (component versions are those of the planned stack, Unverified until S7 reads them from the Chaquopy runtime; licences per [CPython's licence page](https://docs.python.org/3/license.html), [yt-dlp](https://github.com/yt-dlp/yt-dlp#licensing), [yt-dlp-ejs](https://github.com/yt-dlp/ejs), [Chaquopy](https://github.com/chaquo/chaquopy), [quickjs-kt](https://github.com/dokar3/quickjs-kt)):
+
+| Component | Version (planned) | Licence | Ships in |
+|---|---|---|---|
+| CPython runtime and standard library | 3.14.0 | Python-2.0 (PSF-2.0 with the BeOpen, CNRI and CWI terms); its Licences entry and `THIRD_PARTY_NOTICES.md` text is CPython's full licence verbatim, including every "Licenses and Acknowledgements for Incorporated Software" notice (Mersenne Twister, SipHash24, strtod and dtoa, cfuhash, Global Unbounded Sequences, the Zstandard bindings and the others listed there, [CPython licence](https://docs.python.org/3/license.html)) | `arm64-v8a`, `x86_64` APKs (ABI-independent stdlib assets possibly also in `armeabi-v7a`, S7) |
+| mimalloc (CPython's allocator) | as bundled | MIT | 64-bit APKs |
+| Unicode Character Database extract (`unicodedata`, `str`) | as bundled | Unicode-3.0, data | 64-bit APKs |
+| OpenSSL (`libcrypto`, `libssl`; Python's `ssl` module, not used for network traffic, [D74](../PLAN.md#3-key-decisions)) | 3.0.18 | Apache-2.0 | 64-bit APKs |
+| SQLite (Python's `_sqlite3`) | 3.50.4 | blessing (public domain) | 64-bit APKs |
+| libffi, expat, HACL* | as bundled | MIT | 64-bit APKs |
+| mpdecimal | as bundled | BSD-2-Clause | 64-bit APKs |
+| zstd | as bundled | BSD-3-Clause (elected from `BSD-3-Clause OR GPL-2.0-only`) | 64-bit APKs |
+| xz (liblzma) | as bundled | 0BSD | 64-bit APKs |
+| bzip2 | as bundled | bzip2-1.0.6 | 64-bit APKs |
+| zlib | as bundled | Zlib | 64-bit APKs |
+| Chaquopy runtime (Java, JNI, bootstrap) | 17.0.0 (or S7's choice) | MIT | 64-bit APKs (Java part possibly in all three, S7) |
+| `libc++_shared.so` (shipped with Chaquopy's runtime) | NDK | Apache-2.0 WITH LLVM-exception | 64-bit APKs |
+| CA certificate bundle (certifi `cacert.pem`, shipped by Chaquopy) | as bundled | MPL-2.0, data only | 64-bit APKs |
+| yt-dlp (official zipimport release) | 2026.08.19 | Unlicense | 64-bit APKs, engine updates |
+| yt-dlp-ejs (inside the yt-dlp release) | 0.8.0 | Unlicense; its solver bundles meriyah (ISC) and astring (MIT) | 64-bit APKs, engine updates |
+| `neutrodyne_ytx` shim | — | Unlicense | 64-bit APKs |
+| QuickJS (inside quickjs-kt; only if the JS provider ships) | as bundled by 1.0.15 | MIT | 64-bit APKs |
+
+Never shipped (each would be a licence regression, risk L2; [D3](../PLAN.md#3-key-decisions)): yt-dlp's PyInstaller executables (GPL parts; Linux glibc/musl builds anyway), youtubedl-android (GPL-3.0), a Termux-built Python (GNU readline), `mutagen` (GPL-2.0+, part of yt-dlp's `default` extra), `bgutil-ytdlp-pot-provider` (GPL-3.0), Deno or Node.
+
+Tasks (all in `:youtube:ytdlp`, all configuration-cache safe):
+
+| Task | In `check` | Fails when |
+|---|---|---|
+| `checkPythonLicences` | yes (from M0, whatever S7 decides; the licence allow-list check is unconditional) | a component's licence is not on the allow-list (MPL-2.0 outside `kind = "data"`; an `OR` expression without an allowed `elected`); only while `:youtube:ytdlp` applies Chaquopy (S7 go): the lockfile's `chaquopy`, `python` or `pip` differ from the build's Chaquopy plugin version, Python version or pip requirements (on a fallback host the lockfile's `python` entry is checked against the A2 package instead, and with the Kotlin port the CPython rows leave the lockfile); the vendored `engine/bundled.json` version differs from the yt-dlp entry; the top-level packages inside `engine/yt-dlp` are anything but `yt_dlp` and `yt_dlp_ejs`; a component has no AboutLibraries manual definition with its `aboutLibrariesId` (so the Licences screen and `THIRD_PARTY_NOTICES.md` cannot drift) |
+| `verifyBundledYtDlp` | yes (no-op until M9a vendors the file) | the SHA-256 of `engine/yt-dlp` differs from its line in the committed `engine/SHA2-256SUMS` or from `bundled.json`; `engine/SHA2-256SUMS.sig` does not verify against `keys/yt-dlp-release-key.asc` whose fingerprint must equal the one pinned in build-logic (`AC0C BBE6 848D 6A87 3464 AF4E 57CF 6593 3B5A 7581`, [yt-dlp public key](https://github.com/yt-dlp/yt-dlp/blob/master/public.key); re-verified when M9b starts); `ORIGIN` in the zip's `yt_dlp/version.py` is not `yt-dlp/yt-dlp`. Verification uses build-logic's `OpenPgpSignatureCheck` (JDK `Signature`, no `gpg` binary) |
+| `shimTest` | no (needs a host CPython of the target minor version; CI `unit` job) | the shim's pytest suite fails against the bundled yt-dlp with `ReplayRH` (04 owns the content) |
+
+09's `check-apk.sh` closes the loop on the built APKs: it fails on forbidden content (`mutagen`, `readline`, `libreadline`, `org/schabi/newpipe`, `org/mozilla/javascript`), and it uses the lockfile as its input for what native libraries and top-level Python packages an APK may contain (09 owns the script).
 
 ### AboutLibraries and the Licences screen
 
-- The AboutLibraries Gradle plugin in `:app` generates per-variant library metadata (so `foss` lists NewPipe Extractor, Rhino and nanojson; `play` does not). Unverified: whether 15.x uses the plugin ID `com.mikepenz.aboutlibraries.plugin` or `com.mikepenz.aboutlibraries.plugin.android` for Android variants — M0 step 18 confirms. The plugin runs in offline mode (no remote licence or funding fetches during the build) so builds stay reproducible ([09 Hygiene](09-quality-and-release.md#hygiene)); Unverified: the 15.x property names.
+- The AboutLibraries Gradle plugin in `:app` generates library metadata for the `release` variant; all three ABI APKs of a default build show the same list, engine stack included (08 labels it on the `armeabi-v7a` APK); only the [emergency build](#emergency-build-without-the-engine) omits the engine entries. Unverified: whether 15.x uses the plugin ID `com.mikepenz.aboutlibraries.plugin` or `com.mikepenz.aboutlibraries.plugin.android` for Android variants — M0 step 18 confirms. The plugin runs in offline mode (no remote licence or funding fetches during the build) so builds stay reproducible ([09 Hygiene](09-quality-and-release.md#hygiene)); Unverified: the 15.x property names.
 - `:feature:settings` renders `LicencesKey` itself with `Nd*` components from `aboutlibraries-core` data (loaded at runtime from the app's generated resource) — **not** with AboutLibraries' Compose UI artifact, which could pull a different Compose/Material3 line (the same trap as `material-kolor`). M0 step 18 checks `aboutlibraries-core` has no Compose dependency.
 - Each entry shows name, version, licence name and the full licence text; Apache-2.0 `NOTICE` contents are added through AboutLibraries' `config/aboutlibraries/` overrides where a dependency ships one (Unverified which do).
-- Manual library definitions in the same config directory cover code that ships in the APK but is not on a runtime classpath: from M9 `desugar_jdk_libs_nio` (GPL-2.0-only WITH Classpath-exception-2.0, [Core library desugaring](#core-library-desugaring)); and any permissive snippet copied under the [contribution rule](#copied-code-and-contributions) (mirrors `THIRD_PARTY_NOTICES.md`).
+- Manual library definitions in the same config directory cover code that ships in the APK but is not on a runtime classpath: every component of the [lockfile inventory](#python-and-native-components) — CPython (its full licence text with the incorporated-software notices) and its bundled libraries (OpenSSL, SQLite, libffi, expat, mpdecimal, zstd, xz, bzip2, zlib, HACL*, mimalloc, the Unicode Character Database extract), the Chaquopy runtime and `libc++_shared`, yt-dlp, yt-dlp-ejs with meriyah and astring, the CA bundle (MPL-2.0), QuickJS when the JS provider ships (quickjs-kt itself comes from its POM) — each with its `aboutLibrariesId`, plus any permissive or Unlicense code copied or ported under the [contribution rule](#copied-code-and-contributions). `THIRD_PARTY_NOTICES.md` mirrors the same list. The engine entries sit in their own subdirectory that the [emergency build](#emergency-build-without-the-engine) leaves out.
 - **Packaging:** never exclude `META-INF/LICENSE*` or `META-INF/NOTICE*` wholesale; only the duplicate `/META-INF/{AL2.0,LGPL2.1}` entries are excluded ([common config](#common-android-configuration)).
 
 ### About statements
 
-`BuildInfo.licenceStatementResId` points to a flavor string in `:app` (`strings_flavor.xml`); `:feature:settings` shows it with the version, flavor name and a "Source code" link to `BuildInfo.repoUrl`.
+About (`:feature:settings`) shows the version, the APK's ABI (`BuildInfo.apkAbi`), one licence statement and a "Source code" link to `BuildInfo.repoUrl`. The statement is an ordinary string resource of `:feature:settings`, identical in every APK:
 
 | Build | Statement (en) |
 |---|---|
-| `play`, and `foss` before M9 | "Neutrodyne's source code is dedicated to the public domain under the Unlicense. Third-party components and their licences are listed under Licences." |
-| `foss` from M9 | "Neutrodyne's own source code is dedicated to the public domain under the Unlicense. This build includes NewPipe Extractor, licensed under the GNU General Public License version 3 or later, so this build as a whole is distributed under GPL-3.0-or-later. Source code for this version: {repoUrl}/tree/v{versionName}" |
+| every APK | "Neutrodyne's source code is dedicated to the public domain under the Unlicense. The app also includes third-party components under permissive licences, listed under Licences." |
 
-[04 Licensing and legal](04-youtube.md#licensing-and-legal) owns the NewPipe Extractor notice wording on the Licences screen and must use the statement above for About.
+On APKs with the engine, About may add the credit line "YouTube engine: yt-dlp {activeVersion}" from `YouTubeEngine.status` (08 decides placement). [04 Licensing and legal](04-youtube.md#licensing-and-legal) owns the engine-stack notice wording on the Licences screen and must use the statement above for About.
 
 ### Copied code and contributions
 
 `CONTRIBUTING.md` and the PR template (created in M0) carry this rule verbatim:
 
-1. **Behaviour-only reuse.** Never copy code from GPL projects (AntennaPod, NewPipe app, LibreTube, Podcini, NewPipe Extractor internals) or MPL projects (Pocket Casts) into any module except `:youtube:streams`. Re-implement behaviour from documentation and design notes.
-2. **Permissive snippets** (Apache-2.0, MIT, BSD — e.g. nav3-recipes) may be copied only with their original copyright header and an `SPDX-License-Identifier` line kept, plus an entry in `THIRD_PARTY_NOTICES.md`.
-3. Contributions outside `youtube/streams/` are dedicated under the Unlicense; contributions inside it are GPL-3.0-or-later.
-4. PR template checkbox: "No code was copied from GPL/MPL projects; any copied permissive code keeps its header and is listed in THIRD_PARTY_NOTICES.md." Reviewers enforce it ([09 Static analysis](09-quality-and-release.md#static-analysis) runs `checkSpdxHeaders`).
+1. **Behaviour-only reuse.** Never copy code from GPL, LGPL or AGPL projects (AntennaPod, the NewPipe app, NewPipe Extractor, LibreTube, Podcini, youtubedl-android, Seal, YTDLnis) or MPL projects (Pocket Casts) into any module — there is no exception. Re-implement behaviour from documentation and design notes.
+2. **Permissive and public-domain code** (Apache-2.0, MIT, BSD, ISC, Unlicense — e.g. nav3-recipes) may be copied only with its original copyright header and `SPDX-License-Identifier` line kept, plus an entry in `THIRD_PARTY_NOTICES.md`. yt-dlp is Unlicense: porting its logic (for example the Kotlin InnerTube fallback of [D72](../PLAN.md#3-key-decisions)) is allowed, with a credit header in each ported file ("Ported from yt-dlp `<path>` at `<commit>`, Unlicense") and an entry in `THIRD_PARTY_NOTICES.md`.
+3. All contributions are dedicated under the Unlicense.
+4. PR template checkbox: "No code was copied from GPL, LGPL, AGPL or MPL projects; copied or ported permissive or Unlicense code keeps its header (or credit line) and is listed in THIRD_PARTY_NOTICES.md." Reviewers enforce it ([09 Static analysis](09-quality-and-release.md#static-analysis) runs `checkSpdxHeaders`).
 
 ---
 
@@ -1555,25 +1735,25 @@ Delivers [M0](../PLAN.md#m0-scaffold-and-ci). Ordered; each step ends with a gre
 4. Write `settings.gradle.kts`, `gradle.properties`, root `build.gradle.kts` ([above](#settingsgradlekts-gradleproperties-root-build)); `compose-stability.conf`.
 5. Create `build-logic/` (settings, `convention/build.gradle.kts`, plugin classes for all ten IDs, `ModuleRules.kt`); policy tasks may start as no-ops returning success, filled in step 18.
 6. **Spike S1** (KGP pin). Record the result before continuing; on failure apply its fallback.
-7. Create every module of [Module layout](#module-layout) (except `:benchmark`) with its plugins, namespace, an `internal` placeholder and one placeholder test; `:youtube:streams` placeholder files carry the GPL SPDX header.
+7. Create every module of [Module layout](#module-layout) (except `:benchmark`) with its plugins, namespace, an `internal` placeholder and one placeholder test (`:update:api`, `:update:impl` as plain stubs). Then **Spike S7** on `:youtube:ytdlp` ([S7](#s7-chaquopy-under-agp-941)); record the outcome before continuing. If go, `:youtube:ytdlp` keeps Chaquopy applied with the hello-world `neutrodyne_ytx/selftest.py` and the real `YtxService` declared in `:ytx` (answering only `ping` and `selftest` until M9a), and `NeutrodyneApplication`'s `ProcessRole.YTX` branch and `YtxProcessStartTest` are live from then on, so every later AGP, Kotlin or Chaquopy bump that breaks the integration fails CI at once; on a fallback it stays a plain Android library stub and D72 is amended. Every source file carries `SPDX-License-Identifier: Unlicense`.
 8. `:core:common`: `Clock`, `Dispatcher`/`NeutrodyneDispatchers`, `ApplicationScope`, `Outcome`, `suspendRunCatching`, `Log`/`LogSink`/`Redactor`, `AppInitializer`, `NetworkMonitor`/`NetworkStatus` interfaces — with the unit tests listed in [Testing](#testing).
-9. `:core:model`: `Distribution`, `BuildInfo`, `NetError`/`TlsKind`, `IpFamily` (04's enum, placed here), `SettingsFile`/`SettingKey`, `AllSettingKeys` (empty list + test).
+9. `:core:model`: `BuildInfo` (fields per [Build variants and ABIs](#build-variants-and-abis)), `NetError`/`TlsKind`, `IpFamily` (04's enum, placed here), `SettingsFile`/`SettingKey`, `AllSettingKeys` (empty list + test). `ExternalReason` (04's enum, placed here so that `:playback:api` and `:core:ui` can use it under rules 7 and 10) follows in M2 with its first consumer.
 10. `:core:navigation`: all canonical keys plus 08's `SettingsHomeKey`, `TopLevelKey`, `EntryProviderInstaller`, `AppNavigator` (with 08's `pushDetail`), `LocalAppNavigator`, `NdSceneMetadata`, and 08's `PaneLayout`/`LocalPaneLayout`/`LocalNavTab`.
 11. `:core:datastore`: both `DataStore`s, `SettingsStore`, `DeviceSettingsStore`; `:core:domain`: `SettingsRepository` interface; `:core:data` stub: `CredentialLookup.None` binding.
-12. `:core:network`: `NetworkModule` (base + all six derived clients), `UserAgentInterceptor`, `AuthInterceptor`, `IdentityEncodingInterceptor`, `LocalNetworkGuardDns`, `LocalNetworkGuardInterceptor`, `DnsFamilyHints`, `FamilyHintDns`, `NetErrorClassifier`, `ConnectivityNetworkMonitor`, `network_security_config.xml`, manifest permissions — with tests.
+12. `:core:network`: `NetworkModule` (credential-free core, base, all six derived clients), `pinnedToFamily`, `UserAgentInterceptor`, `AuthInterceptor`, `IdentityEncodingInterceptor`, `LocalNetworkGuardDns`, `LocalNetworkGuardInterceptor`, `DnsFamilyHints`, `FamilyHintDns`, `NetErrorClassifier`, `ConnectivityNetworkMonitor`, `network_security_config.xml`, manifest permissions — with tests.
 13. `:core:testing`: `MainDispatcherRule`, `TestClock`, `FakeNetworkMonitor` (09 owns the full inventory).
 14. `:core:designsystem`: `NeutrodyneTheme` (dynamic colour on API 31+, placeholder brand scheme, light/dark) and Material Symbols for the five destinations and the gear (08).
-15. Feature stubs: each top-level feature installs its `TopLevelKey` entry showing a placeholder empty state; `:feature:settings` installs `SettingsHomeKey` (the gear's target, 08), `SettingsKey` (M0 renders `ABOUT`: version, flavor, licence statement, source link; 08 adds Appearance) and `LicencesKey`.
-16. `:app`: `NeutrodyneApplication` (ACRA guard, initializer runner, entry points), `CoreModule` (dispatchers, scope, `DeviceClock`, `BuildInfo`, `@Multibinds` initializer set), `FlavorModule` × 2 (`Distribution` only in M0, [Flavor modules](#flavor-modules)), `strings_flavor.xml` × 2, `MainActivity` (AppCompat, splash with `StartupViewModel`, edge-to-edge), `NavigationState`, `NeutrodyneNavHost`, overlay scene strategies, `IntentRouter` (internal routes only in M0), `NeutrodyneRoot` with `NavigationSuiteScaffold` (08), `keepRules/app.keep` and `keepRules/foss.keep`, themes XML, manifest per [Manifest and permissions](#manifest-and-permissions) (M0 subset), M0 backup rule files, `res/resources.properties`.
+15. Feature stubs: each top-level feature installs its `TopLevelKey` entry showing a placeholder empty state; `:feature:settings` installs `SettingsHomeKey` (the gear's target, 08), `SettingsKey` (M0 renders `ABOUT`: version, ABI, licence statement, source link; 08 adds Appearance) and `LicencesKey` (AboutLibraries plus the manual entries of the Chaquopy runtime and CPython stack when S7 is go).
+16. `:app`: `NeutrodyneApplication` (`ProcessRole`, ACRA guard, initializer runner, entry points), `CoreModule` (dispatchers, scope, `DeviceClock`, `BuildInfo`, `@Multibinds` initializer set), an empty `YouTubeBindingsModule` in `app/src/main` (its first binding arrives in M2, [YouTube bindings](#youtube-bindings)), build types and ABI splits ([Build variants and ABIs](#build-variants-and-abis)), `MainActivity` (AppCompat, splash with `StartupViewModel`, edge-to-edge), `NavigationState`, `NeutrodyneNavHost`, overlay scene strategies, `IntentRouter` (internal routes only in M0), `NeutrodyneRoot` with `NavigationSuiteScaffold` (08), `keepRules/app.keep`, themes XML, manifest per [Manifest and permissions](#manifest-and-permissions) (M0 subset), M0 backup rule files, `res/resources.properties`.
 17. ACRA mail + dialog wired to `ACRA_MAILTO` from the committed `neutrodyne.acraMailto` (disabled while empty; forced empty on `debug`) (09).
-18. Policy tooling: Licensee, module-graph assertion, AboutLibraries (confirm plugin ID; confirm `aboutlibraries-core` has no Compose dependency with `./gradlew :feature:settings:dependencies`), `verifyDependencyPolicy`, `verifyManifestPermissions` with `app/policy/permissions.txt`, `checkSpdxHeaders`, `checkBannedApis`.
+18. Policy tooling: Licensee, module-graph assertion, AboutLibraries (confirm plugin ID; confirm `aboutlibraries-core` has no Compose dependency with `./gradlew :feature:settings:dependencies`), `verifyDependencyPolicy`, `verifyManifestPermissions` with `app/policy/permissions.txt`, `checkSpdxHeaders`, `checkBannedApis`, `PythonLicencePolicy.kt` with `youtube/ytdlp/python-components.lock` (the Chaquopy runtime and CPython stack if S7 is go, otherwise empty) and `checkPythonLicences`, `verifyBundledYtDlp` (a no-op until M9a vendors yt-dlp), `THIRD_PARTY_NOTICES.md` ([Python and native components](#python-and-native-components)).
 19. Spotless/ktlint/compose-rules (blocking) and detekt (non-blocking) (09).
 20. GMD definitions (`api26` `aosp`, `api36` `aosp-atd`; the API 37 16 KB image runs through android-emulator-runner) and the M0 instrumented smoke test (09).
-21. `ci.yml`, `nightly.yml` and `release.yml` ([09 Workflows](09-quality-and-release.md#workflows)), Renovate config, PR template and `CONTRIBUTING.md` with the [contribution rule](#copied-code-and-contributions) (09).
+21. `ci.yml`, `nightly.yml` (including the report-only `repro` job) and `release.yml` (three ABI APKs, `SHA256SUMS`, `neutrodyne-update.json`, provenance attestations, immutable release) ([09 Workflows](09-quality-and-release.md#workflows)), `changelogs/`, Renovate config, the Codeberg push mirror (PO-34 default), PR template and `CONTRIBUTING.md` with the [contribution rule](#copied-code-and-contributions) (09).
 22. **Spikes S2–S6**; write results into [Spikes](#spikes) and the owning documents.
-23. Negative verification (PLAN M0 AC2), recorded in the [verification log](#verification-log): (a) add `implementation(project(":feature:library"))` to `:feature:feeds` → `assertModuleGraph` fails; (b) add `implementation(project(":youtube:streams"))` (non-flavored) to `:app` → `verifyDependencyPolicy` fails; (c) add a GPL-licensed artifact to `:core:data` → `licenseeFossRelease` and `licenseePlayRelease` fail. Revert all three.
-24. Acceptance run: `./gradlew check assembleFossDebug assemblePlayDebug assembleFossRelease assemblePlayRelease` green on CI in < 15 min; `./gradlew :app:buildEnvironment` shows `kotlin-gradle-plugin` resolved to 2.4.20; installs on API 26 and API 36 GMDs, five labelled destinations, survives rotation and dark-mode switch, back from Settings returns to the tab (predictive-back animation checked manually once on an API 36 image and noted in the log); Licences lists every runtime dependency with its licence.
-25. Publish `v0.1.0-beta.1` as a GitHub pre-release (09).
+23. Negative verification (PLAN M0 AC2), recorded in the [verification log](#verification-log): (a) add `implementation(project(":feature:library"))` to `:feature:feeds` → `assertModuleGraph` fails; (b) add a GPL-licensed artifact to `:core:data` → `licenseeRelease` and `verifyDependencyPolicy` fail; (c) add a component with `licence = "GPL-3.0-or-later"` to `python-components.lock` → `checkPythonLicences` fails; (d) add a file named `mutagen/__init__.py` (and, separately, `lib/arm64-v8a/libreadline.so`) to a release APK → 09's `scripts/ci/check-apk.sh` fails. Revert all four.
+24. Acceptance run: `./gradlew check assembleDebug assembleRelease` green on CI in < 15 min, producing the `arm64-v8a`, `x86_64` and `armeabi-v7a` APKs and no universal APK; `./gradlew :app:buildEnvironment` shows `kotlin-gradle-plugin` resolved to 2.4.20; installs on API 26 and API 36 GMDs, five labelled destinations, survives rotation and dark-mode switch, back from Settings returns to the tab (predictive-back animation checked manually once on an API 36 image and noted in the log); Licences lists every runtime dependency with its licence (with the CPython stack and Chaquopy when S7 is go).
+25. Key ceremony (holders per PO-35) and `v0.1.0-beta.1` published as an immutable GitHub pre-release signed with the final key: three APKs, `SHA256SUMS`, `neutrodyne-update.json` and attestations, verified per PLAN M0 AC7; README states the certificate SHA-256 (09).
 
 ---
 
@@ -1589,10 +1769,11 @@ Delivered in M0 (PLAN M0). Each spike runs on a throwaway branch or inside the r
 | S4 | Robolectric runs Room 3 with `AndroidSQLiteDriver` (DAO + migration tests) | pending | [02 Migrations and schema testing](02-data-model.md#migrations-and-schema-testing), [09 Test infrastructure](09-quality-and-release.md#test-infrastructure) |
 | S5 | Nav3 1.2 API names, per-tab state retention, sheet/dialog scenes | pending | [Navigation](#navigation), [08 Navigation](08-ui-ux.md#navigation) |
 | S6 | `sqlite-bundled` 16 KB alignment and APK size | pending | [09 Performance budgets](09-quality-and-release.md#performance-budgets) |
+| S7 | Chaquopy embeds CPython 3.14 in `:youtube:ytdlp` under AGP 9.4.1, Gradle 9.7.1, built-in Kotlin 2.4.20 and targetSdk 37, with the app's ABI splits, and starts in `:ytx` on API 26 and on the API 37 16 KB image | pending | [D72](../PLAN.md#3-key-decisions), [D77](../PLAN.md#3-key-decisions) if they deviate; [04 YouTube engine](04-youtube.md#youtube-engine); [Python and native components](#python-and-native-components) (versions read from the runtime) |
 
 ### S1 KGP 2.4.20 under AGP 9.4.1
 
-- **Method:** build-logic declares `implementation(libs.kotlin.gradlePlugin)` (and the other plugin artifacts). Run `./gradlew :app:buildEnvironment` and `./gradlew :core:common:compileKotlin --info`. Add an in-build assertion to every convention plugin: `check(project.getKotlinPluginVersion() == libs.findVersion("kotlin").get().requiredVersion) { "KGP drift: …" }` with `libs` from `VersionCatalogsExtension` ([catalog rule 5](#gradlelibsversionstoml)) (Unverified API location: `org.jetbrains.kotlin.gradle.plugin.getKotlinPluginVersion`). Build `assembleFossDebug`.
+- **Method:** build-logic declares `implementation(libs.kotlin.gradlePlugin)` (and the other plugin artifacts). Run `./gradlew :app:buildEnvironment` and `./gradlew :core:common:compileKotlin --info`. Add an in-build assertion to every convention plugin: `check(project.getKotlinPluginVersion() == libs.findVersion("kotlin").get().requiredVersion) { "KGP drift: …" }` with `libs` from `VersionCatalogsExtension` ([catalog rule 5](#gradlelibsversionstoml)) (Unverified API location: `org.jetbrains.kotlin.gradle.plugin.getKotlinPluginVersion`). Build `assembleDebug`.
 - **Pass:** `kotlin-gradle-plugin:2.2.10 -> 2.4.20` (or `:2.4.20`) in the output; KSP 2.3.12, Hilt 2.60.1 and the Compose compiler plugin run; only deprecation warnings.
 - **Fallback 1:** root `build.gradle.kts` `buildscript { dependencies { classpath(libs.kotlin.gradlePlugin) } }`. **Fallback 2:** set `agp = "9.3.3"` (needs Gradle ≥ 9.5.0, satisfied by 9.7.1; Compose 1.12 needs AGP ≥ 9.2, satisfied), rerun. Record which applied.
 - **CI hook:** the `static` job greps `:app:buildEnvironment` for `kotlin-gradle-plugin.*2.4.20` (PLAN M0 AC3) in addition to the in-build assertion.
@@ -1637,22 +1818,54 @@ flowchart LR
 
 ### S6 sqlite-bundled 16 KB alignment and size
 
-- **Method:** build `fossRelease` with and without `sqlite-bundled`; `zipalign -c -P 16 -v 4 app-foss-release.apk`; `llvm-readelf -l lib/arm64-v8a/*.so` → every `LOAD` segment `Align 0x4000`; compare APK size per ABI.
-- **Pass:** aligned; size delta recorded (budget context: `foss` APK < 25 MB, N5).
+- **Method:** build `release` with and without `sqlite-bundled`; `zipalign -c -P 16 -v 4` on each ABI APK; `llvm-readelf -l lib/arm64-v8a/*.so` → every `LOAD` segment `Align 0x4000`; compare APK size per ABI.
+- **Pass:** aligned; size delta recorded (budget context, N5: `arm64-v8a` and `x86_64` APKs < 40 MB each including the engine, `armeabi-v7a` < 30 MB; PB12, PB13).
 - **Fallback:** `AndroidSQLiteDriver` in production — a one-line change in `SqliteDriverModule`, cheap because 02 already restricts SQL to SQLite 3.18 features; still changes [D9](../PLAN.md#3-key-decisions), PLAN amendment required.
+
+### S7 Chaquopy under AGP 9.4.1
+
+Gates every YouTube-engine milestone ([D72](../PLAN.md#3-key-decisions), risk T14). Facts at planning time (2026-10-05): the latest Chaquopy release on Maven Central is 17.0.0 (2025-11-30, [Maven metadata](https://repo1.maven.org/maven2/com/chaquo/python/gradle/maven-metadata.xml)); its documentation names AGP 7.3–9.2, Python 3.10–3.14 and, for Python ≥ 3.12, only `arm64-v8a` and `x86_64` ([Chaquopy docs](https://chaquo.com/chaquopy/doc/current/android.html)); master's `VERSION.txt` is 17.1.0 and carries the AGP 9.x updates up to 9.4.1, Python 3.15 and target API 37, including read-only extracted `.so` files (Unverified beyond the repository history, [chaquopy](https://github.com/chaquo/chaquopy)). Chaquopy's FAQ warns that ABI splits "won't help much" for its native components and recommends a product-flavor dimension instead ([FAQ](https://chaquo.com/chaquopy/doc/current/faq.html)).
+
+- **Method:**
+  1. Check Maven Central for a Chaquopy release newer than 17.0.0 and start with the newest.
+  2. Apply `com.chaquo.python` to `:youtube:ytdlp` (build-logic classpath and bare `id`, catalog rule 3; if that fails, a versioned `plugins {}` entry) with the configuration of [Build variants and ABIs](#build-variants-and-abis): Python 3.14, `abiFilters` `arm64-v8a` + `x86_64`, empty `pip`, `buildFeatures.aidl`; a hello-world `neutrodyne_ytx/selftest.py` (returns the Python and OpenSSL versions) and `YtxService` with `android:process=":ytx"` that calls `Python.start(AndroidPlatform(context))` and answers `ping` and `selftest` (kept after a go; M9a adds the engine methods).
+  3. Under AGP 9.4.1, Gradle 9.7.1, built-in Kotlin 2.4.20, targetSdk 37 and the configuration cache: `./gradlew check assembleDebug assembleRelease` (minified, so missing keep rules show up).
+  4. If the released plugin fails: build master (17.1.0) at a pinned commit, publish it, together with the CPython `target` artifacts it needs (that repository then alone serves `com.chaquo.python*`), to `third_party/chaquopy-maven/` (the commented `exclusiveContent` repository in `settings.gradle.kts`; record its size) and repeat 2–3.
+  5. Measure and record: APK size per ABI with default and with legacy native packaging (`useLegacyPackaging`); the bytes of foreign-ABI Chaquopy assets in each split and of ABI-independent Python assets in the `armeabi-v7a` APK (`unzip -l`); `Python.start` + `selftest` in `:ytx` on the API 26 GMD and on the API 37 16 KB image (no `UnsatisfiedLinkError` from read-only rules, P35); `llvm-readelf -l` 16 KB alignment of every `.so`, including those inside Chaquopy's asset zips; time from binding `YtxService` to the `selftest` result on the GMDs (first indication only; the reference-device numbers come from the M9a spike); that a host Python 3.14 (`buildPython`) works in CI via `actions/setup-python` and inside 09's pinned release container `python:3.14-slim-trixie` (the image `release.yml` and the `repro` job build in); Chaquopy's Gradle configuration names and runtime coordinates (input to `checkPythonLicences`), whether its runtime appears on `releaseRuntimeClasspath` (Licensee), whether its AAR ships consumer keep rules, the AGP 9 names of the `splits.abi` DSL, and the component versions bundled in the runtime (OpenSSL, SQLite, …) for the [lockfile](#python-and-native-components).
+- **Pass (go):** green build and `selftest` on both images with a released or self-built Chaquopy, configuration cache intact (or a recorded, accepted exception); in each **64-bit** APK the foreign-ABI Chaquopy bytes (the other 64-bit ABI's `lib-dynload` and any other per-ABI assets) ≤ 5 MB; in the **`armeabi-v7a`** APK every Python and Chaquopy byte is unusable (target 0; estimate ≈ 12–13 MB: standard library 4.5 MB, yt-dlp 3.1 MB, shim, two 64-bit `lib-dynload` sets ≈ 2.5 MB each, Unverified) and is accepted only while that APK stays within PB13 (< 30 MB), counted there ([Open questions](#open-questions) 13).
+- **Fallbacks** (in this order, [D72](../PLAN.md#3-key-decisions)): foreign-ABI assets > 5 MB in a 64-bit APK, or the `armeabi-v7a` APK over PB13 because of its Python assets → go with an ABI product-flavor dimension instead of ABI splits, whose `armeabi-v7a` flavor omits `:youtube:ytdlp`'s assets as the no-engine build does (amend [D2](../PLAN.md#3-key-decisions)); no Chaquopy build works → **A2**: python.org's official Android CPython (`arm64-v8a`, `x86_64`, [Python on Android](https://docs.python.org/3/using/android.html)) as a long-lived child process of `:ytx`, started from a launcher packaged in `jniLibs` (`useLegacyPackaging = true`, so it is installed into the executable `nativeLibraryDir`, P33), JSON over stdio; A2 not viable either → the Kotlin InnerTube client ported from yt-dlp's Unlicense source. Lowering AGP to suit Chaquopy is not on the list (open question 12).
+- **CI hook:** while S7 is go, `:youtube:ytdlp` keeps Chaquopy applied from M0 and the instrumented smoke test runs `selftest` in `:ytx` on the API 26 GMD and the API 37 16 KB image; Renovate puts Chaquopy bumps behind dashboard approval and every bump repeats steps 3 and 5 ([09 Dependency updates](09-quality-and-release.md#dependency-updates)).
+
+```mermaid
+flowchart LR
+  a["newest Chaquopy release on Maven Central"] --> b{"builds under AGP 9.4.1 and selftest runs in ytx on API 26 and API 37 16 KB?"}
+  b -->|no| m["self-built master 17.1.0 from a local Maven repository"]
+  m --> b2{"builds and selftest runs?"}
+  b -->|yes| c{"foreign-ABI assets at most 5 MB per 64-bit APK and armeabi-v7a APK within PB13?"}
+  b2 -->|yes| c
+  c -->|yes| go["go: ABI splits"]
+  c -->|no| fl["go with an ABI flavor dimension, amend D2"]
+  b2 -->|no| a2["fallback A2: python.org CPython child process"]
+  a2 --> d{"works?"}
+  d -->|yes| fa["record A2, amend D72"]
+  d -->|no| kt["fallback Kotlin InnerTube port, amend D72"]
+```
 
 ### Verification log
 
 | Date | Check | Result |
 |---|---|---|
 | (M0) | `:feature:feeds → :feature:library` fails `assertModuleGraph` | pending |
-| (M0) | non-flavored `:youtube:streams` in `:app` fails `verifyDependencyPolicy` | pending |
-| (M0) | GPL artifact in `:core:data` fails Licensee for both variants | pending |
+| (M0) | GPL artifact in `:core:data` fails `licenseeRelease` and `verifyDependencyPolicy` | pending |
+| (M0) | GPL-licensed entry in `python-components.lock` fails `checkPythonLicences` | pending |
+| (M0) | an APK containing `mutagen/__init__.py`, and one containing `libreadline.so`, each fail `check-apk.sh` (09) | pending |
+| (M0) | S7 outcome: Chaquopy version (release or master commit), Python version, packaging mode, foreign-ABI bytes per split, `selftest` on API 26 and API 37 16 KB | pending |
+| (M0) | the build fails when a module other than `:youtube:ytdlp` applies `com.chaquo.python`, and when core-library desugaring is enabled | pending |
 | (M0) | predictive back from Settings animates on API 36 (manual) | pending |
-| (M0) | `foss.keep` rules present in the merged R8 configuration of `fossRelease`, absent from `playRelease` | pending |
 | (M0) | merged release permissions equal `app/policy/permissions.txt` (records the `androidx.core` receiver permission name) | pending |
-| (M9) | JitPack-only verification metadata works with the trust regex | pending |
-| (M9) | `j$.` classes present in `playRelease` dex? | pending |
+| (M0 while S7 is go, else M9a) | `YtxProcessStartTest`: no initializer, database, DataStore, WorkManager or ACRA in `:ytx` | pending |
+| (M9a) | `assembleRelease -Pneutrodyne.youtubeEngine=false` contains no Chaquopy, CPython, yt-dlp or `YtxService`, and its Licences screen omits the engine entries | pending |
+| (M11a) | merged release permissions include `REQUEST_INSTALL_PACKAGES` and `UPDATE_PACKAGES_WITHOUT_USER_ACTION`; `getInstallSourceInfo()` names Obtainium with the `<queries>` entries | pending |
 
 ---
 
@@ -1670,17 +1883,21 @@ Test infrastructure, runners and CI wiring: [09 Test strategy](09-quality-and-re
 | `AuthInterceptor` | MockWebServer (two servers = two origins) | header added for same origin; not added after redirect to another host; not added after `https → http` redirect on the same host; not added when `Authorization` already set; lookup returning null |
 | `IdentityEncodingInterceptor` | MockWebServer | MEDIA and DOWNLOAD requests carry `Accept-Encoding: identity`; FEED requests carry OkHttp's default gzip |
 | `LocalNetworkGuardDns`, `LocalNetworkGuardInterceptor` | JVM with a fake `Dns` and SDK-level parameter; MockWebServer for the interceptor | all-private on 37 → throws; mixed → passes; loopback → passes; all-private on 36 → passes; IPv6 ULA and link-local; IP-literal `http://192.168.1.5/feed` and `nas.local` on 37 → `LocalNetworkUnsupportedException` without a connect attempt; same URLs on 36 → request proceeds; `http://127.0.0.1:{port}` (MockWebServer) passes on 37 |
-| `DnsFamilyHints`, `FamilyHintDns` | JVM with a fake `Dns` returning A + AAAA | no hint → all addresses; `V4` hint for `googlevideo.com` → only A records for `rr1---sn-x.googlevideo.com`, not for `notgooglevideo.com`; `V6` hint with no AAAA → all addresses; `null` clears |
+| `DnsFamilyHints`, `FamilyHintDns`, `pinnedToFamily` | JVM with a fake `Dns` returning A + AAAA | no hint → all addresses; `V4` hint for `googlevideo.com` → only A records for `rr1---sn-x.googlevideo.com`, not for `notgooglevideo.com`; `V6` hint with no AAAA → all addresses; `null` clears; `pinnedToFamily(V6)` → only AAAA for every host, shares the original's connection pool and dispatcher, and is the same instance on a second call |
+| Client graph | Robolectric Hilt in `:app` | constructing `@HttpClient(YOUTUBE)` does not construct `CredentialLookup` (a binding that throws on construction proves it); every other kind carries `AuthInterceptor` |
 | `NetErrorClassifier` | JVM | every row of the [taxonomy table](#network-error-taxonomy), with `FakeNetworkMonitor` connected and disconnected |
 | `ConnectivityNetworkMonitor` | Robolectric (`ShadowConnectivityManager`) | initial value seeded without a collector; `status.value` follows a default-network change with no subscriber (eager sharing); metered/unmetered/VPN mapping |
 | `IntentRouter` | Robolectric | every row of the [routing table](#intent-routing); upper-case scheme; 1 MB `EXTRA_TEXT` truncated to 4 KB; non-numeric IDs → `None`; unknown settings page → `None`; no route performs a write (verified with fakes recording calls) |
-| Hilt graph | Robolectric `@HiltAndroidTest` in `:app` (both flavors) | graph builds; every canonical `NavKey` (and 08's `SettingsHomeKey`) has exactly one installer entry; every `AppInitializer.order` lies in a defined band; `Distribution` and `YouTubeCapabilities` match the flavor; `TestSqliteDriverModule` replaces the driver |
-| Start-up ordering (M1; each framework component from the milestone it lands in) | Robolectric in `:app` with a `DatabaseOpener` whose open completes only when the test releases it | constructing the full `Set<AppInitializer>` and every framework component (`NeutrodynePlaybackService`, `ManualDownloadJobService`, `DownloadActionReceiver`) on the main thread while the open is pending neither throws nor blocks (lazy rule, [Application start-up](#application-start-up)); the runner completes within 5 s after release (no initializer below 100 waits for the database) |
+| Hilt graph | Robolectric `@HiltAndroidTest` in `:app`; also run by the nightly `no-engine-build` with `-Pneutrodyne.youtubeEngine=false` | graph builds; every canonical `NavKey` (and 08's `SettingsHomeKey`) has exactly one installer entry; every `AppInitializer.order` lies in a defined band; `YouTubeCapabilitiesSource` reports `NOT_YET_AVAILABLE` before M9a and `NOT_IN_THIS_APK` in the no-engine build (and `YouTubeEngine` is `AbsentYouTubeEngine` there); `TestSqliteDriverModule` replaces the driver |
+| Start-up ordering (M1; each framework component from the milestone it lands in) | Robolectric in `:app` with a `DatabaseOpener` whose open completes only when the test releases it | constructing the full `Set<AppInitializer>` and every framework component (`NeutrodynePlaybackService`, `ManualDownloadJobService`, `DownloadActionReceiver`, `YouTubeAlertActionReceiver`, `UpdateStatusReceiver`) on the main thread while the open is pending neither throws nor blocks (lazy rule, [Application start-up](#application-start-up)); the runner completes within 5 s after release (no initializer below 100 waits for the database) |
 | Navigation | Robolectric + Compose v2 rule + `StateRestorationTester` | push/pop per tab; back from a non-start root returns to Feeds; two `PodcastKey`s get different ViewModels; Library → Podcast, then Downloads, then Up next, then Library again: the podcast entry's `rememberSaveable` state and ViewModel instance survive (every tab decorated every composition); `LocalNavTab` inside an entry equals its tab; stacks restored after state restoration; sheet key renders as overlay; `pushDetail` replaces a same-class top entry only when `LocalPaneLayout.partitions ≥ 2` |
+| `ProcessRole` | JVM (process name as a parameter) | `ch.lkmc.neutrodyne` → `MAIN`; `ch.lkmc.neutrodyne:ytx` and `ch.lkmc.neutrodyne.debug:ytx` → `YTX`; `…:acra` → `ACRA`; a `/proc/self/cmdline` buffer with a trailing NUL and padding parses like the plain name |
+| `:ytx` start (M0 while S7 is go, else M9a) | instrumented (`YtxProcessStartTest`, API 26 and API 36 GMDs; API 37 16 KB image nightly) | binding `YtxService` starts the `:ytx` process; in it no `AppInitializer` runs, `NeutrodyneDatabase` is never opened, no DataStore file is opened, WorkManager is never initialised, ACRA is not installed and no default-process `ContentProvider` is created (observed through a test-only probe in debug builds); killing `:ytx` leaves the main process and a running playback untouched (04's `YtxIsolationTest` covers the engine side) |
 | Initializer runner | JVM (`runInitializers` is a plain suspend function) | runs in ascending `order`; a throwing initializer is logged and later ones still run; cancellation propagates. The `:acra` early return is checked manually once (ACRA crash dialog appears, no WorkManager or session start in its process) |
 | Startup gate | Robolectric | splash condition clears when `device_settings` emitted and the database is `Ready`; clears after 400 ms with a database still `Pending`; clears after 1 s when `device_settings` never emits; a deep-link route received while `Pending` is shown after the gate opens; `StartupGate` is shown and no ViewModel (feature or `PlayerViewModel`) is created while `Pending`; `NavDisplay` appears on `Ready` |
-| Build policy | Gradle (CI `static` job) | `assertModuleGraph`, Licensee ×2, `verifyDependencyPolicy`, `verifyManifestPermissions`, `checkSpdxHeaders`, `checkBannedApis`, KGP assertion; negative checks once per the [verification log](#verification-log) |
-| Smoke | GMD API 26, 36, 37 (16 KB) | launch, five labelled destinations, rotation, dark-mode switch, Settings → About shows flavor and version, Licences non-empty |
+| Build policy | Gradle (CI `static` job) | `assertModuleGraph`, `licenseeRelease`, `verifyDependencyPolicy`, `verifyManifestPermissions`, `checkSpdxHeaders`, `checkBannedApis`, `checkPythonLicences`, `verifyBundledYtDlp`, KGP assertion; negative checks once per the [verification log](#verification-log) |
+| `PythonLicencePolicy`, lockfile parser, `OpenPgpSignatureCheck` | JVM in `build-logic` | allowed and rejected SPDX expressions (`Python-2.0` and `Unicode-3.0` accepted; `GPL-2.0-only`, `LGPL-2.1-or-later`, `AGPL-3.0-only`, `MPL-2.0` on code vs data, `BSD-3-Clause OR GPL-2.0-only` with and without `elected`); lockfile/build mismatches; a good, a tampered and a wrong-key detached signature over a fixture `SHA2-256SUMS` |
+| Smoke | GMD API 26, 36, 37 (16 KB) | launch, five labelled destinations, rotation, dark-mode switch, Settings → About shows version and ABI, Licences non-empty; while S7 is go, `selftest` returns from `:ytx` on API 26 and 37 |
 
 Fixtures: none beyond inline tables; `FakeNetworkMonitor` and `TestClock` in `:core:testing`.
 
@@ -1690,44 +1907,48 @@ Fixtures: none beyond inline tables; `FakeNetworkMonitor` and `TestClock` in `:c
 
 | Milestone | Foundation work |
 |---|---|
-| [M0](../PLAN.md#m0-scaffold-and-ci) | Everything in the [M0 scaffold checklist](#m0-scaffold-checklist): toolchain, catalog, convention plugins, all module stubs, dependency rules and policy tasks, flavors and build types, `:core:common`, `:core:model` basics, `:core:navigation`, `:core:datastore`, `:core:network` (base + derived clients, interceptors, DNS guard, error taxonomy, NSC), Hilt skeleton, Nav3 host, `IntentRouter` (internal routes), `NeutrodyneApplication` start-up and initializer runner, manifest subset, M0 backup rule files, About/Licences, ACRA wiring, CONTRIBUTING/PR template, spikes S1–S6 |
+| [M0](../PLAN.md#m0-scaffold-and-ci) | Everything in the [M0 scaffold checklist](#m0-scaffold-checklist): toolchain, catalog, convention plugins, all module stubs (`:youtube:ytdlp` with Chaquopy, `YtxService` in `:ytx` (`ping`, `selftest`), the `ProcessRole.YTX` branch and `YtxProcessStartTest` if S7 is go; `:update:api`/`:update:impl`), dependency rules and policy tasks (including `checkPythonLicences`, the lockfile and `verifyBundledYtDlp` as a no-op), build types and ABI splits without flavors, `:core:common`, `:core:model` basics, `:core:navigation`, `:core:datastore`, `:core:network` (credential-free core, base and derived clients, interceptors, DNS guard, error taxonomy, NSC), Hilt skeleton with an empty `YouTubeBindingsModule`, Nav3 host, `IntentRouter` (internal routes), process-aware `NeutrodyneApplication` (`ProcessRole`) and initializer runner, manifest subset, M0 backup rule files, About (version, ABI, statement)/Licences, ACRA wiring, CONTRIBUTING/PR template, spikes S1–S7 |
 | [M1](../PLAN.md#m1-subscribe-and-ingest-rss) | `:core:database` with `SqliteDriverModule` and the S2–S4 outcomes applied; database-open initializer (100) and `StartupGate` wired to `DatabaseOpener`; `CredentialStore` replaces `CredentialLookup.None` (initializer 120); FEED and IMAGE clients in use; `SettingsRepository` implementation; `refresh-periodic` initializer (200); start-up ordering test; router: `AddPodcastKey` for direct feed URLs and `feed:`/`pcast:`/`podcast:`/`itpc:` (filters by 03) |
-| [M2](../PLAN.md#m2-groups-and-group-feeds) | Channel initializers for `new_episodes` and `grp_new_episodes` (10) and per-group channel sync (140); router `SelectFeed`; both `FlavorModule`s provide `YouTubeCapabilities` (all `false`) |
+| [M2](../PLAN.md#m2-groups-and-group-feeds) | Channel initializers for `new_episodes` and `grp_new_episodes` (10) and per-group channel sync (140); router `SelectFeed`; `YouTubeBindingsModule` provides `StaticYouTubeCapabilitiesSource(NOT_YET_AVAILABLE)` |
 | [M3](../PLAN.md#m3-import-export-and-backup) | `ExternalImportActivity` and `FileProvider` manifest entries; final backup rule XML (05); restore-check initializer (110); `backup-auto-snapshot` scheduling; `import_backup` channel |
-| [M4](../PLAN.md#m4-playback-core) | Playback service, permissions and `ArtworkProvider` manifest entries; MEDIA client; `kotlinx-coroutines-guava`, `lifecycle-process`, `kotlinx-serialization-json` in `:playback:impl`; `playback`/`alerts` channels; `:playback:impl` lint config for `@UnstableApi`; both `FlavorModule`s bind `YouTubeStreamResolver` → `ExternalOnlyYouTubeStreamResolver` |
+| [M4](../PLAN.md#m4-playback-core) | Playback service, permissions and `ArtworkProvider` manifest entries; MEDIA client; `kotlinx-coroutines-guava`, `lifecycle-process`, `kotlinx-serialization-json` in `:playback:impl`; `playback`/`alerts` channels; `:playback:impl` lint config for `@UnstableApi`; `YouTubeBindingsModule` binds `YouTubeStreamResolver` → `ExternalOnlyYouTubeStreamResolver` |
 | [M5](../PLAN.md#m5-playback-features-and-system-surfaces) | `MediaButtonReceiver`, Auto meta-data and `automotive_app_desc.xml`; `media3-inspector` |
 | [M6](../PLAN.md#m6-downloads) | `include(":benchmark")` for 09's out-of-process system tests; UIDT service, `SystemForegroundService` override, `DownloadActionReceiver`, `RUN_USER_INITIATED_JOBS`/`FOREGROUND_SERVICE_DATA_SYNC`/`RECEIVE_BOOT_COMPLETED`; DOWNLOAD client; `download-reconcile` and `download-cleanup` initializers; `hasFragileUserData` confirmed; `permissions.txt` updated |
 | [M7](../PLAN.md#m7-discovery) | API client in use; exported VIEW/SEND filters complete (03); `PODCASTINDEX_*` plumbing via `BuildInfo` |
-| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | Both `FlavorModule`s bind `NoOpYouTubeEnricher`, `UnsupportedYouTubeChannelSearch`, `NoExtractorChannelLookup` (play column in both flavors) and their flavor's `YouTubeFlavorTexts` |
-| [M9](../PLAN.md#m9-youtube-playback-and-downloads-in-foss) | JitPack resolution + verification metadata; NewPipe Extractor and strict Rhino in `:youtube:streams`; GPL `LICENSE`/README; desugaring in `:app` with the AboutLibraries manual entry; YOUTUBE client and `DnsFamilyHints` in use; foss `FlavorModule` switches to the extractor bindings and all-`true` capabilities; scoped Licensee entries; foss About statement; `verifyDependencyPolicy` proven against real GPL artifacts; `j$` check |
+| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | `YouTubeBindingsModule` binds `NoOpYouTubeEnricher`, `UnsupportedYouTubeChannelSearch`, `NoExtractorChannelLookup` (every APK in external mode until M9a) |
+| [M9](../PLAN.md#m9-youtube-playback-and-downloads-via-the-embedded-yt-dlp-engine) | **M9a:** `YtxService` gains the engine methods (its manifest entry, the `:ytx` start-up branch and `YtxProcessStartTest` are live since M0 while S7 is go; on a fallback host they arrive here); `YouTubeAlertActionReceiver` manifest entry (04's breaker notice); `YouTubeBindingsModule` split into `app/src/youtubeEngine/` (engine-backed bindings, `YtDlpEngine` as `YouTubeCapabilitiesSource` and `YouTubeEngine`) and `app/src/noYouTubeEngine/` (`AbsentYouTubeEngine`, `NOT_IN_THIS_APK`) with the `neutrodyne.youtubeEngine` switch and the nightly `no-engine-build` (09); YOUTUBE client in `:ytx` for `PyHttp` with `pinnedToFamily`, `DnsFamilyHints` in use in the main process; initializer 150 (`YtDlpEngine` capability load); vendored yt-dlp with `verifyBundledYtDlp` active, lockfile complete for the engine stack, AboutLibraries engine entries and `THIRD_PARTY_NOTICES.md`; `youtube/ytdlp/consumer-rules.pro`; packaging mode per S7 and the M9a spike. **M9b:** `tink-android` and, if the JS provider passed the spike, `quickjs-kt-android` (lockfile entry for QuickJS); `engine-update` in initializer 200; `engineManifestUrl` in use |
 | [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) | `material-color-utilities` in `:core:designsystem`/`:core:artwork`; no foundation changes otherwise |
-| [M11](../PLAN.md#m11-release-hardening-and-v10) | Baseline-profile plugin in `:benchmark` (module since M6); `db-maintenance` initializer; `RingBufferLogSink`; final merged-manifest audit against [Platform compliance](#platform-compliance); Play Publisher only if PO-2 approves; release hygiene per 09 |
-
+| [M11](../PLAN.md#m11-release-hardening-and-v10) | **M11a:** `:update:impl` manifest entries (`REQUEST_INSTALL_PACKAGES`, `UPDATE_PACKAGES_WITHOUT_USER_ACTION` in `permissions.txt`, `UpdateStatusReceiver`, Obtainium `<queries>`), channel `updates` (10), `app-update-check` (200), `updates.*` keys, routes `…/open/settings/updates` and `…/open/help/install`, `UpdateModule` bindings. **M11b:** baseline-profile plugin in `:benchmark` (module since M6); `db-maintenance` initializer; `RingBufferLogSink`; final merged-manifest audit against [Platform compliance](#platform-compliance) (including P33–P39 on an API 37 device); release hygiene per 09 |
 ---
 
 ## New names introduced here
 
 | Name | Kind | Module |
 |---|---|---|
-| `Distribution` (`FOSS`, `PLAY`) | enum | `:core:model` |
-| `BuildInfo` | data class | `:core:model` |
+| `BuildInfo` (incl. `apkAbi`, `youTubeEngineBundled`, `updateManifestUrl`, `releasesAtomUrl`, `engineManifestUrl`) | data class | `:core:model` |
 | `NetError`, `TlsKind` | sealed interface, enum | `:core:model` |
+| `ExternalReason` (values owned by 04; M2) | enum | `:core:model` |
 | `SettingsFile`, `SettingKey` (`Bool`, `Int32`, `Int64`, `Float32`, `Text`, `TextSet`, `Choice`), `AllSettingKeys` | settings typing | `:core:model` |
 | `SettingsError` | sealed error type for `SettingsRepository.set` | `:core:domain` |
 | `AppInitializer` | interface | `:core:common` |
 | `LogSink`, `LogLevel`, `Redactor`, `LogcatSink`, `RingBufferLogSink` (M11), `DebugHttpLogInterceptor` | logging | `:core:common` (`LogcatSink`, `DebugHttpLogInterceptor`: `:app`) |
 | `NetworkStatus` | data class (interface `NetworkMonitor` placed in `:core:common`) | `:core:common` |
 | `DeviceClock` | `Clock` implementation | `:app` |
-| `HttpClientKind`, `@HttpClient` | qualifier | `:core:network` |
-| `IdentityEncodingInterceptor`, `LocalNetworkGuardDns`, `LocalNetworkGuardInterceptor`, `LocalNetworkUnsupportedException`, `DnsFamilyHints`, `FamilyHintDns`, `NetErrorClassifier`, `ConnectivityNetworkMonitor`, `CredentialLookup`, `Origin`, `NetworkModule` | networking | `:core:network` |
+| `HttpClientKind`, `@HttpClient`, `@CredentialFreeCore` (internal) | qualifier | `:core:network` |
+| `IdentityEncodingInterceptor`, `LocalNetworkGuardDns`, `LocalNetworkGuardInterceptor`, `LocalNetworkUnsupportedException`, `DnsFamilyHints`, `FamilyHintDns`, `pinnedToFamily`, `NetErrorClassifier`, `ConnectivityNetworkMonitor`, `CredentialLookup`, `Origin`, `NetworkModule` | networking | `:core:network` |
 | `@SettingsDataStore` | qualifier | `:core:datastore` |
 | `SqliteDriverModule`, `TestSqliteDriverModule` | Hilt modules | `:core:database`, `:app/src/test` |
-| `CoreModule`, `WorkEntryPoint`, `ImageEntryPoint`, `ArtworkProviderEntryPoint` | Hilt module / entry points | `:app` (`ArtworkProviderEntryPoint`: `:core:artwork`) |
+| `CoreModule`, `YouTubeBindingsModule`, `WorkEntryPoint`, `ImageEntryPoint`, `ArtworkProviderEntryPoint` | Hilt modules / entry points | `:app` (`ArtworkProviderEntryPoint`: `:core:artwork`) |
+| `ProcessRole` (`MAIN`, `YTX`, `ACRA`) | enum + classifier | `:app` |
+| `StaticYouTubeCapabilitiesSource`, `AbsentYouTubeEngine` | external-only implementations (names proposed here; 04 owns the classes) | `:youtube:impl` |
 | `TopLevelKey`, `LocalAppNavigator`, `NdSceneMetadata` | navigation | `:core:navigation` |
 | `NavigationState`, `NeutrodyneNavHost`, `rememberTabLocalNavEntryDecorator`, `NdBottomSheetSceneStrategy`, `NdDialogSceneStrategy`, `IntentRouter`, `Route`, `StartupViewModel`, `StartupState`, `StartupGate` | navigation / start-up | `:app` |
 | `UiText` (`Res`, `Plural`, `Raw`), `UserMessage` | UI-state helpers (used by feature ViewModels and screens) | `:core:ui` |
-| `assertModuleGraph` rules file `ModuleRules.kt`; tasks `verifyDependencyPolicy`, `verifyManifestPermissions`, `checkSpdxHeaders`, `checkBannedApis` | build | `build-logic` |
-| `compose-stability.conf`, `app/policy/permissions.txt`, `app/src/main/keepRules/app.keep`, `app/src/foss/keepRules/foss.keep`, `playback/impl/lint.xml`, `strings_flavor.xml` (string `licence_statement`), `THIRD_PARTY_NOTICES.md`, `CONTRIBUTING.md` | files | repo |
+| `assertModuleGraph` rules file `ModuleRules.kt`; tasks `verifyDependencyPolicy`, `verifyManifestPermissions`, `checkSpdxHeaders`, `checkBannedApis`; `PythonLicencePolicy`, `OpenPgpSignatureCheck` | build | `build-logic` |
+| Tasks `checkPythonLicences`, `verifyBundledYtDlp`, `shimTest` (Gradle side; test content 04) | build | `:youtube:ytdlp` |
+| Gradle properties `neutrodyne.youtubeEngine`, `neutrodyne.engineManifestUrl`; `BuildConfig.YOUTUBE_ENGINE`, `BuildConfig.ENGINE_MANIFEST_URL` | build | `gradle.properties`, `:app` |
+| `compose-stability.conf`, `app/policy/permissions.txt`, `app/src/main/keepRules/app.keep`, `app/src/youtubeEngine/`, `app/src/noYouTubeEngine/`, `youtube/ytdlp/consumer-rules.pro`, `youtube/ytdlp/python-components.lock`, `third_party/chaquopy-maven/` (S7 fallback only), `playback/impl/lint.xml`, `THIRD_PARTY_NOTICES.md`, `CONTRIBUTING.md` | files | repo |
+| Platform-compliance rows P33–P39 | checklist IDs | this document |
 
 ---
 
@@ -1736,20 +1957,22 @@ Fixtures: none beyond inline tables; `FakeNetworkMonitor` and `TestClock` in `:c
 1. Resolved by [D68](../PLAN.md#3-key-decisions): option (b) — rule 8 stands, `:feeds` produces `ShowNotesDocument` and `:core:data` maps it 1:1 into the `:core:model` mirror `ShowNotes`.
 2. Resolved: rules 10–12 confirmed by PLAN [5.1](../PLAN.md#51-module-graph); rule 13 now states the test-fixture split for pure-JVM modules (09).
 3. Resolved (PLAN [5.1](../PLAN.md#51-module-graph)): the `NetworkMonitor` interface lives in `:core:common`, `ConnectivityNetworkMonitor` in `:core:network`.
-4. Resolved (PLAN [5.1](../PLAN.md#51-module-graph)): `YouTubeCapabilities` (M2) and the `YouTubeStreamResolver` contract with `ExternalOnlyYouTubeStreamResolver` (M4) land early and are bound in both [Flavor modules](#flavor-modules).
-5. Resolved (PLAN [5.1](../PLAN.md#51-module-graph)): `IpFamily` lives in `:core:model`.
-6. Resolved: [D3](../PLAN.md#3-key-decisions) names the desugaring runtime as the one non-permissive exception `play` may carry; the M9 `j$` check in the [Verification log](#verification-log) still records whether R8 removes it.
+4. Resolved (PLAN [5.1](../PLAN.md#51-module-graph)): `YouTubeCapabilitiesSource` (M2) and the `YouTubeStreamResolver` contract with `ExternalOnlyYouTubeStreamResolver` (M4) land early and are bound in `:app`'s [YouTube bindings](#youtube-bindings).
+5. Resolved (PLAN [5.1](../PLAN.md#51-module-graph)): `IpFamily` lives in `:core:model`, and so does `ExternalReason` (M2; used by `:youtube:api`, `:playback:api` and `:core:ui`; 04 owns the values).
+6. Obsolete (2026-10-05): core-library desugaring left with NewPipe Extractor ([D3](../PLAN.md#3-key-decisions) amended); the build now fails if it is enabled.
 7. **Safer Intents (`intentMatchingFlags`).** Opt-in on Android 16 and not a target-37 change ([Android 17 behaviour changes](https://developer.android.com/about/versions/17/behavior-changes-17)); not adopted in v1. Under enforcement, explicit `VIEW neutrodyne://open/…` intents to `MainActivity` (notifications, 05's `ExternalImportActivity` hand-off) would no longer match its filters. Planned fix when it becomes default: add `<intent-filter><action VIEW/><category DEFAULT/><data scheme="neutrodyne" host="open"/></intent-filter>` to `MainActivity`; this exposes nothing new because `MainActivity` is exported anyway and routes only navigate. Revisit at the first targetSdk bump after 37.
-8. **AAB language splits** (`bundle.language.enableSplit = false`) — Unverified whether per-app language on Play-delivered AABs needs it; harmless, but costs `play` download size. Confirm before the first Play upload (M11).
+8. Obsolete (2026-10-05): no app bundles are built (GitHub Releases ships APKs only, [PO-2](../PLAN.md#po-2-distribution-channels)); `bundle.language.enableSplit` was removed.
 9. Resolved as a [PO-18](../PLAN.md#48-further-product-owner-decisions) follow-up: the PO names the GitHub owner; `OWNER` stays a placeholder until then.
-10. Resolved ([PO-18](../PLAN.md#48-further-product-owner-decisions) default, [09 Google Play](09-quality-and-release.md#google-play)): the `play` About links to the repository root only; fallback `BuildInfo.repoUrl` empty in `play`.
-11. **Mechanical uncertainties** resolved by M0/M9 checks above: Gradle verification trust regex; AboutLibraries plugin ID and `aboutlibraries-core` having no Compose dependency; the `room3 { }` extension name for `schemaDirectory`; flavor `keepRules` source sets; the `androidx.core` receiver-permission name; whether Licensee sees `coreLibraryDesugaring`.
+10. Obsolete (2026-10-05): there is no `play` build; every APK's About links to `BuildInfo.repoUrl`.
+11. **Mechanical uncertainties** resolved by M0/M9a checks above: Chaquopy on the build-logic classpath vs a versioned `plugins {}` entry (catalog rule 3); Chaquopy's Gradle configuration names and runtime coordinates for `checkPythonLicences`, and whether its runtime reaches `releaseRuntimeClasspath` (Licensee); library-module `abiFilters` under the app's ABI splits; Chaquopy consumer keep rules and configuration-cache compatibility; AGP 9 names of the `splits.abi` DSL and of `sourceSets…kotlin.srcDir` under built-in Kotlin; conditional AboutLibraries config for the engine entries; AboutLibraries plugin ID and `aboutlibraries-core` having no Compose dependency; the `room3 { }` extension name for `schemaDirectory`; the `androidx.core` receiver-permission name; Obtainium's package IDs in `<queries>`.
+12. **AGP 9.2.x as a Chaquopy fallback** (architect, after S7). If released Chaquopy 17.0.0 fails under AGP 9.4.1 but a self-built master is undesirable, AGP 9.2.x sits inside Chaquopy 17.0.0's documented range (7.3–9.2), Compose 1.12's minimum (9.2) and Kotlin 2.4.20's tested range (to 9.3.1). It would need a [D4](../PLAN.md#3-key-decisions) amendment and gives up AGP 9.3+ features this document uses (`optimization {}` DSL, `keepRules` source set). Default: no — self-built master first, per [D72](../PLAN.md#3-key-decisions)'s order.
+13. **Python assets in the `armeabi-v7a` APK.** ABI splits filter only `lib/<abi>/`; Chaquopy's assets (stdlib `.pyc`, the vendored yt-dlp, the shim, and the `lib-dynload` sets of both 64-bit ABIs) probably also land in the `armeabi-v7a` APK, which cannot run them (≈ 12–13 MB, Unverified). S7 measures it against its `armeabi-v7a` criterion. Options: accept (only while the APK stays within PB13's 30 MB; the dead weight is counted there), an ABI flavor dimension ([D2](../PLAN.md#3-key-decisions) fallback), or a variant-API transform that strips the assets from that split (Unverified feasibility). Default: accept if within budget.
 
 ---
 
 ## Sources
 
-All checked 2026-10-04 by the research behind this plan unless marked otherwise (entries marked 2026-10-05 were re-checked during review).
+All checked 2026-10-04 by the research behind this plan unless marked otherwise (entries marked 2026-10-05 were checked or re-checked for the product owner's decisions of that day).
 
 Toolchain and build:
 - Kotlin releases — https://kotlinlang.org/docs/releases.html
@@ -1793,15 +2016,23 @@ Libraries:
 - ACRA — https://www.acra.ch/docs/Setup · https://www.acra.ch/docs/Senders
 - Robolectric — https://github.com/robolectric/robolectric/releases
 - Roborazzi — https://github.com/takahirom/roborazzi
-- Gradle Play Publisher — https://github.com/Triple-T/gradle-play-publisher/releases
+- GitHub Actions releases (checked 2026-10-05) — https://github.com/actions/setup-python/releases · https://github.com/actions/attest/releases · https://github.com/actions/deploy-pages/releases
+
+YouTube engine and signatures (checked 2026-10-05):
+- Chaquopy — repository, licence (MIT) and master `VERSION.txt` 17.1.0 https://github.com/chaquo/chaquopy · https://raw.githubusercontent.com/chaquo/chaquopy/master/VERSION.txt · documentation (17.0: AGP 7.3–9.2, one module per app, Python ≥ 3.12 64-bit only, `buildPython` minor version, `pyc`, `chaquopy {}` DSL) https://chaquo.com/chaquopy/doc/current/android.html · FAQ (ABI splits "won't help much") https://chaquo.com/chaquopy/doc/current/faq.html · Maven metadata (latest 17.0.0, 2025-11-30) https://repo1.maven.org/maven2/com/chaquo/python/gradle/maven-metadata.xml · runtime builds (3.14.0-0, 3.13.9-0, …) https://repo1.maven.org/maven2/com/chaquo/python/target/maven-metadata.xml
+- CPython on Android, licence and versions — https://docs.python.org/3/using/android.html · https://www.python.org/downloads/android/ · https://docs.python.org/3/license.html · https://devguide.python.org/versions/
+- yt-dlp — licensing https://github.com/yt-dlp/yt-dlp#licensing · release files and channels https://github.com/yt-dlp/yt-dlp#release-files · signing key https://github.com/yt-dlp/yt-dlp/blob/master/public.key · embedding https://github.com/yt-dlp/yt-dlp#embedding-yt-dlp · stable 2026.08.19 https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19 · PyInstaller licences (why the executables are never shipped) https://github.com/yt-dlp/yt-dlp/blob/master/THIRD_PARTY_LICENSES.txt · yt-dlp-ejs https://github.com/yt-dlp/ejs
+- Tink — https://github.com/tink-crypto/tink-java · `tink-android` 1.23.0 https://repo1.maven.org/maven2/com/google/crypto/tink/tink-android/maven-metadata.xml · Ed25519 in `java.security.Signature` from API 33 https://developer.android.com/reference/java/security/Signature
+- quickjs-kt — https://github.com/dokar3/quickjs-kt · 1.0.15 https://repo1.maven.org/maven2/io/github/dokar3/quickjs-kt-android/maven-metadata.xml · QuickJS https://bellard.org/quickjs/
+- GPL components that must never ship — youtubedl-android https://github.com/yausername/youtubedl-android · bgutil-ytdlp-pot-provider https://github.com/Brainicism/bgutil-ytdlp-pot-provider
 
 Platform:
-- Play target API — https://developer.android.com/google/play/requirements/target-sdk
-- Android 15 behaviour changes — https://developer.android.com/about/versions/15/behavior-changes-15
+- Android 15 behaviour changes (targeting / all apps: no installs below targetSdk 24, checked 2026-10-05) — https://developer.android.com/about/versions/15/behavior-changes-15 · https://developer.android.com/about/versions/15/behavior-changes-all
+- Android 10 behaviour changes (no `execve()` from the app's home directory; checked 2026-10-05) — https://developer.android.com/about/versions/10/behavior-changes-10
 - Android 16 behaviour changes (targeting / all apps) — https://developer.android.com/about/versions/16/behavior-changes-16 · https://developer.android.com/about/versions/16/behavior-changes-all
-- Android 17 behaviour changes (targeting / all apps), background audio — https://developer.android.com/about/versions/17/behavior-changes-17 · https://developer.android.com/about/versions/17/behavior-changes-all · https://developer.android.com/about/versions/17/changes/bg-audio
+- Android 17 behaviour changes (targeting / all apps; read-only `System.load` checked 2026-10-05), background audio — https://developer.android.com/about/versions/17/behavior-changes-17 · https://developer.android.com/about/versions/17/behavior-changes-all · https://developer.android.com/about/versions/17/changes/bg-audio
 - Android 17 release — https://en.wikipedia.org/wiki/Android_17 · https://developer.android.com/about/versions/17
-- Android 14 behaviour changes (network-state permission for job constraints) — https://developer.android.com/about/versions/14/behavior-changes-14
+- Android 14 behaviour changes (network-state permission for job constraints; read-only dynamic code loading, checked 2026-10-05) — https://developer.android.com/about/versions/14/behavior-changes-14
 - FGS service types and timeouts — https://developer.android.com/develop/background-work/services/fgs/service-types · https://developer.android.com/develop/background-work/services/fgs/timeout
 - Background FGS-start restrictions — https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start
 - UIDT jobs — https://developer.android.com/develop/background-work/background-tasks/uidt · https://developer.android.com/reference/android/app/job/JobService
@@ -1815,14 +2046,9 @@ Platform:
 - Auto Backup — https://developer.android.com/identity/data/autobackup
 - `hasFragileUserData` — https://developer.android.com/guide/topics/manifest/application-element
 - `<data>` matching rules — https://developer.android.com/guide/topics/manifest/data-element
+- Installing updates (checked 2026-10-05): `PackageInstaller` (developer-verification failure reasons, API 36.1) https://developer.android.com/reference/android/content/pm/PackageInstaller · `SessionParams.setRequireUserAction` https://developer.android.com/reference/android/content/pm/PackageInstaller.SessionParams · `InstallConstraints` https://developer.android.com/reference/android/content/pm/PackageInstaller.InstallConstraints.Builder · `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` https://developer.android.com/reference/android/provider/Settings · AOSP verification handling by installer target https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android16-qpr2-release/services/core/java/com/android/server/pm/PackageInstallerSession.java · Obtainium https://github.com/ImranR98/Obtainium
 - API distribution — https://apilevels.com/
 
 Licensing and policy:
-- Unlicense GPL compatibility — https://en.wikipedia.org/wiki/Unlicense · FSF list mirror https://ftp.gwdg.de/pub/gnu/www/licenses/license-list.html
-- GPL combined works — https://en.wikipedia.org/wiki/GNU_General_Public_License (quoting https://www.gnu.org/licenses/gpl-faq.html#MereAggregation)
-- NewPipe Extractor (licence, JitPack coordinates, desugaring, Rhino pin, R8 rules) — https://github.com/TeamNewPipe/NewPipeExtractor · https://jitpack.io/com/github/teamnewpipe/NewPipeExtractor/v0.26.5/NewPipeExtractor-v0.26.5.pom
-- desugar_jdk_libs_nio — https://dl.google.com/android/maven2/com/android/tools/desugar_jdk_libs_nio/maven-metadata.xml
-- Play Device and Network Abuse — https://support.google.com/googleplay/android-developer/answer/9888379
-- Play FGS declarations — https://support.google.com/googleplay/android-developer/answer/13392821
-- F-Droid inclusion policy, anti-features, reproducible builds — https://f-droid.org/docs/Inclusion_Policy/ · https://f-droid.org/docs/Anti-Features/ · https://f-droid.org/docs/Reproducible_Builds/
-- F-Droid dependency-info block — https://forum.f-droid.org/t/build-fails-with-found-extra-signing-block/29220
+- Unlicense — https://en.wikipedia.org/wiki/Unlicense
+- SPDX licence identifiers (expressions with `OR`, `WITH LLVM-exception`, `blessing`) — https://spdx.org/licenses/

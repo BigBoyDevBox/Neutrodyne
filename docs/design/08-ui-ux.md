@@ -1,10 +1,10 @@
 # 08 — UI and UX
 
-> Status: Draft v1, 2026-10-04 · Implements: R2.4, R2.5, R2.8 (display), R3.7 (display), R4.6, R5.1–R5.8, and the screens of R1.1–R1.9, R2.1–R2.7, R3.1, R4.8 / N4, N5 (UI), N6, N7 (edge-to-edge, predictive back, resizability), N10 (RTL, text expansion) · Milestones: M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M13 · Honours: D6, D7, D16, D42, D54, D55, D56, D57, D58, D64; PO-4, PO-17, PO-19 defaults · Owns: information architecture and screen inventory, navigation behaviour, every screen's layout and states, shared components, the root `PlayerSheet`, the Feeds pager, `EpisodeLiveStateSource`, theming and colour, the artwork pipeline (`ArtworkStore`, `ArtworkSyncWorker`, `ArtworkProvider`, Coil, monograms, mosaics), adaptive layouts, accessibility, onboarding, flavor UI differences and the Settings structure
+> Status: Draft v1, 2026-10-04; revised 2026-10-05 for the product owner's decisions (GitHub-only distribution, no developer verification, in-app updater, yt-dlp engine) · Implements: R2.4, R2.5, R2.8 (display), R3.7 (display), R3.9 (display), R4.6, R5.1–R5.8, the screens of R1.1–R1.9, R2.1–R2.7, R3.1, R4.8 and R6.1–R6.4 / N4, N5 (UI), N6, N7 (edge-to-edge, predictive back, resizability), N10 (RTL, text expansion) · Milestones: M0, M1, M2, M3, M4, M5, M6, M7, M8, M9 (M9a, M9b), M10, M11 (M11a, M11b), M13 · Honours: D2, D6, D7, D16, D42, D51, D54, D55, D56, D57, D58, D64, D76, D77, D78, D80; PO-2 and PO-5 (resolved); PO-4, PO-17, PO-19, PO-31, PO-32, PO-33, PO-36 defaults · Owns: information architecture and screen inventory, navigation behaviour, every screen's layout and states, shared components, the root `PlayerSheet`, the Feeds pager, `EpisodeLiveStateSource`, theming and colour, the artwork pipeline (`ArtworkStore`, `ArtworkSyncWorker`, `ArtworkProvider`, Coil, monograms, mosaics), adaptive layouts, accessibility, onboarding, the UI differences between engine present and external mode (including the Settings › YouTube engine rows), the updater and install-guidance UI (Settings › Updates, the update card, sheets, dialog and notification wording, the Install & updates help page) and the Settings structure
 
 ## Scope
 
-Serves R5.1–R5.8, R2.4, R2.5, R4.6, N4, N6, N7. Delivered from [M0](../PLAN.md#m0-scaffold-and-ci) (shell, theme, five destinations) to [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) (release-quality covers, colour, adaptive layouts and accessibility); see [Delivery by milestone](#delivery-by-milestone).
+Serves R5.1–R5.8, R2.4, R2.5, R4.6, R6.1–R6.4 (screens), N4, N6, N7. Delivered from [M0](../PLAN.md#m0-scaffold-and-ci) (shell, theme, five destinations) to [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) (release-quality covers, colour, adaptive layouts and accessibility), with the YouTube-engine UI in [M9](../PLAN.md#m9-youtube-playback-and-downloads-via-the-embedded-yt-dlp-engine) and the updater and install-guidance UI in [M11](../PLAN.md#m11-release-hardening-and-v10) (M11a); see [Delivery by milestone](#delivery-by-milestone).
 
 Neutrodyne is cover-first: artwork is shown at a size where it reads on every surface (grid tiles 72–152 dp, feed rows 56 dp, podcast header 160 dp, full player ≥ 280 dp, mini player 48 dp, notification, lock screen, Auto), and artwork drives colour while the chrome stays quiet. Groups are places: each group is a tab and a page of the Feeds pager ([D55](../PLAN.md#3-key-decisions)). The player is one root sheet that follows the finger ([D56](../PLAN.md#3-key-decisions)). Everything is stable Material 3 1.4.0 wrapped in `:core:designsystem` ([D6](../PLAN.md#3-key-decisions), [PO-4](../PLAN.md#po-4-material-3-expressive)).
 
@@ -21,6 +21,8 @@ Neutrodyne is cover-first: artwork is shown at a size where it reads on every su
 | Colour schemes, tones, tokens, `Nd*` wrappers, icons | Group palette values and icon keys — [05 Palette](05-groups-opml-backup.md#palette), [05 Icons](05-groups-opml-backup.md#icons) |
 | `ArtworkStore`, `ArtworkSyncWorker`, `ArtworkProvider`, Coil `ImageLoader`, artwork keys, monograms, mosaics, the YouTube thumbnail interceptor | `artwork` table and reference SQL — [02 artwork](02-data-model.md#artwork), [02 Artwork references](02-data-model.md#artwork-references); YouTube URL sources — [04 Artwork and thumbnails](04-youtube.md#artwork-and-thumbnails); system-surface consumption — [06 Artwork rule](06-playback.md#artwork-rule) |
 | Settings screen structure, `appearance.*` and `ui.*` keys | Each area's keys and semantics (03–07, 09) |
+| UI of external mode and of the YouTube engine (reason lines, engine rows, update outcomes), final wording | Capability computation, engine status and engine updates — [04 Capability matrix](04-youtube.md#capability-matrix), [04 Engine updates](04-youtube.md#engine-updates) |
+| Settings › Updates, the update card, `UpdateBlockedKey`/`VerificationNoticeKey`/`WhatsNewKey`, the `updates` notification wording, the Install & updates help page | Updater behaviour (`AppUpdater`, `UpdateState`, install sessions, verification-failure mapping, notice timing) — [09 In-app updater](09-quality-and-release.md#in-app-updater); README "Install and update" content and the verification facts — [09 Developer verification](09-quality-and-release.md#developer-verification) |
 | UI test cases (screenshot matrix, accessibility checks, journeys) | Test infrastructure, Roborazzi/GMD wiring, budgets — [09 Test strategy](09-quality-and-release.md#test-strategy), [09 Performance budgets](09-quality-and-release.md#performance-budgets) |
 
 ### Modules
@@ -28,14 +30,14 @@ Neutrodyne is cover-first: artwork is shown at a size where it reads on every su
 | Module | Contents from this document |
 |---|---|
 | `:core:designsystem` | `NeutrodyneTheme`, `ArtworkTheme`, `ArtworkSchemeCache` (M10), `GroupTones`, `NeutrodyneShapes`, `NeutrodyneType`, `NeutrodyneMotion`, `CoverArt`, `Covers`, `MonogramPainter`, `StatusBarAppearance`, `NdIcons` and Material Symbols vectors, every `Nd*` wrapper including `NdBanner` ([Nd wrappers and icons](#nd-wrappers-and-icons)) |
-| `:core:ui` | `EpisodeRow`, `DownloadStateButton`, `DownloadRequestHandler`, `CoverTile`, `GroupMosaic`, `GroupTabLabel`, `PodcastHeader`, `ShowNotes` (renderer), `ChapterList`, `UpNextList`, `EmptyState`, `SelectionTopBar`, `FeedFilterChips`, `LiveRowState` helpers, string mappers (`PlaybackMessages`, `DownloadStatusText`, `AttributionText`, `FeedErrorText`, `AvailabilityText`), `LocalMiniPlayerInset`, `LocalSnackbarHost`, `SharedKeys` |
+| `:core:ui` | `EpisodeRow`, `DownloadStateButton`, `DownloadRequestHandler`, `CoverTile`, `GroupMosaic`, `GroupTabLabel`, `PodcastHeader`, `ShowNotes` (renderer), `ChapterList`, `UpNextList`, `EmptyState`, `SelectionTopBar`, `FeedFilterChips`, `LiveRowState` helpers, string mappers (`PlaybackMessages`, `DownloadStatusText`, `AttributionText`, `FeedErrorText`, `AvailabilityText`, `ExternalReasonText`), `LocalMiniPlayerInset`, `LocalSnackbarHost`, `SharedKeys` |
 | `:core:model` | `RowLive` additions, `ArtColors`, `Monogram`, `MonogramSpec`, `ArtworkColors` |
 | `:core:domain` | `ArtworkRepository`; `EpisodeLiveStateSource` (canonical, contract here) |
 | `:core:data` | `EpisodeLiveStateSourceImpl`, `ArtworkRepositoryImpl` |
 | `:core:artwork` | `DefaultArtworkStore` (`ArtworkStore`), `ArtworkKeys`, `ArtworkSyncScheduler`, `ArtworkSyncWorker`, `ArtworkColorExtractor` (M10), `MonogramRenderer`, `MosaicRenderer`, `ArtworkProvider`, `ArtworkRefMapper`, `YouTubeThumbnailInterceptor` (M8), `TinyImageInterceptor`, `NeutrodyneImageLoaderFactory` |
-| `:core:navigation` | `AppNavigator.pushDetail`, `SettingsHomeKey`, `LocalNavTab`, `LocalPaneLayout`, `PaneLayout` |
-| `:feature:*` | Screens and ViewModels per [Screen inventory](#screen-inventory) |
-| `:app` | `NeutrodyneRoot` (root scaffold, `PlayerSheet` host, banners, snackbar host), `ndPaneLayout` (pane directive), `StartupGate` visuals |
+| `:core:navigation` | `AppNavigator.pushDetail`, `SettingsHomeKey`, `SettingsPage.UPDATES`, `InstallHelpKey`, `UpdateBlockedKey`, `VerificationNoticeKey`, `WhatsNewKey`, `LocalNavTab`, `LocalPaneLayout`, `PaneLayout` |
+| `:feature:*` | Screens and ViewModels per [Screen inventory](#screen-inventory); `:feature:settings` also renders the update and engine texts (`UpdateStatusText`, `EngineStatusText`) and depends on `:update:api` and `:youtube:api` (01 rule 2) |
+| `:app` | `NeutrodyneRoot` (root scaffold, `PlayerSheet` host, banners including the update card, snackbar host, `UpdateNotices` observer), `ndPaneLayout` (pane directive), `StartupGate` visuals |
 
 ### Threading model
 
@@ -62,6 +64,9 @@ Neutrodyne is cover-first: artwork is shown at a size where it reads on every su
 | `POST_NOTIFICATIONS` runtime permission on API 33+ | Requested contextually only ([Permission prompts](#permission-prompts)) | [Notification permission](https://developer.android.com/develop/ui/views/notifications/notification-permission) |
 | Android 17 RAM-based memory limits; widget `RemoteViews` bitmap cap for target 37 | Bounded Coil caches; widgets (v1.x) use content-URI icons | [Android 17 changes](https://developer.android.com/about/versions/17/behavior-changes-17) |
 | Themed app icons need a `<monochrome>` layer (Android 13); Android 16 QPR2 auto-themes icons without one | Brand icon ships a monochrome layer (PO-17, M10) | [Adaptive icons](https://developer.android.com/develop/ui/views/launch/icon_design_adaptive) |
+| "Install unknown apps" is a per-source user grant (API 26+): `canRequestPackageInstalls()` tells whether Neutrodyne may install its own updates; `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` with `package:ch.lkmc.neutrodyne` opens its toggle | Rationale card before the settings hand-off ([Permission prompts](#permission-prompts)); a browser's grant does not cover Neutrodyne | [PackageManager](https://developer.android.com/reference/android/content/pm/PackageManager), [Settings](https://developer.android.com/reference/android/provider/Settings) |
+| `STATUS_PENDING_USER_ACTION`: launch `EXTRA_INTENT` at once only while the user is using the app, otherwise guide them back with a notification | "Tap to finish updating" notification ([Updates settings](#updates-settings)) | [PackageInstaller](https://developer.android.com/reference/android/content/pm/PackageInstaller) |
+| Developer verification: from Google's 2027 global rollout, certified devices block installs and updates of unregistered apps unless the one-time advanced flow is on or ADB is used; `EXTRA_DEVELOPER_VERIFICATION_FAILURE_REASON` (API 36.1+) explains a blocked session | Pre-enforcement notice, "Update blocked by Android" sheet, Install & updates help ([D80](../PLAN.md#3-key-decisions)) | [Developer verification](https://developer.android.com/developer-verification), [advanced flow](https://support.google.com/android/answer/17588095?hl=en), [PackageInstaller](https://developer.android.com/reference/android/content/pm/PackageInstaller) |
 
 ---
 
@@ -108,8 +113,13 @@ Pane roles apply when the [pane directive](#pane-directive) allows two or more p
 | [Export dialog](#export-dialog) | `ExportKey(groupId)` | `:feature:importexport` | dialog | M3 |
 | [Settings](#settings-screens) home | `SettingsHomeKey` (new) | `:feature:settings` | list | M0 |
 | Settings page | `SettingsKey(page)` | `:feature:settings` | detail | M0 (About), per owner |
-| Licences | `LicencesKey` | `:feature:settings` | detail | M0 |
-| [Diagnostics](#diagnostics) | `DiagnosticsKey` | `:feature:settings` | detail | M11 |
+| Licences | `LicencesKey` | `:feature:settings` | detail | M0, M9a (engine entries) |
+| [Updates settings](#updates-settings) | `SettingsKey(SettingsPage.UPDATES)` | `:feature:settings` | detail | M11a |
+| [Install and updates help](#install-and-updates-help) | `InstallHelpKey` | `:feature:settings` | detail | M11a |
+| [Update blocked sheet](#updates-settings) | `UpdateBlockedKey(reason)` | `:feature:settings` | sheet | M11a |
+| [Verification notice](#updates-settings) | `VerificationNoticeKey` | `:feature:settings` | dialog | M11a |
+| [What's new sheet](#updates-settings) | `WhatsNewKey(versionCode)` | `:feature:settings` | sheet | M11a |
+| [Diagnostics](#diagnostics) | `DiagnosticsKey` | `:feature:settings` | detail | M11 (M11b) |
 | [Speed sheet](#speed-and-sleep-sheets) | `SpeedKey` | `:feature:player` | sheet | M4 |
 | [Sleep timer sheet](#speed-and-sleep-sheets) | `SleepTimerKey` | `:feature:player` | sheet | M5 |
 | [Player](#player-sheet) (mini, full, side panel) | none (`PlayerSheet`, D56) | `:feature:player`, hosted by `:app` | root overlay / side panel | M4, M10 |
@@ -145,8 +155,14 @@ flowchart LR
   SK --> DG["DiagnosticsKey"]
   SK --> BK["BackupKey"]
   BK -. dialog .-> EX["ExportKey"]
+  SK --> IH["InstallHelpKey"]
+  SK -. sheet .-> UB["UpdateBlockedKey"]
+  UB --> IH
   PLAYER(["PlayerSheet (root)"]) -. sheet .-> SPD["SpeedKey"]
   PLAYER -. sheet .-> SLP["SleepTimerKey"]
+  NOTICES(["UpdateNotices (root)"]) -. dialog .-> VN["VerificationNoticeKey"]
+  NOTICES -. sheet .-> WN["WhatsNewKey"]
+  VN --> IH
 ```
 
 ---
@@ -170,6 +186,12 @@ interface AppNavigator {
     fun pushDetail(key: NavKey)                                                    // replace same-type top entry on ≥ 2 panes
 }
 @Serializable data object SettingsHomeKey : NavKey                                 // new: the gear's target
+// SettingsPage (the parameter of SettingsKey) gains UPDATES (M11a). Update and help keys, M11a, all served by
+// :feature:settings; IDs and strings only (01: :core:navigation depends on nothing project-internal):
+@Serializable data class InstallHelpKey(val section: String = "") : NavKey       // help page; InstallHelpSection name
+@Serializable data class UpdateBlockedKey(val reason: String) : NavKey             // InstallBlockReason.name (:update:api)
+@Serializable data object VerificationNoticeKey : NavKey                           // one-time pre-enforcement dialog
+@Serializable data class WhatsNewKey(val versionCode: Long) : NavKey               // after an update
 data class PaneLayout(val partitions: Int, val playerPanel: Boolean, val contentWidthDp: Int)
 val LocalPaneLayout = staticCompositionLocalOf { PaneLayout(1, false, 360) }       // provided by :app; changes only on resize/panel
 val LocalNavTab = staticCompositionLocalOf<TopLevelKey> { FeedsKey }               // provided per entry by :app
@@ -190,7 +212,7 @@ Metadata (01's `ListDetailSceneStrategy.listPane()/detailPane()/extraPane()`) pe
 
 ### Sheets and dialogs
 
-Sheet keys (`AddPodcastKey`, `AddToGroupsKey`, `AllGroupsKey`, `SpeedKey`, `SleepTimerKey`) and the dialog key (`ExportKey`) are pushed on the selected tab's stack and rendered by 01's overlay scene strategies, which must use window-based `NdModalBottomSheet`/`NdDialog` so they draw above the root `PlayerSheet` (a sheet opened from the expanded player would otherwise sit under it). Small confirmations (unsubscribe, mark all played, metered prompts, Replace restore) are plain `NdDialog`s owned by the screen, not keys. Sheets have a drag handle, 28 dp top corners, and close on back, scrim tap or swipe down.
+Sheet keys (`AddPodcastKey`, `AddToGroupsKey`, `AllGroupsKey`, `SpeedKey`, `SleepTimerKey`, and from M11a `UpdateBlockedKey`, `WhatsNewKey`) and the dialog keys (`ExportKey`, from M11a `VerificationNoticeKey`) are pushed on the selected tab's stack and rendered by 01's overlay scene strategies, which must use window-based `NdModalBottomSheet`/`NdDialog` so they draw above the root `PlayerSheet` (a sheet opened from the expanded player would otherwise sit under it). Small confirmations (unsubscribe, mark all played, metered prompts, Replace restore) are plain `NdDialog`s owned by the screen, not keys. Sheets have a drag handle, 28 dp top corners, and close on back, scrim tap or swipe down.
 
 ### Deep links
 
@@ -205,9 +227,12 @@ Sheet keys (`AddPodcastKey`, `AddToGroupsKey`, `AllGroupsKey`, `SpeedKey`, `Slee
 | `Navigate(DownloadsKey, [])` | Downloads root |
 | `ExpandPlayer` | Expands the sheet (or reveals the side panel); no-op when nothing is loaded |
 | `Navigate(LibraryKey, [ImportKey(id)])` | Import screen in the state of that session |
-| `Push(SettingsKey(page))`, `Push(DiagnosticsKey)` | Pushed on the current tab (back returns to where the user was) |
+| `Push(SettingsKey(page))`, `Push(DiagnosticsKey)` | Pushed on the current tab (back returns to where the user was); includes `…/open/settings/youtube` (04's breaker notice) and, from M11a, `…/open/settings/updates` (the `updates` notification, 05's "Check for updates") |
+| `Push(InstallHelpKey())` (`…/open/help/install`, M11a; 01's route table) | The [Install and updates help](#install-and-updates-help) page with every section collapsed, pushed on the current tab |
 
 A route that arrives while the [startup gate](#banners-and-the-startup-gate) is shown is held by the root and applied once `NavDisplay` exists (01's start-up test). Routes only navigate; every write still needs a tap on the destination (01 security rule).
+
+**Update notices (M11a).** `UpdateBlockedKey`, `VerificationNoticeKey` and `WhatsNewKey` are not routes. `NeutrodyneRoot` collects `UpdateNotices.pending` (`:update:api`, 09 decides when a notice becomes pending) once `NavDisplay` exists and the startup gate is gone, and shows at most one notice per process start, never while the player is expanded, a sheet or dialog is open or an import preview is on screen (it waits for the next top-level destination): `FIRST_RUN_CHOICE` → the [update card](#updates-settings) among the banners (not a key); `VERIFICATION_ENFORCEMENT` → `push(VerificationNoticeKey)`; `WHATS_NEW` → `push(WhatsNewKey(BuildInfo.versionCode))`. Each is dismissed through `UpdateNotices.dismiss(notice)` when the user closes it, so it never returns. `UpdateBlockedKey` is pushed only by Settings › Updates.
 
 ### Back handling order
 
@@ -242,7 +267,7 @@ Selection mode registers its handler inside the screen's entry (composed inside 
 
 ## Screens
 
-Serves R1.1–R1.9 (screens), R2.1–R2.8, R3.1, R3.7, R4.6, R5.1–R5.6, N4, N6. Wireframes are compact phone portrait (360–411 dp). Legend: `( )` = 48 dp touch target, `[>]` play, `[v]` download state, `(:)` overflow, `(gear)` settings.
+Serves R1.1–R1.9 (screens), R2.1–R2.8, R3.1, R3.7, R3.9 (display), R4.6, R5.1–R5.6, R6.1–R6.4, N4, N6. Wireframes are compact phone portrait (360–411 dp). Legend: `( )` = 48 dp touch target, `[>]` play, `[v]` download state, `(:)` overflow, `(gear)` settings.
 
 **Conventions for every screen.**
 
@@ -364,18 +389,18 @@ Groups segment: a grid of [`GroupMosaic`](#groupmosaic-and-group-tab-label) tile
 | 12 OCT  S2 E14 · Episode title             (v)   |  date block instead of a thumbnail
 |         52 min                             (>)   |
 | ...                                              |
-| (Load older episodes)                            |  RSS paging pending or YouTube back catalogue (foss)
+| (Load older episodes)                            |  RSS paging pending or YouTube back catalogue (engine)
 +--------------------------------------------------+
 ```
 
 - Top bar: refresh (`refreshNow(Podcasts([id]))`), gear → `PodcastSettingsKey(id)`, overflow. Header: [`PodcastHeader`](#podcast-header); colours from [`ArtworkTheme`](#artwork-scoped-schemes) with the podcast cover seed (M10); status bar icons per [System bars](#status-bar-and-system-bars).
 - Feed-state banner (03 [Per-feed states](03-feeds-and-discovery.md#per-feed-states)): Pending "Fetching episodes…" (spinner); NeedsCredentials "This feed needs a password" → credentials dialog (`PodcastRepository.setCredentials`); Gone "This feed no longer exists" → Edit URL / Unsubscribe; PossiblyDead "This feed hasn't updated since {date} — it may have moved" → Edit URL / Try again (`retry`); a failing feed shows `FeedErrorText(lastErrorKind)` only on this screen, never as a toast.
 - List: `FeedRepository.pagedFeed(FeedSource.Podcast(id), transientFilters, order)`; `EpisodeRow` style `PODCAST` (no thumbnail unless the episode has its own art, date block 48 dp, season/episode overline from `EpisodeRow.episodeDisplay`, else `episodeType` "Trailer"/"Bonus"). Row play → `playFeed(Podcast(id), filters, order, startEpisodeId)`. The "Newest v" chip calls `FeedRepository.setFeedOrder(FeedSource.Podcast(id), order)` (persisted in `podcast.episodeOrder`, 05); the filter chips are transient ViewModel state (05 throws on `setFilters` for podcasts). Row swipes follow `appearance.swipe_*` (on by default outside Feeds, D55).
-- "Load older episodes": RSS when older pages exist → `RefreshController.loadOlderEpisodes(id)`; YouTube when `YouTubeCapabilities.backCatalogue` → `YouTubeChannelRepository.loadOlder(id)` with result "Loaded 30 more" / "No more episodes" / failure text. YouTube channels call `YouTubeChannelRepository.ensureChannelArt(id)` on open (04).
+- "Load older episodes": RSS when older pages exist → `RefreshController.loadOlderEpisodes(id)`; YouTube when `YouTubeCapabilitiesSource.capabilities.value.backCatalogue` (the engine is present and on, M9a) → `YouTubeChannelRepository.loadOlder(id)` with result "Loaded 30 more" / "No more episodes" / failure text ("YouTube isn't responding right now, try again later" for 04's `Failed` results, nothing for `Unsupported`, whose button is hidden). YouTube channels call `YouTubeChannelRepository.ensureChannelArt(id)` on open (04) and, with the engine, `YouTubeEngine.prewarm(SCREEN)` (04 [Capability consumers](04-youtube.md#capability-consumers); a no-op in external mode).
 - Overflow: Podcast settings, Share (website link `link`; the feed URL only through "Copy feed address" with the private-URL warning when `isPrivate`), Watch on YouTube (channel page, YouTube only), Open website, Mark all as played…, Unsubscribe (confirmation with downloaded count).
 - Preview mode: Subscribe button + group chips (multi-select, "+ New group" inline), episode rows without play or download buttons ("Subscribe to play"), "Already subscribed — Open" when `alreadySubscribed.exact`, "You may already be subscribed to this show. Subscribe anyway?" otherwise; failures as in the [Add podcast sheet](#add-podcast-sheet).
 - Data: 03's `PodcastDetail` (display title, author, description as `ShowNotes`, `artwork`, `bannerUrl`, `sourceType`, `link`, `episodeCount`, `latestEpisodeAt`, `status`, `health: FeedHealth` with the derived `possiblyDead`, `isPrivate`, `episodeOrder`, `showType`, `hasOlderPages`) and `ArtworkRepository.observeColors(detail.artwork.key)` for the header scheme.
-- States: loading → header skeleton (cover box in the monogram tone) + 6 skeleton rows; `observePodcast` emits null (unsubscribed elsewhere, merged into another podcast) → pop with snackbar "This podcast was removed"; offline → offline banner, list from the database, refresh disabled with a tooltip; feed with no episodes → "No episodes yet" (`emptyFeed`, new show); YouTube channel with no visible episodes → "No long-form videos yet. This channel may post only Shorts or live streams." + "Podcast settings" (variants, 04 [UI per flavor](04-youtube.md#ui-per-flavor-hand-off-to-08-flavor-differences-in-ui)); preview resolution failure → the [Add podcast sheet](#add-podcast-sheet) failure texts with Retry.
+- States: loading → header skeleton (cover box in the monogram tone) + 6 skeleton rows; `observePodcast` emits null (unsubscribed elsewhere, merged into another podcast) → pop with snackbar "This podcast was removed"; offline → offline banner, list from the database, refresh disabled with a tooltip; feed with no episodes → "No episodes yet" (`emptyFeed`, new show); YouTube channel with no visible episodes → "No long-form videos yet. This channel may post only Shorts or live streams." + "Podcast settings" (variants, 04 [UI per capability](04-youtube.md#ui-per-capability-hand-off-to-08-capability-differences-in-ui)); preview resolution failure → the [Add podcast sheet](#add-podcast-sheet) failure texts with Retry.
 
 ### Podcast settings
 
@@ -410,7 +435,7 @@ Groups segment: a grid of [`GroupMosaic`](#groupmosaic-and-group-tab-label) tile
 | YouTube (M8) | Include Shorts, Include past live streams (`YouTubeChannelRepository.setVariants`) | 04 |
 | Feed (M1) | Feed address (`FeedInfo.redactedUrl`; the full `feedUrl` only after a tap, with "Copy feed address" and the private-URL warning when `isPrivate`), moves (`FeedInfo.moves`), last refresh and last error ([`FeedErrorText`](#feed-error-text)), Edit feed address ([dialog](#dialogs), RSS only), Username and password (`setCredentials`). There is no "remove password" in v1 (03 has no API for it) | 03 |
 
-Each override row opens a chooser whose first option is "Use default ({effective inherited value}, {source})" ([`AttributionText`](#attribution-text)); choosing it writes `null` through `updatePodcast { it.copy(field = null) }`. Data: 05's `ScopeSettingsRepository.observePodcast` (`ScopedSettingsView`: `own`, `effective`, `sources`, `groupHints`) and 03's `observeFeedInfo`; `observePodcast` emitting null pops the screen. Rows a YouTube channel cannot use in this build (`SettingSource.NotSupported`, e.g. auto-download in `play`) are hidden, not disabled. Writes that return 01's `SettingsError.OutOfRange` show the field's inline error (cannot happen from the fixed choosers; defensive).
+Each override row opens a chooser whose first option is "Use default ({effective inherited value}, {source})" ([`AttributionText`](#attribution-text)); choosing it writes `null` through `updatePodcast { it.copy(field = null) }`. Data: 05's `ScopeSettingsRepository.observePodcast` (`ScopedSettingsView`: `own`, `effective`, `sources`, `groupHints`) and 03's `observeFeedInfo`; `observePodcast` emitting null pops the screen. Rows a YouTube channel cannot use in the current capability state (`SettingSource.NotSupported`, e.g. auto-download in external mode) are hidden, not disabled, and reappear when capabilities change (the screen observes them). Writes that return 01's `SettingsError.OutOfRange` show the field's inline error (cannot happen from the fixed choosers; defensive).
 
 ### Episode detail
 
@@ -435,11 +460,11 @@ Each override row opens a chooser whose first option is "Use default ({effective
 +--------------------------------------------------+
 ```
 
-- Primary button: Play / Pause / Resume (`playEpisode(id)`, 06 open question 3); YouTube in `play` or unavailable: "Watch on YouTube" (04 [Watch on YouTube](04-youtube.md#watch-on-youtube), with the 5 s Undo snackbar for mark-played-on-open).
+- Primary button: Play / Pause / Resume (`playEpisode(id)`, 06 open question 3); YouTube in external mode or unavailable: "Watch on YouTube" (04 [Watch on YouTube](04-youtube.md#watch-on-youtube), with the 5 s Undo snackbar for mark-played-on-open). Opening a YouTube episode with the engine calls `YouTubeEngine.prewarm(SCREEN)` (no-op in external mode).
 - Icon buttons with labels: Download state (same states as the [row](#episoderow)), Up next (menu: Play next / Play last; `QueueRepository.addNext/addLast`), Mark played/unplayed (`EpisodeRepository.setPlayed`), Favourite (`setFavorite`, in overflow).
-- Overflow: Go to podcast, Open episode web page (`link`), Watch on YouTube (YouTube, foss, with `&t=` per 04), Check again (`foss`, greyed YouTube episode with `REGION_BLOCKED`, `PRIVATE` or `UNAVAILABLE`: `YouTubeChannelRepository.recheckAvailability(id)`; null result → snackbar "Couldn't check — try again later", 04 [Content flags and filtering](04-youtube.md#content-flags-and-filtering)), Copy link, Share file (M6; shown when `DownloadController.shareableFile(id)` is non-null, i.e. a `COMPLETED` download not on an `ext:{uuid}` root, [07 Sharing a file](07-downloads.md#sharing-a-file)), Delete download.
+- Overflow: Go to podcast, Open episode web page (`link`), Watch on YouTube (YouTube with the engine, where Play is primary; with `&t=` per 04), Check again (with the engine, i.e. `capabilities.enrichment`; greyed YouTube episode with `REGION_BLOCKED`, `PRIVATE` or `UNAVAILABLE`: `YouTubeChannelRepository.recheckAvailability(id)`; null result → snackbar "Couldn't check — try again later", 04 [Content flags and filtering](04-youtube.md#content-flags-and-filtering)), Copy link, Share file (M6; shown when `DownloadController.shareableFile(id)` is non-null, i.e. a `COMPLETED` download not on an `ext:{uuid}` root, [07 Sharing a file](07-downloads.md#sharing-a-file)), Delete download.
 - Show notes: [`ShowNotes`](#show-notes-renderer) renderer from `EpisodeRepository.observeShowNotes`. Chapters: `ChapterRepository.observe(id)` (06); tap → seek per 06 [Current chapter and commands](06-playback.md#current-chapter-and-commands).
-- Unavailable YouTube episode: a reason line under the meta (`AvailabilityText`, [Flavor differences in UI](#flavor-differences-in-ui)).
+- Unavailable YouTube episode: a reason line under the meta (`AvailabilityText`, [Capability differences in UI](#capability-differences-in-ui)). External YouTube episode: the line "Opens in YouTube" and, below the buttons, the short [external-reason text](#external-reason-texts) (for example "In-app YouTube is off") linking to Settings › YouTube.
 - States: missing episode (deleted by retention or unsubscribe) → "This episode is no longer available"; notes loading → 3 skeleton paragraphs; notes empty → "No show notes"; offline and not downloaded → primary button shows `cloud_off` "Offline" and taps give the offline snackbar; images in notes stay unloaded offline (no error).
 
 ### Group editor
@@ -486,7 +511,7 @@ A reorderable list (`sh.calvin.reorderable` 3.1.0): drag handle, 48 dp mosaic, n
 
 ### Group settings
 
-`GroupSettingsKey(groupId)`, `:feature:groups`, M2 (refresh, notifications), M4 (speed, skip silence), M6 (auto-download, delete after played). Layout as [Podcast settings](#podcast-settings) without General/Feed/YouTube; the view settings (filters, order, hide older than) are edited from the Feeds page, not here. Auto-download's dependent rows are disabled with "Turn on auto-download for this group first" until the group's own auto-download is on (05 rule 1). When the group contains YouTube channels and `YouTubeCapabilities.downloads` is false, the auto-download section shows no YouTube-specific line at all (04's Play guardrail 3 forbids any download wording about YouTube in `play`); the resolver silently excludes those channels (`SettingSource.NotSupported`, 05). In `foss` from M9 the section adds "YouTube channels keep {n} (YouTube default)" when the group does not set its own keep count (04 [Auto-download for YouTube](04-youtube.md#auto-download-for-youtube)).
+`GroupSettingsKey(groupId)`, `:feature:groups`, M2 (refresh, notifications), M4 (speed, skip silence), M6 (auto-download, delete after played). Layout as [Podcast settings](#podcast-settings) without General/Feed/YouTube; the view settings (filters, order, hide older than) are edited from the Feeds page, not here. Auto-download's dependent rows are disabled with "Turn on auto-download for this group first" until the group's own auto-download is on (05 rule 1). When the group contains YouTube channels and `capabilities.downloads` is false (external mode), the auto-download section adds the line "YouTube channels in this group aren't downloaded: {short external-reason text}" ([External reason texts](#external-reason-texts)); the resolver excludes those channels (`SettingSource.NotSupported`, 05). With the engine (from M9a) the section adds "YouTube channels keep {n} (YouTube default)" when the group does not set its own keep count (04 [Auto-download for YouTube](04-youtube.md#auto-download-for-youtube)).
 
 ### Add to groups sheet
 
@@ -513,7 +538,7 @@ Title "Add 3 podcasts to groups" ("Groups for {title}" for one podcast). Tri-sta
 | +----+ Current episode title          (>||)      |  not draggable
 | UP NEXT · 3                                      |
 | = +----+ Episode A                        (v)    |  drag handle; swipe start-to-end removes
-| = +----+ Episode B (greyed: Opens in YouTube)    |  play-flavor YouTube / unavailable items stay greyed
+| = +----+ Episode B (greyed: Opens in YouTube)    |  external-mode YouTube / unavailable items stay greyed
 | = +----+ Episode C                        (v)    |
 | THEN: tech, newest first            (Stop after) |  context header from observeSession()
 +--------------------------------------------------+
@@ -545,22 +570,22 @@ Title "Add 3 podcasts to groups" ("Groups for {title}" for one podcast). Tri-sta
 ```
 
 - Rows are `DownloadEntryRow` (`:feature:downloads`), not `EpisodeRow`: they render 07's `DownloadEntry` (title, podcast, `artwork`, `DownloadStatus`, `played`, `favorite`), which lacks the feed fields `EpisodeRow` needs. They share `CoverArt` (THUMB, 56 dp), [`DownloadStateButton`](#episoderow) and [`DownloadStatusText`](#download-status-text) with `EpisodeRow`; live bytes for visible in-progress rows come from `DownloadProgressSource.observe(visibleIds)` with 07's merge rule ([07 Inputs to live row state](07-downloads.md#inputs-to-live-row-state)). One TalkBack stop per row with the [custom actions](#custom-actions-catalogue) of a Downloads row.
-- Row actions follow 07's [Wait reasons](07-downloads.md#wait-reasons) table: `QUEUED` with `NONE`/`SLOT`/`CHARGING`/`SYSTEM` → "Download now" (`promote`; a `NeedsMeteredDecision` result opens the [metered dialog](#dialogs)) and Cancel (`cancel`); `UNMETERED_NETWORK` → "Use mobile data" (`setAllowMetered(ids, true)`, manual lane) or "Download now" (`promote`, auto lane); `STORAGE` → "Manage storage" (`ACTION_MANAGE_STORAGE`); `BACKOFF` → "Retry now" (`retry`); `NEEDS_FOREGROUND` → tap resumes (`resume`); `DOWNLOADING` → Pause (`pause`), bytes "12.3 MB of 48.0 MB · 1.2 MB/s"; `PAUSED` → Resume; `FAILED` → Retry (`retry`) and Dismiss (`cancel`); `COMPLETED` → tap opens the episode, swipe or (x) deletes (`delete(ids, byUser = true)`, no undo: the file is gone), play button plays it, overflow (:) offers Share file under the same rule as [Episode detail](#episode-detail) and Delete. Section buttons: "Pause all"/"Resume all" (`pauseAll`/`resumeAll`), "Retry all" (`retry(failed ids)`).
+- Row actions follow 07's [Wait reasons](07-downloads.md#wait-reasons) table: `QUEUED` with `NONE`/`SLOT`/`CHARGING`/`SYSTEM` → "Download now" (`promote`; a `NeedsMeteredDecision` result opens the [metered dialog](#dialogs)) and Cancel (`cancel`); `UNMETERED_NETWORK` → "Use mobile data" (`setAllowMetered(ids, true)`, manual lane) or "Download now" (`promote`, auto lane); `STORAGE` → "Manage storage" (`ACTION_MANAGE_STORAGE`); `BACKOFF` → "Retry now" (`retry`); `NEEDS_FOREGROUND` → tap resumes (`resume`); `YOUTUBE_ENGINE_OFF` (M9a) → "YouTube settings" (`SettingsKey(YOUTUBE)`, where the reason line offers the switch or "Try again") and Cancel; `DOWNLOADING` → Pause (`pause`), bytes "12.3 MB of 48.0 MB · 1.2 MB/s"; `PAUSED` → Resume; `FAILED` → Retry (`retry`) and Dismiss (`cancel`); `COMPLETED` → tap opens the episode, swipe or (x) deletes (`delete(ids, byUser = true)`, no undo: the file is gone), play button plays it, overflow (:) offers Share file under the same rule as [Episode detail](#episode-detail) and Delete. Section buttons: "Pause all"/"Resume all" (`pauseAll`/`resumeAll`), "Retry all" (`retry(failed ids)`).
 - "Play all" and a completed row's play button start the `DOWNLOADS` context ([05 Context per entry point](05-groups-opml-backup.md#context-per-entry-point)): 06's `nd.PLAY_CONTEXT` handles `DOWNLOADS`, but `PlaybackController.playFeed` takes a `FeedSource`, which has no Downloads value, so 08 calls `PlaybackController.playDownloads(startEpisodeId: Long? = null): PlayResult` ([06 Modules and public API](06-playback.md#modules-and-public-api), M6). Selection mode: Delete (confirmation "Delete 12 downloads (640 MB)?"), Select all completed / played.
 - States: loading → skeleton rows; storage bar shows "—" while `observeStorage()` has not emitted; the screen is fully usable offline (rows show "Waiting for a connection").
-- `DownloadsOverview.notices` render as `NdBanner`s above the lists (at most two, in 07's table order) with 07's texts adopted as the final wording ([07 Notices](07-downloads.md#notices)): `DATA_SAVER` (open the data-restriction settings), `BACKGROUND_RESTRICTED`, `NOTIFICATIONS_OFF` (Allow → the contextual prompt, [Permission prompts](#permission-prompts)), `CAP_REACHED`, `STORAGE_LOW` (Manage storage), `ROOT_UNAVAILABLE`, `YOUTUBE_PAUSED` (04's breaker text with "Try now" → `YouTubeHealth.retryNow()`; shown above the YouTube rows), `MOVE_IN_PROGRESS`, `ORPHAN_FILES` (Delete → confirmation → `deleteOrphanFiles()`). `play` cross-grade leftovers: completed YouTube files are listed with Delete only (04, 07).
+- `DownloadsOverview.notices` render as `NdBanner`s above the lists (at most two, in 07's table order) with 07's texts adopted as the final wording ([07 Notices](07-downloads.md#notices)): `DATA_SAVER` (open the data-restriction settings), `BACKGROUND_RESTRICTED`, `NOTIFICATIONS_OFF` (Allow → the contextual prompt, [Permission prompts](#permission-prompts)), `CAP_REACHED`, `STORAGE_LOW` (Manage storage), `ROOT_UNAVAILABLE`, `YOUTUBE_PAUSED` (04's breaker text with "Try now" → `YouTubeHealth.retryNow()`; shown above the YouTube rows), `MOVE_IN_PROGRESS`, `ORPHAN_FILES` (Delete → confirmation → `deleteOrphanFiles()`). In external mode completed YouTube downloads stay listed with Delete and Share file but no play button (they are not played in the app, 04 [Engine absent or disabled](04-youtube.md#engine-absent-or-disabled)); queued YouTube rows wait with `YOUTUBE_ENGINE_OFF`, or, on an APK without the engine (`NOT_IN_THIS_APK`), end `FAILED(UNSUPPORTED_STREAM)` with the YouTube text of [Download status text](#download-status-text).
 - Empty: "Downloaded episodes play offline" + storage summary + "Auto-download settings" (`SettingsKey(DOWNLOADS)`).
 
 ### Discover
 
-`DiscoverKey`, `:feature:discover`, M1 (add by URL and import entry points), M7 (search, charts), M9 (YouTube channel search in `foss`).
+`DiscoverKey`, `:feature:discover`, M1 (add by URL and import entry points), M7 (search, charts), M9a (YouTube channel search with the engine).
 
 ```
 +--------------------------------------------------+
 | Discover                                  (gear) |
 | [ (search) Search podcasts or paste a link    ]  |  NdSearchBar; keyboard only on tap
 | Searches are sent to Apple and fyyd              |  provider disclosure (03)
-| (+ Add by URL) (Add YouTube channel) (Import)    |  assist chips; YouTube search chip in foss
+| (+ Add by URL) (Add YouTube channel) (Import)    |  assist chips; + "Search YouTube channels" with the engine
 | TOP PODCASTS                              (more) |
 | [cov][cov][cov][cov][cov] ->                     |  horizontal list of 120 dp tiles
 | POPULAR IN TECH                           (more) |  for group names that map to a genre
@@ -570,9 +595,9 @@ Title "Add 3 podcasts to groups" ("Groups for {title}" for one podcast). Tri-sta
 +--------------------------------------------------+
 ```
 
-- Typing: results update in place below the field (`SearchRepository.search`, debounce and minimum length are 03's); a pasted URL shows a chip "Add this link" → `AddPodcastKey(text)`; from M8, text that `YouTubeUrlClassifier.classify` accepts (an `@handle` such as `@mkbhd`, a `UC…` ID or a YouTube link; both flavors) shows "Add YouTube channel {text}" instead → `AddPodcastKey(text)`, whose resolver takes 03's YouTube pre-check ([03 Input normalisation](03-feeds-and-discovery.md#input-normalisation)); IME search → `DirectoryKey(query, null)` when results exceed the inline 10.
+- Typing: results update in place below the field (`SearchRepository.search`, debounce and minimum length are 03's); a pasted URL shows a chip "Add this link" → `AddPodcastKey(text)`; from M8, text that `YouTubeUrlClassifier.classify` accepts (an `@handle` such as `@mkbhd`, a `UC…` ID or a YouTube link; with and without the engine) shows "Add YouTube channel {text}" instead → `AddPodcastKey(text)`, whose resolver takes 03's YouTube pre-check ([03 Input normalisation](03-feeds-and-discovery.md#input-normalisation)); IME search → `DirectoryKey(query, null)` when results exceed the inline 10.
 - Provider status: a provider in `Failed`/`RateLimited` shows "Apple search is busy, showing fyyd results"; all failed → "Search isn't available right now" + Retry.
-- "Search YouTube channels" (`foss`, `YouTubeCapabilities.channelSearch`, M9): runs only on that explicit action (04); hits open `AddPodcastKey("https://www.youtube.com/channel/{id}")`.
+- "Search YouTube channels" (shown while `capabilities.channelSearch` is true, i.e. with the engine, M9a): opening it calls `YouTubeEngine.prewarm(SEARCH)`; YouTube is queried only on its explicit search action, never from the podcast search field (04 [Channel search](04-youtube.md#channel-search)); up to 3 pages load on scroll; hits open `AddPodcastKey("https://www.youtube.com/channel/{id}")`; 04's `Failed` → "YouTube search is temporarily unavailable" with Retry. In external mode the chip is hidden and the Add sheet's helper names the link route ([Capability differences in UI](#capability-differences-in-ui)).
 - Offline: chips and import still work; search shows "You're offline".
 - Loading: charts show 5 skeleton tiles per row; inline search results show a 2 dp indeterminate `NdProgress.Linear` under the field (results of the previous query stay visible). Charts failing → the section is hidden (no error card); "Popular in {group}" appears only for groups whose name matches a genre (03 [Charts and genres](03-feeds-and-discovery.md#charts-and-genres)).
 
@@ -626,7 +651,7 @@ A list of `DirectoryHit` cards: 64 dp cover, title, author, "120 episodes · upd
 | `SubscribeError` | `AlreadySubscribed(id)` → "Already subscribed" + "Open"; `Fetch(e)` → the `AddPodcastError` text of `e` + Retry; `NoMedia` → "This feed has no audio or video episodes"; `Storage` → "Not enough storage space" |
 | subscribed | sheet closes; snackbar "Subscribed to {title}" + "Open" → `PodcastKey` |
 
-The empty field's helper text is "Paste a podcast feed, website, Apple Podcasts or YouTube link, or a YouTube @handle" (`play` and `foss` alike; before M8 without "or a YouTube @handle"); a bare `@handle` resolves through 03's YouTube pre-check and never reaches `NotAUrl`; every "Add a YouTube channel" and "Add by URL" entry point opens this same sheet with `AddPodcastKey(null)`. The sheet's state (input, preview id, chosen groups) is `rememberSaveable`; after process death the preview is re-resolved from the saved input (previews are memory-only, D24).
+The empty field's helper text is "Paste a podcast feed, website, Apple Podcasts or YouTube link, or a YouTube @handle" (with and without the engine; before M8 without "or a YouTube @handle"); a bare `@handle` resolves through 03's YouTube pre-check and never reaches `NotAUrl`; every "Add a YouTube channel" and "Add by URL" entry point opens this same sheet with `AddPodcastKey(null)`. The sheet's state (input, preview id, chosen groups) is `rememberSaveable`; after process death the preview is re-resolved from the saved input (previews are memory-only, D24).
 
 ### Import
 
@@ -717,28 +742,178 @@ Options and warnings are 05's ([05 Options and warnings](05-groups-opml-backup.m
 | (explore)  Discover      Apple, fyyd             |
 | (play)     Playback      1.0x, skip silence off  |
 | (download) Downloads     Wi-Fi only, 1.2 GB      |
-| (yt)       YouTube       Long-form only          |  shown when YouTube subscriptions exist or M8+
+| (yt)       YouTube       In the app · yt-dlp     |  shown when YouTube subscriptions exist or M8+
 | (backup)   Backup        Android backup on       |
+| (update)   Updates       Notify · Stable         |  M11a
 | (shield)   Privacy                               |
-| (info)     About         1.0.0 (foss)            |
+| (info)     About         1.0.0 (arm64-v8a)       |
 +--------------------------------------------------+
 ```
 
-The home list shows one row per `SettingsPage` with an icon and a summary of its most relevant current values; pages are described in [Settings screen structure](#settings-screen-structure). A page row is shown from the milestone that delivers its first setting (M0: Appearance, About; the YouTube row from M8). On ≥ 2 partitions the home list is the list pane and the Appearance page is shown beside it as the detail placeholder ([Pane roles and detail placeholders](#pane-roles-and-detail-placeholders)). `LicencesKey` renders AboutLibraries data with `Nd*` components (01 [AboutLibraries and the Licences screen](01-foundation.md#aboutlibraries-and-the-licences-screen)): a searchable list (name, version, licence) → detail with the full licence text; `foss` from M9 adds the NewPipe Extractor notice at the top (04 [Notices](04-youtube.md#notices)).
+The home list shows one row per `SettingsPage` with an icon and a summary of its most relevant current values; pages are described in [Settings screen structure](#settings-screen-structure). A page row is shown from the milestone that delivers its first setting (M0: Appearance, About; the YouTube row from M8; Updates from M11a). The YouTube summary is "Long-form only" before M9a, then "In the app · yt-dlp {activeVersion}" with the engine, or the short [external-reason text](#external-reason-texts) in external mode; the Updates summary is the mode and channel ("Off", "Notify · Stable", "Automatic · Beta"), "Managed by Obtainium" or "Off in debug builds". On ≥ 2 partitions the home list is the list pane and the Appearance page is shown beside it as the detail placeholder ([Pane roles and detail placeholders](#pane-roles-and-detail-placeholders)).
+
+**About** (`SettingsKey(ABOUT)`, M0): app name and icon; "Version 1.0.0 (1000095) · arm64-v8a" (`BuildInfo.versionName`, `versionCode`, `apkAbi`; long-press copies); on APKs with the engine (from M9a) the credit line "YouTube engine: yt-dlp {activeVersion}" from `YouTubeEngine.status` (01 [About statements](01-foundation.md#about-statements), 04 [Notices](04-youtube.md#notices)), tapping it opens Settings › YouTube; 01's single licence statement (identical in every APK); rows "Source code" (`BuildInfo.repoUrl`), "Licences" (`LicencesKey`), "Install & updates" (`InstallHelpKey`, M11a), "Privacy policy", "Diagnostics" (`DiagnosticsKey`, M11b).
+
+**Licences** (`LicencesKey`, M0) renders AboutLibraries data with `Nd*` components (01 [AboutLibraries and the Licences screen](01-foundation.md#aboutlibraries-and-the-licences-screen)): the licence statement on top, then a searchable list (name, version, licence) → detail with the full licence text. The list has two sections: "Libraries" (Gradle dependencies, Material Symbols) and "Bundled components" (01's manual entries, from M0 when S7 is go and complete from M9a): CPython (its full licence text, incorporated-software notices included) with OpenSSL, SQLite, libffi, expat, mpdecimal, zstd, xz, bzip2, zlib, HACL*, mimalloc and the Unicode Character Database; the Chaquopy runtime and `libc++_shared`; yt-dlp with 04's note "The YouTube engine can update itself to newer yt-dlp releases under the same licence"; yt-dlp-ejs with meriyah and astring; the CA certificate bundle (MPL-2.0, unmodified data); QuickJS and quickjs-kt when the JS provider ships (04 [Notices](04-youtube.md#notices)). The list is the same in every APK of a default build (01); on the `armeabi-v7a` APK (`!BuildInfo.youTubeEngineBundled` with `BuildConfig`'s engine switch on) the "Bundled components" header adds "Used by the YouTube engine of the 64-bit versions"; the emergency build omits the engine entries (01 [Emergency build without the engine](01-foundation.md#emergency-build-without-the-engine)). No GPL, LGPL or AGPL text appears anywhere ([D3](../PLAN.md#3-key-decisions)).
+
+### Updates settings
+
+`SettingsKey(SettingsPage.UPDATES)`, `:feature:settings`, M11a. Serves R6.2–R6.4. Honours [D78](../PLAN.md#3-key-decisions), [D80](../PLAN.md#3-key-decisions), [PO-31](../PLAN.md#48-further-product-owner-decisions) (default Notify), [PO-33](../PLAN.md#48-further-product-owner-decisions) (beta off), [PO-36](../PLAN.md#48-further-product-owner-decisions) (notice). What the updater does — checks, download, verification, install sessions per API level, the idle gate, Obtainium detection, the verification-failure mapping and when a notice becomes pending — is 09's ([09 In-app updater](09-quality-and-release.md#in-app-updater)); this section fixes the screens, states and wording. Data: `AppUpdater.state` (`:update:api`), `updates.mode`, `updates.channel` and `updates.last_check_at` through `SettingsRepository`.
+
+```
++--------------------------------------------------+
+| (<-) Updates                                     |
+| Neutrodyne 1.0.0 · arm64-v8a                     |
+| +----------------------------------------------+ |
+| | Update available: 1.1.0                      | |  status card = AppUpdater.state
+| | 24 MB · released 12 Nov 2026                 | |
+| | Faster group feeds. Fixes a crash when…  More| |  first 3 lines of notes
+| |   (Skip this version)  (:)     ( Download )  | |  (:) Download in browser
+| +----------------------------------------------+ |
+| CHECK FOR UPDATES                                |
+|  ( ) Off                                         |  updates.mode, radio rows
+|  (o) Notify me                                   |  with subtitles (below)
+|  ( ) Automatically                               |
+|  Beta versions                            [off]  |  updates.channel
+|  Last checked today 09:12        ( Check now )   |
+| Notifications are blocked     (Open settings)    |  only when POST_NOTIFICATIONS is denied
+| Install & updates help                       >   |  InstallHelpKey
+| Updates come from github.com/<owner>/Neutrodyne  |
++--------------------------------------------------+
+```
+
+- **Mode** (`updates.mode`, radio rows with subtitles): Off — "Don't check for updates. You can still check now."; Notify me (default) — "Check GitHub once a day and tell me when an update is ready. Install with one tap."; Automatically — "Download updates on Wi-Fi and install them when Neutrodyne isn't playing or downloading. Android may still ask you to confirm." The wording never promises silent installs (risk T17; silent self-updates exist only on API 31+ and where Android allows, 09). **Beta versions** (`updates.channel`, PO-33): "Get test versions before they are released. They may have bugs."; turning it off keeps the installed beta until a newer stable release. Mode and channel rows are disabled while the state is `Disabled(DEBUG_BUILD)` or `Disabled(MANAGED_BY_OTHER_INSTALLER)`. Choosing Notify or Automatically while notifications are not allowed runs the [notification prompt](#permission-prompts).
+- **Check now** → `AppUpdater.checkNow()`; the button shows a 2 dp progress line while `Checking`. It is offered in every state except `Checking`, `Disabled(DEBUG_BUILD)` and `Disabled(MANAGED_BY_OTHER_INSTALLER)`; in mode Off it makes one user-initiated check (09 confirms, [Open questions](#open-questions)). The footer line names the host the updater contacts (09's network inventory `app-updates`).
+
+**Status card** — one card per `UpdateState`; `info` supplies `versionName`, `sizeBytes`, `publishedAt`, `notes`, `channel` (a "Beta" chip for `BETA`):
+
+| `UpdateState` | Card text | Actions |
+|---|---|---|
+| `Disabled(DEBUG_BUILD)` | "Updates are off in debug builds" | — |
+| `Disabled(MANAGED_BY_OTHER_INSTALLER)` | "Obtainium installs Neutrodyne's updates on this device. Check for updates in Obtainium." (R6.3) | "Open Obtainium" (launch intent of the installer of record, when visible) |
+| `Disabled(MODE_OFF)` | "Update checks are off" + last check line if any | Check now |
+| `Idle(lastCheckAtMs)` | "Neutrodyne is up to date" + "Last checked {relative time}" ("Not checked yet" when null) | Check now |
+| `Checking` | "Checking for updates…" | — |
+| `Available(info)` | "Update available: {versionName}" + "{size} · released {date}" + notes (3 lines, "More" expands in place) | Download (`download()`); "Skip this version" (`skip(versionCode)`; the card returns to Idle until a newer version appears); overflow "Download in browser" (`openReleasePage()`) |
+| `Downloading(info, bytes, total)` | "Downloading {versionName}… {12 MB} of {24 MB}" with a determinate `NdProgress.Linear` | — |
+| `ReadyToInstall(info)` | "{versionName} is ready to install. Neutrodyne restarts after installing." | "Install now" → install-permission check ([Permission prompts](#permission-prompts)), then `installWhenIdle()` |
+| `WaitingForIdle(info)` | "{versionName} installs when playback and downloads stop" | — (never interrupts playback or a download, R6.2) |
+| `Installing(info)` | "Installing {versionName}…" | — |
+| `PendingUserAction(info)` | "Android needs your confirmation to finish updating" | "Finish update" → `installWhenIdle()` (09 re-presents Android's confirmation) |
+| `Blocked(info, reason)` | "Android blocked this update" + the reason's one-line summary (sheet below) | "What can I do?" → `UpdateBlockedKey(reason.name)`; "Download in browser" |
+| `Failed(info?, error)` | `UpdateError` text below | "Try again" (`checkNow()`); "Download in browser" |
+
+`UpdateError` texts (`UpdateStatusText`): `NETWORK` "Couldn't reach GitHub. Check your connection and try again."; `RATE_LIMITED` "GitHub is limiting requests right now. Neutrodyne tries again later."; `MANIFEST_INVALID` "The update information on GitHub couldn't be read."; `NO_APK_FOR_ABI` "This release has no version for your phone's processor ({abi})."; `HASH_MISMATCH` "The download was damaged and has been deleted."; `CERTIFICATE_MISMATCH` "The downloaded file isn't signed with Neutrodyne's key and has been deleted."; `PACKAGE_MISMATCH` "The downloaded file isn't Neutrodyne and has been deleted."; `NOT_NEWER` "The downloaded version isn't newer than this one."; `INSTALL_FAILED` "Android couldn't install the update."
+
+**Update card** (`UpdateNotice.FIRST_RUN_CHOICE`, PO-31): an `NdBanner` at the top of Feeds and Library (above the empty state when there are no subscriptions; [Banners and the startup gate](#banners-and-the-startup-gate) priority 6): "Neutrodyne checks GitHub once a day for new versions and tells you when one is ready. GitHub sees only your IP address and app version." Buttons "OK" (dismisses; on API 33+ runs the notification prompt once if not granted) and "Turn off" (writes `updates.mode = OFF`, dismisses, snackbar "Update checks are off" with "Undo"). 09 never raises it in debug builds or when Obtainium is the installer of record.
+
+**Notifications** (channel `updates` "App updates", importance LOW, one notification `NOTIF_ID_UPDATE = 4200` replaced per state; 09 posts them, only with `POST_NOTIFICATIONS`; content intent `neutrodyne://open/settings/updates`):
+
+| State | Title | Text | Action |
+|---|---|---|---|
+| `Available` (Notify) | "Neutrodyne {versionName} is available" | first line of the notes | "Download" |
+| `Downloading` | "Downloading Neutrodyne {versionName}" | progress | — |
+| `ReadyToInstall` (Notify) | "Neutrodyne {versionName} is ready" | "Tap to install" | "Install" |
+| `WaitingForIdle` | "Neutrodyne {versionName} is ready" | "Installs when playback and downloads stop" | — |
+| `PendingUserAction` in the background | "Tap to finish updating" | "Android needs your confirmation to install Neutrodyne {versionName}" | tap launches the confirmation (09) |
+| `Blocked` | "Update blocked by Android" | "Tap to see why and what you can do" | — |
+
+Failures, `Checking` and `Idle` post nothing; Settings › Updates shows them.
+
+**Update blocked sheet** (`UpdateBlockedKey(reason)`, the reason parsed with `InstallBlockReason.valueOf`, unknown → `UNKNOWN`). The installed version keeps working in every case; the sheet says so first.
+
+```
+| ----                                             |
+| Android blocked this update                      |
+| Neutrodyne 1.1.0 wasn't installed because        |
+| Neutrodyne isn't registered with Google's        |
+| developer verification. This version keeps       |
+| working.                                         |
+| 1. Allow apps from unverified developers, once:  |
+|    Developer options, restart, 24-hour wait,     |
+|    then choose "indefinitely".   (Show me how)   |
+| 2. Download the update in your browser.          |
+|                             (Download in browser)|
+| 3. Install it from a computer with ADB. (More)   |
+```
+
+| `InstallBlockReason` | Body | Actions |
+|---|---|---|
+| `DEVELOPER_UNVERIFIED` | as above (R6.4; 09 maps `EXTRA_DEVELOPER_VERIFICATION_FAILURE_REASON` = `DEVELOPER_BLOCKED` here) | "Show me how" → `InstallHelpKey("GOOGLE_PLAY")`; "Download in browser" (`openReleasePage()`); "More" → `InstallHelpKey("ADVANCED")`; "Continue in Android" (`openSystemExplanation()`) only while `AppUpdater.state` is `Blocked` with `systemExplanation = true` (Android supplied its own explanation, [09 Installing](09-quality-and-release.md#installing)) |
+| `VERIFICATION_NETWORK` | "Android couldn't check this update because the phone was offline. Try again when you're connected." | "Try again" (`installWhenIdle()`); "Download in browser" |
+| `INSTALL_PERMISSION_MISSING` | "Neutrodyne isn't allowed to install apps. Allow it once to install its own updates; you can turn it off again later." | "Allow" → `ACTION_MANAGE_UNKNOWN_APP_SOURCES` (`package:ch.lkmc.neutrodyne`); on return, when `canRequestPackageInstalls()` is true, `installWhenIdle()`; "Download in browser" |
+| `BLOCKED_BY_POLICY` | "A policy on this device (for example a work profile or parental controls) blocks installing apps. Ask whoever manages the device." | "Install & updates help" |
+| `INCOMPATIBLE` | "This update doesn't support this device." | "Open release page" (`openReleasePage()`) |
+| `STORAGE` | "Not enough storage space to install the update." | "Manage storage" (`ACTION_MANAGE_STORAGE`); "Try again" |
+| `UNKNOWN` | "Android couldn't install this update. You can download it in your browser and install it from there." | "Download in browser"; "Install & updates help" |
+
+**Verification notice** (`VerificationNoticeKey`, an `NdDialog`, shown once when 09 raises `VERIFICATION_ENFORCEMENT`: in the first release after 2026-12-01 or as soon as Google names the global date, whichever is earlier, PO-36). Neutral wording, no countdown, no urgency, no blame:
+
+> **Installing updates on phones with Google Play**
+> {From {date} | During 2027}, phones with Google Play services will install apps only from developers registered with Google, unless you turn on a one-time setting. Neutrodyne isn't registered, so on these phones its updates will need that setting: Developer options › "Allow apps from unverified developers". Turning it on takes a restart and a 24-hour wait. Choose "indefinitely" — with "7 days", updates stop working after a week. Phones without Google certification, such as GrapheneOS or LineageOS, aren't affected. Nothing changes until then.
+
+From Google's global date on (09's `GLOBAL_ENFORCEMENT`), the same one-time dialog shows the post-enforcement variant instead — mostly to fresh installs, which went through the advanced flow to get here:
+
+> **Keep updates working**
+> If you allowed this install with "Allow apps from unverified developers" and chose "7 days", Neutrodyne's updates will stop working after a week. To avoid that, open Developer options › "Allow apps from unverified developers" and choose "indefinitely". Phones without Google certification, such as GrapheneOS or LineageOS, don't need this.
+
+Buttons: "Show me how" (→ `InstallHelpKey("GOOGLE_PLAY")`) and "OK"; both dismiss the notice. The date appears only when 09's `VerificationTimeline` has one. The dialog is shown on every device (the app cannot tell reliably whether a device is certified), which is why it names the unaffected systems.
+
+**What's new sheet** (`WhatsNewKey(versionCode)`, shown once after the first start of a version the updater installed, when 09 raises `WHATS_NEW`): title "What's new in {versionName}", the release notes of that `versionCode` (09: from `changelogs/<versionCode>.txt`) as plain paragraphs and bullets, "Release page" (`{repoUrl}/releases/tag/v{versionName}`) and "OK". Empty notes → not shown.
+
+### Install and updates help
+
+`InstallHelpKey`, `:feature:settings`, M11a. Serves R6.1, R6.4 and M5 acceptance 4 (Android Auto). Honours [D79](../PLAN.md#3-key-decisions), [D80](../PLAN.md#3-key-decisions), [PO-5](../PLAN.md#po-5-google-developer-verification). Reached from Settings › About › "Install & updates", Settings › Updates, the update blocked sheet, the verification notice, the `NOT_IN_THIS_APK` reason card ("Get the 64-bit version") and `neutrodyne://open/help/install`. It mirrors the README's "Install and update" section, whose facts and wording 09 owns ([09 Developer verification](09-quality-and-release.md#developer-verification)); a change to one is a change to both (09's release checklist compares them). Works offline: everything is bundled text; links open in the browser.
+
+```
++--------------------------------------------------+
+| (<-) Install & updates                           |
+| YOUR VERSION                                     |
+|  Neutrodyne 1.0.0 for arm64-v8a                  |
+|  Phone's processor: arm64-v8a                    |
+| > Download only from GitHub                      |  expandable cards; the one a caller
+| > Check a download (optional)                    |  asks for opens expanded
+| > Allow installs from your browser               |
+| > Phones with Google Play (from 2027)            |
+| > Phones without Google certification            |
+| > Other ways to install (advanced)               |
+| > Update with Obtainium                          |
+| > Android Auto                                   |
+| > Why isn't Neutrodyne registered with Google?   |
++--------------------------------------------------+
+```
+
+| Section | Content (final wording in resources) | Actions |
+|---|---|---|
+| Your version | "Neutrodyne {versionName} for {BuildInfo.apkAbi}"; "Phone's processor: {Build.SUPPORTED_ABIS[0]}". When the APK is `armeabi-v7a` and `Build.SUPPORTED_64_BIT_ABIS` is non-empty: "Your phone can run the 64-bit version, which plays YouTube in the app. Download the file ending in -arm64-v8a.apk and install it over this one; your library stays. The built-in updater switches to it with the next update." | "Open releases" |
+| Download only from GitHub | "Neutrodyne is published only at github.com/{owner}/Neutrodyne/releases. There is no Play Store version; any other copy is not ours. Pick the file that ends in -{abi}.apk for your phone." | "Open releases" (`ACTION_VIEW` of `{repoUrl}/releases`) |
+| Check a download (optional) | "Each release lists SHA-256 checksums in SHA256SUMS. This copy of Neutrodyne is signed with certificate SHA-256 {AA:BB:…}; official releases show the same value in the README and in every release. Apps such as AppVerifier can compare it." Monospace, copyable: package name `ch.lkmc.neutrodyne`, the certificate SHA-256 (read at runtime from the installed package's signing certificate: `GET_SIGNING_CERTIFICATES` on API 28+, `GET_SIGNATURES` on 26–27), and the commands `gh release verify-asset v{versionName} neutrodyne-{versionName}-{abi}.apk -R {owner}/Neutrodyne` and `gh attestation verify neutrodyne-{versionName}-{abi}.apk -R {owner}/Neutrodyne` | "Copy" per value |
+| Allow installs from your browser | "Android asks once whether the app you install from (your browser, Files or Obtainium) may install apps. To install its own updates, Neutrodyne needs the same permission once." | — |
+| Phones with Google Play (from 2027) | Phase line: before the global rollout "Nothing changes yet. Google plans this for {2027 \| date}."; after it "In effect since {date}." Then the advanced flow, numbered: 1. turn on Developer options (Settings › About phone › tap Build number 7 times); 2. Settings › System › Developer options › "Allow apps from unverified developers"; 3. confirm that nobody is guiding you through this — Google added this check against scams, so continue only if you decided to install Neutrodyne yourself; 4. the phone restarts; 5. after 24 hours, confirm with your fingerprint or PIN; 6. choose **indefinitely** — with "7 days", updates stop working after a week; 7. each install or update then shows a warning: tap "Install anyway". "You can turn Developer options off again afterwards. Menu names differ between manufacturers." | "Open Developer options" (`Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS`; `ActivityNotFoundException` → `ACTION_DEVICE_INFO_SETTINGS`, where Build number is) |
+| Phones without Google certification | "GrapheneOS, LineageOS without Google apps, /e/OS and other systems without Google certification aren't affected: installing and updating work as before." | — |
+| Other ways to install (advanced) | Labelled "For experienced users". ADB: "From a computer: `adb install -r neutrodyne-{versionName}-{abi}.apk`. Installs over ADB aren't affected by developer verification." Shizuku: "Installer apps that work through Shizuku can also install updates; Shizuku has to be restarted after every reboot, and this may stop working if Google changes the rules." | "Copy" (command) |
+| Update with Obtainium | "Obtainium can install and update Neutrodyne from GitHub instead of the built-in updater. Add the repository, then set the APK filter to your phone's file (for example `neutrodyne-.*-arm64-v8a\.apk$`) or use Obtainium's architecture filter; for beta versions turn on 'Include prereleases'. While Obtainium installs Neutrodyne, the built-in updater stays off. Obtainium is affected by developer verification like any other installer." | "Add to Obtainium" (`ACTION_VIEW` `obtainium://add/{repoUrl}`; `ActivityNotFoundException` → Obtainium's GitHub page) |
+| Android Auto | "Android Auto shows apps that weren't installed from a store only after you allow them: in Android Auto's settings open About, tap 'Version and permission info' 10 times to unlock developer settings, then turn on 'Unknown sources' there." ([06 System surfaces](06-playback.md#system-surfaces)) | — |
+| Why isn't Neutrodyne registered with Google? | "Registering would tie a legal identity to Neutrodyne. Its maintainers decided not to register; the README explains why." No campaigning ([PO-36](../PLAN.md#48-further-product-owner-decisions)) | "Read more" (README section) |
+
+`{owner}` and `{repoUrl}` come from `BuildInfo.repoUrl`; commands, hashes and file names are never translated. A caller can open one section expanded and scrolled into view: `InstallHelpKey(section)` carries an `InstallHelpSection` name (`VERSION`, `DOWNLOAD`, `CHECK`, `ALLOW`, `GOOGLE_PLAY`, `UNCERTIFIED`, `ADVANCED`, `OBTAINIUM`, `ANDROID_AUTO`, `WHY`; `""` = all collapsed, the deep link's default). "Show me how" opens `GOOGLE_PLAY`, "More" in the blocked sheet `ADVANCED`, "Get the 64-bit version" `VERSION`. After Google's global rollout has started (09's `VerificationTimeline`), the "Phones with Google Play" card moves to the top.
 
 ### Diagnostics
 
-`DiagnosticsKey`, `:feature:settings`, M11. Visual shell only; contents and actions are 09's ([09 Crash reporting and diagnostics](09-quality-and-release.md#crash-reporting-and-diagnostics)).
+`DiagnosticsKey`, `:feature:settings`, M11 (M11b). Visual shell only; contents and actions are 09's ([09 Crash reporting and diagnostics](09-quality-and-release.md#crash-reporting-and-diagnostics)).
 
 ```
 +--------------------------------------------------+
 | (<-) Diagnostics                       (refresh) |
 | Detailed log for 24 hours                 [off]  |  diagnostics.verbose_log_until
-| APP         1.0.0 (1000095) foss · Android 16    |
+| APP         1.0.0 (1000095) arm64-v8a · API 36   |  version, ABI, Android
+|             updates Notify · by Neutrodyne       |  updater mode, installer of record
 | REFRESH     last run 10:42 · 212 ok, 3 failed    |
 | BACKGROUND  bucket ACTIVE · (!) Data Saver on    |  WARNING / PROBLEM lines tinted
 |             (Open battery settings)              |
-| JOBS ... DOWNLOADS ... YOUTUBE ... DATABASE ...  |
+| JOBS ... DOWNLOADS ...                           |
+| YOUTUBE     yt-dlp 2026.08.19 (updated) · ready  |  engine version, source, health
+| DATABASE ...                                     |
 | NOTIFICATIONS ... PARSE WARNINGS (12) v          |  expandable
 | LOG (500 lines, monospace)                     v |
 |------------------------------------------------- |
@@ -746,7 +921,7 @@ The home list shows one row per `SettingsPage` with an icon and a summary of its
 +--------------------------------------------------+
 ```
 
-One card per `DiagnosticsSection` of `DiagnosticsRepository.snapshot()`, in 09's `DiagnosticsSectionId` order (`APP`, `REFRESH`, `BACKGROUND`, `JOBS`, `DOWNLOADS`, `YOUTUBE`, `DATABASE`, `NOTIFICATIONS`, `PARSE_WARNINGS`, `LOG`); each `DiagnosticsLine` is a key/value row, `WARNING` in `tertiary`, `PROBLEM` in `error` with an icon (never colour alone). `PARSE_WARNINGS` and `LOG` are collapsed by default; the log reads `observeLogLines()`. The Background card has "Open battery settings" → `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` (fallback `ACTION_APPLICATION_DETAILS_SETTINGS`), never a direct exemption request. Bottom bar: "Copy diagnostics" (`toPlainText`, snackbar "Copied"), "Report a problem" (09's issue URL), "Export database copy" (confirmation that subscriptions, titles and history are included, then share; `DiagnosticsError.NOT_ENOUGH_SPACE` → "Not enough storage space"). Loading: skeleton cards while `snapshot()` runs (≤ 2 s per section, 09); an unavailable section shows 09's "unavailable" line. All text selectable.
+One card per `DiagnosticsSection` of `DiagnosticsRepository.snapshot()`, in 09's `DiagnosticsSectionId` order (`APP`, `REFRESH`, `BACKGROUND`, `JOBS`, `DOWNLOADS`, `YOUTUBE`, `DATABASE`, `NOTIFICATIONS`, `PARSE_WARNINGS`, `LOG`); each `DiagnosticsLine` is a key/value row, `WARNING` in `tertiary`, `PROBLEM` in `error` with an icon (never colour alone). `PARSE_WARNINGS` and `LOG` are collapsed by default; the log reads `observeLogLines()`. The Background card has "Open battery settings" → `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` (fallback `ACTION_APPLICATION_DETAILS_SETTINGS`), never a direct exemption request. Bottom bar: "Copy diagnostics" (`toPlainText`, snackbar "Copied"), "Report a problem" (09's issue URL), "Export database copy" (confirmation that subscriptions, titles and history are included, then share; `DiagnosticsError.NOT_ENOUGH_SPACE` → "Not enough storage space"). Loading: skeleton cards while `snapshot()` runs (≤ 2 s per section, 09); an unavailable section shows 09's "unavailable" line. All text selectable. The `APP` card carries 09's lines for the version, the APK's ABI, the updater mode and the installer of record; the `YOUTUBE` card the engine version, its source (bundled or updated), the engine health and the last engine-update outcome.
 
 ---
 
@@ -762,6 +937,7 @@ Serves R5.1, R5.2, R5.4, R5.6, R5.8, R4.6, N4. Delivered in M1 (`CoverArt`, `Cov
 // :core:ui
 enum class EpisodeRowStyle { FEED, PODCAST, QUEUE }            // Downloads uses DownloadEntryRow (:feature:downloads)
 @Immutable data class RowCaps(val inAppPlayback: Boolean, val downloads: Boolean,  // from YouTubeCapabilities for YouTube rows
+                              val recheck: Boolean,                               // YouTubeCapabilities.enrichment ("Check again")
                               val swipe: SwipeConfig?, val offline: Boolean)
 @Immutable data class SwipeConfig(val startToEnd: SwipeAction, val endToStart: SwipeAction)
 // SwipeAction lives in :core:model (it is also the type of the appearance.swipe_* keys):
@@ -777,7 +953,7 @@ sealed interface EpisodeAction {
     data class OpenPodcast(override val episodeId: Long, val podcastId: Long) : EpisodeAction
     data class WatchOnYouTube(override val episodeId: Long, val videoId: String) : EpisodeAction
     data class Select(override val episodeId: Long) : EpisodeAction             // long-press / toggle in selection mode
-    data class CheckAvailability(override val episodeId: Long) : EpisodeAction  // foss greyed YouTube rows (04 "Check again")
+    data class CheckAvailability(override val episodeId: Long) : EpisodeAction  // greyed YouTube rows with the engine (04 "Check again")
 }
 @Composable fun DownloadStateButton(state: DownloadState?, waitReason: WaitReason?, progress: Float?, // null = indeterminate
                                     onClick: () -> Unit, modifier: Modifier = Modifier)            // shared with DownloadEntryRow
@@ -801,7 +977,7 @@ sealed interface EpisodeAction {
 | Status line | first of: unavailable reason; download failure or wait text; nothing | same |
 | Trailing | download button then play button, each 48 dp with 24 dp icons | same |
 
-Dates: Today / Yesterday / weekday name within 6 days / "d MMM" this year / "d MMM yyyy" otherwise (`DateFormat.getBestDateTimePattern(locale, "dMMM")`), computed from `pubDate ?: sortDate` in the device zone. Durations (`live.durationMs ?: row.durationMs`): "45 min", "1 h 5 min"; unknown (YouTube from Atom, `play` always) → omitted in rows, "—" in episode detail (04 [UI per flavor](04-youtube.md#ui-per-flavor-hand-off-to-08-flavor-differences-in-ui)). Remaining = duration − position in content time (not divided by speed), rounded up to whole minutes; hidden when the duration is unknown.
+Dates: Today / Yesterday / weekday name within 6 days / "d MMM" this year / "d MMM yyyy" otherwise (`DateFormat.getBestDateTimePattern(locale, "dMMM")`), computed from `pubDate ?: sortDate` in the device zone. Durations (`live.durationMs ?: row.durationMs`): "45 min", "1 h 5 min"; unknown (YouTube from Atom before enrichment, and always in external mode) → omitted in rows, "—" in episode detail (04 [UI per capability](04-youtube.md#ui-per-capability-hand-off-to-08-capability-differences-in-ui)). Remaining = duration − position in content time (not divided by speed), rounded up to whole minutes; hidden when the duration is unknown.
 
 **Playback states** (from `row` plus `live`):
 
@@ -814,8 +990,8 @@ Dates: Today / Yesterday / weekday name within 6 days / "d MMM" this year / "d M
 | Now playing, paused | container `secondaryContainer` | `play_arrow` "Resume" |
 | Played | title and meta `onSurfaceVariant`, check badge, no progress | `play_arrow` "Play again" |
 | Offline and not downloaded | play icon `cloud_off`, 60 % alpha | tap → offline snackbar |
-| Unavailable (`availability` not `AVAILABLE`, foss) | row at 60 % alpha, reason in the status line; custom action "Check again" for `REGION_BLOCKED`, `PRIVATE`, `UNAVAILABLE` (`CheckAvailability`) | `open_in_new` "Watch on YouTube" |
-| External (YouTube, `!caps.inAppPlayback`) | normal; status "Opens in YouTube" | `open_in_new` replaces both buttons |
+| Unavailable (`availability` not `AVAILABLE`; recorded while the engine was available) | row at 60 % alpha, reason in the status line; custom action "Check again" for `REGION_BLOCKED`, `PRIVATE`, `UNAVAILABLE` (`CheckAvailability`) only when `caps.recheck` | `open_in_new` "Watch on YouTube" |
+| External (YouTube, `!caps.inAppPlayback`: external mode) | normal; status "Opens in YouTube" | `open_in_new` replaces both buttons |
 
 **Download states** (`live.downloadState ?: row.downloadState`, `live.waitReason`; hidden for YouTube when `!caps.downloads`):
 
@@ -924,7 +1100,7 @@ All in `:core:ui`, returning `UiText` (01) so ViewModels stay resource-free; eac
 
 #### Download status text
 
-07 owns the meaning of each state ([07 Wait reasons](07-downloads.md#wait-reasons), [07 Errors](07-downloads.md#errors)); this is the final wording, including 07's refinements (marked ‡). Context needed beyond the enum value: `lastError` (for `STORAGE` and `MISSING`), `nextAttemptAt` (both in `RowLive` and `DownloadStatus`), the row's `sourceType` and `YouTubeHealth.state` (YouTube gate). Texts naming YouTube together with downloads come from `YouTubeFlavorTexts` ([Flavor differences in UI](#flavor-differences-in-ui)); they can only appear in `foss`.
+07 owns the meaning of each state ([07 Wait reasons](07-downloads.md#wait-reasons), [07 Errors](07-downloads.md#errors)); this is the final wording, including 07's refinements (marked ‡). Context needed beyond the enum value: `lastError` (for `STORAGE` and `MISSING`), `nextAttemptAt` (both in `RowLive` and `DownloadStatus`), the row's `sourceType`, `YouTubeHealth.state` (YouTube gate) and `YouTubeCapabilities.externalReason` (YouTube rows in external mode). All texts, the YouTube ones included, are ordinary string resources, identical in every APK ([Capability differences in UI](#capability-differences-in-ui)).
 
 | `WaitReason` | Text |
 |---|---|
@@ -936,6 +1112,7 @@ All in `:core:ui`, returning `UiText` (01) so ViewModels stay resource-free; eac
 | `BACKOFF` | "Retrying in {relative time}" from `nextAttemptAt` ("Retrying soon" when null or past); ‡ YouTube row while `YouTubeHealth.state` has the breaker open or a rate limit: "YouTube downloads paused until {time}" |
 | `SYSTEM` | "Paused by Android, resumes automatically" |
 | `NEEDS_FOREGROUND` | "Tap to resume" |
+| `YOUTUBE_ENGINE_OFF` (M9a, 02/07) | ‡ "Waiting — in-app YouTube is off" (`externalReason = DISABLED_BY_USER`); ‡ "Waiting for the YouTube engine" (`ENGINE_FAILED`, `NOT_YET_AVAILABLE`); action ‡ "YouTube settings" |
 
 Other states: `DOWNLOADING` "{p} %" in rows and "{12.3 MB} of {48.0 MB} · {1.2 MB/s}" on the Downloads screen (sizes from `totalBytes ?: estimatedBytes`, prefixed "about" when estimated); `PAUSED` "Paused"; `MISSING` "File missing" (‡ with `lastError = STORAGE_UNAVAILABLE`: "Storage isn't available"); `RESOLVING`, `VERIFYING` no text.
 
@@ -952,12 +1129,16 @@ Other states: `DOWNLOADING` "{p} %" in rows and "{12.3 MB} of {48.0 MB} · {1.2 
 | `STORAGE_UNAVAILABLE` | "Storage isn't available"; ‡ on a `FAILED` row (only the permanent `EFBIG` case fails): "This file is too large for the selected storage" |
 | `YT_UNAVAILABLE` | the episode's [availability text](#availability-text) |
 | `YT_EXTRACTION`, `YT_FORBIDDEN` | "YouTube download failed" |
-| `UNSUPPORTED_STREAM` | "This format isn't supported" |
+| `UNSUPPORTED_STREAM` | "This format isn't supported"; ‡ on a YouTube row ended on an APK without the engine (`NOT_IN_THIS_APK`, 07's reconciler): "This version of Neutrodyne can't download YouTube videos" |
 | `CANCELLED_BY_SYSTEM`, `UNKNOWN` | "Download failed" |
 
 #### Availability text
 
 04's reason strings are adopted verbatim: `AGE_RESTRICTED` "Age-restricted — sign-in required on YouTube"; `MEMBERS_ONLY` "Members only"; `REGION_BLOCKED` "Not available in your country"; `PRIVATE` "Private video"; `KIDS_ONLY` "Made for kids — can't be played here"; `UNAVAILABLE` "No longer available"; `UPCOMING` "Premieres soon"; `LIVE` "Live now" ([04 Participation matrix](04-youtube.md#participation-matrix)).
+
+#### External reason text
+
+`ExternalReasonText.long(reason)` / `.short(reason)` for 04's `ExternalReason`; wording and actions in [External reason texts](#external-reason-texts).
 
 #### Attribution text
 
@@ -971,7 +1152,7 @@ Other states: `DOWNLOADING` "{p} %" in rows and "{12.3 MB} of {48.0 MB} · {1.2 
 
 ## Player sheet
 
-Serves R4.7, R4.8, R5.2, R5.5, R5.7, N4. Delivered in M4 (sheet, mini and full player, speed sheet), M5 (sleep sheet, chapters tab, timestamp seeks), M9 (YouTube issue banners), M10 (artwork tint, side panel, tabletop, landscape). Honours [D56](../PLAN.md#3-key-decisions), [D43](../PLAN.md#3-key-decisions). Behaviour behind every button is 06's ([06 UI boundary](06-playback.md#ui-boundary)); no Media3 type enters `:feature:player` in v1.0 (06 [No Media3 in features](06-playback.md#no-media3-in-features-v10)).
+Serves R4.7, R4.8, R5.2, R5.5, R5.7, N4. Delivered in M4 (sheet, mini and full player, speed sheet), M5 (sleep sheet, chapters tab, timestamp seeks), M9a (YouTube issue banners), M10 (artwork tint, side panel, tabletop, landscape). Honours [D56](../PLAN.md#3-key-decisions), [D43](../PLAN.md#3-key-decisions). Behaviour behind every button is 06's ([06 UI boundary](06-playback.md#ui-boundary)); no Media3 type enters `:feature:player` in v1.0 (06 [No Media3 in features](06-playback.md#no-media3-in-features-v10)).
 
 ### Structure and states
 
@@ -1070,8 +1251,8 @@ Compact portrait layout; other layouts in [Side panel, medium widths and tableto
 
 - Transport: skip back/forward labels and a11y use `playback.skip_back_ms`/`skip_forward_ms` ("Back 10 seconds"); `|<`/`>|` are `previousChapter`/`nextChapter` when the episode has chapters (labels "Previous chapter"/"Next chapter"), else `skipToPrevious`/`skipToNext` ("Previous episode"/"Next episode"; `>|` disabled when `!hasNext`); with chapters, the overflow's "Next episode" (`skipToNext()`) keeps episode skipping one tap away. The play button morphs between a rounded square and a circle (`graphics-shapes` 1.1.0) only when animations are enabled.
 - Scrubber: `NdSlider`, chapter start ticks drawn in `drawBehind`; dragging shows the target time in a bubble and seeks on release (`seekTo`); `stateDescription` "12 minutes 4 seconds of 45 minutes"; custom actions Back/Forward {n} seconds; no live-region announcements of the position.
-- Secondary row: speed (label "1.2×" → `SpeedKey`), sleep (icon, or "23 min" while running → `SleepTimerKey`), Up next (count → opens the tabs panel), share (episode web link or YouTube watch URL). `play` flavor v1.x adds the Output Switcher here (PO-6).
-- Overflow: Go to episode (`EpisodeKey`), Go to podcast, Next episode (only when chapters own `>|`), Mark played and skip (`EpisodeRepository.setPlayed(listOf(id), true)` **only**: 06's projector advances when the current item is marked played, so an extra `skipToNext()` would skip two episodes, 06 open question 12), Download / Delete download (per [`RowCaps`](#episoderow); results through `DownloadRequestHandler`), Watch on YouTube (YouTube in `foss`), Stop and close (`dismiss()`).
+- Secondary row: speed (label "1.2×" → `SpeedKey`), sleep (icon, or "23 min" while running → `SleepTimerKey`), Up next (count → opens the tabs panel), share (episode web link or YouTube watch URL). No cast button: Chromecast is not planned ([PO-6](../PLAN.md#po-6-chromecast); Cast needs proprietary Play services).
+- Overflow: Go to episode (`EpisodeKey`), Go to podcast, Next episode (only when chapters own `>|`), Mark played and skip (`EpisodeRepository.setPlayed(listOf(id), true)` **only**: 06's projector advances when the current item is marked played, so an extra `skipToNext()` would skip two episodes, 06 open question 12), Download / Delete download (per [`RowCaps`](#episoderow); results through `DownloadRequestHandler`), Watch on YouTube (YouTube items, which play only with the engine; with `&t=` per 04), Stop and close (`dismiss()`).
 - Colours: the whole sheet is wrapped in `ArtworkTheme(colors?.seedArgb)` (M10; app scheme before).
 
 ### Tabs panel
@@ -1105,14 +1286,14 @@ Chips and the slider (on release) call `setSpeed(value, scope)`; the switch call
 | | `METERED_BLOCKED` | banner "Streaming on mobile data is off" → Settings (`SettingsKey(PLAYBACK)`) |
 | | `LOCAL_FILE_MISSING` | banner "The downloaded file is missing — streaming instead" |
 | | `YOUTUBE_RATE_LIMITED` | banner "YouTube is limiting requests from your network. Try again later." |
-| | `YOUTUBE_BREAKER_OPEN` | banner "YouTube playback is temporarily broken — update Neutrodyne" → Try now (`YouTubeHealth.retryNow()`) |
+| | `YOUTUBE_BREAKER_OPEN` | banner "YouTube playback is temporarily broken — Neutrodyne is checking for a fix" (R3.8; with engine updates Off, and in M9a builds, which have no engine updates yet: "YouTube playback is temporarily broken. Neutrodyne retries at {time}.") → Try now (`YouTubeHealth.retryNow()`) |
 | | `PLAYER_ERROR` | banner "Playback stopped because of an error" → Retry (`play()`) |
 | `PlayResult` | `Started` | nothing (the sheet appears or updates) |
 | | `NothingToPlay(false)` / `(true)` | snackbar "Nothing unplayed in '{context}'" / "Episodes in '{context}' open in YouTube" |
 | | `NeedsMeteredConsent` | "Stream on mobile data?" [dialog](#dialogs) |
 | | `MeteredBlocked` | snackbar "Streaming on mobile data is off" + Settings |
 | | `Offline` | snackbar "You're offline — downloaded episodes still play" |
-| | `NotPlayable(id, reason)` | snackbar: `Http(404/410)` "This episode's audio file is gone"; `AuthRequired` "This feed needs a password" + Enter (opens the Enter password [dialog](#dialogs) for the episode's podcast, `PodcastRepository.setCredentials`); `UnsupportedFormat` "This file format can't be played"; `NoMedia` "This episode has no audio"; `YouTube(a)` availability text; `YouTubeExtraction` "YouTube playback failed — try again later"; `NotInThisBuild` → the row opens YouTube instead (never reached from the UI) |
+| | `NotPlayable(id, reason)` | snackbar: `Http(404/410)` "This episode's audio file is gone"; `AuthRequired` "This feed needs a password" + Enter (opens the Enter password [dialog](#dialogs) for the episode's podcast, `PodcastRepository.setCredentials`); `UnsupportedFormat` "This file format can't be played"; `NoMedia` "This episode has no audio"; `YouTube(a)` availability text; `YouTubeExtraction` "YouTube playback failed — try again later"; `YouTubeExternal(reason)` (a start refused in external mode, e.g. right after the engine was turned off; 06 open question 17) → the short [external-reason text](#external-reason-texts) with "Watch on YouTube" |
 | | `ServiceUnavailable` | snackbar "Couldn't start playback" + Retry |
 | `PlaybackStateSource.events` | `Skipped(id, title, reason)` | snackbar "Skipped “{title}”: {reason}" |
 | | `MarkedPlayed`, `SleepTimerFired` | nothing |
@@ -1763,7 +1944,7 @@ Serves N4, R5 (all). Delivered with every UI milestone; audit and the full autom
 
 | Element | Custom actions |
 |---|---|
-| Episode row | Play / Pause / Resume / Watch on YouTube; Play next; Play last; Download / Pause download / Resume download / Cancel download / Retry download / Delete download (plus the wait reason's action: Use mobile data, Download now, Retry now); Mark played / Mark unplayed; Open podcast; Check again (`foss`, greyed YouTube rows); Select |
+| Episode row | Play / Pause / Resume / Watch on YouTube; Play next; Play last; Download / Pause download / Resume download / Cancel download / Retry download / Delete download (plus the wait reason's action: Use mobile data, Download now, Retry now); Mark played / Mark unplayed; Open podcast; Check again (greyed YouTube rows, `caps.recheck`); Select |
 | Swipe-enabled rows | the configured swipe actions appear in the list above (no extra action) |
 | Up next row | Move up; Move down; Move to top; Remove from Up next |
 | Manage groups row | Move up; Move down; Move to top; Edit; Delete |
@@ -1785,7 +1966,7 @@ Serves N4, R5 (all). Delivered with every UI milestone; audit and the full autom
 
 ## Onboarding and empty states
 
-Serves R1.1, R2.1, R3.1, R5.4, N4. Delivered in M1 (Feeds/Library empty states), M2 (group states), M3 (import banners), M7 (Discover onboarding, suggested groups), M10 (illustrations, brand assets). No multi-step wizard: the empty states are the onboarding.
+Serves R1.1, R2.1, R3.1, R5.4, R6.2, N4. Delivered in M1 (Feeds/Library empty states), M2 (group states), M3 (import banners), M7 (Discover onboarding, suggested groups), M10 (illustrations, brand assets), M11a (update card, install-permission rationale). No multi-step wizard: the empty states are the onboarding.
 
 ### Empty states
 
@@ -1821,7 +2002,8 @@ Shown at the top of Feeds and Manage groups when `PodcastRepository.observeCateg
 | 3 | "Restore your library from Android backup?" (Library only) | `BackupRepository.observeSnapshotStatus().foreignPending` (05) | Restore (`restoreAndroidBackup()` → `ImportKey(sessionId)`), Discard (confirmation → `discardAndroidBackup()`) |
 | 4 | "You're offline — downloaded episodes still play" | `NetworkMonitor` | — |
 | 5 | "Finish importing 142 podcasts" / "Importing… 87 of 139" | `ImportRepository.observeOpenSessions()` (05) | Review / View, Discard (PREVIEW only) |
-| 6 | "YouTube feeds aren't responding. Your channels will update automatically when YouTube is back." | `YouTubeHealth.state.feedOutageUntil` in the future (04) | Retry now (`retryNow()`) |
+| 6 | Update card (M11a): "Neutrodyne checks GitHub once a day for new versions and tells you when one is ready. GitHub sees only your IP address and app version." | `UpdateNotices.pending == FIRST_RUN_CHOICE` (09, PO-31), observed by the root ([Updates settings](#updates-settings)) | OK, Turn off |
+| 7 | "YouTube feeds aren't responding. Your channels will update automatically when YouTube is back." | `YouTubeHealth.state.feedOutageUntil` in the future (04) | Retry now (`retryNow()`) |
 
 `StartupGate` (`:app`, 01 [Application start-up](01-foundation.md#application-start-up)): the system splash covers the first 400 ms; if the database is still `Pending`, a full-window surface shows the app icon, "Updating your library…" and an indeterminate `NdLoading`. `Failed` keeps the gate: for 02's `DatabaseOpenException.Reason.DISK_FULL`, "Not enough storage to open your library" with "Manage storage" (`ACTION_MANAGE_STORAGE`) and "Try again"; otherwise "Neutrodyne couldn't open its library" with "Send report" (09's `reportNonFatal`; "Copy diagnostics" when ACRA is unavailable) and "Try again". "Try again" calls `StartupViewModel.retry()`, which calls `DatabaseOpener.awaitOpen()` again (02: a failed result is not cached); it does not restart the activity, because the activity-retained `StartupViewModel` would keep the failed state. Nothing is deleted. The gate uses only `:core:designsystem` and string resources (no repository, 01).
 
@@ -1829,39 +2011,55 @@ Shown at the top of Feeds and Manage groups when `PodcastRepository.observeCateg
 
 `POST_NOTIFICATIONS` (API 33+) is never requested at launch ([01 P22](01-foundation.md#platform-compliance)). `rememberNotificationPermissionRequester()` (`:core:ui`) wraps `rememberLauncherForActivityResult(RequestPermission())` and is invoked only:
 
-1. when the user switches a new-episode notification setting on (global, group, podcast, or the import preview's "Notify me about new episodes"; 03's permission rule), and
-2. after a manual download request whose result is 07's `RequestResult.Queued(askNotificationPermission = true)` (API 33+, not granted, `downloads.notification_prompted` false); the screen then sets `downloads.notification_prompted = true`, so the system dialog appears at most once per install for downloads ([07 Requests](07-downloads.md#requests)).
+1. when the user switches a new-episode notification setting on (global, group, podcast, or the import preview's "Notify me about new episodes"; 03's permission rule),
+2. after a manual download request whose result is 07's `RequestResult.Queued(askNotificationPermission = true)` (API 33+, not granted, `downloads.notification_prompted` false); the screen then sets `downloads.notification_prompted = true`, so the system dialog appears at most once per install for downloads ([07 Requests](07-downloads.md#requests)), and
+3. (M11a) when the user taps "OK" on the update card or chooses Notify or Automatically in Settings › Updates while the permission is not granted ([Updates settings](#updates-settings)).
 
 Denied → no repeated system dialog; the relevant screen shows an inline row "Notifications are blocked" with "Open settings" (`Settings.ACTION_APP_NOTIFICATION_SETTINGS`). Media-session notifications need no permission (06).
 
+**Installing updates** (M11a, R6.2). Neutrodyne needs Android's "install unknown apps" permission for itself once; a grant to the browser that installed it does not count ([Platform constraints](#platform-constraints)). Before "Install now", "Finish update" or the blocked sheet's "Allow", the screen checks `packageManager.canRequestPackageInstalls()`; when false it shows a rationale card (not a system dialog): "To install its own updates, Neutrodyne needs Android's permission to install apps. Android shows a switch for Neutrodyne; turn it on and come back. You can turn it off later; updates then need your browser." with "Continue" → `startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:ch.lkmc.neutrodyne")))` and "Not now". On return (`ON_RESUME`) the screen re-checks and, when granted, calls `installWhenIdle()`; still denied → the card stays with "Download in browser". `REQUEST_INSTALL_PACKAGES` itself is a manifest permission with no runtime dialog (01). Nothing asks for this permission before the user starts an install; with mode Automatic, a background install that finds it missing ends `Blocked(INSTALL_PERMISSION_MISSING)` and the `updates` notification leads here.
+
 ---
 
-## Flavor differences in UI
+## Capability differences in UI
 
-Serves R3.7, R3.5, R3.6, N8. Delivered in M8 (both flavors show external YouTube episodes) and M9 (`foss` playback and downloads). Honours [D2](../PLAN.md#3-key-decisions), [D51](../PLAN.md#3-key-decisions), [PO-2](../PLAN.md#po-2-distribution-channels-and-youtube-per-flavor). The UI never checks the flavor name: every difference is driven by 04's `YouTubeCapabilities` (injected into ViewModels from `:youtube:api`) so `foss` before M9 behaves exactly like `play` ([04 Capability consumers](04-youtube.md#capability-consumers)).
+Serves R3.7, R3.5, R3.6, R3.9 (display), N8. Delivered in M8 (every APK in external mode, reason `NOT_YET_AVAILABLE`), M9a (the engine on the 64-bit APKs; reason texts for `NOT_IN_THIS_APK`, `DISABLED_BY_USER`, `ENGINE_FAILED`; engine rows) and M9b (engine-update rows). Honours [D2](../PLAN.md#3-key-decisions), [D51](../PLAN.md#3-key-decisions), [D77](../PLAN.md#3-key-decisions), [PO-2](../PLAN.md#po-2-distribution-channels). There is one product (build types only, [D2](../PLAN.md#3-key-decisions)) and the UI never reads the ABI, `BuildConfig` or the no-engine build switch: every difference is driven by 04's `YouTubeCapabilitiesSource.capabilities` (`StateFlow<YouTubeCapabilities>` from `:youtube:api`, observed by ViewModels and never snapshotted), so every APK before M9a, the `armeabi-v7a` APK, the emergency build without the engine and a 64-bit APK whose engine is off or failed all render the same **external mode** ([04 Capability matrix](04-youtube.md#capability-matrix), [04 Capability consumers](04-youtube.md#capability-consumers)). Capabilities can flip while a screen is visible (the switch, a third failed start, "Try again"): rows, Discover and Settings re-render at once; the queue and downloads follow 06 and 07.
 
-| Element | all five `YouTubeCapabilities` flags true (`foss` from M9) | all false (`play`; `foss` before M9) |
+| Element | Engine present (all five flags true) | External mode (all five false, `externalReason` set) |
 |---|---|---|
 | YouTube row primary action | Play / Pause | "Watch on YouTube" (`open_in_new`); status "Opens in YouTube" |
 | Play next / Play last / Download / swipe actions on YouTube rows | shown | hidden (also from selection mode, custom actions and the player overflow); auto-download rows of YouTube podcasts hidden (`SettingSource.NotSupported`, 05) |
-| Duration | measured or enriched, omitted while unknown | omitted in rows, "—" in episode detail |
-| Unavailable reason line | shown, row greyed, primary "Watch on YouTube"; "Check again" (custom action, episode overflow) for `REGION_BLOCKED`, `PRIVATE`, `UNAVAILABLE` | never present (no enrichment) |
+| Duration | measured or enriched; while unknown omitted in rows, "—" in episode detail | omitted in rows, "—" in episode detail |
+| Unavailable reason line | shown, row greyed, primary "Watch on YouTube"; "Check again" (custom action, episode overflow) for `REGION_BLOCKED`, `PRIVATE`, `UNAVAILABLE` | only reasons recorded while the engine was available; no "Check again" |
 | Channel without visible episodes | "No long-form videos yet…" + Podcast settings | same |
-| "Play group" / Up next | YouTube items play | skipped; "Episodes in 'tech' open in YouTube" when nothing else is left |
+| "Play group" / Up next | YouTube items play | skipped; "Episodes in 'tech' open in YouTube" when nothing else is left; Up next rows added earlier stay, greyed ("Opens in YouTube") |
+| Starting a YouTube item that just became external (06 `NotPlayable(YouTubeExternal(reason))`) | — | snackbar with the short reason text and "Watch on YouTube" |
 | Podcast detail "Load older episodes" for channels | shown | hidden |
 | Discover "Search YouTube channels" | shown | hidden; the Add sheet's helper text adds 04's "To add a YouTube channel, share it from the YouTube app or paste its link." |
-| Settings › YouTube | variants info, audio quality, volume levelling, YouTube auto-download, suggest RSS, mark played on open (greyed episodes only), extractor status line | suggest RSS, mark played on open |
+| Settings › YouTube | [YouTube engine rows](#youtube-engine-rows): "Play YouTube in the app", engine line, status line, engine updates (M9b), audio quality, volume levelling; variants info, suggest RSS, mark played on open (greyed episodes only) | the reason card of [External reason texts](#external-reason-texts) with its action; suggest RSS, mark played on open |
+| Settings › Downloads | "YouTube channels" auto-download rows | hidden |
 | Player banners | breaker and rate-limit banners | never |
-| Downloads screen | YouTube rows and breaker banner | leftover YouTube files (cross-grade) listed with Delete only |
-| About and Licences | GPL statement and NewPipe Extractor notice (01 [About statements](01-foundation.md#about-statements), 04 [Notices](04-youtube.md#notices)) | Unlicense statement; no GPL text |
+| Downloads screen | YouTube rows and the breaker banner | completed YouTube files with Delete and Share file, no play button; queued YouTube rows wait ("Waiting — in-app YouTube is off" / "Waiting for the YouTube engine") or, on an APK without the engine, end with "This version of Neutrodyne can't download YouTube videos" |
+| About | the credit line "YouTube engine: yt-dlp {version}" | no credit line; licence statement identical; Licences lists the engine stack under the label below on the `armeabi-v7a` APK and omits it in the emergency build |
 
-Wording rules for `play` (risk P1, 04 [Play guardrails](04-youtube.md#play-guardrails)): no string in the `play` build mentions downloading YouTube content, background YouTube play, or the existence of another build. Only `:app` has flavors, and feature modules' strings ship in both builds, so every string that pairs YouTube with download or background wording ("YouTube downloads paused until {time}", "YouTube download failed", Settings › Downloads › YouTube channels, the `foss` About text) is declared only in `:app/src/foss/res/values/strings_youtube.xml` and reaches feature code as a `UiText` through `YouTubeFlavorTexts` (interface in `:core:ui`, bound in each flavor's `FlavorModule`; the `play` binding returns a neutral "Not available" text, unreachable because the capability flags hide those paths). `PlayStringsPolicyTest` (`:app`, `playDebug` unit test) loads every string of the merged `play` resources (all locales) and fails when a value containing "YouTube" also contains "download", "background", "F-Droid", "IzzyOnDroid" or "GitHub" (case-insensitive), or when any value contains "F-Droid", "IzzyOnDroid" or "NewPipe". The YouTube logo is never used (trademark); YouTube items carry the `smart_display` glyph.
+### External reason texts
+
+`ExternalReasonText` (`:core:ui`) maps 04's `ExternalReason` to a long text (the Settings › YouTube reason card, episode detail) and a short text (snackbars, the Settings home summary, group settings, row status lines that need a reason). All strings are ordinary resources, identical in every APK.
+
+| `ExternalReason` | Long text | Short text | Action on the reason card |
+|---|---|---|---|
+| `NOT_YET_AVAILABLE` (builds before M9a) | "In-app YouTube playback arrives in a later version of Neutrodyne. Until then, videos open in YouTube." | "YouTube plays in the app in a later version" | none |
+| `NOT_IN_THIS_APK` (`armeabi-v7a` APK, emergency build) | "This version of Neutrodyne can't play YouTube in the app on this device. Videos open in YouTube." | "In-app YouTube isn't available in this version" | "Get the 64-bit version" → `InstallHelpKey("VERSION")`, offered only when `BuildInfo.apkAbi` is `armeabi-v7a` and `Build.SUPPORTED_64_BIT_ABIS` is non-empty; otherwise none |
+| `DISABLED_BY_USER` | "In-app YouTube is off. Videos open in YouTube." | "In-app YouTube is off" | the "Play YouTube in the app" switch (the engine line stays visible) |
+| `ENGINE_FAILED` | "The YouTube engine couldn't start. Videos open in YouTube until it works again." | "The YouTube engine couldn't start" | "Try again" (`YouTubeEngine.retryStart()`); "Reset to bundled" when the active version is a downloaded one (M9b) |
+
+The YouTube logo is never used (trademark); YouTube items carry the `smart_display` glyph.
 
 ---
 
 ## Settings
 
-Serves R2.7 (settings screens), R5.5, N10. Delivered in M0 (home, Appearance basics, About, Licences) and by each owning milestone. Keys follow 01's registry ([01 DataStore files and typed setting keys](01-foundation.md#datastore-files-and-typed-setting-keys)); enums used as key types (`ThemeMode`, `LibraryDensity`, `LibrarySort`, `SwipeAction`, `PlayerTimeDisplay`, `YouTubeRowArt`, `LibrarySegment`) live in `:core:model` (`ch.lkmc.neutrodyne.core.model.settings`).
+Serves R2.7 (settings screens), R3.9 (display), R5.5, R6.2–R6.3 (Settings › Updates), N10. Delivered in M0 (home, Appearance basics, About, Licences) and by each owning milestone (YouTube engine rows M9a/M9b, Updates M11a). Keys follow 01's registry ([01 DataStore files and typed setting keys](01-foundation.md#datastore-files-and-typed-setting-keys)); enums used as key types (`ThemeMode`, `LibraryDensity`, `LibrarySort`, `SwipeAction`, `PlayerTimeDisplay`, `YouTubeRowArt`, `LibrarySegment`) live in `:core:model` (`ch.lkmc.neutrodyne.core.model.settings`).
 
 ### Settings screen structure
 
@@ -1873,13 +2071,50 @@ Serves R2.7 (settings screens), R5.5, N10. Delivered in M0 (home, Appearance bas
 | `FEEDS` | Refresh interval, Wi-Fi only, refresh on open, load older episodes when subscribing, show-notes images; Notifications: new episodes (with the blocked-permission row); Groups: show Ungrouped tab, Manage groups | 03, 05 |
 | `DISCOVER` | Country; Apple; fyyd; Podcast Index and "Use my own Podcast Index key"; provider disclosure | 03 |
 | `PLAYBACK` | Default speed, skip silence, speed presets, skip back, skip forward, pause for navigation prompts, streaming on mobile data, headset next/previous, rewind after long pauses; Storage: streaming cache size, usage, Clear streaming cache (`PlaybackMaintenance`) | 06 |
-| `DOWNLOADS` | 07's [Settings](07-downloads.md#settings): mobile data for manual downloads, automatic downloads (enabled, keep latest, network, charging, include video), delete played episodes, storage limit; Storage location (`storageRoots()` as radio rows with free space; choosing another root asks "Move {n} downloads ({2.3 GB}) to {SD card}?" → `changeRoot(rootId, moveExisting)`); usage line from `observeStorage()`; "Clean up unknown files" ({1.2 GB}, confirmation → `deleteOrphanFiles()`); YouTube channels auto-download (`foss`, M9, 04) | 07, 04 |
-| `YOUTUBE` | 04's [Settings](04-youtube.md#settings), filtered by `YouTubeCapabilities`; extractor status line (`foss`) | 04 |
+| `DOWNLOADS` | 07's [Settings](07-downloads.md#settings): mobile data for manual downloads, automatic downloads (enabled, keep latest, network, charging, include video), delete played episodes, storage limit; Storage location (`storageRoots()` as radio rows with free space; choosing another root asks "Move {n} downloads ({2.3 GB}) to {SD card}?" → `changeRoot(rootId, moveExisting)`); usage line from `observeStorage()`; "Clean up unknown files" ({1.2 GB}, confirmation → `deleteOrphanFiles()`); YouTube channels auto-download (with the engine, M9a, 04) | 07, 04 |
+| `YOUTUBE` | 04's [Settings](04-youtube.md#settings), filtered by capabilities: with the engine the [YouTube engine rows](#youtube-engine-rows) ("Play YouTube in the app", engine version and source, status line, engine updates policy, "Check for engine update", "Reset to bundled"), audio quality, volume levelling; in external mode the reason card ([External reason texts](#external-reason-texts)); in both: variants info, suggest RSS, mark played on open | 04 |
 | `BACKUP` | the [Backup and restore](#backup-and-restore) body | 05 |
-| `PRIVACY` | crash reports (ACRA), network inventory ("What Neutrodyne connects to"), link to Discover providers and show-notes images | 09 |
-| `ABOUT` | version and flavor, licence statement (01), source code, Licences (`LicencesKey`), privacy policy, Diagnostics (`DiagnosticsKey`, M11) | 01, 09 |
+| `UPDATES` (M11a) | the [Updates settings](#updates-settings) body: status card, mode (Off / Notify / Automatic), beta versions, Check now, last check, Install & updates help | 09 |
+| `PRIVACY` | crash reports (ACRA), network inventory ("What Neutrodyne connects to", including GitHub for app and YouTube-engine updates while they are on, N3), link to Discover providers and show-notes images | 09 |
+| `ABOUT` | version and ABI, YouTube engine credit (with the engine), licence statement (01), source code, Licences (`LicencesKey`), Install & updates (`InstallHelpKey`, M11a), privacy policy, Diagnostics (`DiagnosticsKey`, M11b) ([About](#settings-screens)) | 01, 09 |
 
 Every effective-value row on podcast and group settings uses [Attribution text](#attribution-text); global rows show the plain value.
+
+### YouTube engine rows
+
+Settings › YouTube on an APK with the engine (`BuildInfo.youTubeEngineBundled`), M9a; rows marked M9b arrive with engine updates. Data: `YouTubeEngine.status` (`EngineStatus`), `YouTubeCapabilitiesSource.capabilities`, `YouTubeHealth.state`, `youtube.engine_enabled`, `youtube.engine_updates` (04 [Settings](04-youtube.md#settings), [04 Engine updates](04-youtube.md#engine-updates)). Opening the page never starts `:ytx`.
+
+```
++--------------------------------------------------+
+| (<-) YouTube                                     |
+| IN-APP PLAYBACK                                  |
+|  Play YouTube in the app                  [on]   |  youtube.engine_enabled
+|  YouTube engine     yt-dlp 2026.08.19 · updated  |  EngineStatus
+|  Idle, starts when needed · checked today 06:10  |  status line
+|  Engine updates           Neutrodyne-approved    |  M9b, youtube.engine_updates
+|  (Check for engine update)  (Reset to bundled)   |  M9b
+|  Audio quality            Standard (AAC)         |
+|  Volume levelling                         [off]  |
+| CHANNELS                                         |
+|  Suggest the podcast feed                 [on]   |
+|  Mark played when opened in YouTube       [on]   |
+|  Shorts and live streams are set per channel     |
++--------------------------------------------------+
+```
+
+| Row | Content | Action |
+|---|---|---|
+| Play YouTube in the app | `youtube.engine_enabled`; subtitle "Plays and downloads YouTube episodes as audio with the built-in engine. When off, YouTube episodes open in the YouTube app; an episode that is already playing continues until it needs to reconnect." (06 open question 17: no promise of an immediate stop) | switch; off → external mode at once (`DISABLED_BY_USER`), queued YouTube downloads wait |
+| YouTube engine | "yt-dlp {activeVersion} · built in" or "yt-dlp {activeVersion} · updated (built in: {bundledVersion})"; second line, from `jsChallenges`: "Made-for-kids and some age-restricted videos can play" or "can't play in the app" | tap → a details dialog (versions, source, last check and outcome) |
+| Status line | from `EngineStatus.availability` and `YouTubeHealth.state`, first match: breaker open "YouTube playback is temporarily broken — retrying at {time}" (+ "Try now"); rate limited "YouTube is limiting requests from your network until {time}"; `STARTING` "Starting…"; `READY` "Running"; `STOPPED` "Idle, starts when needed"; then (M9b) " · last update check {relative time}" | "Try now" (`YouTubeHealth.retryNow()`) while the breaker is open |
+| Engine updates (M9b) | `youtube.engine_updates` chooser: "Neutrodyne-approved (recommended)" — "Installs yt-dlp versions that Neutrodyne's automated tests approved, usually within a day of their release"; "Upstream stable (advanced)" — "Installs every new stable yt-dlp release directly from its developers, without Neutrodyne's tests. Versions withdrawn later aren't removed automatically."; "Off" — "Keeps the current engine until you reset it or update Neutrodyne." (04 [Policies](04-youtube.md#policies), PO-32) | chooser |
+| Check for engine update (M9b; hidden with policy Off) | progress on the row while running | `YouTubeEngine.checkForUpdate()` → snackbar per outcome (below) |
+| Reset to bundled (M9b; enabled when `source == UPDATED`) | — | confirmation "Go back to the engine built into this version (yt-dlp {bundledVersion})? Downloaded engine versions are deleted." → `resetToBundled()` → snackbar "Using the built-in YouTube engine (yt-dlp {bundledVersion})" |
+| Audio quality, Volume levelling | 04's keys (with the engine) | choosers |
+
+In external mode the IN-APP PLAYBACK section is replaced by the reason card ([External reason texts](#external-reason-texts)); with `DISABLED_BY_USER` and `ENGINE_FAILED` the card keeps the switch and the engine line (04's matrix), with `NOT_IN_THIS_APK` and `NOT_YET_AVAILABLE` it shows no engine line and no update rows.
+
+Engine-update outcome texts (`EngineStatusText`, snackbar and the details dialog): `UpToDate` "The YouTube engine is up to date"; `Staged(v)` "yt-dlp {v} is ready; it switches on when YouTube isn't in use"; `Activated(v)` "YouTube engine updated to yt-dlp {v}"; `Failed(kind)` "Couldn't check for an engine update. Try again later."; `Rejected(v, reason)` "yt-dlp {v} wasn't installed: {reason}", with `MANIFEST_SIGNATURE`, `MANIFEST_REPLAYED` "the approval list failed its signature check"; `UPSTREAM_SIGNATURE` "its signature from the yt-dlp developers didn't verify"; `HASH_MISMATCH` "the download didn't match its checksum"; `ORIGIN` "it didn't come from the official yt-dlp project"; `BELOW_BUNDLED` "it's older than the engine built into this version"; `SHIM_INCOMPATIBLE` "it needs a newer version of Neutrodyne"; `SIZE_CAP` "the download was larger than allowed"; `SELFTEST_FAILED` "it failed its self-test"; two reasons have their own sentence: `ROLLED_BACK` "yt-dlp {v} stopped working after it was switched on, so the previous version is back" and `REVOKED` "yt-dlp {v} was withdrawn and isn't used". A rejection before activation never changes the active version (04 [Rollback and reset](04-youtube.md#rollback-and-reset)).
 
 ### Keys owned here
 
@@ -1915,7 +2150,7 @@ Outline for M13 (`:feature:widgets`, [D64](../PLAN.md#3-key-decisions)): Glance 
 
 ## Testing
 
-Serves N4, N5, N10, N11 and every R5 acceptance criterion. Infrastructure (Roborazzi 1.76.0, Robolectric 4.17 with `sdk = 36`, GMD devices, the golden-update switch, Macrobenchmark wiring and budgets) is 09's ([09 Test strategy](09-quality-and-release.md#test-strategy), [09 Test infrastructure](09-quality-and-release.md#test-infrastructure), [09 Performance budgets](09-quality-and-release.md#performance-budgets)); this section lists what this area tests.
+Serves N4, N5, N10, N11, the UI side of R3.7, R3.9 and R6.1–R6.4, and every R5 acceptance criterion. Infrastructure (Roborazzi 1.76.0, Robolectric 4.17 with `sdk = 36`, GMD devices, the golden-update switch, Macrobenchmark wiring and budgets) is 09's ([09 Test strategy](09-quality-and-release.md#test-strategy), [09 Test infrastructure](09-quality-and-release.md#test-infrastructure), [09 Performance budgets](09-quality-and-release.md#performance-budgets)); this section lists what this area tests.
 
 ### Unit tests (JVM)
 
@@ -1927,8 +2162,8 @@ Serves N4, N5, N10, N11 and every R5 acceptance criterion. Infrastructure (Robor
 | `PlayerMorphTest` | `:feature:player` | property table values at p = 0, 0.2, 0.6, 1; reduced motion; 16:9 art box | M4 |
 | `PaneLayoutTest` | `:app` | widths 360, 600, 696, 840, 1,200, 1,600 × panel shown/hidden/no playback → partitions and panel width | M10 |
 | `FeedSourceRefTest` | `:feature:feeds` | encode/decode round trip; garbage → All; unknown group → fallback rule | M2 |
-| String mapper tests | `:core:ui` | every `WaitReason`, `DownloadError`, `Availability`, `FeedErrorKind`, `PlayResult`, `UnplayableReason`, `PlaybackIssue`, `SettingSource`, `AddPodcastError` value maps to a non-empty `UiText`; `EpisodeRowSummary` for 12 representative states | M1–M9 |
-| `PlayStringsPolicyTest` | `:app` (`playDebug` unit test) | merged `play` resources, all locales: no value containing "YouTube" also contains "download", "background", "F-Droid", "IzzyOnDroid" or "GitHub"; no value mentions "F-Droid", "IzzyOnDroid" or "NewPipe" ([Flavor differences in UI](#flavor-differences-in-ui)) | M8 |
+| String mapper tests | `:core:ui`, `:feature:settings` | every `WaitReason` (incl. `YOUTUBE_ENGINE_OFF` per `ExternalReason`), `DownloadError`, `Availability`, `FeedErrorKind`, `PlayResult`, `UnplayableReason` (incl. `YouTubeExternal` per reason), `PlaybackIssue`, `SettingSource`, `AddPodcastError`, `ExternalReason` (long and short), and from M9b/M11a every `EngineAvailability`, `EngineUpdateOutcome`, `EngineRejectReason`, `UpdateState`, `UpdateDisabledReason`, `UpdateError` and `InstallBlockReason` value maps to a non-empty `UiText`; `EpisodeRowSummary` for 12 representative states | M1–M11a |
+| `InstallHelpSectionTest` | `:feature:settings` | every `InstallHelpSection` name parses; unknown or empty → all collapsed; "Get the 64-bit version" only for an `armeabi-v7a` `BuildInfo` with a non-empty 64-bit ABI list; commands contain `BuildInfo.repoUrl`'s owner and the APK's ABI | M11a |
 | `DayHeaderTest` | `:feature:feeds` | Today/Yesterday/weekday/date boundaries across a DST change and in `America/St_Johns` (09's test zone) | M2 |
 | `ScrubberClockTest` | `:feature:player` | interpolation uses `elapsedRealtime` (fake clock with a deep-sleep offset between uptime and elapsed realtime yields the right position); stops when `advancing` is false | M4 |
 | `DownloadRequestHandlerTest` | `:core:ui` | every `RequestResult` shape → metered dialog, notification prompt, snackbar text per `RejectReason`, nothing for `alreadyPresent` only | M6 |
@@ -1942,7 +2177,11 @@ All use the Compose v2 test rule with `enableAccessibilityChecks()` and `:core:t
 |---|---|---|
 | `EpisodeLiveStateSourceTest` (`TestDb`, fake `PlaybackStateSource`, fake `DownloadProgressSource`) | first ID set emitted without debounce; later sets debounced 100 ms; 450 IDs → 3 chunks; now-playing row follows ticks, others the DB; absent optionals (M2 setup) still emit positions; no emission when nothing changed; download live bytes win only while `DOWNLOADING` | M2, M4, M6 |
 | `FeedsScreenTest` | selection restored after `StateRestorationTester` (pager keys are `String`s, so saving state does not crash); scroll position of a page restored after process death and after the page left the pager's LRU; reorder keeps the selected group; deleting the selected group → All + snackbar (M2 acceptance 6); hidden group from the sheet → transient tab; "Next group" action (M2 acceptance 8); row swipe setting disables pager swipe; pull-to-refresh calls `refreshFeed(source)`; visit ≥ 1 s calls `markVisited` | M2 |
-| `EpisodeRowTest` | custom actions per playback, download and flavor state; external YouTube row has no download or queue actions (M8 acceptance 5); stacked layout at font scale 1.5 | M2, M6, M8 |
+| `EpisodeRowTest` | custom actions per playback, download and capability state (engine present, external); external YouTube row has no download or queue actions (M8 acceptance 5); "Check again" only with `caps.recheck`; stacked layout at font scale 1.5 | M2, M6, M8, M9a |
+| `YouTubeSettingsScreenTest` (`FakeYouTubeEngine`, `FakeYouTubeCapabilitiesSource`) | engine rows for each `EngineAvailability`; the reason card and its action for each `ExternalReason` ("Get the 64-bit version" only on a 32-bit APK with 64-bit ABIs, "Try again" calls `retryStart()`); switch off flips the fake's capabilities and the screen re-renders without restart; M9b: policy chooser writes `youtube.engine_updates`, "Check for engine update" hidden with Off, each `EngineUpdateOutcome` shows its snackbar, "Reset to bundled" only for `UPDATED` and after confirmation | M9a, M9b |
+| `UpdatesSettingsScreenTest` (`FakeAppUpdater`) | one card per `UpdateState` with its actions; mode and channel rows write `updates.mode`/`updates.channel` and are disabled for `DEBUG_BUILD` and `MANAGED_BY_OTHER_INSTALLER` ("Managed by Obtainium", PLAN M11 acceptance 6); "Install now" with `canRequestPackageInstalls() == false` shows the rationale and calls `installWhenIdle()` only after the grant; `Blocked` → `UpdateBlockedKey(reason.name)`; "Download in browser" calls `openReleasePage()` | M11a |
+| `UpdateBlockedSheetTest` | body and actions per `InstallBlockReason` (an unknown name → `UNKNOWN`); "Show me how" → `InstallHelpKey("GOOGLE_PLAY")`; "Continue in Android" only with `systemExplanation = true` and calls `openSystemExplanation()` | M11a |
+| `UpdateNoticesRootTest` (`FakeUpdateNotices`) | `FIRST_RUN_CHOICE` → update card on Feeds (OK dismisses, Turn off writes `OFF` with Undo); `VERIFICATION_ENFORCEMENT` → `VerificationNoticeKey` once, pre- and post-enforcement variant by the timeline's global date, both buttons dismiss, no date without one from the timeline; `WHATS_NEW` → `WhatsNewKey`; nothing while the startup gate is up or the player is expanded; at most one notice per process start | M11a |
 | `LibraryScreenTest` | density columns at 360 dp; chip filter including Ungrouped; selection → `AddToGroupsKey`; unsubscribe confirmation text | M1, M2 |
 | `AddToGroupsSheetTest` | tri-state chips from memberships; only changed chips sent to `applyMembership`; inline group creation | M2 |
 | `PlayerSheetTest` | anchors from measured content bottom; expand/collapse by tap and fling; dismiss only while paused (the `Dismissed` anchor disappears when playback starts); suite hidden only after settle; back collapses the sheet before `NavDisplay` pops (fake `NavigationState`); saveable state; "Mark played and skip" calls only `setPlayed` (fake controller records no `skipToNext`) | M4 |
@@ -1965,19 +2204,21 @@ Roborazzi on Robolectric, reviewed in PRs. 09 owns the record/verify switch, sto
 
 | Subject | Variants |
 |---|---|
-| `EpisodeRow` | unplayed, new, in progress, now playing/paused, played, offline, every `DownloadState` and each `WaitReason`, failed, missing, video, YouTube (16:9 and avatar), external (`play`), unavailable (added by M9, whichever of M9 and M10 lands later, [PLAN 7.1](../PLAN.md#71-milestone-overview)) × light/dark/pure black × font scale 1.0/1.5/2.0 × LTR/RTL (`ar-XB` pseudo-locale) |
+| `EpisodeRow` | unplayed, new, in progress, now playing/paused, played, offline, every `DownloadState` and each `WaitReason`, failed, missing, video, YouTube (16:9 and avatar), external mode, unavailable (added by M9, whichever of M9 and M10 lands later, [PLAN 7.1](../PLAN.md#71-milestone-overview)) × light/dark/pure black × font scale 1.0/1.5/2.0 × LTR/RTL (`ar-XB` pseudo-locale) |
 | `DownloadEntryRow` | every `DownloadState`/`WaitReason`, failed with each error text, completed played/unplayed × light/dark × font 1.0/2.0 |
 | `CoverTile`, `GroupMosaic`, `GroupTabLabel`, monograms | 0–4 members, badges, long names, emoji names, pseudo-locale `en-XA` |
 | Mini and full player, side panel, tabletop | three synthetic reference artworks (colourful, monochrome, very light) × light/dark |
 | Screens | Feeds, Library (both segments), Podcast detail (RSS, YouTube with and without banner), Episode detail, Up next, Downloads, Discover, Import (preview, report), Settings home × compact, medium, expanded, large widths and tabletop posture (M10 acceptance 6) |
+| Settings › YouTube | engine present (`STOPPED`, breaker open; M9b: updated version, rollback outcome), each `ExternalReason` card × light/dark × font 1.0/2.0 (added by M9a) |
+| Settings › Updates and its overlays | status card per `UpdateState`, update card, each `InstallBlockReason` sheet, verification notice (with and without date), What's new, Install & updates help (collapsed and with `GOOGLE_PLAY` open) × light/dark × font 1.0/2.0 × LTR/RTL (added by M11a) |
 
 ### Performance journeys
 
-Defined here, run by 09's `:benchmark` module against a seeded database (02's `SeedDatabase`, 300 podcasts, 50,000 episodes, 20 groups; budgets PB1–PB5 and PB9 are 09's): `ColdStartToFeeds` (cold start to the first Feeds page; `ReportDrawnWhen` marks full display), `CoverGridFling` (3 flings over the 300-tile Library grid; jank < 1 %, M10 acceptance 7, from M10), `AllFeedFling` (flings through the All feed with day headers), `GroupPagerSwipe` (10 pager swipes across groups), `PlayerExpandCollapse` (5 expand/collapse cycles with a seeded current episode), `PodcastOpen` (Library tile → podcast screen content, M11, PB9). UI Automator finds nodes through the root's `testTagsAsResourceId`; test tags: `feeds_pager`, `feed_list`, `library_grid`, `mini_player`, `player_sheet`, `podcast_list`. The same journeys generate the baseline and startup profiles.
+Defined here, run by 09's `:benchmark` module against a seeded database (02's `SeedDatabase`, 300 podcasts, 50,000 episodes, 20 groups; budgets PB1–PB5 and PB9 are 09's): `ColdStartToFeeds` (cold start to the first Feeds page; `ReportDrawnWhen` marks full display), `CoverGridFling` (3 flings over the 300-tile Library grid; jank < 1 %, M10 acceptance 7, from M10), `AllFeedFling` (flings through the All feed with day headers), `GroupPagerSwipe` (10 pager swipes across groups), `PlayerExpandCollapse` (5 expand/collapse cycles with a seeded current episode), `PodcastOpen` (Library tile → podcast screen content, M11b, PB9). UI Automator finds nodes through the root's `testTagsAsResourceId`; test tags: `feeds_pager`, `feed_list`, `library_grid`, `mini_player`, `player_sheet`, `podcast_list`. The same journeys generate the baseline and startup profiles.
 
 ### Manual checks
 
-Per release (09 checklist): TalkBack and Switch Access pass; 200 % font; Arabic RTL; keyboard-only navigation on a ChromeOS or desktop-mode device; foldable emulator in tabletop and book posture; grid → podcast transition frame review (M10 acceptance 5); airplane mode with downloaded episodes (artwork present everywhere, N6).
+Per release (09 checklist): TalkBack and Switch Access pass; 200 % font; Arabic RTL; keyboard-only navigation on a ChromeOS or desktop-mode device; foldable emulator in tabletop and book posture; grid → podcast transition frame review (M10 acceptance 5); airplane mode with downloaded episodes (artwork present everywhere, N6). From M9a: Settings › YouTube on a 32-bit device (the `armeabi-v7a` APK shows the `NOT_IN_THIS_APK` card) and turning the engine off and on mid-session. From M11a: the update flows on API 26, 31, 34+ and 37 as in 09's device checklist, including the blocked sheet produced with `pm set-developer-verification-result` (PLAN M11 acceptance 5); the help page's commands and certificate value compared with the release they name.
 
 ### Fixtures
 
@@ -2005,6 +2246,8 @@ Serves N1, N4, N6. Expected failures arrive as values (01 [Errors](01-foundation
 | Download request rejected or needs a decision | rows, episode detail, player, Downloads | `DownloadRequestHandler` ([EpisodeRow](#episoderow)): metered dialog, notification prompt or one snackbar per request |
 | Database cannot be opened | start-up | `StartupGate` failure variants with "Try again" re-running `awaitOpen()` ([Banners and the startup gate](#banners-and-the-startup-gate)) |
 | Export or backup contains private links | export dialog, backup | warning dialog before anything leaves the app; Cancel writes nothing ([Dialogs](#dialogs)) |
+| YouTube engine unavailable, failed or turned off | rows, episode detail, Discover, Settings › YouTube | transient trouble (`ENGINE_UNAVAILABLE`, timeout, breaker, rate limit) shows as status text or a banner, never a capability change; persistent states switch the UI to external mode with the [reason text](#external-reason-texts) |
+| App update cannot be checked, downloaded or installed | Settings › Updates, `updates` notification | status card with the `UpdateError` text or the blocked sheet, always with "Download in browser"; the installed version keeps working; never a crash or a blocking dialog |
 | A screen's subject disappears (podcast unsubscribed, group deleted, import session cleaned up) | podcast detail, group editor and settings, import | pop with a snackbar ("This podcast was removed", "This group was deleted") or "no longer available" with Back; never a crash on a null flow value |
 
 ---
@@ -2013,7 +2256,7 @@ Serves N1, N4, N6. Expected failures arrive as values (01 [Errors](01-foundation
 
 | Milestone | Delivered in this area |
 |---|---|
-| [M0](../PLAN.md#m0-scaffold-and-ci) | `NeutrodyneTheme` (dynamic colour, M3 baseline brand scheme, light/dark), tokens, `NeutrodyneMotion`, core `Nd*` wrappers, `NdIcons` for destinations and gear; `NeutrodyneRoot` with five destinations, the rail's gear footer, `testTagsAsResourceId` and empty states; `SettingsHomeKey`, Appearance (theme, dynamic colour), About, Licences; `AppNavigator.pushDetail`, `LocalNavTab`, `LocalPaneLayout` (1 pane) |
+| [M0](../PLAN.md#m0-scaffold-and-ci) | `NeutrodyneTheme` (dynamic colour, M3 baseline brand scheme, light/dark), tokens, `NeutrodyneMotion`, core `Nd*` wrappers, `NdIcons` for destinations and gear; `NeutrodyneRoot` with five destinations, the rail's gear footer, `testTagsAsResourceId` and empty states; `SettingsHomeKey`, Appearance (theme, dynamic colour), About (version and ABI, licence statement), Licences (including the manual entries for the CPython stack and Chaquopy when S7 is go); `AppNavigator.pushDetail`, `LocalNavTab`, `LocalPaneLayout` (1 pane) |
 | [M1](../PLAN.md#m1-subscribe-and-ingest-rss) | `ArtColors`, `Monogram`, `MonogramPainter`, `CoverArt`, `Covers` (THUMB), `CoverTile`; `ArtworkKeys`, `NeutrodyneImageLoaderFactory`, `ArtworkRefMapper`; Library grid (100 dp, sort, titles); Podcast detail (header without tint, paged episodes, feed-state banners); Podcast settings (general, feed); Episode detail with the show-notes renderer; Feeds showing the All feed with day headers, pull-to-refresh and `ReportDrawnWhen`; Add podcast sheet (direct feed URLs); `StartupGate` with its failure variants; offline banner |
 | [M2](../PLAN.md#m2-groups-and-group-feeds) | Feeds pager, tabs, counts, chips, selection persistence and fallback, visits, All groups sheet; Library chips, Groups segment, selection mode; `GroupMosaic`, `GroupTabLabel`, group tones; Group editor, Manage groups, Group settings, Add to groups sheet; `EpisodeLiveStateSource` pipeline; swipe settings; suggested-groups card (basic) |
 | [M3](../PLAN.md#m3-import-export-and-backup) | Import screen (preview, progress, report incl. "Will load later", restore preview), Backup and restore (preflight warning, Android-backup row), Export dialog (`ExportRepository.prepare` → warning → save or share), restore, import and foreign-snapshot banners |
@@ -2021,10 +2264,10 @@ Serves N1, N4, N6. Expected failures arrive as values (01 [Errors](01-foundation
 | [M5](../PLAN.md#m5-playback-features-and-system-surfaces) | Sleep timer sheet, chapters tab and chapter line, chapter list on episode detail, timestamp seeks, video badge |
 | [M6](../PLAN.md#m6-downloads) | Download states in rows and episode detail (`DownloadStateButton`, `DownloadRequestHandler`), Downloads screen (`DownloadEntryRow`, notices, "Play all" through `playDownloads`), "Download all unplayed" dialog, metered download dialog, notification prompt for downloads, Downloads tab badge, restore re-download offer, "Share file" in episode detail and Downloads overflows |
 | [M7](../PLAN.md#m7-discovery) | Discover, Directory results, Podcast preview mode, full Add podcast sheet (chooser, credentials, subscription lists), suggested groups from categories |
-| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | YouTube rows (16:9 thumbnails, external episodes), `YouTubeThumbnailInterceptor`, banner header, YouTube podcast settings, outage banner, capability-driven flavor UI, `appearance.youtube_row_art` |
-| [M9](../PLAN.md#m9-youtube-playback-and-downloads-in-foss) | YouTube playback and download UI in `foss`, breaker and rate-limit banners, channel search, Load older for channels, unavailable reason lines and "Check again" |
+| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | YouTube rows (16:9 thumbnails, external episodes), `YouTubeThumbnailInterceptor`, banner header, YouTube podcast settings, outage banner, capability-driven external mode on every APK (reason `NOT_YET_AVAILABLE`, `ExternalReasonText`), `appearance.youtube_row_art` |
+| [M9](../PLAN.md#m9-youtube-playback-and-downloads-via-the-embedded-yt-dlp-engine) | **M9a:** YouTube playback and download UI with the engine on the 64-bit APKs, pre-warm calls (`SCREEN`, `SEARCH`), breaker (the "retries at {time}" wording until M9b) and rate-limit banners, channel search, Load older for channels, unavailable reason lines and "Check again" (`RowCaps.recheck`), `YOUTUBE_ENGINE_OFF` wait texts, Settings › YouTube engine rows ("Play YouTube in the app", engine line, status line) and the reason cards for `NOT_IN_THIS_APK`, `DISABLED_BY_USER`, `ENGINE_FAILED`, the `YouTubeExternal` snackbar, About credit line, Licences engine entries. **M9b:** engine updates policy, "Check for engine update" (also on the breaker notice), the breaker banner's "checking for a fix" wording, "Reset to bundled", outcome texts, the JS-challenges line |
 | [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) | `ArtworkColorExtractor`, `ArtworkSchemeCache`, `ArtworkTheme` (player, mini tint, headers), MCU brand scheme (PO-17), pure black, average-colour placeholders, HERO tier and shared elements, `MosaicRenderer`, pane directive and list-detail, side panel, tabletop and landscape player, library density, status-bar handling, keyboard shortcuts, illustrations, accessibility audit, screenshot matrix (`FULL` tier) |
-| [M11](../PLAN.md#m11-release-hardening-and-v10) | Diagnostics screen, performance journeys (incl. `PodcastOpen`) and baseline profile with 09 |
+| [M11](../PLAN.md#m11-release-hardening-and-v10) | **M11a:** Settings › Updates (status card, mode, beta channel, Check now), update card, `updates` notification wording, `UpdateBlockedKey` sheet, `VerificationNoticeKey` dialog, `WhatsNewKey` sheet, Install & updates help (`InstallHelpKey`, About row, `…/open/help/install`), install-permission rationale, notification prompt from Settings › Updates. **M11b:** Diagnostics screen (ABI, updater mode, installer of record, engine lines), performance journeys (incl. `PodcastOpen`) and baseline profile with 09 |
 | [M13](../PLAN.md#74-after-v10-v1x-themes) | Glance widgets ([Widgets (v1.x)](#widgets-v1x)) |
 
 ---
@@ -2034,6 +2277,11 @@ Serves N1, N4, N6. Expected failures arrive as values (01 [Errors](01-foundation
 | Name | Kind | Module |
 |---|---|---|
 | `SettingsHomeKey` | `NavKey` (data object), the gear's target | `:core:navigation` |
+| `SettingsPage.UPDATES`, `InstallHelpKey(section)`, `UpdateBlockedKey(reason)`, `VerificationNoticeKey`, `WhatsNewKey(versionCode)` | Settings page value and update/help keys (M11a; served by `:feature:settings`) | `:core:navigation` |
+| `InstallHelpSection` | help page sections (`VERSION` … `WHY`) | `:feature:settings` |
+| `ExternalReasonText` | string mapper for 04's `ExternalReason` (long and short) | `:core:ui` |
+| `UpdateStatusText`, `EngineStatusText` | string mappers for `UpdateState`/`UpdateError`/`InstallBlockReason` and for `EngineStatus`/`EngineUpdateOutcome`/`EngineRejectReason` | `:feature:settings` |
+| `RowCaps.recheck` | "Check again" capability of a YouTube row (`enrichment`) | `:core:ui` |
 | `AppNavigator.pushDetail`, `PaneLayout`, `LocalPaneLayout`, `LocalNavTab` | navigation additions (implemented and provided by `:app`) | `:core:navigation` |
 | `RowLive.nextAttemptAt`, `RowLive.lastError` | properties added to the canonical `RowLive` | `:core:model` |
 | `ArtColors`, `Monogram`, `MonogramSpec`, `MonogramMode`, `ArtworkColors` | colour and artwork model | `:core:model` |
@@ -2046,7 +2294,6 @@ Serves N1, N4, N6. Expected failures arrive as values (01 [Errors](01-foundation
 | `PlayerSheetState`, `PlayerSheetValue`, `PlayerViewModel`, `PlayerUiState`, `PlayerMorph`, `PlayerSidePanel`, `MiniPlayer`, `FullPlayer` | player UI | `:feature:player` |
 | `FeedsUiState`, `FeedTabUi`, `FeedSourceRef`, `FeedItem`, `FeedsViewModel` | Feeds UI | `:feature:feeds` |
 | `DownloadEntryRow` | Downloads screen row over 07's `DownloadEntry` | `:feature:downloads` |
-| `YouTubeFlavorTexts` | flavor-bound `UiText`s for YouTube download/background wording (`foss` strings only) | `:core:ui` (bindings in `:app` `FlavorModule`s) |
 | `ArtworkSyncScheduler.enqueueNow`, `ArtworkRepository.observeColors(key, fallbackPodcastId)` | artwork scheduling and colours | `:core:artwork`, `:core:domain` |
 | Test tags `feeds_pager`, `feed_list`, `library_grid`, `mini_player`, `player_sheet`, `podcast_list` | UI Automator handles for 09's journeys | `:feature:*` |
 | `NeutrodyneRoot`, `ndPaneLayout` | root scaffold and pane computation | `:app` |
@@ -2067,11 +2314,18 @@ Numbering is new in this revision; items settled by other documents are listed o
 5. Moved to [PO-27](../PLAN.md#48-further-product-owner-decisions) (defaults: undo restores only the unplayed state; library titles hidden; YouTube rows with video thumbnails; brand assets before M10, PO-17).
 6. Resolved in 06: `PlaybackController.playDownloads(startEpisodeId)` exists (M6), and the UI-boundary note reads `positionAt(SystemClock.elapsedRealtime())`. Applied from 06: `NowPlaying.artwork` is the in-app art; "Mark played and skip" calls only `setPlayed` (06 open question 12); `playFeed` with a start item from feed rows, `playEpisode` elsewhere (06 open question 3).
 7. Resolved in 02: `episodeDisplay` is in the paged `EpisodeRow` projection, and `PodcastDao.observeArtworkKey(podcastId)` feeds `ArtworkRepository.observeColors(key, fallbackPodcastId)` ([02 Artwork references](02-data-model.md#artwork-references)); `ArtworkDao.syncCandidates/applyBatch/fallbackFor/observe/pinnedIndex/recountPins`, the `artwork.url` source descriptor and `lastSuccessAt` in the library tiles query were already there.
-8. Resolved in 01 ([01 Application start-up](01-foundation.md#application-start-up), [01 Flavor modules](01-foundation.md#flavor-modules), [01 S5](01-foundation.md#s5-nav3-12-api-names-and-scenes)): `StartupState.database = Failed(reason)`, "Try again" calls `StartupViewModel.retry()`; the splash also waits for the first `settings` emission within the 1 s cap; S5 checks a `HingePolicy.AvoidSeparating` directive; both `FlavorModule`s bind `YouTubeFlavorTexts` from M8. Also resolved there: `pushDetail`, `LocalNavTab` decorator, window-based overlay strategies, activity-scoped `PlayerViewModel`, `SettingsHomeKey` in M0.
-9. Resolved in 04: its "UI per flavor" table lists "mark played on open" in both flavors.
+8. Resolved in 01 ([01 Application start-up](01-foundation.md#application-start-up), [01 YouTube bindings](01-foundation.md#youtube-bindings), [01 S5](01-foundation.md#s5-nav3-12-api-names-and-scenes)): `StartupState.database = Failed(reason)`, "Try again" calls `StartupViewModel.retry()`; the splash also waits for the first `settings` emission within the 1 s cap; S5 checks a `HingePolicy.AvoidSeparating` directive. Also resolved there: `pushDetail`, `LocalNavTab` decorator, window-based overlay strategies, activity-scoped `PlayerViewModel`, `SettingsHomeKey` in M0. (Since 2026-10-05 there is no per-build string interface: YouTube strings are ordinary resources.)
+9. Resolved in 04: its "UI per capability" table lists "mark played on open" in both modes ([04 UI per capability](04-youtube.md#ui-per-capability-hand-off-to-08-capability-differences-in-ui)).
 10. **Owner 07 (optional):** a cheap `observeFailedCount(): Flow<Int>` for the Downloads tab badge; otherwise the root maps `observeAll()` (full lists, fine up to 07's ≈ 2,000 rows) and so triggers 07's volume check whenever the app is open.
 11. Resolved: 03's `LibraryTile`/`PodcastDetail`/`EpisodeDetail` (with `FeedHealth.possiblyDead`) carry every field 08 renders; 05's `observeMemberships()`, `writeSnapshotNow()`, `preflight`, `ExportRepository` and foreign-snapshot flow are applied here (05 open question 11); 09 decided the screenshot tiers and requested `testTagsAsResourceId` and `ReportDrawnWhen` (applied).
 12. **Unverified** (checked in their milestone): Nav3/adaptive APIs (custom directive, extra pane after a list pane, `PredictiveBackHandler` versus Nav3's back handling: S5, M0/M10); `com.materialkolor` 5.0.1 class names and signatures (M10); dynamic colour following the system contrast on every OEM (M10); Compose shared elements with hardware bitmaps (M10); every Compose animation honouring "Remove animations" (M10); ATF contrast checks under Robolectric (M2); Material bidirectionality guidance for media icons and the scrubber (M10 review); artwork store size per cover (M10); widget taps and while-in-use under Android 17 and launcher support for `content://` icons (M13).
+13. **Owner 09:** (a) whether "Check now" works while `updates.mode = OFF` (08 offers it as a user-initiated one-off check; default yes); (b) how `installWhenIdle()` re-presents Android's confirmation from `PendingUserAction` ("Finish update"); (c) whether `UpdateNotices` raises `FIRST_RUN_CHOICE` on fresh installs only or also on the first update to an M11a build (default both, once). The UI above works with either answer.
+14. Resolved in 01 ([01 Intent routing](01-foundation.md#intent-routing)): `InstallHelpKey` carries a section name (`InstallHelpKey(section: String = "")`) so callers can open the advanced-flow section; 01's route table reads `Push(InstallHelpKey())` and its key sketch lists the M11a keys with these signatures. `UpdateBlockedKey` carries `InstallBlockReason.name` as a `String` because `:core:navigation` depends on nothing project-internal (01 rule 7).
+15. Default **no device detection** for the verification notice: the app cannot reliably tell a certified device from GrapheneOS or LineageOS without extra package visibility, so the notice and the help page are shown everywhere and name the unaffected systems. Revisit if 09 finds a reliable, permission-free signal.
+16. **Unverified** (M11a device checks, risk T17): how Android 17's verifier presents an unregistered self-update when the advanced flow is on (a warning in our session, `STATUS_FAILURE_ABORTED`, or only the system installer's "Install anyway"); the blocked sheet's wording assumes the worst case and always offers "Download in browser". Also Unverified: that the advanced flow's menu names match the help text on non-Pixel devices (the help says names differ between manufacturers).
+17. Resolved (01, 04, 08 agree): the Licences list is the same in every APK of a default build, so the `armeabi-v7a` APK lists the engine components it does not run (and may carry their ABI-independent files, 01 open question 13); 08 labels the section ("Used by the YouTube engine of the 64-bit versions") instead of filtering it. Only the emergency build omits the engine entries.
+18. Resolved for 06 (its open question 17): `NotPlayable(YouTubeExternal(reason))` shows the short [external-reason text](#external-reason-texts) with "Watch on YouTube", and the "Play YouTube in the app" subtitle says a playing episode continues until it needs to reconnect ([YouTube engine rows](#youtube-engine-rows)).
+19. Resolved for 07 (its open question 17): the ‡ texts for `YOUTUBE_ENGINE_OFF` (with the action "YouTube settings") and for `UNSUPPORTED_STREAM` on a YouTube row without the engine are adopted verbatim ([Download status text](#download-status-text)).
 
 ## Sources
 
@@ -2082,8 +2336,9 @@ Checked 2026-10-04 by the research behind this plan unless marked as a reference
 - Navigation: Navigation 3 releases https://developer.android.com/jetpack/androidx/releases/navigation3 · animate destinations https://developer.android.com/guide/navigation/navigation-3/animate-destinations · custom layouts and scenes https://developer.android.com/guide/navigation/navigation-3/custom-layouts · navigationevent metadata https://dl.google.com/android/maven2/androidx/navigationevent/navigationevent-compose/maven-metadata.xml
 - Coil: versions https://repo1.maven.org/maven2/io/coil-kt/coil3/coil-compose/maven-metadata.xml · changelog (3.4.0 caches 404s, 3.5.0 background memory percent) https://coil-kt.github.io/coil/changelog/ · defaults https://github.com/coil-kt/coil/blob/main/coil-core/src/androidMain/kotlin/coil3/util/contexts.kt · memory keys https://github.com/coil-kt/coil/blob/main/coil-core/src/commonMain/kotlin/coil3/memory/MemoryCacheService.kt · network caching https://github.com/coil-kt/coil/blob/main/coil-network-core/README.md · recipes (hardware bitmaps) https://coil-kt.github.io/coil/recipes/ · `SubcomposeAsyncImage` in lists https://github.com/coil-kt/coil/blob/main/coil-compose/README.md
 - Colour: MaterialKolor https://github.com/jordond/MaterialKolor and artifacts https://repo1.maven.org/maven2/com/materialkolor/ · MCU sources (scheme, `ContrastCurve`, `Score` with null fallback) https://github.com/jordond/MaterialKolor/tree/main/material-color-utilities/src/commonMain/kotlin/com/materialkolor · `material-kolor` 5.0.1 POM coupling to M3 alpha https://repo1.maven.org/maven2/com/materialkolor/material-kolor-android/5.0.1/material-kolor-android-5.0.1.pom · `UiModeManager.getContrast` https://developer.android.com/reference/android/app/UiModeManager · palette releases https://developer.android.com/jetpack/androidx/releases/palette · MDC content-based colour https://github.com/material-components/material-components-android/blob/master/docs/theming/Color.md · reference: CIELAB/sRGB conversion https://www.w3.org/TR/css-color-4/#color-conversion-code · reference: WCAG 2.2 contrast https://www.w3.org/TR/WCAG22/#contrast-minimum
-- Platform: Android 17 behaviour changes (widget bitmap cap, resizability, memory limits) https://developer.android.com/about/versions/17/behavior-changes-17 · Android 16 behaviour changes (edge-to-edge, predictive back, orientation) https://developer.android.com/about/versions/16/behavior-changes-16 · Android 15 behaviour changes https://developer.android.com/about/versions/15/behavior-changes-15 · Play target API https://developer.android.com/google/play/requirements/target-sdk · non-linear font scaling https://developer.android.com/about/versions/14/features#non-linear-font-scaling · notification permission https://developer.android.com/develop/ui/views/notifications/notification-permission · adaptive and themed icons https://developer.android.com/develop/ui/views/launch/icon_design_adaptive · Material icons guidance https://developer.android.com/develop/ui/compose/graphics/images/material
+- Platform: Android 17 behaviour changes (widget bitmap cap, resizability, memory limits) https://developer.android.com/about/versions/17/behavior-changes-17 · Android 16 behaviour changes (edge-to-edge, predictive back, orientation) https://developer.android.com/about/versions/16/behavior-changes-16 · Android 15 behaviour changes https://developer.android.com/about/versions/15/behavior-changes-15 · non-linear font scaling https://developer.android.com/about/versions/14/features#non-linear-font-scaling · notification permission https://developer.android.com/develop/ui/views/notifications/notification-permission · adaptive and themed icons https://developer.android.com/develop/ui/views/launch/icon_design_adaptive · Material icons guidance https://developer.android.com/develop/ui/compose/graphics/images/material
 - Accessibility: Compose touch-target defaults https://developer.android.com/develop/ui/compose/accessibility/api-defaults · Compose accessibility testing https://developer.android.com/develop/ui/compose/accessibility/testing · M3 navigation bar guidance https://m3.material.io/components/navigation-bar/guidelines (read via https://www.sap.com/design-system/fiori-design-android/v25-8/components/m3-standard-components/navigation-bar/usage)
 - Added in review (2026-10-05): navigation-suite 1.4.0 default types, `NavigationSuiteScaffoldLayout` and `WideNavigationRail` (96 dp collapsed, `header` slot only) from the navigation-suite and material3 1.4.0 sources jars above · `AnchoredDraggableDefaults.flingBehavior` and the fixed 125 dp/s fling velocity from the foundation 1.12.1 sources jar above · Choreographer frame time base https://developer.android.com/reference/android/view/Choreographer.FrameCallback#doFrame(long) · elapsed realtime vs uptime https://developer.android.com/reference/android/os/SystemClock · Bundle-saveable keys for `SaveableStateHolder` https://developer.android.com/reference/kotlin/androidx/compose/runtime/saveable/SaveableStateHolder · `ReportDrawnWhen` https://developer.android.com/reference/kotlin/androidx/activity/compose/package-summary · pane directive and `HingePolicy` https://developer.android.com/reference/kotlin/androidx/compose/material3/adaptive/layout/package-summary · keyboard shortcut helper https://developer.android.com/reference/android/app/Activity#onProvideKeyboardShortcuts(java.util.List%3Candroid.view.KeyboardShortcutGroup%3E,android.view.Menu,int)
+- Installing and updating (read 2026-10-05): `PackageManager.canRequestPackageInstalls` (API 26) https://developer.android.com/reference/android/content/pm/PackageManager · `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` (API 26, `package:` data URI), `ACTION_APPLICATION_DEVELOPMENT_SETTINGS`, `ACTION_DEVICE_INFO_SETTINGS` https://developer.android.com/reference/android/provider/Settings · `PackageInstaller` (`STATUS_PENDING_USER_ACTION` guidance, `STATUS_FAILURE_ABORTED`, `EXTRA_DEVELOPER_VERIFICATION_FAILURE_REASON` and `DEVELOPER_VERIFICATION_FAILED_REASON_DEVELOPER_BLOCKED`, added in 36.1) https://developer.android.com/reference/android/content/pm/PackageInstaller · developer verification https://developer.android.com/developer-verification · FAQ https://developer.android.com/developer-verification/guides/faq · advanced flow ("Allow apps from unverified developers", 24-hour delay, seven days or indefinitely, "Install anyway") https://support.google.com/android/answer/17588095?hl=en · Google's announcement of the flow (restart, anti-coercion check) https://android-developers.googleblog.com/2026/03/android-developer-verification.html · LineageOS statement https://lineageos.org/Developer-Verification/ · Shizuku setup https://shizuku.rikka.app/guide/setup/ · Obtainium https://github.com/ImranR98/Obtainium and deep links (`obtainium://add/<url>`) https://wiki.obtainium.imranr.dev/deep_links/ · AppVerifier https://github.com/soupslurpr/AppVerifier · GitHub release verification and attestations https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases, https://docs.github.com/en/actions/concepts/security/artifact-attestations · Android Auto and sideloaded apps https://www.androidauthority.com/sideload-apps-on-android-auto-3681820/
 - Widgets: Glance releases https://developer.android.com/jetpack/androidx/releases/glance · generated previews https://developer.android.com/develop/ui/compose/glance/generated-previews
 - Media and artwork sources: Media3 releases (`media3-ui-compose` state holders, used only from M14) https://developer.android.com/jetpack/androidx/releases/media3 · Apple show cover template https://podcasters.apple.com/support/5514-show-cover-template · `podcast:image` https://podcasting2.org/docs/podcast-namespace/tags/image · YouTube thumbnail sizes and letterboxing (tested with `https://www.youtube.com/feeds/videos.xml?channel_id=UC_x5XG1OV2P6uZZ5FSM9Ttw` and `https://i.ytimg.com/vi/{id}/{name}.jpg`) https://www.binarymoon.co.uk/2014/03/using-youtube-thumbnails/
