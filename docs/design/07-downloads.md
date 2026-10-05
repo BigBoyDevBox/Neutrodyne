@@ -1296,6 +1296,10 @@ Fixtures: `download/impl/src/test/resources/media/` — `id3.mp3`, `framesync.mp
 | 6 offline play with artwork, deferred delete | `OfflinePlaybackTest` |
 | 7 `bmgr` excludes `Podcasts/` | `bmgr` check, `BackupRulesTest` |
 | 8 wait-reason texts | `DownloadsScreenStringsTest` |
+| 9 one claim per row, slots, three `download` writes per completed download | `DownloadEngineTest` |
+| 10 UIDT vs lane worker by visibility, no job while all rows back off, wake only with a runnable row | `DownloadSchedulerTest` |
+| 11 Task Manager stop pauses `MANUAL` rows; Recents swipe does not | `DownloadReconcilerTest`, device checklist |
+| 12 captive portal, full disk, unmounted root | `RssTransferSourceTest`, `DownloadEngineTest`, `DownloadReconcilerTest` |
 
 ---
 
@@ -1369,29 +1373,15 @@ Serves N1, N2. Expected failures are values (`TransferResult`, `Prepared`), `IOE
 
 ## Open questions
 
-1. **Architect review: WorkManager policies and new work names.** The canonical work-name list gives `download-lane-*` the policy `KEEP` (continuations `APPEND_OR_REPLACE`). A `KEEP` enqueue right after a worker decides to finish is swallowed by the unique work that is still `RUNNING`. This document therefore makes three changes ([Lane registry and the exit protocol](#lane-registry-and-the-exit-protocol)):
-   - `KEEP` for the first enqueue per process, `APPEND_OR_REPLACE` afterwards, with an in-process `PENDING` guard against chains of duplicate workers;
-   - `REPLACE` only to upgrade a not-yet-started API 26–30 request to expedited;
-   - new work names `download-wake-MANUAL` and `download-wake-AUTO` (`REPLACE`) for delayed and condition-bound re-arming.
-
-   The canonical work-name list and the PLAN M6 deliverables should add the wake works and the policy nuance.
-2. **Architect review: `lifecycle-process` for `:download:impl`** (01's module table lists it only for `:core:data` and `:playback:impl`). It is needed by `AppVisibility`: UIDT only while visible, `setForeground` only when visible, `NEEDS_FOREGROUND`, and the `ON_START` re-arm.
-3. **Architect review: N2 wording.** N2 says every background job stops itself before 8 min; the UIDT job and the API ≤ 33 foreground `MANUAL` worker deliberately have no soft deadline (D47). Suggest "every background job that is neither user-initiated nor foreground".
-4. **Architect review: protected set.** Unplayed `AUTO` downloads that are in progress are protected from the rolling keep-N cleanup here (02 already filters them); R4.5 and the canonical "Never auto-deleted" row should name them.
-5. **Architect review: D67 wording.** D67 says "first seen after subscribing"; M6 acceptance 4 says "first seen after enabling". The [watermark pass](#no-backfill-watermark) implements both: the later of subscribing and enabling. D67 should say so.
-6. **Owner 01:** add the `:download:impl` initializer at order 310 (collectors and the `ProcessLifecycleOwner` observer) to the start-up index ([Start-up hooks](#start-up-hooks)).
-7. **Owner 02:**
-   - `candidates(…)`/`claimNext(…)` take an `offset` (pages of 20, [Claiming and slots](#claiming-and-slots));
-   - the orphaned-runner reset needs a runner-token prefix filter (`runnerToken LIKE 'uidt:%'`) and a companion `UPDATE … SET state = 'PAUSED', lastStopReason = -4 WHERE lane = 'MANUAL' AND state = 'QUEUED'` for the Task Manager rule;
-   - the `autoDownloadEligibleAfter` column note should defer to this document's watermark pass (the "subscribed less than 10 min ago" rule is replaced);
-   - answers 02's open question 8: yes, protected rows count in their place in the rolling window and are never deleted.
+1. Resolved: [D47](../PLAN.md#3-key-decisions) and PLAN M6's deliverables name the lane policy (`KEEP` for the first enqueue per process, `APPEND_OR_REPLACE` afterwards, `REPLACE` only to upgrade a not-yet-started API 26–30 request) and the wake works `download-wake-MANUAL`/`download-wake-AUTO` ([Lane registry and the exit protocol](#lane-registry-and-the-exit-protocol)).
+2. Resolved: 01's module table lists `lifecycle-process` for `:download:impl` (`AppVisibility`).
+3. Resolved: [N2](../PLAN.md#22-non-functional-requirements) now limits the 8-min rule to jobs that are neither user-initiated nor foreground workers.
+4. Resolved: [R4.5](../PLAN.md#21-functional-requirements) names unplayed automatic downloads in progress in the protected set.
+5. Resolved: [D67](../PLAN.md#3-key-decisions) says "the later of subscribing and enabling auto-download".
+6. Resolved: 01's start-up index lists the `:download:impl` initializer at order 310.
+7. Resolved in 02: `candidates(…)`/`claimNext(…)` take an `offset`; the orphaned-runner reset has the `runnerToken LIKE 'uidt:%'` filter and the companion `PAUSED` update for queued `MANUAL` rows; the `autoDownloadEligibleAfter` note defers to the [watermark pass](#no-backfill-watermark); 02's open question 8 is answered (protected rows count in their place and are never deleted).
 8. **Owner 05** (resolved: 05 uses the six `downloads.*` keys and [Estimates](#estimates)). Standing constraint: the include-only backup rules must stay free of download paths ([Backup exclusion](#backup-exclusion)).
-9. **PO (PO-12 follow-ups, defaults applied):**
-   - (a) automatic downloads skip video episodes unless enabled;
-   - (b) unplayed automatic downloads beyond keep-N are deleted when newer ones arrive (rolling window), rather than kept until played;
-   - (c) the storage cap only pauses automatic downloads and never deletes;
-   - (d) automatic downloads post no notifications;
-   - (e) parallel downloads are fixed at 3, not a setting.
+9. Moved to [PO-12](../PLAN.md#48-further-product-owner-decisions)'s follow-ups (defaults applied): automatic downloads skip video episodes unless enabled; unplayed automatic downloads beyond keep-N are deleted when newer ones arrive (rolling window); the storage cap only pauses automatic downloads and never deletes; automatic downloads post no notifications; parallel downloads are fixed at 3.
 10. **Unverified (device checks in M6/M9):**
     - UIDT notifications: whether a plain `notify` updates a UIDT job's notification like a repeated `setNotification`;
     - networks: whether JobScheduler accepts and needs `NET_CAPABILITY_VALIDATED`; Data Saver's effect on UIDT jobs, and whether transfers must bind to `JobParameters.getNetwork()`;

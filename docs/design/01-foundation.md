@@ -1619,9 +1619,9 @@ flowchart LR
 
 ### S3 foreign_keys with the bundled driver
 
-- **Method:** with `BundledSQLiteDriver` on a GMD: (a) insert an `episode` with a missing `podcastId` → expect a constraint error; (b) delete a `podcast` → its `episode` rows cascade; (c) run `PRAGMA foreign_keys` on the writer and on reader connections (`useReaderConnection`) of the WAL pool → expect 1 on each.
-- **Pass:** all three hold.
-- **Fallback:** 02's `ForeignKeysDriver` — a `SQLiteDriver` decorator whose `open()` runs `PRAGMA foreign_keys = ON` on every new connection, bound in `SqliteDriverModule` around the production and test drivers ([02 Conventions](02-data-model.md#conventions)); 02 records which.
+- **Method:** with `BundledSQLiteDriver` on a GMD: (a) insert an `episode` with a missing `podcastId` → expect a constraint error; (b) delete a `podcast` → its `episode` rows cascade; (c) run `PRAGMA foreign_keys` on the writer and on reader connections (`useReaderConnection`) of the WAL pool → expect 1 on each; (d) run `PRAGMA foreign_keys` inside a test `Migration.migrate` → expect 0 (02's table rebuilds need it off, [02 Writing migrations](02-data-model.md#writing-migrations)).
+- **Pass:** all four hold.
+- **Fallback:** 02's `ForeignKeysDriver` — a `SQLiteDriver` decorator whose `open()` runs `PRAGMA foreign_keys = ON` on every new connection, armed only after the first open completes (so migrations still run with foreign keys off); if (d) fails, parent-table rebuilds run in a pre-Room step of `DatabaseOpener` on a raw connection, bound in `SqliteDriverModule` around the production and test drivers ([02 Conventions](02-data-model.md#conventions)); 02 records which.
 
 ### S4 Robolectric with AndroidSQLiteDriver
 

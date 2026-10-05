@@ -80,7 +80,7 @@ Exceptions to [D15](../PLAN.md#3-key-decisions) "episode is written only by inge
 | `EpisodeRowProjection`, `ContextItem`, `MediaLookupRow`, `ExistingEpisodeKey`, `EpisodeFeedUpdate`, `PodcastFeedMetadata`, `PodcastFetchState`, `DueFeed` (requested by 03), `YouTubeFeedMetadata`, `YouTubeFacts`, `ArtworkSyncResult`, `QueryPlanRow` | DAO projections, `:core:database` | Query results and partial-entity updates | 03, 04, 06, 07, 08 |
 | `PodcastDao`, `EpisodeDao`, `IngestDao`, `FeedDao`, `GroupDao`, `ScopeSettingsDao`, `EpisodeStateDao`, `PositionDao`, `QueueDao`, `PlaySessionDao`, `DownloadDao`, `ArtworkDao`, `ChapterDao`, `CredentialDao`, `ImportDao`, `BackupDao`, `MaintenanceDao` | DAOs, `:core:database` | One DAO per area | impl modules |
 | `diagnostics.db_quick_check_failed_at` | `device_settings` key, `Long` | Last failed `PRAGMA quick_check`, shown on the diagnostics screen | 09 |
-| `MigrationInvariants`, `SeedDatabase`, `TestDb`, `SqlEnumLiterals` | test utilities, `core/database/src/sharedTest/` | Migration invariants, seeded scale DB, in-memory and temp-file DB factory, enum names used in SQL | 09 |
+| `MigrationInvariants`, `SeedDatabase`, `TestDb`, `SqlEnumLiterals` | test utilities, `:core:database` Android test fixtures (`core/database/src/testFixtures/`, [09 Shared helpers](09-quality-and-release.md#shared-helpers)) | Migration invariants, seeded scale DB, in-memory and temp-file DB factory, enum names used in SQL | 09 |
 
 ---
 
@@ -348,8 +348,8 @@ data class PodcastEntity(
 | `contentSha256` | Lowercase hex of the last parsed body (64 chars) |
 | `status`, `initialFetch` | See the state diagram below; transitions are 03's |
 | `latestEpisodeAt` | Max `sortDate` of the podcast's episodes, maintained by ingestion |
-| `gone`, `needsCredentials`, `failureCount`, `lastErrorKind` | Error badges; "possibly dead" is derived (`failureCount ≥ 10 AND lastSuccessAt < now − 7 d`, thresholds owned by 03) — no column |
-| `autoDownloadEligibleAfter` | Written only by 07's planner: set when the effective auto-download policy of the podcast becomes enabled (to `now`, or `subscribedAt` for a podcast subscribed less than 10 min ago, [07 Auto-download policy](07-downloads.md#auto-download-policy)), cleared when disabled ([Auto-download candidates](#auto-download-candidates)) |
+| `gone`, `needsCredentials`, `failureCount`, `lastErrorKind` | Error badges; "possibly dead" is derived (`gone = 0 AND failureCount ≥ 10 AND COALESCE(lastSuccessAt, subscribedAt) < now − 7 d`, thresholds owned by [03 Per-feed states](03-feeds-and-discovery.md#per-feed-states)) — no column |
+| `autoDownloadEligibleAfter` | Written only by 07's planner: the D67 watermark: the later of `subscribedAt` and the moment the effective auto-download policy became enabled, written by 07's watermark pass ([07 No-backfill watermark](07-downloads.md#no-backfill-watermark)), cleared when disabled ([Auto-download candidates](#auto-download-candidates)) |
 | `channelMetadataAt`; for `YOUTUBE_CHANNEL` rows also `bannerUrl`, `artworkUrl`/`artworkKey`, `descriptionHtml` | After the subscribe or import insert, written only by `PodcastDao.applyYouTubeChannelMetadata` (04); for `YOUTUBE_CHANNEL` rows Atom ingestion's `applyFeedMetadata` never touches them, nor `link`, `youtubeChannelId`, `youtubeVariants` ([04 Atom feed ingestion](04-youtube.md#atom-feed-ingestion)) |
 
 ```mermaid
@@ -392,7 +392,7 @@ data class CredentialEntity(
 )
 ```
 
-A feed credential is deleted in the transaction that removes its last referencing podcast ([Unsubscribe and merge](#unsubscribe-and-merge)); `db-maintenance` sweeps any survivor (`origin <> 'podcastindex' AND id NOT IN (SELECT credentialId FROM podcast WHERE credentialId IS NOT NULL)`), so no secret outlives its feed ([N3](../PLAN.md#22-non-functional-requirements)). `CredentialStore` (03) must drop its in-memory copy on the same events.
+`CredentialDao.observeAll(): Flow<List<CredentialEntity>>` (`SELECT * FROM credential`) feeds 03's in-memory `CredentialStore` map, so a row deleted by a cascade also leaves the map. A feed credential is deleted in the transaction that removes its last referencing podcast ([Unsubscribe and merge](#unsubscribe-and-merge)); `db-maintenance` sweeps any survivor (`origin <> 'podcastindex' AND id NOT IN (SELECT credentialId FROM podcast WHERE credentialId IS NOT NULL)`), so no secret outlives its feed ([N3](../PLAN.md#22-non-functional-requirements)). `CredentialStore` (03) must drop its in-memory copy on the same events.
 
 ### podcast_settings
 
@@ -894,7 +894,7 @@ object FeedQueryBuilder {
 -- ROW_COLUMNS
 e.id, e.podcastId, e.title, e.sortDate, e.pubDate,
 COALESCE(s.measuredDurationMs, e.durationMs) AS durationMs,
-e.isVideo, e.isShort, e.availability, e.episodeType, e.externalMediaId, e.isNew, e.firstSeenAt,
+e.isVideo, e.isShort, e.availability, e.episodeType, e.episodeDisplay, e.externalMediaId, e.isNew, e.firstSeenAt,
 COALESCE(p.customTitle, p.title) AS podcastTitle, p.sourceType,
 COALESCE(e.artworkKey, p.artworkKey) AS artworkKey, COALESCE(e.imageUrl, p.artworkUrl) AS artworkUrl,
 COALESCE(a.version, 0) AS artworkVersion, a.avgArgb AS artworkAvgArgb,
@@ -1151,7 +1151,7 @@ WHERE gone = 0 AND needsCredentials = 0 AND (:scopeAll = 1 OR id IN (:ids)) AND 
 SELECT id, feedUrl, sourceType, youtubeChannelId, youtubeVariants, channelMetadataAt, etag, lastModified,
        contentSha256, parserVersion, lastParseOk, credentialId, failureCount, initialFetch, status,
        lastSuccessAt, lastFullFetchAt, pendingNewFeedUrl, pagingNextUrl, pagingComplete, complete,
-       ttlMinutes, latestEpisodeAt, subscribedAt
+       ttlMinutes, latestEpisodeAt, subscribedAt, lastAttemptAt, lastErrorKind
 FROM podcast
 WHERE gone = 0 AND needsCredentials = 0
   AND (nextRefreshAt IS NULL OR nextRefreshAt <= :dueBefore)
@@ -1165,7 +1165,7 @@ WHERE gone = 0 AND needsCredentials = 0 AND pagingComplete = 0 AND pagingNextUrl
 ORDER BY id;
 ```
 
-Outcomes that change no feed data (304, identical SHA-256, failures) only touch scheduling columns. They are written with `@Update(entity = PodcastEntity::class) suspend fun updateFetchStates(rows: List<PodcastFetchState>)` (partial entity: `id`, `lastAttemptAt`, `lastSuccessAt`, `nextRefreshAt`, `failureCount`, `lastErrorKind`, `lastErrorDetail`, `gone`, `needsCredentials`, values computed by 03 from the `DueFeed` snapshot) in **batches of up to 20 outcomes or every 5 s**, so a 300-feed refresh invalidates open lists a few times instead of 300 times. The batcher (`FetchStateBatcher`, `:core:data`) flushes under `NonCancellable` when the run ends or hits its deadline; a process kill loses at most the unflushed outcomes, whose feeds are simply still due next tick (conditional GET, harmless). 03's user actions on a podcast (Retry, Edit URL, Enter password, unsubscribe) flush the batcher before writing, so a stale batched outcome never overwrites them. Outcomes with a changed body write validators and scheduling inside the feed's ingest transaction (validators are stored only after a successful commit, 03).
+Outcomes that change no feed data (304, identical SHA-256, failures) only touch scheduling columns. They are written with `@Update(entity = PodcastEntity::class) suspend fun updateFetchStates(rows: List<PodcastFetchState>)` (partial entity: `id`, `lastAttemptAt`, `lastSuccessAt`, `nextRefreshAt`, `failureCount`, `lastErrorKind`, `lastErrorDetail`, `gone`, `needsCredentials`, and for `Unchanged` outcomes `etag`, `lastModified`, `lastFullFetchAt`, `lastParseOk` ([03 Validators](03-feeds-and-discovery.md#validators)); values computed by 03 from the `DueFeed` snapshot) in **batches of up to 20 outcomes or every 5 s**, so a 300-feed refresh invalidates open lists a few times instead of 300 times. The batcher (`FetchStateBatcher`, `:core:data`) flushes under `NonCancellable` when the run ends or hits its deadline; a process kill loses at most the unflushed outcomes, whose feeds are simply still due next tick (conditional GET, harmless). 03's user actions on a podcast (Retry, Edit URL, Enter password, unsubscribe) flush the batcher before writing, so a stale batched outcome never overwrites them. Outcomes with a changed body write validators and scheduling inside the feed's ingest transaction (validators are stored only after a successful commit, 03).
 
 ### Ingestion support
 
@@ -1174,6 +1174,7 @@ The diff algorithm is 03's ([03 Ingestion and diff](03-feeds-and-discovery.md#in
 | Function | SQL / behaviour |
 |---|---|
 | `existing(podcastId): List<ExistingEpisodeKey>` | `SELECT id, identityKey, guid, enclosureUrl, title, pubDate, contentHash, inFeed FROM episode WHERE podcastId = ?` (03 builds the in-memory maps) |
+| `PodcastDao.youtubeChannelIds()` (04's `YouTubeOutageMonitor`, M8) | `SELECT id FROM podcast WHERE sourceType = 'YOUTUBE_CHANNEL'` |
 | `insertEpisodes(rows): List<Long>` | `@Insert` with ABORT; rows in descending `feedOrder` |
 | `updateFeedFields(row: EpisodeFeedUpdate)` | One `@Query` `UPDATE episode SET … WHERE id = :id` per changed row (rows whose `contentHash` changed) writing every feed column except `id`, `podcastId`, `identityKey`, `firstSeenAt`, `isNew`. 03's null-preserving columns are written as `col = COALESCE(:col, col)`: `durationMs`, `imageUrl` and `artworkKey` (as a pair), `chaptersUrl` and `chaptersType`; `availability`, `isShort`, `isVideo` likewise take the adapter's `RowHint` when non-null ([03 Column rules on update](03-feeds-and-discovery.md#column-rules-on-update)). `sortDate` is recomputed by 03 from the stored `firstSeenAt` |
 | `rekey(id, key, guid)` | `UPDATE episode SET identityKey = ?, guid = ? WHERE id = ?` |
@@ -1192,14 +1193,16 @@ The diff algorithm is 03's ([03 Ingestion and diff](03-feeds-and-discovery.md#in
 
 ```kotlin
 @Transaction suspend fun claimNext(lanes: List<DownloadLane>, now: Long, unmetered: Boolean, charging: Boolean,
-                                   youtubeAllowed: Boolean, token: String, hostHasSlot: (DownloadEntity) -> Boolean): DownloadEntity? {
-    val pick = candidates(lanes, now, unmetered, charging, youtubeAllowed).firstOrNull(hostHasSlot) ?: return null
+                                   youtubeAllowed: Boolean, token: String, offset: Int = 0,
+                                   hostHasSlot: (DownloadEntity) -> Boolean): DownloadEntity? {
+    val pick = candidates(lanes, now, unmetered, charging, youtubeAllowed, offset).firstOrNull(hostHasSlot) ?: return null
     return if (claim(pick.episodeId, token) == 1) pick.copy(state = DownloadState.RESOLVING, runnerToken = token) else null
 }
 ```
 
 ```sql
--- candidates(...): up to 20 rows; the engine picks the first whose host and YouTube slots are free
+-- candidates(..., offset): pages of 20 rows; the engine picks the first whose host and YouTube slots are free and
+-- pages on (offset 20, 40, …) when every row of a page waits for a busy host (07 Claiming and slots)
 SELECT * FROM download
 WHERE state = 'QUEUED' AND lane IN (:lanes)
   AND (nextAttemptAt IS NULL OR nextAttemptAt <= :now)
@@ -1207,7 +1210,7 @@ WHERE state = 'QUEUED' AND lane IN (:lanes)
   AND (requireCharging = 0 OR :charging = 1)
   AND (:youtubeAllowed = 1 OR sourceKind != 'YOUTUBE')
 ORDER BY priority DESC, requestedAt ASC, episodeId ASC
-LIMIT 20;
+LIMIT 20 OFFSET :offset;
 -- claim(id, token)
 UPDATE download SET state = 'RESOLVING', waitReason = 'NONE', runnerToken = :token
 WHERE episodeId = :id AND state = 'QUEUED';
@@ -1215,7 +1218,7 @@ WHERE episodeId = :id AND state = 'QUEUED';
 
 | Purpose | SQL |
 |---|---|
-| Reconcile orphaned runners (07 `DownloadReconciler.resetOrphanedRunners`) | `UPDATE download SET state = :toState, waitReason = :reason, runnerToken = NULL, lastError = 'CANCELLED_BY_SYSTEM', lastStopReason = :stopReason WHERE state IN ('RESOLVING','DOWNLOADING','VERIFYING') AND lane IN (:lanes) AND (runnerToken IS NULL OR runnerToken NOT IN (:liveTokens))` — 07 calls it with `QUEUED`/`SYSTEM`/`STOP_PROCESS_DEATH`, or for `MANUAL` after a Task Manager stop with `PAUSED`/`NONE`/`STOP_USER_TASK_MANAGER` |
+| Reconcile orphaned runners (07 `DownloadReconciler.resetOrphanedRunners`) | `UPDATE download SET state = :toState, waitReason = :reason, runnerToken = NULL, lastError = 'CANCELLED_BY_SYSTEM', lastStopReason = :stopReason WHERE state IN ('RESOLVING','DOWNLOADING','VERIFYING') AND lane IN (:lanes) AND (runnerToken IS NULL OR runnerToken NOT IN (:liveTokens))` — 07 calls it with `QUEUED`/`SYSTEM`/`STOP_PROCESS_DEATH`, or for `MANUAL` after a Task Manager stop with `PAUSED`/`NONE`/`STOP_USER_TASK_MANAGER` and the extra filter `AND runnerToken LIKE 'uidt:%'`, followed in the same transaction by `UPDATE download SET state = 'PAUSED', lastStopReason = :stopReason WHERE lane = 'MANUAL' AND state = 'QUEUED'` ([07 Pause, cancel and Task Manager stops](07-downloads.md#pause-cancel-and-task-manager-stops)) |
 | Completed rows to verify on disk | `SELECT episodeId, rootId, relativePath, finalUri, totalBytes FROM download WHERE state = 'COMPLETED'` |
 | `LocalMediaIndex` load (07, mirrored in memory) | `SELECT episodeId, finalUri FROM download WHERE state = 'COMPLETED' AND finalUri IS NOT NULL` |
 | Storage used (quota) | `SELECT COALESCE(SUM(totalBytes), 0) FROM download WHERE state = 'COMPLETED'` |
@@ -1329,7 +1332,7 @@ DELETE FROM podcast WHERE id = :pid;
 
 `artwork` rows and files of the podcast are left to the reference-based garbage collection ([Artwork references](#artwork-references)).
 
-**Merge** of podcast `loser` into `winner` (03 decides when, [03 Ingestion and diff](03-feeds-and-discovery.md#podcast-dedupe-and-merge); 05's import report shows `MERGED`). Before the transaction 03 deletes the download files of loser episodes that have no match in the winner. Matching runs in Kotlin on both podcasts' `IngestDao.existing()` lists: `identityKey`, then normalised enclosure URL. Then one write transaction:
+**Merge** of podcast `loser` into `winner` (03 decides when, [03 Ingestion and diff](03-feeds-and-discovery.md#podcast-dedupe-and-merge); 05's import report shows `MERGED`). Before the transaction 03 deletes, through `DownloadController`, only the download files of **matched** loser episodes whose winner episode already has a `download` row (step 4 keeps the winner's row); unmatched loser episodes keep their downloads, because step 5 re-parents them. Matching runs in Kotlin on both podcasts' `IngestDao.existing()` lists: `identityKey`, then normalised enclosure URL. Then one write transaction:
 
 1. `INSERT OR IGNORE INTO podcast_group_member(groupId, podcastId, sortOrder, addedAt, source) SELECT groupId, :winner, sortOrder, addedAt, source FROM podcast_group_member WHERE podcastId = :loser`.
 2. `UPDATE OR IGNORE podcast_url_alias SET podcastId = :winner WHERE podcastId = :loser`; `INSERT OR IGNORE` the loser's `feedKey` as alias (`MERGE`); `DELETE FROM podcast_url_alias WHERE url = (SELECT feedKey FROM podcast WHERE id = :winner)` (an alias never equals a `feedKey`).
@@ -1344,7 +1347,7 @@ DELETE FROM podcast WHERE id = :pid;
 `ImportDao.commitChunk(...)` (M3, pipeline [05 OPML import](05-groups-opml-backup.md#opml-import)). Each chunk of ≤ 500 items is one write transaction:
 
 1. Create missing groups: `INSERT OR IGNORE INTO podcast_group(uuid, name, nameKey, sortOrder, createdAt, updatedAt, …)` with `sortOrder = (SELECT COALESCE(MAX(sortOrder), -1) + 1 FROM podcast_group)` and `uuid`/`nameKey` from 05; an ignored insert (Room returns `-1`) means a group with that `nameKey` exists: `SELECT id FROM podcast_group WHERE nameKey = :nameKey` and reuse it. A plain `INSERT` would abort the whole chunk on the unique index.
-2. For new items: `INSERT OR IGNORE INTO podcast(sourceType, feedUrl, feedKey, title, artworkKey, status, initialFetch, subscribedAt, nextRefreshAt, includeInAll, youtubeChannelId, youtubeVariants) VALUES (…, 'PENDING_FIRST_FETCH', 1, :now, :now, 1, …)`, with `title` from the file (else the URL host) and the monogram `artworkKey` `m-{sha1hex(feedKey)}`. An ignored insert means the `feedKey` was subscribed meanwhile: `SELECT id FROM podcast WHERE feedKey = :feedKey` and continue as "already subscribed"; if that finds nothing the insert failed for another reason, which is a bug (throw, the chunk rolls back).
+2. For new items: `INSERT OR IGNORE INTO podcast(sourceType, feedUrl, feedKey, title, customTitle, artworkKey, credentialId, status, initialFetch, subscribedAt, nextRefreshAt, includeInAll, youtubeChannelId, youtubeVariants) VALUES (…, 'PENDING_FIRST_FETCH', 1, :now, :now, 1, …)` (`customTitle` and `credentialId` as 05 supplies them, usually null), with `title` from the file (else the URL host) and the monogram `artworkKey` `m-{sha1hex(feedKey)}`. An ignored insert means the `feedKey` was subscribed meanwhile: `SELECT id FROM podcast WHERE feedKey = :feedKey` and continue as "already subscribed"; if that finds nothing the insert failed for another reason, which is a bug (throw, the chunk rolls back).
 3. Aliases: `INSERT OR IGNORE INTO podcast_url_alias(url, podcastId, reason, addedAt) VALUES (:normalised, :pid, 'IMPORT', :now)` (skipped when equal to any `podcast.feedKey`).
 4. Memberships, also for already-subscribed podcasts ([R1.2](../PLAN.md#21-functional-requirements)): `INSERT OR IGNORE INTO podcast_group_member(groupId, podcastId, sortOrder, addedAt, source) VALUES (…, 'MANUAL')`.
 5. `UPDATE import_item SET status = 'QUEUED', podcastId = :pid WHERE sessionId = :sid AND ordinal = :ord`.
@@ -1353,7 +1356,7 @@ Progress: `ImportDao.observeProgress(sid)` = `SELECT status, COUNT(*) FROM impor
 
 ### Backup export
 
-`BackupDao` (M3, archive format [05 Full backup and restore](05-groups-opml-backup.md#full-backup-and-restore)). The whole export runs inside **one read transaction**, so the archive is a point-in-time snapshot (WAL readers are isolated from concurrent writes). Library rows (podcasts with aliases and settings, groups with settings, memberships, queue, session) are small and read in full. Episodes are streamed in keyset chunks of 1,000 and written line by line to `episodes.jsonl`:
+`BackupDao` (M3, archive format [05 Full backup and restore](05-groups-opml-backup.md#full-backup-and-restore)). `observeLibraryShape(): Flow<LibraryShape>` = `SELECT (SELECT COUNT(*) FROM podcast) AS podcasts, (SELECT COUNT(*) FROM podcast_group_member) AS memberships` drives 05's snapshot library watcher. The whole export runs inside **one read transaction**, so the archive is a point-in-time snapshot (WAL readers are isolated from concurrent writes). Library rows (podcasts with aliases and settings, groups with settings, memberships, queue, session) are small and read in full. Episodes are streamed in keyset chunks of 1,000 and written line by line to `episodes.jsonl`:
 
 ```sql
 SELECT p.feedKey, e.id, e.identityKey, e.guid, e.title, e.pubDate, e.enclosureUrl, e.enclosureType, e.durationMs,
@@ -1388,7 +1391,8 @@ UNION ALL SELECT podcastId, 2 FROM podcast_url_alias WHERE url IN (:keys)
 ORDER BY rank, id LIMIT 1;
 -- 2. real podcast:guid
 SELECT id FROM podcast WHERE podcastGuid = :guid AND podcastGuidDerived = 0 ORDER BY id LIMIT 1;
--- 3. otherwise insert as in Import commit (status PENDING_FIRST_FETCH, initialFetch = 1), aliases with reason RESTORE
+-- 3. otherwise insert as in Import commit (status PENDING_FIRST_FETCH, initialFetch = 1) plus the backup's artworkUrl,
+--    customTitle and credentialId; aliases with reason RESTORE
 ```
 
 Groups: `SELECT id FROM podcast_group WHERE uuid = :uuid`, else `WHERE nameKey = :nameKey`, else insert.
@@ -1430,6 +1434,7 @@ UPDATE artwork SET pinCount = <refCount> WHERE pinCount <> <refCount>;
 | `applyBatch(rows: List<ArtworkSyncResult>)` | `@Upsert(entity = ArtworkEntity::class)` with partial class `ArtworkSyncResult(key, url, localPath, width, height, seedArgb, avgArgb, version, fetchedAt, lastError)`, one transaction per batch of 8; `pinCount` is never written here |
 | `fallbackFor(key)` | `SELECT COALESCE(p.customTitle, p.title) AS title, p.feedKey FROM podcast p WHERE p.artworkKey = :key UNION ALL SELECT COALESCE(p.customTitle, p.title), p.feedKey FROM download d JOIN episode e ON e.id = d.episodeId JOIN podcast p ON p.id = e.podcastId WHERE e.artworkKey = :key LIMIT 1` (goes through `download`, so no index on `episode.artworkKey` is needed) |
 | `observe(key)` | `SELECT * FROM artwork WHERE key = :key` (`Flow`) |
+| `PodcastDao.observeArtworkKey(podcastId)` | `SELECT artworkKey FROM podcast WHERE id = :podcastId` (`Flow`; key for 08's `ArtworkRepository.observeColors(key, fallbackPodcastId)`) |
 | `pinnedIndex()` | `SELECT key, localPath FROM artwork WHERE localPath IS NOT NULL` |
 
 ## Invalidation hygiene
@@ -1545,7 +1550,7 @@ Selecting and deleting in the same write transaction closes the race with a user
 | 7 | `VACUUM` when `freelist_count / page_count > 0.25` and freelist > 8 MB, free space > 2 × DB size + 100 MB, and no playback in the last 10 min (`play_session.updatedAt` and `MAX(episode_position.updatedAt)` older than 10 min). `VACUUM` cannot run inside a transaction: it runs on the writer connection via `useWriterConnection` outside any transaction and blocks other writers for its duration (a few seconds at the N5 scale; a writer waiting longer than Room's 30 s pool timeout fails and is retried by its owner), hence the playback guard and the idle constraint. After a vacuum the freelist is empty, so it does not repeat until the threshold is reached again | when thresholds are met |
 | 8 | Record row counts, `page_count × page_size` and step durations for the diagnostics screen (09) | daily |
 
-`VACUUM INTO '<cacheDir>/diag.db'` (SQLite ≥ 3.27: the bundled driver, or the framework driver on API 30+) produces the diagnostics DB export of [D33](../PLAN.md#3-key-decisions); it is never importable ([SQLite VACUUM](https://www.sqlite.org/lang_vacuum.html)). Before it leaves the app the copy is scrubbed on a raw driver connection ([N3](../PLAN.md#22-non-functional-requirements)): `DELETE FROM credential`; every URL column that can carry a token (`podcast.feedUrl`, `feedKey`, `pagingNextUrl`, `pendingNewFeedUrl`, `podcast_url_alias.url`, `episode.enclosureUrl`, `download.sourceRef`, `import_item.originalUrl`/`normalizedUrl`) replaced by `scheme://host/…#{rowid}` (the suffix keeps unique indices valid); then `VACUUM` so deleted bytes are gone. The flow and the user warning are 09's.
+`VACUUM INTO '<cacheDir>/export/neutrodyne-diagnostics-<yyyy-MM-dd-HHmm>.db'` (SQLite ≥ 3.27: the bundled driver, or the framework driver on API 30+; `cache/export/` is the path the FileProvider shares) produces the diagnostics DB export of [D33](../PLAN.md#3-key-decisions); it is never importable ([SQLite VACUUM](https://www.sqlite.org/lang_vacuum.html)). Before it leaves the app the copy is scrubbed on a raw driver connection ([N3](../PLAN.md#22-non-functional-requirements)): `DELETE FROM credential`; every URL column that can carry a token (`podcast.feedUrl`, `feedKey`, `pagingNextUrl`, `pendingNewFeedUrl`, `artworkUrl`, `podcast_url_alias.url`, `episode.enclosureUrl`, `imageUrl`, `chaptersUrl`, `episode_alt_enclosure.sourcesJson`, `artwork.url`, `download.sourceRef`, `import_item.originalUrl`/`normalizedUrl`) replaced by `scheme://host/…#{rowid}`, and `episode.identityKey` and `episode.guid` (`u:` keys embed the enclosure URL; GUIDs can be URLs) replaced by their key prefix + `…#{rowid}` (the suffix keeps unique indices valid); then `VACUUM` so deleted bytes are gone. The flow and the user warning are 09's.
 
 ### Expected size
 
@@ -1626,7 +1631,7 @@ Manual migration rules:
 
 - `MigrationTestHelper(instrumentation, databaseClass = NeutrodyneDatabase::class, driver = …, file = …)`, with `core/database/schemas` added as assets of the `test` and `androidTest` source sets (09 configures).
 - `MigrationNToMTest` per version pair: `createDatabase(N)` with fixture rows, `runMigrationsAndValidate(M, …)`, invariant comparison, plus assertions for the intended change.
-- `MigrateAllTest`: create version 1 from `sharedTest/resources/db/v1-fixture.sql` (rows in **every** table, including edge values: null optionals, max lengths, emoji, a position of 1 ms), migrate to the current version, validate, compare invariants, then open with `NeutrodyneDatabase.build` and call one read function of every DAO.
+- `MigrateAllTest`: create version 1 from `testFixtures/resources/db/v1-fixture.sql` (rows in **every** table, including edge values: null optionals, max lengths, emoji, a position of 1 ms), migrate to the current version, validate, compare invariants, then open with `NeutrodyneDatabase.build` and call one read function of every DAO.
 - `RebuildProcedureTest` (M1, before any real rebuild exists): the shared `TableRebuild.run(connection, table, newDdl, columnMap)` helper that every manual migration uses is applied to `podcast` and `episode` of the v1 fixture inside a `BEGIN EXCLUSIVE` transaction on a raw driver connection; asserts every child table keeps its row count and `sqlite_sequence` is unchanged, and that the helper refuses to run when `foreign_keys = 1`. Whether Room's own migration transaction runs with foreign keys off is spike S3's assertion.
 - Drivers: JVM/Robolectric with `AndroidSQLiteDriver`; instrumented (GMD API 26 and API 36) with both `BundledSQLiteDriver` and `AndroidSQLiteDriver`.
 - M11 acceptance criterion 6: migrate the frozen schema of the first tester build to the 1.0 schema with `MigrateAllTest`, and upgrade a device from the last beta keeping all data.
@@ -1666,7 +1671,7 @@ flowchart TD
   F --> G["OpenResult created = true, recovered = cause"]
   E -->|yes| H["OpenResult created = true"]
   E -->|no| I["OpenResult created = false"]
-  G --> J["05 restores files/backup/auto-snapshot.zip in Replace mode"]
+  G --> J["05 restores files/backup/auto-snapshot.zip in Merge mode (D70)"]
   H --> J
 ```
 
@@ -1720,9 +1725,9 @@ Serves N1, N5, N9. Test infrastructure, runners and CI wiring are owned by [09 T
 | `DiagExportScrubTest` | JVM | The `VACUUM INTO` copy has no `credential` rows and no URL path, query or userinfo in the scrubbed columns | M11 |
 | Migration tests | JVM + GMD | [Tests](#tests) | M1 onward |
 
-Fixtures (`core/database/src/sharedTest/`):
+Fixtures (`core/database/src/testFixtures/`, consumed with `testImplementation(testFixtures(project(":core:database")))`):
 
-- `TestDb.inMemory(driver = AndroidSQLiteDriver())`, `TestDb.file(dir, driver)` and `TestClock` from `:core:testing`.
+- `TestDb.inMemory(driver = AndroidSQLiteDriver())`, `TestDb.file(dir, driver)`; `TestClock` comes from the `:core:common` test fixtures (re-exported by `:core:testing`).
 - `FeedFixture`: the 60-episode hand-built dataset above, expressed as Kotlin builders so expected orders are readable in tests.
 - `SeedDatabase(seed = 42, podcasts = 300, episodes = 50_000, groups = 20, membershipsPerPodcast = 0..3, playedFraction = 0.6, favourites = 200, downloads = 300, inProgress = 50, youtubeChannels = 30)`: deterministic generator with realistic string lengths (titles 40–90 chars, enclosure URLs 90–180 chars, descriptions 0.2–6 KB) used by `QueryPlanTest`, `FeedQueryTimingTest` and the size measurement.
 - `db/v1-fixture.sql` for `MigrateAllTest`.
@@ -1750,16 +1755,16 @@ Fixtures (`core/database/src/sharedTest/`):
 
 ## Open questions
 
-1. **Architect review:** `podcast` mixes low-churn metadata with refresh bookkeeping that changes on every fetch, and every paged feed joins `podcast` (D16 lists it as joinable). This document mitigates with batched fetch-state writes (≤ 15 invalidations per 300-feed refresh, `RefreshBatchingTest`). If that test or the R2.9 benchmark fails, move the fetch-state columns into a 1:1 table `podcast_fetch_state` that lists never join; that changes the canonical column placement and needs a PLAN amendment.
-2. **Architect review:** the SQL baseline is SQLite 3.18 so that the `AndroidSQLiteDriver` production fallback (spike S6) stays a one-line change. D9's rationale names window functions as a benefit of the bundled driver; none of the key queries needs them. Confirm that window functions stay banned and reword D9.
-3. **Architect review:** `episode_description.html` is a compressed `BLOB`, which rules out an FTS external-content table over descriptions in M15 (FTS would index `title` and `snippet`, or need an extra plain-text column). Accept, or store plain `TEXT` (≈ +50 MB at the N5 scale).
-4. **Architect review:** D15 ("episode is written only by ingestion") has three exceptions here: restore stubs, retention deletes and 04's `YouTubeAvailabilityRecorder` (`availability` only). Proposed D15 wording: "feed columns of `episode` are written only by the refresh pipeline (03 ingestion, 04 enrichment); restore inserts stubs, retention deletes, and resolve-time availability is recorded by 04".
-5. **Architect review:** table rebuilds require `foreign_keys = OFF` during migrations ([Writing migrations](#writing-migrations)). Room 3's sources show the pragma is executed only in the generated `onOpen`, after migrations, so this holds unless the bundled SQLite is compiled with foreign keys on by default. 01's spike S3 currently checks only that foreign keys are on after open; its pass criterion must also assert `PRAGMA foreign_keys` = 0 inside `Migration.migrate`, and its `ForeignKeysDriver` fallback must arm only after the first open. If S3 finds foreign keys on during migrations, parent-table rebuilds must run in a pre-Room step of `DatabaseOpener` on a raw connection (to be designed before the first such migration).
-6. Owner 03: a merge now re-parents loser episodes without a match to the winner (`inFeed = 0`) instead of deleting them, so their played state survives; 03 still deletes their download files first. Confirm, and drop the in-memory `CredentialStore` entry when [Unsubscribe and merge](#unsubscribe-and-merge) deletes a credential.
-7. Owner 05: [Download all candidates](#download-all-candidates) does not exclude Up next items or the current episode (unlike the context tail). Confirm.
-8. Owner 07: the rolling keep-N window counts protected rows (favourite, current, Up next, in progress) in their place and never deletes them ([Cleanup candidates](#cleanup-candidates)); so a podcast can keep more than `keepLatest` unplayed automatic downloads while some are protected. Confirm. The optional "accept video episodes with an audio alternate when `includeVideo` is off" in `autoCandidates` is not adopted (PO-12 follow-up (a) says automatic downloads skip video episodes).
+1. Resolved by the [D16](../PLAN.md#3-key-decisions) amendment: batched fetch-state writes (≤ 15 invalidations per 300-feed refresh, `RefreshBatchingTest`, PLAN M2 acceptance 3); the 1:1 `podcast_fetch_state` table is the recorded fallback if that test or the R2.9 benchmark fails.
+2. Resolved: [D9](../PLAN.md#3-key-decisions) now names the SQLite 3.18 baseline; window functions stay banned ([SQL dialect baseline](#sql-dialect-baseline)).
+3. Resolved by [D71](../PLAN.md#3-key-decisions): descriptions stay a compressed `BLOB`; the M15 FTS index covers `title` and `snippet`.
+4. Resolved: [D15](../PLAN.md#3-key-decisions) names the three exceptions (restore stubs, retention deletes, `YouTubeAvailabilityRecorder`).
+5. Resolved: [D22](../PLAN.md#3-key-decisions) names the rebuild procedure, and 01's spike S3 now also asserts `PRAGMA foreign_keys` = 0 inside `Migration.migrate`, arms the `ForeignKeysDriver` fallback only after the first open, and names the pre-Room raw-connection step if foreign keys are on during migrations ([01 S3](01-foundation.md#s3-foreign_keys-with-the-bundled-driver)).
+6. Resolved: 03 deletes only the files of matched loser downloads whose winner has a `download` row ([Unsubscribe and merge](#unsubscribe-and-merge)); the `CredentialStore` entry of a deleted credential leaves the map through `CredentialDao.observeAll()`.
+7. Resolved by 05 ([05 Group actions](05-groups-opml-backup.md#group-actions)): "Download all" does not exclude Up next items or the current episode.
+8. Resolved by 07 (07 open question 7): protected rows count in their place in the rolling window and are never deleted; video episodes with an audio alternate are not accepted (PO-12 follow-up (a)).
 9. Spike S2 results may change the [Room 2 to Room 3 mapping](#room-2-to-room-3-mapping) rows marked Unverified (Gradle extension name, `MigrationTestHelper` parameter names, `@AutoMigration`, `BEGIN IMMEDIATE` for write transactions).
-10. Whether `QueryPlanTest` results on Robolectric's SQLite match the bundled driver's; if not, the JVM variant asserts only "no full scan" and the GMD variant asserts the full expectations (PLAN M2 acceptance criterion 1 says "a JVM test").
+10. Resolved: PLAN M2 acceptance 1 now names `QueryPlanTest`, with the GMD run on the bundled driver authoritative and the JVM run asserting rows and "no full scan" only.
 
 ## Sources
 

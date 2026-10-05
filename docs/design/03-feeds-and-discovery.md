@@ -688,7 +688,8 @@ sealed interface FeedOutcome {
     data object Unchanged : FeedOutcome
     data class Merged(val intoPodcastId: Long) : FeedOutcome
     data class Failed(val kind: FeedErrorKind, val httpStatus: Int?) : FeedOutcome
-    data class Deferred(val untilMs: Long) : FeedOutcome          // 04: not attempted (YouTube outage or rate limit)
+    data class Deferred(val untilMs: Long) : FeedOutcome          // 04: not attempted (YouTube outage or rate limit);
+                                                                  // 05's ImportFetchWorker records FETCH_FAILED(DEFERRED)
 }
 data class FeedRunEvent(val podcastId: Long, val origin: RefreshOrigin, val outcome: FeedOutcome)
 ```
@@ -1436,14 +1437,14 @@ Also: `no-media-blog` and `empty-channel` for the accepted-items rules. The corp
 
 ## Open questions
 
-1. **Architect review: show-notes block model placement.** Following 01's default (option b), `:feeds` produces `ShowNotesDocument` and `:core:data` maps it 1:1 into the `:core:model` mirror `ShowNotes` that 08 renders. Allowing `:feeds → :core:model` (option a) would remove the duplicate types and the mapper; this document recommends (a) and changes only the type location if adopted.
-2. **Architect review: `refresh-now` not expedited on API 26–30.** [D25](../PLAN.md#3-key-decisions) describes `refresh-now` as expedited; below API 31 that requires a foreground notification (`getForegroundInfo`). This document drops expedition there instead of adding a refresh notification channel (05 made the same choice for `import-{sessionId}`). D25 should say "expedited on API 31+".
-3. **Architect review: `refresh-continuation` with `KEEP`.** The canonical policy cannot re-enqueue the continuation from inside a running continuation (`KEEP` sees the running work). This document keeps `KEEP` and uses `Result.retry()` with a linear 60 s backoff for the continuation's own follow-up ([Work requests](#work-requests)). Alternative: `APPEND_OR_REPLACE`, which would chain duplicates when several runs stop at once.
-4. **Architect review: one credential per origin.** `CredentialLookup` (01) is keyed by origin only, so two private feeds on one host with different accounts cannot coexist. Supporting them would need a per-request credential hint (request tag) in `AuthInterceptor` and 06/07's enclosure requests.
-5. **Architect review: Apple Podcasts web links on Android 12+.** The `https://podcasts.apple.com` VIEW filter (01, PLAN M7) does nothing on API 31+ unless the user approves the domain in system settings; Share is the working path. PLAN M7's deliverable list should say so.
-6. **Owner 02:** `PodcastFetchState` needs `etag`, `lastModified`, `lastFullFetchAt`, `lastParseOk` ([Validators](#validators)); `CredentialDao.observeAll()`; the merge preamble must delete only *matched* loser downloads whose winner has a `download` row (02 currently says "loser episodes that have no match", which would destroy files of episodes that 02's step 5 re-parents); chapter deletion by `(episodeId, source)` for a changed `chaptersUrl`; `dueForRefresh`/`pagingPending` should also select `lastAttemptAt` (04's 15-minute floor) and `lastErrorKind`; the derived "possibly dead" uses `COALESCE(lastSuccessAt, subscribedAt)` (02's podcast table says `lastSuccessAt`); optionally a unique index on `credential.origin`.
-7. **PO (proposed PO-21):** show-notes images default `TAP_TO_LOAD` (privacy) vs `WIFI_ONLY`/`ALWAYS`; and whether "Manual only" refresh is offered globally.
-8. Dump-guard numbers (more than 20 qualifying → newest 3) and the fortnightly unmetered full fetch are first estimates; M11 diagnostics data may tune them.
+1. Resolved by [D68](../PLAN.md#3-key-decisions): option (b) stays — `:feeds` produces `ShowNotesDocument`, `:core:data` maps it into `ShowNotes` (`:core:model`).
+2. Resolved: [D25](../PLAN.md#3-key-decisions) now says `refresh-now` is expedited on API 31+ only.
+3. Resolved: [D25](../PLAN.md#3-key-decisions) records `KEEP` with `Result.retry()` (linear 60 s backoff, at most 10 attempts) for the continuation's own follow-up ([Work requests](#work-requests)).
+4. Accepted for v1 as risk [T13](../PLAN.md#8-risks-and-mitigations): `CredentialLookup` stays keyed by origin; a per-request credential hint in `AuthInterceptor` and 06/07's enclosure requests is v1.x work.
+5. Resolved: PLAN M7's deliverables state that the `https://podcasts.apple.com` VIEW filter works on API 31+ only after the user approves the domain, and that Share is the working path.
+6. Resolved in 02: `PodcastFetchState` carries `etag`, `lastModified`, `lastFullFetchAt`, `lastParseOk`; `CredentialDao.observeAll()`; the merge preamble deletes only matched loser downloads whose winner has a `download` row; chapter rows are replaced per `(episodeId, source)`; `dueForRefresh`/`pagingPending` select `lastAttemptAt` and `lastErrorKind`; "possibly dead" uses `COALESCE(lastSuccessAt, subscribedAt)` and `gone = 0`. The optional unique index on `credential.origin` is not added (`CredentialStore` keeps one row per origin).
+7. Moved to [PO-21](../PLAN.md#48-further-product-owner-decisions) (defaults: `TAP_TO_LOAD`; "Manual only" offered at every scope).
+8. Recorded as risk [T11](../PLAN.md#8-risks-and-mitigations): dump-guard numbers (more than 20 qualifying → newest 3) and the fortnightly unmetered full fetch are first estimates; M11 diagnostics data may tune them.
 9. Unverified facts to check in their milestone: Apple genre IDs other than 1318/1489/1483/1303 and the chart JSON paths (M7); Podcast Index response field names (M7); Google Podcasts link encoding (M7); fyyd rate limits and terms; Android 17's exact "local network" address set (01).
 10. Apple's search terms grant no explicit licence for directory use (risk L3); if Apple objects, fyyd becomes the default and Apple an opt-in.
 

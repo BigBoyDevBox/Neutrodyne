@@ -200,7 +200,7 @@ interface YouTubeAvailabilityRecorder { suspend fun record(episodeId: Long, avai
 | `YouTubeChannelRepository`, `LoadOlderResult`, `RssAlternative`, `YouTubeAvailabilityRecorder` | `:core:domain` | Feature-facing YouTube operations |
 | `YouTubeSourceAdapter`, `YouTubeOutageMonitor` | `:core:data` (names from 03) | YouTube rules on 03's engine |
 | `YouTubeAlertNotifier`, `YouTubeChannelRepositoryImpl`, `YouTubeAvailabilityRecorderImpl` | `:core:data` | YouTube services |
-| `AdapterResult.Parsed.absenceFloor`, `AdapterResult.Deferred`, `SourceAdapter.afterIngest` returning the IDs to announce | additions to 03's internal adapter contract (requested from 03) | [Contract with 03's engine](#contract-with-03s-engine) |
+| `AdapterResult.Parsed.absenceFloor`, `AdapterResult.Deferred`, `SourceAdapter.afterIngest` returning the IDs to announce | additions to 03's internal adapter contract (adopted by 03, [03 Source adapters](03-feeds-and-discovery.md#source-adapters)) | [Contract with 03's engine](#contract-with-03s-engine) |
 | `UrlListParser`; DTOs `NewPipeSubscriptionsFile`, `LibreTubeBackupFile`, `TakeoutRow`, `YouTubeImportEntry` | `:feeds` | Import formats |
 | `ImportFormat.URL_LIST` | enum constant appended to the canonical `ImportFormat` (defined in 02, pipeline in 05) | Plain list of URLs or IDs |
 | `podcast.channelMetadataAt` | column `Long?` ([02 podcast](02-data-model.md#podcast)) | Last channel-page/extractor metadata fetch; null = never |
@@ -269,7 +269,7 @@ Each binding exists from the milestone of its first consumer (`YouTubeCapabiliti
 | YouTube channel with no visible episodes | Empty state "No long-form videos yet. This channel may post only Shorts or live streams." + "Podcast settings" (variants) | Same |
 | Podcast detail "Load older" | Shown for YouTube channels | Hidden |
 | Discover "Search YouTube channels" | Shown | Hidden; Add sheet hint "share from the YouTube app or paste a link" |
-| Settings › YouTube | Variants info, audio quality, volume levelling, YouTube auto-download, suggest RSS, extractor status line | Suggest RSS, mark played on open |
+| Settings › YouTube | Variants info, audio quality, volume levelling, YouTube auto-download, suggest RSS, mark played on open (applies to unplayable episodes), extractor status line | Suggest RSS, mark played on open |
 | Licences / About | NewPipe Extractor notice, GPL statement | No GPL text, **no mention of the other build** |
 
 ---
@@ -444,7 +444,7 @@ Serves R3.2, R3.3, R3.4. Delivered in M8 (enrichment in M9). 03's refresh engine
 | `afterIngest(podcastId, inserted, newIds): List<Long>` | [Enrichment step](#enrichment-step) and [channel art](#channel-metadata-refresh); returns the IDs to announce |
 | `hostKey` | `www.youtube.com` (03's 2-per-host limit applies) |
 
-Three additions to 03's internal contract are **requested from 03** (they do not exist in 03's sketch yet):
+Three additions to 03's internal contract, adopted by 03 ([03 Source adapters](03-feeds-and-discovery.md#source-adapters)):
 
 1. `AdapterResult.Parsed.absenceFloor: Long?` — when non-null it replaces 03's partial-document rule "`sortDate ≥ min(sortDate of this document's rows)`" in diff step 8: absent rows flip to `inFeed = 0` only if `sortDate ≥ absenceFloor`. `Long.MAX_VALUE` flips nothing.
 2. `AdapterResult.Deferred(untilMs)` — the feed was not attempted: `lastAttemptAt`, `failureCount`, `lastErrorKind` unchanged; `nextRefreshAt = untilMs`; not counted as remaining work (no continuation).
@@ -812,7 +812,7 @@ Serves R3.5, R3.8. Delivered in M9 (06's YouTube branch returns an error until t
 | `Transient(BREAKER_OPEN)` | same | Skip every YouTube item in the projection; show the breaker banner | — |
 | `Transient(RATE_LIMITED)` | same | Pause with "YouTube is limiting requests from your network. Try again later." | — |
 | `Transient(NETWORK, TIMEOUT)` | same | As an RSS network error (Media3 retries, then pause with Retry) | — |
-| `YouTubeFormatChangedException` | itself | Once per item: remove the `SimpleCache` resource `yt:{videoId}:{oldFormatId}` when only `clen`/`lmt` changed, then `replaceMediaItem` (same mediaId), seek to the last position, `prepare()`; a second one for the same item → treat as `Transient(EXTRACTION)` | — |
+| `YouTubeFormatChangedException` | itself | Once per item: remove the `SimpleCache` resource `yt:{videoId}:{oldFormatId}` when only `clen`/`lmt` changed, then unpin the item and `prepare()` at the current position, so the next open re-resolves and pins the new format (an identical `replaceMediaItem` would be a no-op, [06 Error recovery](06-playback.md#error-recovery)); a second one for the same item → treat as `Transient(EXTRACTION)` | — |
 | `Unsupported` | same | Skip (defensive) | — |
 
 The queue continues with the next playable item in every skip case (R3.8). Unavailable reasons recorded during playback remove the item from the projection window at the next diff (06's window skips `availability != AVAILABLE`).
@@ -986,7 +986,7 @@ Serves N8, N3; mitigates risks L1, L2, P1. Delivered in M0 (SPDX stub), M8 (Play
 
 ### Corresponding source
 
-GPLv3 §6(d) allows the Corresponding Source to sit on a different server "provided you maintain clear directions next to the object code", but "you remain obligated to ensure that it is available for as long as needed". Each `foss` GitHub release therefore attaches `neutrodyne-{version}-foss-corresponding-source.tar.gz`: `git archive` of the tag plus `third_party/` with the `-sources` artifacts of NewPipe Extractor and nanojson (JitPack) and Rhino (Maven Central), and `third_party/DEPENDENCIES.txt` listing every artifact of `fossReleaseRuntimeClasspath` with version, licence and source URL (generated by the same task). The release notes carry the line "Corresponding source: {asset name}". `release.yml` builds it (09). Unverified (PO to confirm with counsel): that this satisfies §6 for GitHub, IzzyOnDroid and Obtainium users; F-Droid publishes source itself.
+GPLv3 §6(d) allows the Corresponding Source to sit on a different server "provided you maintain clear directions next to the object code", but "you remain obligated to ensure that it is available for as long as needed". Each `foss` GitHub release therefore attaches `neutrodyne-{version}-foss-corresponding-source.tar.gz`: `git archive` of the tag plus `third_party/` with the `-sources` artifacts of NewPipe Extractor and nanojson (JitPack) and Rhino (Maven Central), filled by the Gradle `Copy` task `:youtube:streams:collectGplSources`, and `third_party/DEPENDENCIES.txt` listing every artifact of `fossReleaseRuntimeClasspath` with version, licence and source URL (generated by the same task; wrapper script `scripts/release/corresponding-source.sh`, [09 release.yml](09-quality-and-release.md#releaseyml)). The release notes carry the line "Corresponding source: {asset name}". `release.yml` builds it (09). Unverified (PO to confirm with counsel, [PO-22](../PLAN.md#48-further-product-owner-decisions)): that this satisfies §6 for GitHub, IzzyOnDroid and Obtainium users; F-Droid publishes source itself.
 
 ### F-Droid and IzzyOnDroid
 
@@ -1048,7 +1048,7 @@ N11's clock is **tag → signed GitHub release < 30 min**; the whole path from a
 | 0 | Renovate PR appears (or a maintainer runs `bump-extractor.sh` by hand) |
 | 0–15 | PR CI (`static`, `unit` incl. recorded-response tests, `assemble`); a failing recorded-response test means requests changed → re-record (below). Device check in parallel |
 | 15–27 | Merge; dispatch `nightly.yml` with `scope: youtube-smoke` on `main` (minified `fossRelease` smoke, ≈ 12 min) |
-| 27–30 | `scripts/release.sh patch --hotfix` (requires the green `youtube-smoke` run) bumps `versionName`/`versionCode` and tags `vX.Y.Z` |
+| 27–30 | `scripts/release.sh patch --hotfix` (requires the green `youtube-smoke` run) bumps `versionName`/`versionCode` and tags `vX.Y.Z`. While `main` carries a pre-release of the next minor, the fix is cherry-picked onto `release/X.Y` (created from the latest stable tag on first need), `youtube-smoke` is dispatched there and `release.sh patch --hotfix` runs on that branch ([09 scripts/release.sh](09-quality-and-release.md#scriptsreleasesh)) |
 | 30–60 | `release.yml` (N11: < 30 min) builds, signs and publishes APK, `SHA256SUMS`, mapping, corresponding-source bundle and notes; Obtainium users update immediately |
 | later | IzzyOnDroid picks up the GitHub release; F-Droid builds the tag (typically days; Unverified exact lag); reproducible builds let F-Droid users update from GitHub with the same signature |
 
@@ -1131,22 +1131,22 @@ Fixtures: `feeds/src/test/resources/corpus/youtube/` (`uulf_mkbhd.xml`, `channel
 
 ## Open questions
 
-1. **Architect review:** the window-aware `inFeed` rule means YouTube videos that merely scroll out of the 15-entry window are never retention-deleted ([D23](../PLAN.md#3-key-decisions)). A news channel at 20 uploads a day adds ~7,000 rows a year. Options: accept (rows are small; description is compressed), or extend D23 with "YouTube episodes older than 365 days that are unprotected". Proposed: accept for v1, measure in M11 with `SeedDatabase(youtubeChannels = 30)`.
-2. **Architect review:** `YouTubeAvailabilityRecorder` (and "Check again") writes `episode.availability` from playback and downloads, outside the refresh pipeline. 02 records it as an exception to [D15](../PLAN.md#3-key-decisions) next to restore stubs and retention; D15 itself should name it.
-3. **Architect review:** the canonical cache key `yt:{videoId}:{itag}` is ambiguous because YouTube reuses one itag for DRC and dubbed variants. This document keeps the canonical form for single-track non-DRC formats and appends `-drc` / `~{audioTrackId}` otherwise ([Modules and public API](#modules-and-public-api)); PLAN 5.2 and 06 should say `yt:{videoId}:{formatId}`. 06's `Pin.YouTube.itag` and `removeResource("yt:$videoId:$oldItag")` must use `formatId`.
-4. **Architect review:** 03's internal `SourceAdapter` contract needs three additions (`Parsed.absenceFloor`, `Deferred`, `afterIngest` returning the IDs to announce and running before the emit, also after `Unchanged`); see [Contract with 03's engine](#contract-with-03s-engine). Without `absenceFloor`, 03's `min(sortDate)` rule wrongly flips scrolled-out Shorts when `UULF` and `UUSH` are both polled; without `Deferred`, an outage would add a failure to every channel.
-5. Owner 02: add `PodcastDao.youtubeChannelIds()` (`SELECT id FROM podcast WHERE sourceType = 'YOUTUBE_CHANNEL'`).
-6. Owner 07: store the YouTube `lmt` in `download.lastModified` and include it in the `.part` resume invariant; delete (not fail) `AUTO` rows whose resolve says `UPCOMING`/`LIVE`.
-7. Owner 03: `SubscribeUseCase.youTube` writes `channelMetadataAt` (now when the resolution carried an avatar) and uses `resolved.title ?: channelId` as the provisional title; 03's 404 row ("YouTube: never possibly dead") must follow [Fetch policy](#fetch-policy): never `gone`, but the derived badge appears after 7 days without success, with YouTube wording (08).
+1. Resolved by the [D23](../PLAN.md#3-key-decisions) amendment: accepted for v1; growth is measured in M11 with `SeedDatabase(youtubeChannels = 30)`.
+2. Resolved: [D15](../PLAN.md#3-key-decisions) names `YouTubeAvailabilityRecorder` as an exception.
+3. Resolved: [D52](../PLAN.md#3-key-decisions) and PLAN 5.2 use `yt:{videoId}:{formatId}`; 06 keys and removes cache resources by `formatId`.
+4. Resolved: 03 adopted `Parsed.absenceFloor`, `Deferred` and `afterIngest` ([03 Source adapters](03-feeds-and-discovery.md#source-adapters)).
+5. Resolved: 02 defines `PodcastDao.youtubeChannelIds()` ([02 Ingestion support](02-data-model.md#ingestion-support)).
+6. Resolved in 07 ([07 YouTube transfers](07-downloads.md#youtube-transfers)): `lmt` is stored in `download.lastModified` and part of the resume invariant; `AUTO` rows whose resolve says `UPCOMING`/`LIVE` are deleted, not failed.
+7. Resolved in 03: `SubscribeUseCase.youTube` writes `channelMetadataAt` and the provisional title; YouTube 404s are never `gone` and the derived badge follows [Fetch policy](#fetch-policy).
 8. Unverified: whether premieres appear in `UULF` before air time, whether members-only uploads appear in `UULF`, and whether `UULF`/`UUSH`/`UULV` return 404 or an empty feed for channels without such content. A daily `UUMO` poll to flag members-only items is deferred.
 9. Unverified: that premieres report `LIVE_STREAM_OFFLINE` through v0.26.5's ANDROID player (M9 recorded fixture); the channel-tab item fields (`getDuration()`, `getContentAvailability()`) on current YouTube responses.
 10. Unverified: the `views == 0` Atom signal as an "upcoming" heuristic for `play`. Not used in v1 because a false positive hides real new videos until the next refresh; revisit with recorded feeds of scheduled premieres.
 11. Unverified: googlevideo throttling of plain `Range` requests (NewPipe's `range`/`rn` query parameters) and the IPv4/IPv6 mismatch hypothesis; both are checked by the M9 device checklist with defined fallbacks.
 12. Unverified: the byte size of a channel page's `<head>`; decides the metered-network rule for imported channels' avatars (M8 measurement).
-13. PO (with counsel): is the corresponding-source bundle on GitHub releases sufficient for GPLv3 §6 across GitHub, IzzyOnDroid and Obtainium distribution?
-14. PO (P1): accept Layer A's channel-page read in `play` given YouTube's "automated means" clause, or ship `play` with ID-only inputs ([Posture and emergency build](#posture-and-emergency-build))?
-15. PO-9 follow-up: in `play`, premieres, live streams and members-only uploads cannot be held back (no flags), so R3.2's "premieres appear only once playable" and "no members-only" are `foss`-only. Accept, or add the Data API later (D51 says no for v1).
-16. PO: should a per-channel audio-quality override exist? v1 has the global setting only ([D20](../PLAN.md#3-key-decisions) allows a `podcast_settings` column later).
+13. Moved to [PO-22](../PLAN.md#48-further-product-owner-decisions) (default: the source bundle suffices, confirmed with counsel before the first M9 release).
+14. Moved to [PO-23](../PLAN.md#48-further-product-owner-decisions) (default: accept the channel-page read; the ID-only variant stays the emergency build).
+15. Resolved: PLAN [PO-2](../PLAN.md#po-2-distribution-channels-and-youtube-per-flavor) now states that `play` delivers R3.2 without holding back premieres, live streams and members-only uploads.
+16. Moved to [PO-24](../PLAN.md#48-further-product-owner-decisions) (default: global setting only in v1).
 
 ---
 
