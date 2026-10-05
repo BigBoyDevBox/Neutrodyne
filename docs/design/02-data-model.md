@@ -71,6 +71,7 @@ Exception to [D15](../PLAN.md#3-key-decisions) "episode is written only by inges
 | `play_session.contextMediaFilter`, `contextMinSortDate`, `contextAnchorSortDate` | columns | Full context filter set; keyset anchor that survives deletion of the anchor row | 05, 06 |
 | `download.requireCharging` | column `Boolean` | Per-row charging requirement (AUTO policy) for the claim query | 07 |
 | `import_session.finishedAt` | column `Long?` | Start of the 7-day cleanup window | 05 |
+| `EpisodeKeys.candidates(item)`, `EpisodeKeys.keyFor(episode, version)`, `EpisodeKeys.versionOf(key)` | required members of the canonical `EpisodeKeys` (`:feeds`, implemented by 03) | Version-tolerant matching ([Key versions](#key-versions)) | 03, 05 |
 | `ScopeOverrides` | `@Embedded` class, `:core:database` | Guarantees identical columns in both settings tables | 05 |
 | `NeutrodyneConverters`, `EpisodeDescriptionCodec`, `DatabaseOpener`, `OpenResult`, `RecoveryCause`, `ForeignKeysDriver` (only if spike S2 needs it) | classes, `:core:database` | Converters, show-notes storage, open/recovery | 01, 03, 05 |
 | `EpisodeRowProjection`, `ContextItem`, `MediaLookupRow`, `ExistingEpisodeKey`, `EpisodeFeedUpdate`, `PodcastFeedMetadata`, `PodcastFetchState`, `QueryPlanRow` | DAO projections, `:core:database` | Query results and partial-entity updates | 03, 06, 07 |
@@ -92,7 +93,7 @@ Serves N1, N9, N11. Delivered in M1.
 | Columns | `camelCase` = Kotlin property name (Room default); never `@ColumnInfo(name = …)` renames |
 | Entity classes | `<PascalCaseTable>Entity` (`PodcastGroupMemberEntity`) |
 | Indices | Room default names `index_<table>_<col>[_<col>]` (EXPLAIN tests refer to them) |
-| Primary keys | `Long` `autoGenerate = true` (SQLite `AUTOINCREMENT`: deleted IDs are never reused, which keeps `episode:{id}` media IDs, notifications and `[e<id>]` file names unambiguous); natural keys where canonical (`artwork.key`, `podcast_url_alias.url`) |
+| Primary keys | `Long` `autoGenerate = true` (SQLite `AUTOINCREMENT`: deleted IDs are never reused, which keeps `episode:{id}` media IDs, notifications and `[e<id>]` file names unambiguous; verify `AUTOINCREMENT` in `1.json`); natural keys where canonical (`artwork.key`, `podcast_url_alias.url`) |
 | Timestamps | `Long` epoch milliseconds UTC from the injected `Clock` (never `System.currentTimeMillis()` in DAOs) |
 | Booleans | Kotlin `Boolean` → `INTEGER` 0/1 |
 | Enums | `TEXT` holding `Enum.name` via explicit converters ([Type converters](#type-converters)) |
@@ -206,7 +207,7 @@ abstract class NeutrodyneDatabase : RoomDatabase() {
 
 ### SQL dialect baseline
 
-All SQL must run on **SQLite 3.18** (framework SQLite on API 26), even though production uses the bundled driver. Reasons: the `AndroidSQLiteDriver` fallback (stack pitfall: APK size or 16 KB alignment of `sqlite-bundled`), and Robolectric tests run on the framework driver.
+All SQL must run on **SQLite 3.18** (framework SQLite on API 26), even though production uses the bundled driver. Reasons: production must be able to fall back to `AndroidSQLiteDriver` if spike S4 finds the APK-size or 16 KB-alignment cost of `sqlite-bundled` unacceptable, and JVM/Robolectric tests run on the framework driver.
 
 | Allowed | Forbidden |
 |---|---|
@@ -244,7 +245,7 @@ AI sessions tend to emit Room 2 code (risk [T1](../PLAN.md#8-risks-and-mitigatio
 | Constraint | Consequence | Source |
 |---|---|---|
 | `sqlite-bundled` ships native `.so` per ABI | 16 KB page alignment checked in CI (09); APK size budget includes it | [16 KB page sizes](https://developer.android.com/guide/practices/page-sizes), [SQLite drivers](https://developer.android.com/kotlin/multiplatform/sqlite) |
-| The bundled driver does not load under Robolectric (host JVM has no Android `.so`) | JVM tests inject `AndroidSQLiteDriver`; the bundled driver is exercised by instrumented tests | quality research pitfall 1 (spike S3) |
+| The Android `sqlite-bundled` artifact ships `.so` files for Android ABIs only, so it is not expected to load under Robolectric on the host JVM (Unverified until spike S3) | JVM tests inject `AndroidSQLiteDriver`; the bundled driver is exercised by instrumented tests | [SQLite drivers](https://developer.android.com/kotlin/multiplatform/sqlite) |
 | Auto Backup never includes `databases/` (include-only rules, [D34](../PLAN.md#3-key-decisions)) | A reinstall or new phone starts with an empty DB; `onCreate` triggers the snapshot restore of [05 Auto Backup](05-groups-opml-backup.md#auto-backup) | [Auto Backup](https://developer.android.com/identity/data/autobackup) |
 | `hasFragileUserData = true` (07) | A "keep app data" uninstall leaves the DB; a later install may open **any** released schema version, so every released version must keep a migration path | [07 Lifecycle and reconciliation](07-downloads.md#lifecycle-and-reconciliation) |
 | DB lives in credential-encrypted storage | No component touches it before first unlock; nothing is direct-boot aware | — |
@@ -510,7 +511,7 @@ object EpisodeDescriptionCodec {             // the only way to read or write `h
 }
 ```
 
-The column holds raw HTML from the feed (or plain text for YouTube and Atom); sanitising happens at display time ([D27](../PLAN.md#3-key-decisions), [03 Show notes](03-feeds-and-discovery.md#show-notes)). Compression halves to thirds the dominant table (see [Expected size](#expected-size)); encoding runs on `Default` before the ingest transaction.
+The column holds raw HTML from the feed (or plain text for YouTube and Atom); sanitising happens at display time ([D27](../PLAN.md#3-key-decisions), [03 Show notes](03-feeds-and-discovery.md#show-notes)). Compression shrinks the largest table to roughly a third (see [Expected size](#expected-size)); encoding runs on `Default` before the ingest transaction.
 
 ### episode_transcript
 
@@ -747,7 +748,7 @@ Stored as `TEXT` in `episode.identityKey`, unique per podcast. Grammar: `key := 
 |---|---|---|
 | `g` | `guid.trim()`, verbatim, case-sensitive | `g:yt:video:3iRUwVzRDZQ`, `g:https://example.com/?p=123` |
 | `u` | `UrlNormalizer.forIdentity(primaryEnclosureUrl)` | `u:` + normalised URL |
-| `t` | lowercase hex SHA-1 of `title.trim().lowercase(Locale.ROOT) + "|" + pubDate.truncatedTo(DAYS).toString()` | `t:3f2a…` (40 hex) |
+| `t` | lowercase hex SHA-1 of `title.trim().lowercase(Locale.ROOT)`, then `"\|"`, then `pubDate.truncatedTo(DAYS).toString()`, concatenated | `t:3f2a…` (40 hex) |
 | `l` | lowercase hex SHA-1 of `link.trim()` | `l:9c1b…` |
 | `h` | lowercase hex SHA-1 of `title.orEmpty() + description.orEmpty().take(500)` | `h:07de…` |
 
@@ -1069,25 +1070,26 @@ Column-scoped statements ([DAO rules](#dao-rules)); semantics owned by 06 (playe
     /** Only for explicit reset and mark-played (06). */
     @Query("UPDATE episode_position SET positionMs = 0, updatedAt = :now WHERE episodeId = :id")
     suspend fun reset(id: Long, now: Long)
-
-    @Transaction suspend fun save(id: Long, pos: Long, dur: Long?, src: PositionSource, now: Long, stateDao: EpisodeStateDao) {
-        insertIfAbsent(id, pos, dur, src, now); updateGuarded(id, pos, dur, src, now)
-        if (pos > 0) { stateDao.ensure(id, now); stateDao.markStarted(id, now) }   // no-op after the first time
-    }
 }
+// 06 PositionTracker saves in one write transaction per event:
+// db.withWriteTransaction { insertIfAbsent(…); updateGuarded(…); if (pos > 0) { state.ensure(id, now); state.markStarted(id, now) } }
 
 @Dao interface EpisodeStateDao {
     @Query("INSERT OR IGNORE INTO episode_state(episodeId, playCount, isFavorite, updatedAt) VALUES (:id, 0, 0, :now)")
     suspend fun ensure(id: Long, now: Long)
-    @Query("UPDATE episode_state SET startedAt = :now, lastPlayedAt = :now, updatedAt = :now " +
+    @Query("UPDATE episode_state SET startedAt = :now, updatedAt = :now " +
            "WHERE episodeId = :id AND startedAt IS NULL AND playedAt IS NULL")
-    suspend fun markStarted(id: Long, now: Long): Int
+    suspend fun markStarted(id: Long, now: Long): Int                 // matches 0 rows after the first time
     @Query("UPDATE episode_state SET playedAt = :now, playCount = playCount + 1, startedAt = NULL, updatedAt = :now " +
            "WHERE episodeId IN (:ids) AND playedAt IS NULL")
-    suspend fun markPlayed(ids: List<Long>, now: Long): Int           // after ensure(); ids chunked at 500
+    suspend fun markPlayed(ids: List<Long>, now: Long): Int           // after ensureAll(ids); ids chunked at 500
+    @Query("INSERT OR IGNORE INTO episode_state(episodeId, playCount, isFavorite, updatedAt) " +
+           "SELECT id, 0, 0, :now FROM episode WHERE id IN (:ids)")
+    suspend fun ensureAll(ids: List<Long>, now: Long)
     @Query("UPDATE episode_state SET playedAt = NULL, updatedAt = :now WHERE episodeId IN (:ids)")
     suspend fun markUnplayed(ids: List<Long>, now: Long): Int
-    // setFavorite(id, fav, now), setDismissed(id, at, now), clearDismissed(id, now), setMeasuredDuration(id, ms)
+    // touchLastPlayed(id, now) once per play start; setFavorite(id, fav, now); setDismissed(id, at, now);
+    // clearDismissed(id, now); setMeasuredDuration(id, ms)
 }
 ```
 
@@ -1229,7 +1231,7 @@ DELETE FROM podcast WHERE id = :pid;
 -- SET NULL: play_session.currentEpisodeId, import_item.podcastId
 ```
 
-Merging a podcast `loser` into `winner` (03 decides when; 05 import reports `MERGED`) is one write transaction: `INSERT OR IGNORE INTO podcast_group_member SELECT groupId, :winner, sortOrder, addedAt, source FROM podcast_group_member WHERE podcastId = :loser`; `UPDATE OR IGNORE podcast_url_alias SET podcastId = :winner WHERE podcastId = :loser`; insert the loser's `feedKey` as alias (`MERGE`); copy loser settings into empty winner settings; move user state of episodes whose `identityKey` exists in both podcasts (state, position, queue entries, download rows: winner keeps its own if present); `UPDATE import_item SET podcastId = :winner WHERE podcastId = :loser`; then `deleteCascade(loser)`.
+Merging a podcast `loser` into `winner` (03 decides when; 05 import reports `MERGED`) is one write transaction: `INSERT OR IGNORE INTO podcast_group_member SELECT groupId, :winner, sortOrder, addedAt, source FROM podcast_group_member WHERE podcastId = :loser`; `UPDATE podcast_url_alias SET podcastId = :winner WHERE podcastId = :loser`; insert the loser's `feedKey` as alias (`MERGE`); copy loser settings into empty winner settings; move user state of episodes whose `identityKey` exists in both podcasts (state, position, queue entries, download rows: winner keeps its own if present); `UPDATE import_item SET podcastId = :winner WHERE podcastId = :loser`; then `deleteCascade(loser)`.
 
 ### Import commit
 
@@ -1266,7 +1268,7 @@ ORDER BY e.id
 LIMIT 1000
 ```
 
-The `kv` of each line is `EpisodeKeys.versionOf(identityKey)`. The size-guard degradation of the Auto Backup snapshot (05) adds `AND NOT (s.playedAt < :cutoff AND pos.positionMs IS NULL …)` style filters; the guard's rules are 05's.
+The `kv` of each line is `EpisodeKeys.versionOf(identityKey)`. When the Auto Backup snapshot exceeds its size guard, 05 drops or slims lines in Kotlin before writing them; the query itself does not change.
 
 ### Restore matching
 
@@ -1421,11 +1423,11 @@ Selecting and deleting in the same write transaction closes the race with a user
 |---|---|---|
 | 1 | Retention batches until none left or deadline | daily |
 | 2 | Orphan sweep: `DELETE FROM person WHERE (ownerType = 'EPISODE' AND ownerId NOT IN (SELECT id FROM episode)) OR (ownerType = 'PODCAST' AND ownerId NOT IN (SELECT id FROM podcast))`; same for `funding` | daily |
-| 3 | Import cleanup: sessions in `DONE`/`CANCELLED` with `COALESCE(finishedAt, createdAt)` older than 7 days and `PREVIEW` sessions older than 7 days; delete `cacheDir/{payloadPath}` then the row (items cascade) | daily |
+| 3 | Import-session cleanup (rule owned by 05): `SELECT id, payloadPath FROM import_session WHERE state IN ('DONE','CANCELLED','PREVIEW') AND COALESCE(finishedAt, createdAt) < :now - 7 d`; delete `cacheDir/{payloadPath}`, then the row (items cascade). 05 does not run a second cleanup | daily |
 | 4 | Ask `ArtworkStore` (08) to collect garbage using [Artwork references](#artwork-references) | daily |
 | 5 | `PRAGMA optimize` | daily |
-| 6 | `PRAGMA quick_check`; on a result other than `ok`, write `diagnostics.db_quick_check_failed_at` and log (redacted) | weekly |
-| 7 | `VACUUM` when `freelist_count / page_count > 0.25` and freelist > 8 MB, free space > 2 × DB size + 100 MB, and no playback in the last 10 min (`play_session.updatedAt` and `MAX(episode_position.updatedAt)` older than 10 min) | at most monthly |
+| 6 | `PRAGMA quick_check` if at least 2 min remain before the deadline; on a result other than `ok`, write `diagnostics.db_quick_check_failed_at` and log (redacted) | daily |
+| 7 | `VACUUM` when `freelist_count / page_count > 0.25` and freelist > 8 MB, free space > 2 × DB size + 100 MB, and no playback in the last 10 min (`play_session.updatedAt` and `MAX(episode_position.updatedAt)` older than 10 min). After a vacuum the freelist is empty, so it does not repeat until the threshold is reached again | when thresholds are met |
 | 8 | Record row counts, `page_count × page_size` and step durations for the diagnostics screen (09) | daily |
 
 `VACUUM INTO '<cacheDir>/diag.db'` (SQLite ≥ 3.27, bundled driver only) produces the diagnostics DB export of [D33](../PLAN.md#3-key-decisions); it is never importable ([SQLite VACUUM](https://www.sqlite.org/lang_vacuum.html)).
@@ -1519,7 +1521,9 @@ enum class RecoveryCause { CORRUPT, MIGRATION_FAILED, DOWNGRADE }
 flowchart TD
   A["awaitOpen() on IO, main process only"] --> B{"quarantine marker present?"}
   B -->|yes| Q["move neutrodyne.db, -wal, -shm to databases/quarantine/ts/"]
-  B -->|no| C["raw driver preflight: PRAGMA user_version"]
+  B -->|no| K{"neutrodyne.db exists?"}
+  K -->|no| D
+  K -->|yes| C["raw driver preflight: PRAGMA user_version"]
   C -->|"NOTADB or CORRUPT"| Q
   C -->|"version above VERSION"| Q
   C -->|ok| D["build Room, force open with a trivial read"]

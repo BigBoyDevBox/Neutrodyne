@@ -1,0 +1,1404 @@
+# 03 — Feeds and discovery
+
+> Status: Draft v1, 2026-10-04 · Implements: R1.3 (fetch side), R1.9 (feed-URL secrecy), R2.6 (refresh a group), R2.7 (refresh interval, new-episode notifications), R3.1 (add-flow hand-off), R3.3 (refresh-engine side), R5.2 (artwork selection) / N1, N2, N3, N6, N9 · Milestones: M1, M2, M3, M4, M7, M8, M9, M11 · Honours: D1, D10, D11, D15, D18, D19, D24, D25, D26, D27, D28, D36, D45, D66 · Owns: `:feeds` feed formats, feed fetching and HTTP policy, ingestion diff, feed moves, aliases, Basic auth and `CredentialStore`, RFC 5005 paging, refresh engine and scheduling, show-notes sanitising, add-podcast pipeline and autodiscovery, directory search and charts, subscribe intents, `IngestionEvents` and new-episode notifications
+
+Contents: [Scope](#scope) · [Parser](#parser) · [Fetch pipeline](#fetch-pipeline) · [Ingestion and diff](#ingestion-and-diff) · [Feed moves, auth and paging](#feed-moves-auth-and-paging) · [Refresh scheduling](#refresh-scheduling) · [Show notes](#show-notes) · [Add podcast flow](#add-podcast-flow) · [Search and discovery](#search-and-discovery) · [Deep links and share targets](#deep-links-and-share-targets) · [New-episode notifications](#new-episode-notifications) · [Settings](#settings) · [Testing](#testing) · [Delivery by milestone](#delivery-by-milestone) · [New names introduced here](#new-names-introduced-here) · [Open questions](#open-questions) · [Sources](#sources)
+
+---
+
+## Scope
+
+Serves R1.3, R2.6, R2.7, R3.1, R3.3, N1, N2, N3, N6, N9. The phone polls every feed itself; there is no Neutrodyne server ([D1](../PLAN.md#3-key-decisions)). This document is what an engineer implements the `:feeds` module, the refresh engine in `:core:data`, the add-podcast pipeline and directory search from.
+
+| Owned here | Not here (link instead) |
+|---|---|
+| `:feeds` feed-format API: `FeedParser`, namespaces, field mapping, dates, durations, enclosure types, artwork candidates, `EpisodeKeys`, `UrlNormalizer`, `PodcastGuid`, `PrivateFeedUrls`, `ShowNotesSanitizer`, `Autodiscovery`, `AddInputNormalizer`, directory-response parsers | Entities, column types, all SQL — [02 Tables](02-data-model.md#tables), [02 Key queries](02-data-model.md#key-queries) (this document lists only the columns it writes) |
+| `FeedFetcher`, the feed response-code policy, `FeedErrorKind` values | Shared `OkHttpClient`, `AuthInterceptor`, `LocalNetworkGuardDns`, `NetError` — [01 Networking baseline](01-foundation.md#networking-baseline) |
+| Ingestion diff and identity-key *computation*, `sortDate`, `isNew`, `inFeed` | Identity-key storage and versioning — [02 Identity keys](02-data-model.md#identity-keys) |
+| Feed moves, aliases, merge decisions, Basic auth, `CredentialStore`, private-URL heuristic, RFC 5005 paging, `podcast:guid` derivation | OPML, import pipeline, backup — [05](05-groups-opml-backup.md) |
+| Refresh engine (`FeedRefresher`), `RefreshWorker`, `RefreshScheduler`, `RefreshController` | YouTube Atom variants, entry rules, outage threshold, enrichment — [04 Atom feed ingestion](04-youtube.md#atom-feed-ingestion), plugged into this engine through `YouTubeSourceAdapter` |
+| Show-notes sanitising, `ShowNotesDocument` block model, snippets, timestamp grammar | Rendering — [08 Components](08-ui-ux.md#components); seeking — [06 Chapters](06-playback.md#chapters) |
+| Add-podcast pipeline, in-memory preview, `SubscribeUseCase`, unsubscribe | YouTube channel resolution — [04 Channel resolution](04-youtube.md#channel-resolution); screens — [08 Screens](08-ui-ux.md#screens) |
+| Directory providers, charts, genre mapping, Podcast Index BYOK storage | Discover and Directory screens — [08 Screens](08-ui-ux.md#screens) |
+| VIEW/SEND intent filters of `MainActivity`, input unwrapping | Routing mechanics — [01 Intent routing](01-foundation.md#intent-routing); file intents — [05 Receiving files](05-groups-opml-backup.md#receiving-files) |
+| `IngestionEvents`, `NewEpisodeNotifier` (posting, channel choice, permission rule) | Channel create/rename/delete with groups — [05 Group model and lifecycle](05-groups-opml-backup.md#group-model-and-lifecycle); resolution rules — [05 Effective settings resolution](05-groups-opml-backup.md#effective-settings-resolution) |
+| PSC chapter rows, chapter and transcript references at ingest | Chapter fetching and source priority — [06 Chapters](06-playback.md#chapters) |
+
+```mermaid
+flowchart LR
+  subgraph FEEDS[":feeds (pure JVM)"]
+    FP["FeedParser"]
+    KEYS["EpisodeKeys, UrlNormalizer, PodcastGuid"]
+    SNS["ShowNotesSanitizer"]
+    DISC["AddInputNormalizer, Autodiscovery"]
+    DIRP["directory parsers"]
+  end
+  subgraph DATA[":core:data"]
+    RW["RefreshWorker, RefreshScheduler"]
+    FR["FeedRefresher"]
+    SA["RssSourceAdapter, YouTubeSourceAdapter"]
+    FF["FeedFetcher"]
+    FI["FeedIngestor"]
+    CS["CredentialStore"]
+    APR["AddPodcastResolverImpl, PreviewCache"]
+    SUB["SubscribeUseCaseImpl"]
+    SR["SearchRepositoryImpl"]
+    NN["NewEpisodeNotifier"]
+    BUS["IngestionEventBus"]
+  end
+  RW --> FR --> SA --> FF
+  SA --> FP
+  FR --> FI --> KEYS
+  FI --> BUS
+  FR --> NN
+  APR --> FF
+  APR --> DISC
+  SUB --> FI
+  SR --> DIRP
+  FF -.->|"Basic auth via CredentialLookup"| CS
+  BUS --> AD["AutoDownloadPlanner (07)"]
+  IMP["ImportFetchWorker (05)"] --> FR
+```
+
+| Module | Contents from this document |
+|---|---|
+| `:feeds` (JVM) | The packages in [Package layout](#package-layout) |
+| `:core:model` | `FeedErrorKind`, `RefreshScope`, `RefreshStatus`, `FeedPreview`, `PreviewEpisode`, `FeedCandidate`, `AlreadySubscribed`, `BasicCredentials`, `DirectoryHit`, `ProviderId`, `ProviderStatus`, `SearchResults`, `ChartGenre`, `ShowNotes` (mirror of `ShowNotesDocument`), `ShowNotesImages`, `LibraryTile`, `CategoryCount` |
+| `:core:domain` | `PodcastRepository`, `EpisodeRepository`, `RefreshController`, `AddPodcastResolver`, `AddResolution`, `AddPodcastError`, `SubscribeUseCase`, `SubscribeError`, `SearchRepository`, `IngestionEvents` |
+| `:core:data` | Implementations, plus `FeedFetcher`, `FeedTempFiles`, `FeedIngestor`, `FeedRefresher`, `SourceAdapter`s, `RefreshWorker`, `RefreshScheduler`, `CredentialStore`, `PreviewCache`, search providers, `NewEpisodeNotifier`, `IngestionEventBus`, `RefreshForegroundObserver`, `YouTubeOutageMonitor` (M8) |
+| `:feature:discover` | Add-podcast sheet, Discover, Directory screens (visuals: 08) |
+| `:app` | `MainActivity` intent filters ([Deep links and share targets](#deep-links-and-share-targets)) |
+
+---
+
+## Parser
+
+Serves N9, R5.2. Delivered in M1 ([D11](../PLAN.md#3-key-decisions)); Atom entries with `yt:` fields mapped generically from M1, interpreted by 04 from M8.
+
+A hand-written streaming `XmlPullParser` maps RSS 2.0, Atom, RSS 1.0/RDF, iTunes, Podcasting 2.0, Media RSS and Podlove Simple Chapters onto one normalised model. prof18 RSS-Parser (Apache-2.0, 6.1.8) was rejected: no Podcasting 2.0 namespace, one enclosure per item, dates as strings, no paging links, literal-prefix tag matching ([RSS-Parser source](https://raw.githubusercontent.com/prof18/RSS-Parser/master/rssparser/src/commonMain/kotlin/com/prof18/rssparser/internal/RssKeyword.kt)). AntennaPod's parser is GPL-3.0: its behaviour may be studied, its code never copied ([N8](../PLAN.md#22-non-functional-requirements), risk L4).
+
+### Package layout
+
+```
+feeds/src/main/kotlin/app/neutrodyne/feeds/
+  model/      ParsedFeed, ParsedEpisode, Enclosure, AlternateEnclosure, ArtworkCandidate, Person, Funding,
+              TranscriptRef, InlineChapter, Paging, ParseWarning, WarningCode, FeedFormat
+  parse/      FeedParser, PullParserFactory, ParseLimits, Namespaces, HtmlEntities, InnerXml, PrologGuard,
+              FeedDates, Durations, EnclosureTypes, FeedSniffer
+  identity/   EpisodeKeys, KeyInput, EpisodeContentHash, TitleMatch, UrlNormalizer, PodcastGuid, PrivateFeedUrls
+  html/       ShowNotesSanitizer, ShowNotesDocument (NoteBlock, NoteSpan), PlainTextSnippet, TimestampLinkifier
+  discovery/  AddInputNormalizer, NormalizedInput, HostRecognizer, Autodiscovery, DiscoveredFeed
+  directory/  AppleSearchParser, AppleChartParser, FyydSearchParser, PodcastIndexParser, AppleGenres
+  opml/, backup/ (05) · youtube/ formats (04)
+```
+
+`:feeds` has no project dependencies, no Android and no I/O beyond reading the streams it is handed ([01 Dependency rules](01-foundation.md#dependency-rules)). kxml2 2.3.0 is `compileOnly` + `testImplementation` because `org.xmlpull.v1` is in `android.jar` ([kxml2 POM](https://repo1.maven.org/maven2/net/sf/kxml/kxml2/2.3.0/kxml2-2.3.0.pom)).
+
+```kotlin
+// :feeds — app.neutrodyne.feeds.parse
+fun interface PullParserFactory { fun create(): XmlPullParser }
+// device (bound in :core:data): PullParserFactory { android.util.Xml.newPullParser() }  — AOSP KXmlParser
+// JVM tests:                     PullParserFactory { org.kxml2.io.KXmlParser() }
+
+class FeedParser(private val factory: PullParserFactory, private val limits: ParseLimits = ParseLimits()) {
+    /** Pure: reads only through [open] (called a second time for a charset re-parse); never throws for
+     *  malformed input. [baseUrl] resolves relative URLs (xml:base and atom links win when present). */
+    fun parse(open: () -> InputStream, httpCharset: String?, baseUrl: String): ParseResult
+    companion object { const val VERSION = 1 }
+}
+sealed interface ParseResult {
+    data class Ok(val feed: ParsedFeed) : ParseResult
+    data class Failed(val reason: ParseFailure, val detail: String) : ParseResult
+}
+enum class ParseFailure { NOT_A_FEED, HOSTILE, MALFORMED, TOO_DEEP }
+data class ParseLimits(val maxDepth: Int = 64, val maxItems: Int = 10_000, val maxTextChars: Int = 512 * 1024,
+                       val maxUrlChars: Int = 4_096, val prologScanBytes: Int = 64 * 1024)
+```
+
+```kotlin
+// :feeds — app.neutrodyne.feeds.model (immutable, @Serializable for golden tests)
+data class ParsedFeed(
+    val format: FeedFormat,                              // RSS2, ATOM, RDF
+    val title: String?, val author: String?, val descriptionHtml: String?, val link: String?,
+    val language: String?, val categories: List<List<String>>, val explicit: Boolean?,
+    val showType: String?, val complete: Boolean, val newFeedUrl: String?, val podcastGuid: String?,
+    val locked: Boolean?, val medium: String?, val artwork: List<ArtworkCandidate>, val bannerUrl: String?,
+    val funding: List<Funding>, val persons: List<Person>, val updateFrequencyRrule: String?, val ttlMinutes: Int?,
+    val paging: Paging, val hubUrl: String?, val usesPodping: Boolean,
+    val ytChannelId: String?,                            // raw feed-level yt:channelId; interpreted by 04
+    val items: List<ParsedEpisode>,                      // document order
+    val warnings: List<ParseWarning>,
+)
+data class ParsedEpisode(
+    val feedOrder: Int, val guid: String?, val title: String?, val pubDate: Long?, val rawPubDate: String?,
+    val descriptionHtml: String?, val descriptionIsHtml: Boolean, val link: String?,
+    val enclosures: List<Enclosure>, val primaryEnclosure: Enclosure?, val alternateEnclosures: List<AlternateEnclosure>,
+    val durationMs: Long?, val season: Int?, val seasonName: String?, val episodeNumber: String?,
+    val episodeDisplay: String?, val episodeType: String?, val explicit: Boolean?, val artwork: List<ArtworkCandidate>,
+    val chaptersUrl: String?, val chaptersType: String?, val inlineChapters: List<InlineChapter>,
+    val transcripts: List<TranscriptRef>, val persons: List<Person>?, val funding: List<Funding>,
+    val externalMediaId: String?,                        // yt:videoId
+)
+data class Enclosure(val url: String, val type: String?, val length: Long?, val effectiveType: String?)
+data class Paging(val next: String?, val prevArchive: String?, val first: String?, val fhComplete: Boolean, val fhArchive: Boolean)
+data class ParseWarning(val code: WarningCode, val itemIndex: Int?, val detail: String)
+```
+
+`showType` and `episodeType` stay lowercase strings in `:feeds` (it cannot see `:core:model`); `:core:data` maps them to `ShowType`/`EpisodeType` (02) and drops unknown values.
+
+### Parser setup and charset
+
+1. **Prolog guard** (`PrologGuard`, before any parser): scan the first 64 KiB up to the first element start tag; if it contains `<!ENTITY` (case-insensitive) return `Failed(HOSTILE)`. `FEATURE_PROCESS_DOCDECL` stays off, and no external DTD is ever fetched ([N9](../PLAN.md#22-non-functional-requirements)).
+2. `setFeature(FEATURE_PROCESS_NAMESPACES, true)`; `runCatching { setFeature("http://xmlpull.org/v1/doc/features.html#relaxed", true) }` (relaxed tolerates undefined prefixes, unescaped `&`, bad attributes, unknown entities, which stay as literal `&name;` text).
+3. `setInput(stream, httpCharset)` with `httpCharset = null` unless the HTTP `Content-Type` carries one and the body has no BOM: KXmlParser then sniffs UTF-32/UTF-16 BOMs and the XML declaration and defaults to UTF-8 ([AOSP KXmlParser](https://android.googlesource.com/platform/libcore/+/refs/heads/main/xml/src/main/java/com/android/org/kxml2/io/KXmlParser.java)). Never pass a `Reader`.
+4. Predefine all HTML 4 named entities with `defineEntityReplacementText` (`HtmlEntities.ALL`: `&nbsp;`, `&rsquo;`, `&eacute;`, …).
+5. **Re-parse heuristic:** `InputStreamReader` replaces malformed bytes with U+FFFD silently. If more than 0.5 % of collected text characters are U+FFFD, re-parse via `open()` with (a) the HTTP charset if it differs from the one used, else (b) `windows-1252`; keep the result with fewer replacement characters and add `CHARSET_REPARSED`.
+6. **Mixed content:** in HTML-bearing elements (`description`, `content:encoded`, `itunes:summary`, Atom `content`/`summary` with `type="html"` or `"xhtml"`), child elements produced by unescaped markup are re-serialised (`InnerXml.collect`, rebuilding `<tag attr="…">…</tag>`), never dropped.
+7. Root dispatch: `rss` → RSS 2.0; `feed` (Atom NS or none) → Atom; `RDF` → RSS 1.0; anything else → `Failed(NOT_A_FEED)`.
+
+### Namespace registry
+
+Matching rule: `canonical(namespaceUri) ?: prefixFallback[prefix]`; the prefix fallback covers `itunes`, `podcast`, `media`, `content`, `atom`, `psc` for feeds that forget the `xmlns` declaration (warning `UNDECLARED_PREFIX`).
+
+| Key | Canonical URI | Also accepted |
+|---|---|---|
+| RSS | `""` | — |
+| ITUNES | `http://www.itunes.com/dtds/podcast-1.0.dtd` | any case variant (`…/DTDs/Podcast-1.0.dtd`), `https` |
+| PODCAST | `https://podcastindex.org/namespace/1.0` | `https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/1.0.md` (spec: must be treated as identical; the reference feed uses it), `http://`, trailing `/` |
+| ATOM | `http://www.w3.org/2005/Atom` | — |
+| CONTENT | `http://purl.org/rss/1.0/modules/content/` | — |
+| MEDIA | `http://search.yahoo.com/mrss/` | without trailing `/` |
+| DC | `http://purl.org/dc/elements/1.1/` | — |
+| PSC | `http://podlove.org/simple-chapters` | trailing `/` |
+| FH | `http://purl.org/syndication/history/1.0` | — |
+| SY | `http://purl.org/rss/1.0/modules/syndication/` | — |
+| YT | `http://www.youtube.com/xml/schemas/2015` | — |
+| GOOGLEPLAY | `http://www.google.com/schemas/play-podcasts/1.0` | fallback image/description only |
+| RDF, RSS1 | `http://www.w3.org/1999/02/22-rdf-syntax-ns#`, `http://purl.org/rss/1.0/` | minimal |
+
+### Field mapping
+
+Precedence left to right; the first non-blank value wins.
+
+| Channel field | Sources |
+|---|---|
+| `title` | `title` › `itunes:title` › Atom `title` |
+| `author` | `itunes:author` › `dc:creator` › Atom `author/name` › `itunes:owner/itunes:name` › `managingEditor` |
+| `descriptionHtml` | `description` › `itunes:summary` › `content:encoded` › Atom `subtitle` › `googleplay:description` |
+| `link` | `link` › Atom `link[rel=alternate]` |
+| `language` | `language`, normalised with `Locale.forLanguageTag(raw.replace('_','-')).toLanguageTag()`; `und` → null |
+| `categories` | `itunes:category@text`, nested → path (`["Society & Culture","Documentary"]`) |
+| `explicit` | `itunes:explicit` ∈ {yes, true, explicit} → true; {no, false, clean} → false |
+| `showType` | `itunes:type` ∈ {episodic, serial} |
+| `complete` | `itunes:complete == "yes"` OR `podcast:updateFrequency@complete == "true"` |
+| `newFeedUrl` | `itunes:new-feed-url` |
+| `podcastGuid` | `podcast:guid`, kept only if it matches 8-4-4-4-12 hex (lowercased) |
+| `locked`, `medium` | `podcast:locked` (owner ignored), `podcast:medium` (verbatim, lowercase) |
+| `funding`, `persons` | `podcast:funding@url` + text ≤ 128 chars; `podcast:person` (role default `host`, group `cast`, `img`, `href`) |
+| `updateFrequencyRrule` | `podcast:updateFrequency@rrule` |
+| `ttlMinutes` | RSS `ttl`, else `sy:updatePeriod` (hourly 60, daily 1440, weekly 10080, monthly 43200, yearly 525600) ÷ `sy:updateFrequency` |
+| `paging` | `atom:link[rel=next/first/prev-archive]`, `fh:complete`, `fh:archive` |
+| `hubUrl`, `usesPodping` | `atom:link[rel=hub]`, `podcast:podping@usesPodping` (stored, unused in v1) |
+| `bannerUrl` | `podcast:image` whose `purpose` contains `banner` or `canvas` and aspect is `16/9` |
+
+| Item field | Sources |
+|---|---|
+| `guid` | `guid` (any `isPermaLink`) › Atom `id` |
+| `title` | `title` › `itunes:title` › `media:title` |
+| `pubDate` | `pubDate` › Atom `published` › Atom `updated` › `dc:date` (raw string always kept in `rawPubDate`) |
+| `descriptionHtml` | `content:encoded` › `description` › `itunes:summary` › Atom `content` › Atom `summary` › `media:description` (plain text, `descriptionIsHtml = false`) |
+| `enclosures` | every `enclosure@url,type,length` › Atom `link[rel=enclosure]` › `media:content` with `medium` audio/video or type `audio/*`/`video/*` (also inside `media:group`; `isDefault="true"` first) |
+| `alternateEnclosures` | `podcast:alternateEnclosure@type,length,bitrate,height,lang,title,rel,codecs,default` with `source@uri,contentType` and `integrity@type,value` |
+| `durationMs` | `itunes:duration` › `media:content@duration` |
+| `season`, `seasonName` | `podcast:season` (+`@name`) › `itunes:season` |
+| `episodeNumber`, `episodeDisplay` | `podcast:episode` (decimal kept as string, `@display`) › `itunes:episode` |
+| `episodeType`, `explicit` | `itunes:episodeType` ∈ {full, trailer, bonus}; `itunes:explicit` |
+| `link` | `link` › Atom `link[rel=alternate]` |
+| `chaptersUrl`, `chaptersType` | `podcast:chapters@url,type`; `application/json+chapters` and `application/json` both accepted |
+| `inlineChapters` | `psc:chapters/psc:chapter@start,title,href,image` |
+| `transcripts` | `podcast:transcript@url,type,language,rel`; `application/srt` ≡ `application/x-subrip` |
+| `persons`, `funding` | item-level `podcast:person` **replaces** the channel list (spec); item `podcast:funding` |
+| `externalMediaId` | `yt:videoId` |
+
+### Podcasting 2.0 tiers
+
+| Tier | Tags |
+|---|---|
+| Ingest and store (v1) | `guid`, `chapters`, `transcript`, `funding`, `person`, `season`, `episode`, `alternateEnclosure`/`source`/`integrity`, `locked`, `medium`, `image`, `images` (deprecated, still parsed), `updateFrequency` |
+| Store only (no UI) | `podping`, `atom:link rel=hub`, `ttl`/`sy:*` hints |
+| Parse, not stored in v1 | `trailer` (no column; UI later) |
+| Ignored in v1 | `value`, `valueRecipient`, `liveItem`, `remoteItem`, `podroll`, `socialInteract`, `chat`, `soundbite`, `location`, `license`, `txt`, `block` |
+
+`medium` values ending in `L` (`podcastL`, `musicL`, …) are lists of other feeds (`remoteItem` only): ingestion fails them with `UNSUPPORTED_LIST_FEED` instead of showing an empty podcast. `music` and `video` media with enclosures ingest normally.
+
+### Dates
+
+`FeedDates.parse(raw): Long?` (epoch ms UTC). `DateTimeFormatter.RFC_1123_DATE_TIME` is unusable: it rejects a wrong weekday and `PDT`/`UT`/`Z`/ISO forms (tested on JDK 21). Algorithm:
+
+1. Trim; collapse whitespace; drop a leading weekday token (`^[A-Za-z]{2,}\.?,? `), even a wrong or localised one.
+2. Normalise localised month abbreviations to English (German, French, Spanish, Italian, Dutch, Portuguese tables, e.g. `Okt`→`Oct`, `Mai`→`May`, `janv.`→`Jan`; heuristic).
+3. Replace a trailing zone token: `UT, UTC, GMT, Z → +0000`, `EST -0500`, `EDT -0400`, `CST -0600`, `CDT -0500`, `MST -0700`, `MDT -0600`, `PST -0800`, `PDT -0700`.
+4. Parse with a case-insensitive `Locale.ENGLISH` builder `d MMM [yyyy][yy] H:mm[:ss][.SSS]` + optional `+HHMM` or `+HH:MM`, defaulting the offset to UTC.
+5. Fallbacks in order: `OffsetDateTime.parse` (ISO-8601/RFC 3339), `LocalDateTime.parse` (as UTC; a space between date and time is replaced by `T` first), `LocalDate.parse` (UTC midnight).
+6. Unparsable → `null` + warning `UNKNOWN_DATE`. The parser applies **no** plausibility window (it is clock-free); ingestion does ([sortDate and clock](#sortdate-and-clock)).
+
+### Durations
+
+`Durations.parseMs(raw)`: split on `:`, accept 1–3 numeric parts (`H:MM:SS`, `MM:SS`, `M:SS`, seconds, `00:52:57`), allow a fractional last part, reject negative values, values over 48 h, empty and garbage (`null` + `BAD_DURATION`). The value is a hint; 06's measured duration supersedes it ([06 Positions and played state](06-playback.md#positions-and-played-state)).
+
+### Enclosure types and media acceptance
+
+`EnclosureTypes.effective(type, url)`: lowercase and strip parameters, then map aliases: `audio/mp3`, `audio/x-mp3`, `audio/mpeg3`, `audio/x-mpeg` → `audio/mpeg`; `audio/x-m4a`, `audio/m4a`, `audio/x-m4b` → `audio/mp4`; `audio/x-aac` → `audio/aac`; `application/ogg` → `audio/ogg`; `audio/x-wav` → `audio/wav`; `video/x-m4v` → `video/mp4`; `application.x-mpegurl` (sic, seen in the reference feed), `application/vnd.apple.mpegurl` → `application/x-mpegurl`. If the result is not `audio/*`, `video/*` or `application/x-mpegurl`, infer from the URL path extension: `.mp3` mpeg, `.m4a`/`.m4b` audio/mp4, `.aac`, `.ogg`/`.oga` audio/ogg, `.opus` audio/opus, `.flac`, `.wav`, `.mp4`/`.m4v` video/mp4, `.mov` video/quicktime, `.webm` video/webm, `.m3u8` application/x-mpegurl. `length` ≤ 0 or missing → `null`.
+
+**Primary enclosure:** the first enclosure with an `audio/*` effective type; else the first `video/*`; else the first `application/x-mpegurl`; else none. `podcast:alternateEnclosure[@default=true]` changes transport only, never identity (06 decides whether to use it). `isVideo = effectiveType.startsWith("video/")`. Whether HLS enclosures play is 06's decision; ingestion stores them.
+
+### Artwork candidates
+
+Podcast cover, first valid absolute `http(s)` URL wins (source recorded in the golden JSON):
+
+1. channel `itunes:image@href` (or its text, a common error);
+2. `podcast:image` with `purpose` containing `artwork` (or absent) and aspect `1/1` or absent, largest `width`;
+3. deprecated `podcast:images@srcset`, largest;
+4. channel `media:thumbnail` / `media:content[medium=image]`;
+5. RSS `image/url` (often a ≤ 144 px logo);
+6. Atom `logo`, then `icon`;
+7. `googleplay:image@href`;
+8. at subscribe time only: the directory hit's art (Apple `artworkUrl600`, Podcast Index `artwork`, fyyd `imgURL`);
+9. none → monogram key ([02 podcast](02-data-model.md#podcast): `artworkKey = m-{sha1hex(feedKey)}`).
+
+Episode art: item `itunes:image@href` (or text) › item `podcast:image` › `media:thumbnail` (also in `media:group`) › none. Ingestion stores `episode.imageUrl = null` when it equals the podcast cover after `UrlNormalizer.forIdentity` comparison (652 of 831 items in the 99% Invisible feed do). Artwork keys are derived with 08's key function in `:core:artwork` ([08 Artwork pipeline](08-ui-ux.md#artwork-pipeline)).
+
+### Limits and version policy
+
+| Limit | Value | On breach |
+|---|---|---|
+| Body size | 32 MB (fetch, decompressed) | `TOO_LARGE` |
+| Element depth | 64 | `Failed(TOO_DEEP)` |
+| Items per document | 10,000 | stop reading items, `ITEMS_TRUNCATED` |
+| Text per element | 512 Ki chars | truncate, `TEXT_TRUNCATED` |
+| URL length | 4,096 chars | URL dropped, `BAD_URL` |
+| `<!ENTITY` in prolog | — | `Failed(HOSTILE)` |
+
+`FeedParser.VERSION` (stored per podcast in `podcast.parserVersion` after each successful ingest) is bumped whenever a change would alter any value ingestion writes for an existing golden fixture; warnings-only changes do not bump. A podcast with `parserVersion < VERSION` is fetched once without validators and without the unchanged-SHA-256 shortcut, so every feed re-ingests after an upgrade ([Validators](#validators)).
+
+---
+
+## Fetch pipeline
+
+Serves N3, N6, N9. Delivered in M1. Honours [D10](../PLAN.md#3-key-decisions) (no OkHttp `Cache`), [D28](../PLAN.md#3-key-decisions) (cleartext allowed, LAN unsupported).
+
+```kotlin
+// :core:data (internal)
+internal class FeedFetcher @Inject constructor(
+    @HttpClient(HttpClientKind.FEED) private val client: OkHttpClient,   // 15 s / 30 s / 120 s (01)
+    private val credentials: CredentialStore, private val temp: FeedTempFiles,
+    private val classifier: NetErrorClassifier, private val clock: Clock,
+) { suspend fun fetch(req: FeedRequest): FetchOutcome }
+
+data class FeedRequest(val url: String, val etag: String?, val lastModified: String?,
+                       val conditional: Boolean, val maxBytes: Long = 32L * 1024 * 1024, val sniffOnlyBytes: Int? = null)
+sealed interface FetchOutcome {
+    data class NotModified(val maxAgeSec: Long?, val serverDateMs: Long?) : FetchOutcome
+    data class Body(val file: File, val sha256Hex: String, val requestedUrl: String, val finalUrl: String,
+        val permanentUrl: String?,                 // target of an unbroken 301/308 chain from hop 0, else null
+        val etag: String?, val lastModified: String?, val charset: String?, val maxAgeSec: Long?,
+        val serverDateMs: Long?, val sniff: Sniff) : FetchOutcome
+    data class Http(val code: Int, val retryAfterMs: Long?, val basicChallenge: Boolean, val realm: String?) : FetchOutcome
+    data class Network(val error: NetError) : FetchOutcome
+    data object TooLarge : FetchOutcome
+    data object RedirectLoop : FetchOutcome        // OkHttp "Too many follow-up requests"
+}
+enum class Sniff { RSS, ATOM, RDF, OPML, HTML, JSON, OTHER }
+```
+
+### Request rules
+
+| Header / option | Rule |
+|---|---|
+| `Accept` | `application/rss+xml, application/atom+xml;q=0.9, application/xml;q=0.8, text/xml;q=0.8, */*;q=0.5` |
+| `User-Agent` | set by `UserAgentInterceptor` (01); feeds.podcastindex.org returns 403 to generic UAs (tested) |
+| `Accept-Encoding` | never set: OkHttp adds gzip and decompresses only when the caller did not set it |
+| `If-None-Match` / `If-Modified-Since` | only when `conditional`; the stored `etag` (weak `W/"…"` sent verbatim) and the stored `Last-Modified` **string** (never a locally formatted date) |
+| `Authorization` | never set by `FeedFetcher`; `AuthInterceptor` adds Basic credentials for the request origin from `CredentialStore` on every hop ([01 Interceptors](01-foundation.md#interceptors)) |
+| Before the call | `credentials.awaitLoaded()` so a cold start never fetches a private feed without its credentials |
+| Redirects | OkHttp follows up to its limit; `permanentUrl` is computed by walking `priorResponse` from hop 0 while each hop is 301 or 308 |
+| Cleartext | `http://` is fetched as given (network security config allows it, PO-13 default); only scheme-less user input tries `https://` first ([Input normalisation](#input-normalisation)) |
+
+### Body, hashing and sniffing
+
+1. Stream the response body into `cacheDir/feeds/{uuid}.tmp` through Okio `HashingSink.sha256`, counting decompressed bytes; above `maxBytes` cancel the call, delete the file and return `TooLarge` (also bounds gzip bombs).
+2. `sniffOnlyBytes` (probes in [Autodiscovery](#fetch-sniff-and-autodiscovery)) stops after N bytes.
+3. `FeedSniffer` reads the first 4 KiB: skip BOM (UTF-8/16/32), whitespace, `<?xml…?>`, comments and `<!DOCTYPE …>` (except `<!DOCTYPE html`), then classify the first element: `rss` → RSS, `feed` → ATOM, `RDF`/`rdf:RDF` → RDF, `opml` → OPML, `html` or `<!DOCTYPE html` → HTML; a first non-space byte `{` or `[` → JSON; otherwise OTHER.
+4. `FeedTempFiles` deletes each file in a `finally` after parsing; `sweep()` at every engine start deletes files older than 1 h.
+
+### Response handling
+
+| Response | Outcome | Podcast state (refresh) |
+|---|---|---|
+| 200, sniff RSS/ATOM/RDF | `Body` → parse | see [Ingestion and diff](#ingestion-and-diff) |
+| 200, identical SHA-256, `parserVersion == VERSION`, `lastParseOk` | `Unchanged` (no parse) | success scheduling; validators and `lastFullFetchAt` updated |
+| 200, sniff HTML | `NOT_A_FEED` | existing data untouched; failure backoff. Pending first fetch: [autodiscovery once](#refresh-of-pending-podcasts) |
+| 200, sniff OPML/JSON/OTHER | `NOT_A_FEED` | as above |
+| 200, parse failed | `PARSE_ERROR` | data untouched, `lastParseOk = 0`, validators not stored |
+| 304 (validators were sent) | `NotModified` | success scheduling only. A 304 to an unconditional request is `HTTP_CLIENT` |
+| 401 or 403 with `WWW-Authenticate: Basic` | `HTTP_AUTH` | `needsCredentials = 1`; no auto-refresh until the user acts |
+| 401 other schemes, 403 | `HTTP_FORBIDDEN` | failure backoff |
+| 404 | `HTTP_NOT_FOUND` | failure backoff; "possibly dead" when `failureCount ≥ 10` and `COALESCE(lastSuccessAt, subscribedAt) < now − 7 d` (derived, 02 stores no column). YouTube: transient, never "possibly dead" (04) |
+| 410 | `HTTP_GONE` | `gone = 1`; excluded from refresh until "Try again" |
+| 429, 503 | `HTTP_RATE_LIMITED` / `HTTP_SERVER` | `Retry-After` (delta-seconds or HTTP-date) honoured when larger than backoff, capped at 7 d |
+| other 5xx / 4xx | `HTTP_SERVER` / `HTTP_CLIENT` | failure backoff |
+| too many redirects | `REDIRECT_LOOP` | failure backoff |
+| body over 32 MB | `TOO_LARGE` | failure backoff |
+| `IOException` | `NetErrorClassifier` → kind below | `OFFLINE` and `CANCELLED` change nothing; others failure backoff; `LOCAL_NETWORK_UNSUPPORTED` → `nextRefreshAt = now + 24 h` |
+
+### Error kinds
+
+`FeedErrorKind` (`:core:model`, stored in `podcast.lastErrorKind`, [02 podcast](02-data-model.md#podcast)); `lastErrorDetail` holds the HTTP status or the redacted exception class, never a URL with credentials.
+
+| `FeedErrorKind` | From |
+|---|---|
+| `OFFLINE`, `TIMEOUT`, `DNS`, `CONNECTION`, `LOCAL_NETWORK_UNSUPPORTED`, `TLS_UNTRUSTED`, `TLS_CERTIFICATE_TRANSPARENCY`, `TLS_HANDSHAKE` | `NetError.Offline`, `Timeout`, `DnsFailure`, `ConnectionFailed`, `LocalNetworkUnsupported`, `Tls(UNTRUSTED_CERTIFICATE / CERTIFICATE_TRANSPARENCY / HANDSHAKE)` ([01 Network error taxonomy](01-foundation.md#network-error-taxonomy)); `NetError.Cancelled` is not recorded |
+| `HTTP_AUTH`, `HTTP_FORBIDDEN`, `HTTP_NOT_FOUND`, `HTTP_GONE`, `HTTP_RATE_LIMITED`, `HTTP_SERVER`, `HTTP_CLIENT`, `REDIRECT_LOOP`, `TOO_LARGE` | table above |
+| `NOT_A_FEED`, `PARSE_ERROR`, `NO_MEDIA`, `UNSUPPORTED_LIST_FEED` | sniffing, parser, [accepted items](#accepted-items) |
+| `IDENTITY_CONFLICT` | unique-index abort during ingest ([02 Uniqueness](02-data-model.md#uniqueness-and-in-place-re-keying)) |
+| `STORAGE` | `SQLITE_FULL` or no space for the temp file |
+| `UNKNOWN` | anything else (`NetError.Other`) |
+
+Android 17 specifics: `LocalNetworkGuardDns` fails LAN hosts fast on API 37+ (v1 never requests `ACCESS_LOCAL_NETWORK`, [D28](../PLAN.md#3-key-decisions)); the UI text is "Feeds on your local network aren't supported yet". Certificate Transparency is enforced for targetSdk 37 and surfaces as `TLS_CERTIFICATE_TRANSPARENCY` per feed, never silently ([Local network permission](https://developer.android.com/privacy-and-security/local-network-permission), [Network security config](https://developer.android.com/privacy-and-security/security-config)).
+
+### Validators
+
+- `etag`, `lastModified`, `contentSha256` and `parserVersion` are written **only inside the ingest transaction that commits the parsed body** (or with an `Unchanged` outcome, whose body equals the last committed one). A crash before commit can therefore never strand a feed in "304 forever".
+- Validators are not sent when `parserVersion < FeedParser.VERSION`, when `lastParseOk = 0`, for previews, for `new-feed-url` probes, for paging requests, and for the **fortnightly full fetch**: when `lastFullFetchAt < now − 14 d` **and** the current network is unmetered (`NetworkMonitor.status.isMetered == false`), the request is unconditional. This catches servers that answer 304 forever although the feed changed (prior-art pitfall: constant ETag / stale `Last-Modified`), while keeping the extra data on Wi-Fi.
+- A URL change (move) discards the old validators; the new URL's validators are stored from the response that was ingested.
+- Feed requests never use OkHttp's `Cache` ([D10](../PLAN.md#3-key-decisions)): simplecast sends `max-age=3600` (tested), which an HTTP cache would honour on pull-to-refresh; `max-age` is used only as a lower bound for success scheduling.
+
+---
+
+## Ingestion and diff
+
+Serves N1, R2.3, R2.8 (inputs), R3.3. Delivered in M1. Honours [D15](../PLAN.md#3-key-decisions), [D18](../PLAN.md#3-key-decisions), [D19](../PLAN.md#3-key-decisions), [D66](../PLAN.md#3-key-decisions). DAO primitives: [02 Ingestion support](02-data-model.md#ingestion-support).
+
+```kotlin
+// :core:data (internal)
+internal class FeedIngestor @Inject constructor(/* db, IngestDao, PodcastDao, Clock, ArtworkPinner?, IngestionEventBus */) {
+    suspend fun ingest(podcast: DueFeed, parsed: ParsedFeed, ctx: IngestContext): IngestResult
+}
+data class IngestContext(val mode: IngestMode, val partial: Boolean, val fetch: FetchMeta,
+                         val rowHints: Map<String, RowHint> = emptyMap())   // keyed by externalMediaId (04)
+enum class IngestMode { REFRESH, INITIAL, OLDER_PAGE }
+data class FetchMeta(val finalUrl: String, val permanentUrl: String?, val etag: String?, val lastModified: String?,
+                     val sha256Hex: String, val serverDateMs: Long?, val maxAgeSec: Long?)
+data class RowHint(val availability: Availability?, val isShort: Boolean?, val isVideo: Boolean?)
+data class IngestResult(val inserted: List<Long>, val newIds: List<Long>, val updated: Int, val accepted: Int,
+                        val flippedOut: Int, val firstIngest: Boolean, val artworkChanged: Boolean,
+                        val warnings: List<ParseWarning>)
+```
+
+`IngestMode.INITIAL` is used when `podcast.initialFetch = 1` and by `SubscribeUseCase`; `OLDER_PAGE` by [paging](#rfc-5005-paging). `DueFeed` is 02's `dueForRefresh` row ([Refresh selection](02-data-model.md#refresh-selection-and-fetch-state-writes)).
+
+### Accepted items
+
+An item is **accepted** only if it has a primary enclosure or an `externalMediaId`; others (blog posts) are skipped and counted (`NO_MEDIA_ITEM` warning). This enforces 02's invariant `enclosureUrl IS NOT NULL OR externalMediaId IS NOT NULL`.
+
+| Parse result | Effect |
+|---|---|
+| ≥ 1 accepted item | normal diff |
+| items present, 0 accepted | `NO_MEDIA`: nothing written except `lastErrorKind = NO_MEDIA` and success scheduling; `status`/`initialFetch` unchanged (a blog that later becomes a podcast still ingests with initial-fetch semantics) |
+| 0 items, `medium` ends in `L` | `UNSUPPORTED_LIST_FEED` |
+| 0 items | metadata updated; no episode touched; a pending podcast becomes `ACTIVE` (new show without episodes yet) |
+| Empty title | `title = rawPubDate date (yyyy-MM-dd) ?: enclosure file name ?: "…"` (02 requires non-empty) |
+
+### Episode keys and matching helpers
+
+```kotlin
+// :feeds — app.neutrodyne.feeds.identity (algorithm owned here, storage format: 02 Identity keys)
+object EpisodeKeys {
+    const val VERSION = 1
+    fun primary(e: ParsedEpisode): String       // g: → u: → t: → l: → h: (02 grammar)
+    fun fallbacks(e: ParsedEpisode): List<String>  // [u:, t:] used when primary repeats within one document
+    fun candidates(e: ParsedEpisode): List<String> // current-version primary first, then older versions (v1: [primary])
+    fun keyFor(e: KeyInput, version: Int): String   // stored episode → key of a given version (restore, 05)
+    fun versionOf(key: String): Int                 // optional numeric prefix; absent = 1
+}
+data class KeyInput(val guid: String?, val enclosureUrl: String?, val title: String?, val pubDate: Long?,
+                    val link: String?, val descriptionHead: String?)
+object EpisodeContentHash { fun of(e: ParsedEpisode): Long }   // first 8 bytes (big-endian) of SHA-256
+object TitleMatch { fun normalise(title: String): String }     // NFKC, lowercase ROOT, quotes/dashes folded, spaces collapsed
+```
+
+- `g:` = `guid.trim()`; `u:` = `UrlNormalizer.forIdentity(primaryEnclosure.url)`; `t:` = sha1hex(`title.trim().lowercase(Locale.ROOT)` + `"|"` + UTC day `Instant.toString()`); `l:` = sha1hex(`link.trim()`); `h:` = sha1hex(`title.orEmpty() + description.orEmpty().take(500)`).
+- `EpisodeContentHash` hashes, separated by U+001F (list entries by U+001E): title, pubDate (or rawPubDate), primary enclosure url/type/length, isVideo, durationMs, season, seasonName, episodeNumber, episodeDisplay, episodeType, explicit, chosen image URL, link, chaptersUrl/Type, externalMediaId, SHA-256 of the description, transcripts, alternate enclosures, persons, funding, inline chapters. `feedOrder` is excluded, so re-ordering alone causes no write.
+
+### Diff algorithm
+
+All CPU work runs before the transaction on `@Dispatcher(Default)`; the transaction is one `withWriteTransaction` per feed ([02 Transactions and threading](02-data-model.md#transactions-and-threading)), ≤ 150 ms for 831 items.
+
+**Prepare (outside the transaction)**
+
+1. Filter accepted items; compute for each: key candidates, normalised enclosure URL and its query-less variant (`UrlNormalizer.forIdentityNoQuery`), `TitleMatch` + UTC day, `contentHash`, encoded description (`EpisodeDescriptionCodec`, 02), snippet ([Show notes](#show-notes)), child rows (transcripts, alternate enclosures, persons, funding, PSC chapters).
+2. **In-document key dedupe**, document order: if an item's primary key was already used by an earlier item (a generator that repeats GUIDs), try its `fallbacks()` in order; if every key is taken, drop the item with `DUPLICATE_ITEM`; record `DUPLICATE_GUID`.
+
+**Transaction**
+
+3. Load `IngestDao.existing(podcastId)`; build `byKey`, `byEnclosure`, `byEnclosureNoQuery`, `byTitleDay` maps.
+4. **Pass 1 (exact):** for each item, the first of `candidates(item)` present in `byKey` and not yet matched matches; a match on an older-version key rewrites the row's key in place (`IngestDao.rekey`).
+5. **Pass 2 (fallback, GUID rewrites):** for each unmatched item, consider only stored rows that are unmatched **and** whose `identityKey` is not a primary key of any item in this document. Match by normalised enclosure URL, then query-less enclosure URL, then `TitleMatch` + same UTC day with guards: both durations known ⇒ within 10 min; both MIME major types known ⇒ equal (behaviour of AntennaPod's duplicate guesser, re-implemented). A match calls `rekey(id, newKey, newGuid)`, preserving the row and all user state ([02 Uniqueness](02-data-model.md#uniqueness-and-in-place-re-keying)). Because in-document keys are unique and pass 1 runs first, the new key is never held by another stored row.
+6. **Matched rows:** if `contentHash` differs, `updateFeedFields` and `replaceChildren` (column rules below); if `inFeed = 0`, flip to 1.
+7. **Unmatched items:** insert with `firstSeenAt`, `sortDate`, `isNew` (rules below), `lastSeenAt = firstSeenAt`, `inFeed = 1`, in **descending `feedOrder`** (02 invariant: the first item in the document gets the highest `id`), then their children; PSC chapters become `chapter` rows with `source = PSC` (start in Normal Play Time `hh:mm:ss.mmm`, `mm:ss` or seconds; ordered by start).
+8. **Absent rows:** only if `accepted ≥ 1` and mode is not `OLDER_PAGE`: stored rows not matched get `inFeed = 0`. If the document is **partial** (`paging.next` or `prevArchive` present without `fh:complete`, or the YouTube adapter says so), only absent rows with `sortDate ≥ min(sortDate of this document's rows)` are flipped; older rows outside the window are left alone (they are on older pages, or beyond YouTube's 15-entry window). Ingestion never deletes an episode.
+9. `touchSeen(podcastId, now)`.
+10. `applyFeedMetadata`: feed metadata (title only when non-blank; `customTitle`, `includeInAll`, `episodeOrder`, `youtubeVariants`, `autoDownloadEligibleAfter` are never touched), categories as `categoriesJson`, `artworkUrl`/`artworkKey`, `bannerUrl`, `podcastGuid` (real one, `podcastGuidDerived = 0`; else keep a stored real one; else derive once, `podcastGuidDerived = 1`), `ttlMinutes`, `updateFrequencyRrule`, `hubUrl`, `usesPodping`, paging columns ([RFC 5005 paging](#rfc-5005-paging)), `latestEpisodeAt = max(sortDate)`, validators, `parserVersion = VERSION`, `lastParseOk = 1`, `contentSha256`, `lastFullFetchAt`, scheduling columns ([nextRefreshAt policy](#nextrefreshat-policy)), `failureCount = 0`, `lastErrorKind = null`, and on the first accepted ingest `status = ACTIVE`, `initialFetch = 0`.
+11. After commit: emit events ([Events](#events)); if `artworkUrl` changed and `ArtworkStore` exists (M4+), request a pin of the new key (08 enqueues `artwork-sync`; the old key is garbage-collected by 02's reference query); run the source adapter's `afterIngest` hook.
+
+A `SQLITE_CONSTRAINT_UNIQUE` from step 4–7 rolls the feed back and records `IDENTITY_CONFLICT` (a bug or a hostile feed); the next refresh retries.
+
+### isNew and back-catalogue guard
+
+```
+newFloor = max(previousLatestEpisodeAt ?: Long.MIN_VALUE, podcast.subscribedAt) − 7 d
+isNew    = mode == REFRESH && podcast.initialFetch == 0 && (pubDateValid ?: now) ≥ newFloor
+```
+
+- `INITIAL` and `OLDER_PAGE` ingests never set `isNew` ([D66](../PLAN.md#3-key-decisions)); imports, restores and subscribes therefore produce no notifications and no auto-downloads.
+- A host re-adding old episodes, or a podcast with no episodes yet receiving its back catalogue, fails the floor.
+- **Dump guard:** if more than 20 inserted items qualify in one ingest, only the newest 3 by `(sortDate, feedOrder)` keep `isNew = 1`; warning `BACK_CATALOGUE_DUMP`.
+- `isNew` is never cleared by user actions (02); "new since last visit" is 05's `isNew && firstSeenAt > lastViewedAt`.
+
+### sortDate and clock
+
+- `now` comes from `Clock`. If the response carried a `Date` header and `|now − serverDate| > 24 h`, `firstSeenAt` uses the server date (device clock wrong).
+- `pubDateValid = pubDate` if `1990-01-01 ≤ pubDate ≤ now + 365 d`, else `null` (`rawPubDate` keeps the original).
+- `sortDate = min(pubDateValid ?: firstSeenAt, firstSeenAt + 24 h)` ([D19](../PLAN.md#3-key-decisions)); recomputed with the stored `firstSeenAt` whenever an update changes `pubDate`. Ties are broken by `id` (insertion in descending `feedOrder`).
+
+### Column rules on update
+
+`updateFeedFields` (02) writes every feed column except `id`, `podcastId`, `identityKey`, `firstSeenAt` and `isNew`, with these rules:
+
+| Column | Rule |
+|---|---|
+| `durationMs`, `imageUrl`/`artworkKey`, `chaptersUrl` | a `null` parsed value never overwrites a stored non-null value (feeds drop optional tags intermittently; YouTube Atom never carries durations, which 04's enrichment writes) |
+| `availability`, `isShort`, `isVideo` for `externalMediaId` rows | taken from the adapter's `RowHint` when present, else unchanged (04 owns the rules) |
+| `enclosureUrl` | updated silently (tracking prefixes rotate); an existing download keeps its file and 07 decides about re-downloading |
+| `snippet`, `episode_description` | rewritten together with the description |
+
+### Podcast dedupe and merge
+
+- **Subscribe-time dedupe** ([Preview and dedupe](#preview-and-dedupe)): normalised input URL and final URL against `podcast.feedKey` and `podcast_url_alias.url` (exact: "Already subscribed"), then a **real** `podcastGuid` (soft: "You may already be subscribed"). Derived GUIDs are never used ([02 podcastGuid](02-data-model.md#podcastguid)).
+- **Automatic merge** happens only on URL identity: when an accepted move (301/308 chain, validated `new-feed-url`, user "Edit URL") produces a `feedKey` that is another podcast's `feedKey` or alias. Winner = the podcast that owns that key; loser = the moving podcast. Before the transaction, download files of loser episodes that have no identity match in the winner are deleted through `DownloadController.delete(ids, byUser = false)` (M6+); then 02's merge transaction runs ([02 Unsubscribe and merge](02-data-model.md#unsubscribe-and-merge)) and the engine reports `FeedOutcome.Merged(winnerId)`.
+- Equal real `podcastGuid` alone never merges (an ad-free premium feed legitimately shares the public feed's GUID); the outcome carries `sameGuidAs` so 05's import report can say "possibly the same show as …".
+
+### Events
+
+```kotlin
+// :core:domain (canonical)
+interface IngestionEvents { val newEpisodes: SharedFlow<NewEpisodes> }
+// :core:model (canonical): data class NewEpisodes(val podcastId: Long, val episodeIds: List<Long>, val initialFetch: Boolean)
+```
+
+- `IngestionEventBus` (`:core:data`, singleton) = `MutableSharedFlow(replay = 0, extraBufferCapacity = 256, onBufferOverflow = DROP_OLDEST)`, emitted **after** the feed's transaction commits.
+- `initialFetch = false`: `episodeIds` = rows inserted with `isNew = 1`; emitted only if non-empty. `initialFetch = true` (INITIAL ingests): `episodeIds` = all inserted rows, none of them new; consumers must not react user-visibly to these.
+- Delivery is in-process and best effort. Consumers that must not miss work re-derive it from the database (07's planner queries `isNew` and `firstSeenAt > autoDownloadEligibleAfter`, [02 Auto-download candidates](02-data-model.md#auto-download-candidates)). New-episode notifications are not driven by this flow but by the run report ([New-episode notifications](#new-episode-notifications)).
+
+```mermaid
+sequenceDiagram
+  participant E as FeedRefresher
+  participant A as SourceAdapter
+  participant F as FeedFetcher
+  participant P as FeedParser
+  participant I as FeedIngestor
+  participant DB as Room
+  participant B as IngestionEventBus
+  E->>A: fetchAndParse(feed, mode)
+  A->>F: fetch(url, validators)
+  alt 304 or identical SHA-256
+    F-->>A: NotModified or Body
+    A-->>E: NotModified or Unchanged
+    E->>DB: batched fetch-state write
+  else feed body
+    F-->>A: Body(temp file, sha256)
+    A->>P: parse(temp file)
+    P-->>A: ParsedFeed
+    A-->>E: Parsed(feed, partial)
+    E->>I: ingest(podcast, feed, context)
+    I->>DB: one write transaction (diff, metadata, validators, schedule)
+    I->>B: emit NewEpisodes after commit
+    I-->>E: IngestResult
+  else failure
+    A-->>E: Failed(kind, retryAfter)
+    E->>DB: batched fetch-state write with backoff
+  end
+```
+
+---
+
+## Feed moves, auth and paging
+
+Serves R1.9, N1, N3. Delivered in M1. Storage: [02 Podcast feedKey and aliases](02-data-model.md#podcast-feedkey-and-aliases), [02 credential](02-data-model.md#credential).
+
+### URL normalisation
+
+```kotlin
+// :feeds — app.neutrodyne.feeds.identity
+object UrlNormalizer {
+    const val VERSION = 1                                   // a change is an identity-key version change (02)
+    fun forIdentity(url: String): String?                   // null if not http(s)
+    fun forIdentityNoQuery(url: String): String?            // weak enclosure match only
+    fun splitUserInfo(url: String): Pair<String, BasicCredentials?>
+    fun origin(url: String): String?                        // "https://host[:port]", the credential.origin form
+}
+```
+
+`forIdentity` (scheme-free, so `http` and `https` compare equal): parse with `java.net.URI` (lenient fallback for unescaped spaces); host lowercased, IDN → ASCII, trailing dot removed; ports 80 and 443 dropped; empty path → `/`; percent-encoding normalised (unreserved characters decoded, other escapes uppercased); dot segments removed; one trailing `/` removed unless the path is `/`; query kept verbatim in order (empty `?` dropped); userinfo and fragment dropped. Output `host[:port]/path[?query]`, e.g. `HTTPS://Feeds.Example.com:443/Show/?a=1#x` → `feeds.example.com/Show?a=1`. Analytics prefixes (`dts.podtrac.com/redirect.mp3/…`, `chrt.fm/track/…`, `pdst.fm/e/…`) are **not** stripped: they rotate, so enclosure URLs are a secondary signal only.
+
+### Permanent redirects
+
+- Adopt `permanentUrl` only when the chain from the **original** request is an unbroken sequence of 301/308 **and** the body parsed with ≥ 1 accepted item. Then, in the ingest transaction: `feedUrl = permanentUrl`, `feedKey` recomputed, old `feedKey` inserted as alias (`REDIRECT`), an alias equal to the new `feedKey` deleted first, old validators discarded (02 rules). A collision with another podcast's key → [merge](#podcast-dedupe-and-merge).
+- 302, 303 and 307 are never adopted (captive portals, CDNs, login pages).
+- If only the scheme differs (`http` → `https`, same `feedKey`), `feedUrl` is updated without an alias.
+- After every successful refresh `feedKey` is recomputed from `feedUrl`; a difference (normaliser version change) is applied as a move with reason `RENORMALISED`.
+- Podcast info shows "Feed moved to … on <date>" from aliases with reason `REDIRECT`/`NEW_FEED_URL` (`PodcastRepository.observeFeedInfo`), which matters when a feed is hijacked.
+
+### itunes:new-feed-url
+
+1. Ignore it when `forIdentity(newFeedUrl)` equals the current `feedKey` (self-referential, as in 99% Invisible), is not `http(s)`, or equals an alias this podcast moved away from (loop).
+2. Otherwise store it in `podcast.pendingNewFeedUrl` and, after the current ingest commits, probe it in the same run: unconditional fetch, require a feed with ≥ 1 accepted item and plausibility — equal real `podcastGuid`, **or** at least one shared `g:` key among the newest 20 items, **or** normalised-title similarity ≥ 0.8 (1 − Levenshtein distance / max length on `TitleMatch` forms).
+3. Plausible → move (alias reason `NEW_FEED_URL`), ingest the probed body in REFRESH mode, clear `pendingNewFeedUrl`. Not plausible or failed → keep it pending and retry at most once per 24 h; after 5 failed probes drop it with a `SELF_NEW_FEED_URL`-style warning in diagnostics. At most 5 hops per run.
+Apple asks publishers to keep both the 301 and the tag for at least four weeks, so lazy adoption is safe ([Apple: change the RSS feed URL](https://podcasters.apple.com/support/change-the-rss-feed-url)).
+
+### Basic auth and CredentialStore
+
+```kotlin
+// :core:data — implements :core:network CredentialLookup (01) and replaces CredentialLookup.None in M1
+@Singleton internal class CredentialStore @Inject constructor(/* CredentialDao, CipherProvider, @ApplicationScope */) : CredentialLookup {
+    suspend fun awaitLoaded()                                              // decrypts all rows into memory once
+    override fun basicAuthorization(origin: Origin): String?               // "Basic base64(user:pass)", non-blocking
+    suspend fun put(origin: String, username: String, secret: CharArray): Long   // replaces the row for that origin
+    suspend fun remove(id: Long)
+    suspend fun podcastIndexKey(): Pair<String, String>?                   // origin = "podcastindex"
+}
+```
+
+- **Crypto:** Android Keystore key alias `neutrodyne_credentials_v1`, AES-256-GCM, `PURPOSE_ENCRYPT or PURPOSE_DECRYPT`, `BLOCK_MODE_GCM`, no padding, 12-byte IV generated by the cipher, 128-bit tag, AAD = `origin + "\n" + username`; rows in `credential` (`secretCipher`, `iv`). `androidx.security:security-crypto` is deprecated and not used ([security releases](https://developer.android.com/jetpack/androidx/releases/security)). `CipherProvider` is an interface so JVM tests use a software AES key.
+- **One credential per origin:** `put` replaces an existing row with the same origin (all podcasts on that origin share it), because `AuthInterceptor` looks up by origin only. Two accounts on one host are not supported in v1 ([Open questions](#open-questions)).
+- **Input:** `https://user:pass@host/feed` in typed input, intents or OPML → `UrlNormalizer.splitUserInfo` (percent-decoded), stored via `put`, `podcast.credentialId` set, `feedUrl` without userinfo. A 401/403 with a `Basic` challenge in the add flow → `AddPodcastError.AuthRequired(realm)`; the sheet asks for user name and password and calls `resolve(input, credentials)`; credentials are held only in the [preview cache](#preview-and-dedupe) until subscribe.
+- **On refresh:** `HTTP_AUTH` → `needsCredentials = 1`; the podcast shows "Enter password"; `PodcastRepository.setCredentials(podcastId, user, password)` stores them, clears the flag and calls `refreshNow(Podcasts([id]))`.
+- **Key loss** (decrypt fails, e.g. Keystore reset): the row is deleted and every podcast referencing it gets `needsCredentials = 1`. Restored or imported podcasts never have credentials on a new device ([05 Full backup and restore](05-groups-opml-backup.md#full-backup-and-restore)).
+- Start-up: an `AppInitializer` (order 120, after the database at 100) calls `awaitLoaded()`; `FeedFetcher` also awaits it.
+
+### Private feed URLs
+
+Token-in-URL feeds (Patreon, Supercast, Memberful and similar) are secrets ([N3](../PLAN.md#22-non-functional-requirements), [R1.9](../PLAN.md#21-functional-requirements)):
+
+- Feed URLs are never sent to any directory or third party (no Podcast Index `byfeedurl` call exists in v1); logs and crash reports pass through 01's `Redactor` ([01 Logging and redaction](01-foundation.md#logging-and-redaction)).
+- `PrivateFeedUrls.looksPrivate(url): Boolean` (`:feeds`, used by 05's export warning and by the "Private feed" chip): true if the URL has userinfo; or a query parameter name (case-insensitive) in {`token`, `auth`, `key`, `apikey`, `api_key`, `secret`, `sig`, `signature`, `access_token`, `session`, `sid`, `uid`, `user`, `pass`, `password`, `hash`, `subscriber`, `member`, `premium`}; or any path segment or query value matching `[A-Za-z0-9_-]{20,}` containing both a letter and a digit; or the host ends with `patreon.com`, `supercast.tech`, `memberful.com`, `memberfulcontent.com` (heuristic list, extended from bug reports). False positives only cost a warning.
+
+### RFC 5005 paging
+
+- Page 1 is fetched on every refresh. `next` (paged feeds) and `prev-archive` (archived feeds) both point to older documents; `fh:complete` means the document is the complete feed and normal (non-partial) absence rules apply ([RFC 5005](https://www.rfc-editor.org/rfc/rfc5005)).
+- Paging state lives in `podcast.pagingNextUrl` and `podcast.pagingComplete`:
+
+| State | Meaning | Set by |
+|---|---|---|
+| `pagingNextUrl = null, pagingComplete = 0` | unknown (never paged) | default |
+| `pagingNextUrl = X, pagingComplete = 0` | background paging pending | subscribe with `feeds.backfill_paged_feeds` on; "Load older episodes" |
+| `pagingNextUrl = X, pagingComplete = 1` | older pages exist, not wanted automatically ("Load older episodes" shown) | caps reached; first ingest of an imported/restored podcast; setting off |
+| `pagingNextUrl = null, pagingComplete = 1` | nothing older | last page reached |
+
+- A page-1 refresh writes paging columns only while the state is "unknown"; it never rewinds a paging session.
+- **Paging session** (engine, mode `OLDER_PAGE`): fetch `pagingNextUrl` unconditionally, ingest with `OLDER_PAGE` (no `isNew`, no absence flips, no metadata changes except paging columns), continue with the page's own `next`/`prev-archive`. Stop and set `pagingComplete = 1` when: no further link (`pagingNextUrl = null`); the URL was already visited in this run; a page yields no new keys; 50 pages fetched in this session; or the podcast holds ≥ 5,000 episodes (automatic sessions only). The two caps keep `pagingNextUrl`.
+- Automatic sessions run only for podcasts subscribed from a preview; imports and restores never backfill automatically (300 feeds × 50 pages would be gigabytes).
+
+### podcast:guid
+
+`PodcastGuid.parse(raw)` validates and lowercases a feed-supplied GUID. `PodcastGuid.derive(feedUrl)` computes UUIDv5 with namespace `ead4c236-bf58-58c6-a2c6-a6b28d128cb6` over the URL with the scheme and trailing slashes removed (verified against both spec examples, [podcast:guid](https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/tags/guid.md)). Derived values are a local key only (`podcastGuidDerived = 1`), never exported as real, never used for dedupe.
+
+---
+
+## Refresh scheduling
+
+Serves N2, R2.6, R2.7, R3.3, R1.3. Delivered in M1 (engine, periodic and manual work), M2 (group scope, effective intervals), M3 (import interplay), M8 (YouTube adapter). Honours [D25](../PLAN.md#3-key-decisions), [D45](../PLAN.md#3-key-decisions); mitigates risks T3 and T8.
+
+### API
+
+```kotlin
+// :core:domain (canonical members first)
+interface RefreshController {
+    fun refreshNow(scope: RefreshScope, force: Boolean = true)
+    suspend fun reschedulePeriodic()
+    fun observeStatus(): Flow<RefreshStatus>
+    fun refreshFeed(source: FeedSource)          // pull-to-refresh: All → All, Group → Group, Podcast/Ungrouped → Podcasts(ids)
+    fun loadOlderEpisodes(podcastId: Long)       // sets pagingComplete = 0, enqueues a pages-only run
+}
+// :core:model
+sealed interface RefreshScope {
+    data object All : RefreshScope
+    data class Group(val groupId: Long) : RefreshScope
+    data class Podcasts(val ids: List<Long>) : RefreshScope
+}
+data class RefreshStatus(val running: Boolean, val scope: RefreshScope?, val done: Int, val total: Int,
+                         val lastRunFinishedAt: Long?)
+```
+
+```kotlin
+// :core:data (internal)
+internal class FeedRefresher @Inject constructor(/* adapters, FeedIngestor, PodcastDao, NewEpisodeNotifier, Clock, … */) {
+    val status: StateFlow<RefreshStatus>
+    val events: SharedFlow<FeedRunEvent>                 // per-feed outcomes; ImportFetchWorker (05) collects
+    suspend fun run(request: RefreshRequest): RefreshReport
+}
+data class RefreshRequest(val scope: RefreshScope, val force: Boolean, val pagesOnly: Boolean,
+                          val origin: RefreshOrigin, val deadlineElapsedMs: Long)
+enum class RefreshOrigin { PERIODIC, MANUAL, FOREGROUND, SUBSCRIBE, CONTINUATION, IMPORT, RESTORE }
+data class RefreshReport(val outcomes: Map<Long, FeedOutcome>, val newEpisodes: List<NewEpisodes>,
+                         val remaining: Int, val stoppedByDeadline: Boolean)
+sealed interface FeedOutcome {
+    data class Ingested(val inserted: Int, val newCount: Int, val firstIngest: Boolean, val sameGuidAs: Long?) : FeedOutcome
+    data object NotModified : FeedOutcome
+    data object Unchanged : FeedOutcome
+    data class Merged(val intoPodcastId: Long) : FeedOutcome
+    data class Failed(val kind: FeedErrorKind, val httpStatus: Int?) : FeedOutcome
+}
+data class FeedRunEvent(val podcastId: Long, val origin: RefreshOrigin, val outcome: FeedOutcome)
+```
+
+`ImportFetchWorker` (05) calls `run(RefreshRequest(Podcasts(sessionIds), force = false, origin = IMPORT, …))`: imported podcasts are already due (`nextRefreshAt = now` at commit), so a periodic run that got there first leaves nothing to do, and 05 derives each `import_item` status from the persisted podcast row plus the events it saw ([05 OPML import](05-groups-opml-backup.md#opml-import)).
+
+### Periodic tick
+
+- **Tick interval** = max(60 min, min over subscribed podcasts of the effective refresh interval), where the effective interval follows [D45](../PLAN.md#3-key-decisions): podcast override → minimum over its groups' overrides → global `feeds.refresh_interval_minutes`, resolved by `EffectiveSettingsResolver` ([05](05-groups-opml-backup.md#effective-settings-resolution)). Overrides are one of 60, 120, 240, 480, 720, 1440 min. A global value of 0 ("Manual only") counts as infinite; if every podcast resolves to infinite, `refresh-periodic` is cancelled.
+- `RefreshScheduler.reschedulePeriodic()` computes the tick and the constraint set (`CONNECTED`, or `UNMETERED` when `feeds.refresh_wifi_only`; `setRequiresBatteryNotLow(true)`), compares them with `feeds.scheduled_tick_minutes`/`feeds.scheduled_tick_unmetered` (`device_settings`), and only when they differ enqueues `refresh-periodic` with `ExistingPeriodicWorkPolicy.UPDATE`, flex = interval / 3, backoff exponential 10 min. Called by the start-up initializer (order 200, [01 Application start-up](01-foundation.md#application-start-up)), after changes to the global interval or Wi-Fi setting, after any podcast or group refresh-interval change (05 calls it), and after subscribe/unsubscribe/membership changes.
+- WorkManager's periodic minimum is 15 min and periodic work drifts by up to the flex window; the UI says "about every N hours", never a clock time ([define work](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work)).
+
+### Work requests
+
+| Unique name | Request | Constraints | Policy | Input |
+|---|---|---|---|---|
+| `refresh-periodic` | periodic, tick interval, flex interval / 3 | `CONNECTED` or `UNMETERED`; battery not low | `UPDATE` | origin `PERIODIC`, scope All |
+| `refresh-now` | one-time; **API ≥ 31:** `setExpedited(RUN_AS_NON_EXPEDITED_WORK_REQUEST)`; **API 26–30:** not expedited | `CONNECTED` only (expedited jobs accept only network and storage constraints) | `APPEND_OR_REPLACE` | scope, `force`, `pagesOnly`, origin |
+| `refresh-continuation` | one-time, initial delay 1 min | same as `refresh-periodic` | `KEEP` | origin `CONTINUATION` (pure due selection) |
+
+All three run `RefreshWorker` (`@HiltWorker`, tag `refresh`). Below Android 12, WorkManager runs expedited work as a foreground service and requires `getForegroundInfo()` ([define work](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work)); refresh deliberately avoids that path (no FGS, no notification channel, no `dataSync` use for refresh), accepting slightly later starts on API 26–30. Scope serialisation in `Data`: `"all"`, `"group:<id>"`, or a `LongArray` of ≤ 1,000 ids (larger sets are marked due in the database first and sent as `"due"`).
+
+```kotlin
+@HiltWorker
+internal class RefreshWorker @AssistedInject constructor(
+    @Assisted ctx: Context, @Assisted params: WorkerParameters,
+    private val refresher: FeedRefresher, private val scheduler: RefreshScheduler, private val clock: Clock,
+) : CoroutineWorker(ctx, params) {
+    override suspend fun doWork(): Result {
+        val deadline = clock.elapsedRealtime() + 8 * 60_000L
+        val report = refresher.run(RefreshRequest.from(inputData, deadline))
+        if (report.remaining > 0 || report.stoppedByDeadline) scheduler.enqueueContinuation()
+        return Result.success()          // per-feed failures live on the podcast rows, not in WorkManager retries
+    }
+}
+```
+
+### Engine run
+
+```mermaid
+sequenceDiagram
+  participant WM as WorkManager
+  participant W as RefreshWorker
+  participant R as FeedRefresher
+  participant N as NewEpisodeNotifier
+  WM->>W: doWork (periodic, now or continuation)
+  W->>R: run(request, deadline = start + 8 min)
+  R->>R: acquire mutex (wait at most until deadline)
+  R->>R: sweep temp files, mark scope due if forced
+  R->>R: select due feeds, fan out 6 global and 2 per host
+  R->>R: background paging while more than 2 min remain
+  R->>N: post(new episodes of this run)
+  R-->>W: RefreshReport
+  opt stopped by deadline or work remaining
+    W->>WM: enqueue refresh-continuation (1 min delay, KEEP)
+  end
+```
+
+1. **Mutex.** One engine run per process (`Mutex`); a second caller waits with `withTimeoutOrNull(deadline − now)` and, on timeout, returns `remaining = scope size` so its worker enqueues a continuation.
+2. `FeedTempFiles.sweep()`.
+3. **Force.** If `force`, one `UPDATE podcast SET nextRefreshAt = 0 WHERE <scope> AND gone = 0 AND needsCredentials = 0`. Forced work is thereby persisted: a continuation needs no ids, and `KEEP` cannot lose them.
+4. **Selection.** `dueForRefresh(now + slack, scope)` (02) with `slack = tick / 4` (a feed due shortly after this tick is refreshed now, not one tick later). Order: pending first fetches, then by `COALESCE(lastSuccessAt, 0)` ascending. `pagesOnly` runs select `pagingComplete = 0 AND pagingNextUrl IS NOT NULL` within the scope instead.
+5. **Fan-out.** For each feed: stop launching when `elapsed ≥ deadline − 30 s`; acquire the global `Semaphore(6)`, then the per-host `Semaphore(2)` (host = lowercase request host; applies to `www.youtube.com` too, C44 of the plan's conflict list); launch `refreshOne`. OkHttp's dispatcher (64 / 8 per host, 01) is never the bottleneck.
+6. **`refreshOne`** = adapter `fetchAndParse` → `FeedIngestor.ingest` or a fetch-state outcome → `events.emit` → `status` update (`done`/`total`).
+7. **Background paging.** If ≥ 2 min remain and the run is not `pagesOnly`, run pending paging sessions round-robin, one page per podcast per round.
+8. **Fetch-state flush.** Outcomes without a body (304, unchanged, failures) are written by 02's batched `updateFetchStates` (≤ 20 rows or every 5 s), so a 300-feed refresh invalidates open lists a few times, not 300 ([02 Refresh selection](02-data-model.md#refresh-selection-and-fetch-state-writes)).
+9. **Deadline.** At `deadline` all in-flight feeds are cancelled; each feed is one transaction, so a cancelled feed leaves no partial ingest and is retried by the continuation (still due).
+10. `NewEpisodeNotifier.post(report.newEpisodes)` (M2+), YouTube cycle statistics to `YouTubeOutageMonitor` (M8, rules 04), diagnostics keys written.
+
+Expected cost: 300 feeds at 6 parallel and 1–2 s each ≈ 1–2 min on a fresh import; a steady-state run is mostly 304s.
+
+### nextRefreshAt policy
+
+`I` = effective interval of the podcast (D45); `NEVER = 253_402_300_799_000` (9999-12-31) for "Manual only".
+
+| Outcome | `nextRefreshAt` | Other columns |
+|---|---|---|
+| Success (ingested, 304, unchanged, `NO_MEDIA`) | `now + I'`, where `I' = max(I, 24 h)` if `complete` or no new episode for 180 days; `I' = max(I', min(ttl or max-age, 24 h))` | `lastSuccessAt`, `lastAttemptAt`, `failureCount = 0` |
+| Failure | `now + min(30 min · 2^(failureCount − 1), 24 h) · random(0.8–1.2)`, or `now + Retry-After` (≤ 7 d) if later | `failureCount + 1`, `lastErrorKind`, `lastErrorDetail` |
+| 410 | unchanged; excluded by `gone = 1` | `gone = 1` |
+| 401/403 Basic | unchanged; excluded by `needsCredentials = 1` | `needsCredentials = 1` |
+| `OFFLINE`, cancelled | unchanged | none |
+| `LOCAL_NETWORK_UNSUPPORTED` | `now + 24 h` | kind recorded |
+| Forced | ignored for selection (step 3); still a conditional GET | — |
+
+YouTube channels follow the adapter's schedule (04): never sooner than the feed's `max-age=900`, 404 transient.
+
+### Per-feed states
+
+```mermaid
+stateDiagram-v2
+  [*] --> Pending: import or restore commit
+  [*] --> Healthy: subscribe from preview
+  Pending --> Healthy: first ingest or empty feed
+  Pending --> Pending: failure or no media, backoff
+  Healthy --> Failing: fetch or parse failure
+  Failing --> Healthy: success
+  Failing --> PossiblyDead: 10 failures and no success for 7 days
+  PossiblyDead --> Healthy: success
+  Healthy --> NeedsCredentials: 401 or 403 with Basic challenge
+  Failing --> NeedsCredentials: 401 or 403 with Basic challenge
+  Pending --> NeedsCredentials: 401 or 403 with Basic challenge
+  NeedsCredentials --> Healthy: password entered and refresh succeeds
+  Healthy --> Gone: 410
+  Failing --> Gone: 410
+  Gone --> Healthy: Try again succeeds
+```
+
+`Pending` = `status = PENDING_FIRST_FETCH`; `Failing`/`PossiblyDead` are derived from `failureCount` and `lastSuccessAt`; badges are 08's ([08 Components](08-ui-ux.md#components)). "Try again" (`PodcastRepository.retry`) clears `gone`/`needsCredentials` and forces a refresh.
+
+### Refresh of pending podcasts
+
+For `status = PENDING_FIRST_FETCH` (imports, restores, YouTube subscribes) the engine differs from a normal refresh in exactly three ways: ingestion uses `INITIAL`; an HTML body runs [autodiscovery](#fetch-sniff-and-autodiscovery) once and, if it yields a top-ranked feed candidate, fetches it and adopts it as a move (alias reason `IMPORT` for the page URL) — otherwise `NOT_A_FEED`; and paging columns go to "older pages exist, not wanted" ([RFC 5005 paging](#rfc-5005-paging)).
+
+### Source adapters
+
+The engine is source-agnostic; per-source behaviour sits behind one internal interface in `:core:data` (YouTube Atom is fetched and parsed here, never in a YouTube module — [01 Dependency rules](01-foundation.md#dependency-rules)).
+
+```kotlin
+// :core:data (internal)
+internal interface SourceAdapter {
+    val sourceType: SourceType
+    fun hostKey(feed: DueFeed): String
+    suspend fun fetchAndParse(feed: DueFeed, mode: FetchMode): AdapterResult
+    fun nextRefreshAt(feed: DueFeed, result: AdapterResult, base: Long): Long   // may raise the base from the policy table
+    suspend fun afterIngest(podcastId: Long, inserted: List<Long>) {}
+}
+enum class FetchMode { REFRESH, FULL, OLDER_PAGE }
+internal sealed interface AdapterResult {
+    data class Parsed(val feed: ParsedFeed, val partial: Boolean, val meta: FetchMeta,
+                      val rowHints: Map<String, RowHint>, val htmlFallback: File? = null) : AdapterResult
+    data class NotModified(val meta: FetchMeta?) : AdapterResult
+    data class Unchanged(val meta: FetchMeta) : AdapterResult
+    data class Failed(val kind: FeedErrorKind, val http: Int?, val retryAfterMs: Long?, val transient: Boolean) : AdapterResult
+}
+```
+
+| Adapter | Owner | Behaviour |
+|---|---|---|
+| `RssSourceAdapter` (`RSS`) | 03 | Everything in this document |
+| `YouTubeSourceAdapter` (`YOUTUBE_CHANNEL`, M8) | rules: [04 Atom feed ingestion](04-youtube.md#atom-feed-ingestion) | Polls the URLs from `YouTubeFeedUrls` for the channel's `youtubeVariants` (unconditional; Atom has no validators), parses each with `FeedParser`, merges entries by `externalMediaId`, takes the title from `author/name` via `YouTubeEntryRules`, supplies `RowHint`s (Shorts, availability), always `partial = true`; 404/5xx are transient (`transient = true`, never `gone`); schedules ≥ 15 min; `afterIngest` runs `YouTubeEnricher` for inserted video IDs when `YouTubeCapabilities.enrichment` (`foss`, M9) and writes `durationMs`/`availability` |
+| `YOUTUBE_PLAYLIST` | — | Reserved, never created ([D53](../PLAN.md#3-key-decisions)); the engine skips such rows |
+
+Per cycle the engine counts YouTube attempts and transient failures and hands them to `YouTubeOutageMonitor`, whose threshold (> 50 % failing), global notice on channel `alerts` and global backoff are specified by [04](04-youtube.md#atom-feed-ingestion).
+
+### Triggers
+
+| Trigger | Call | Notes |
+|---|---|---|
+| Periodic tick | `refresh-periodic` | due feeds only |
+| Pull-to-refresh in a feed (08) | `refreshFeed(source)` → `refreshNow(scope, force = true)` | same scope ignored within 20 s (cooldown, as AntennaPod) |
+| Group action "Refresh" ([R2.6](../PLAN.md#21-functional-requirements)) | `refreshNow(Group(id))` | M2 |
+| App comes to foreground | `RefreshForegroundObserver` (`ProcessLifecycleOwner` ON_START, registered by an initializer) → `refreshNow(All, force = false)` | only if `feeds.refresh_on_app_open` and `feeds.last_run_finished_at` is older than the tick interval; at most every 10 min |
+| Subscribe with older pages | `refreshNow(Podcasts([id]), pagesOnly = true)` | after `SubscribeUseCase` commits |
+| "Load older episodes" | `loadOlderEpisodes(id)` | manual session (50 pages, no item cap) |
+| Credentials entered, "Try again", "Edit URL" | `refreshNow(Podcasts([id]))` | — |
+| Import / restore | `ImportFetchWorker` / 05 | through `FeedRefresher.run` |
+
+### Threading model
+
+| Work | Dispatcher / context | Bound |
+|---|---|---|
+| Worker body, orchestration | `CoroutineWorker` (`Dispatchers.Default`) | one run per process (mutex) |
+| HTTP | `okhttp-coroutines` `executeAsync()` (cancellable); body copy and hashing in `withContext(@Dispatcher(IO))` | 6 global, 2 per host |
+| Parse from temp file | `@Dispatcher(IO).limitedParallelism(2)` (blocking reads, CPU-heavy; 01 rule) | 2 |
+| Diff preparation, codec, hashing | `@Dispatcher(Default)` | — |
+| Ingest transaction | Room query context (`@Dispatcher(IO)`, one writer) | serialised by SQLite |
+| Events, status | `IngestionEventBus`, `StateFlow` (thread-safe) | — |
+| Notification posting | `@Dispatcher(Default)` | once per run |
+
+Every suspend call site uses `suspendRunCatching` (never `runCatching`), so worker stops propagate `CancellationException` and roll back the open transaction ([01 Errors](01-foundation.md#errors)).
+
+### Platform constraints
+
+| Constraint | Consequence | Source |
+|---|---|---|
+| Periodic work ≥ 15 min; flex; exponential backoff ≥ 10 s | Tick floor 60 min; "about every N hours" wording | [define work](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work) |
+| Workers get ~10 min unless foreground | 8-min soft deadline + `refresh-continuation` | [long-running workers](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running) |
+| Expedited work has a quota (`OutOfQuotaPolicy`); before API 31 it runs as an FGS needing `getForegroundInfo()`; expedited jobs accept only network/storage constraints | `refresh-now` expedited only on API ≥ 31, network constraint only | [define work](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work), [JobInfo.Builder.setExpedited](https://developer.android.com/reference/android/app/job/JobInfo.Builder#setExpedited(boolean)) |
+| Android 16: runtime quota also for jobs started while visible that continue, and for jobs running beside an FGS (playback) | Resumable per feed; deadline; stop reason logged | [Android 16 behaviour changes](https://developer.android.com/about/versions/16/behavior-changes-all), [power details](https://developer.android.com/topic/performance/power/power-details) |
+| Frequent timeouts can demote the app to the restricted bucket | Never run into the hard limit; diagnostics show the bucket (09) | [optimise battery](https://developer.android.com/develop/background-work/background-tasks/optimize-battery) |
+| WorkManager 2.11.1–2.11.2 fixed network-constraint bugs on Android 15+; 2.12.0 required | Catalog pins 2.12.0 (01) | [WorkManager releases](https://developer.android.com/jetpack/androidx/releases/work) |
+| No exact alarms, no battery-exemption request | Refresh is best effort ([N2](../PLAN.md#22-non-functional-requirements)) | [doze and standby](https://developer.android.com/training/monitoring-device-state/doze-standby) |
+| Android 17 LAN permission, CT | [Error kinds](#error-kinds) | above |
+
+### Failure modes
+
+| Failure | Behaviour |
+|---|---|
+| Worker stopped (quota, constraint loss, process death) | In-flight feeds roll back; WorkManager reschedules the stopped work; forced work persists as `nextRefreshAt = 0` |
+| Disk full (`STORAGE`) | Run ends early; feeds untouched; next tick retries |
+| Database write error in one feed | That feed records `IDENTITY_CONFLICT`/`UNKNOWN`; others continue |
+| Clock jumps | Scheduling uses `Clock.now()` for stored times and `elapsedRealtime()` for deadlines; `firstSeenAt` corrected by the server date |
+| Many feeds on one host 429 | Per-host semaphore 2 + `Retry-After` per feed |
+
+### Diagnostics
+
+`device_settings` keys written at the end of every run (shown by 09's diagnostics screen, M11): `feeds.last_run_finished_at`, `feeds.last_run_summary` (JSON: origin, attempted, ingested, not modified, failed by kind, stopped by deadline), `feeds.last_run_stop_reason` (`WorkInfo`/`ListenableWorker.stopReason`, −1 when none). Per-feed parse warnings of the last ingest are kept in an in-memory LRU (50 podcasts) for the debug screen.
+
+---
+
+## Show notes
+
+Serves R4.8 (timestamps), N3, N6. Delivered in M1 (storage, sanitiser, block model), M5 (seek links wired by 06). Honours [D27](../PLAN.md#3-key-decisions).
+
+### At ingest
+
+- Raw description (HTML, or plain text for Atom/YouTube) goes to `episode_description` through 02's `EpisodeDescriptionCodec`; nothing is sanitised at ingest ([02 episode_description](02-data-model.md#episode_description)).
+- `snippet` = `PlainTextSnippet.of(text, isHtml)`: jsoup `text()` (or the plain text), whitespace collapsed, cut at the last word boundary ≤ 199 chars plus `…`; used by list rows (02 keeps it out of descriptions).
+
+### Sanitiser and block model
+
+`ShowNotesSanitizer.toDocument(raw, isHtml, baseUri): ShowNotesDocument` runs at display time on `@Dispatcher(Default)`; `EpisodeRepository.observeShowNotes` caches the last 16 documents in memory.
+
+1. **Normalise input:** no tags but escaped markup (`&lt;p&gt;`, `&lt;br`) → unescape once (double-escaped feeds); no tags at all (YouTube, many Atom feeds) → plain text: blank lines split paragraphs, `\n` → line break, URLs linkified.
+2. **Clean:** `Jsoup.clean(html, baseUri, safelist)` with `Safelist.basicWithImages()` + `h1`–`h6`, `div`, `hr`, `figure`, `figcaption`; `img` attributes `alt`, `width`, `height`; `a` protocols `http`, `https`, `mailto`; `img` protocols `http`, `https`; the enforced `rel` on `a` removed; `prettyPrint(false)` ([jsoup Safelist](https://jsoup.org/apidocs/org/jsoup/safety/Safelist.html)). `baseUri` = episode `link`, else the feed URL.
+3. **Drop:** images with `width` or `height` ≤ 2 and images whose URL matches `(?i)(/pixel|/track|/beacon|1x1|spacer)[^/]*\.(gif|png)`; empty paragraphs.
+4. **Walk** the cleaned DOM into blocks; caps: 2,000 blocks, list nesting 4 (deeper flattened), 50 images.
+
+```kotlin
+// :feeds — app.neutrodyne.feeds.html. Mirrored 1:1 into :core:model as ShowNotes / ShowNoteBlock / ShowNoteSpan
+// by :core:data (01 open question 1, option b); 08 renders the :core:model mirror.
+data class ShowNotesDocument(val blocks: List<NoteBlock>)
+sealed interface NoteBlock {
+    data class Paragraph(val spans: List<NoteSpan>) : NoteBlock
+    data class Heading(val level: Int, val spans: List<NoteSpan>) : NoteBlock
+    data class ListBlock(val ordered: Boolean, val items: List<List<NoteBlock>>) : NoteBlock
+    data class Quote(val blocks: List<NoteBlock>) : NoteBlock
+    data class Image(val url: String, val alt: String?, val width: Int?, val height: Int?) : NoteBlock
+    data object Rule : NoteBlock
+}
+sealed interface NoteSpan {
+    data class Text(val text: String, val style: Int) : NoteSpan          // bits: BOLD 1, ITALIC 2, UNDERLINE 4, CODE 8
+    data class Link(val text: String, val url: String, val style: Int) : NoteSpan
+    data class Timestamp(val text: String, val positionMs: Long) : NoteSpan
+    data object LineBreak : NoteSpan
+}
+```
+
+Inline mapping: `b`/`strong` BOLD, `i`/`em` ITALIC, `u` UNDERLINE, `code` CODE, `a` → `Link`, `br` → `LineBreak`; `div`/`figure` contents flatten into paragraphs; `figcaption` becomes an italic paragraph.
+
+### Timestamp linkifier
+
+`TimestampLinkifier` turns text outside links into `Timestamp` spans:
+
+```
+(?<![\d:.])(?:(\d{1,2}):)?([0-5]?\d):([0-5]\d)(?![\d:])(?!\s?(?i:am|pm|a\.m\.|p\.m\.|uhr|h\b))
+```
+
+`positionMs = ((h ?: 0) · 3600 + m · 60 + s) · 1000`. The renderer (08) shows spans beyond a known episode duration as plain text; a tap calls 06's seek path (seek if this episode is current, else start it at that position; [06 Chapters](06-playback.md#chapters)). Times of day ("10:30 am", "20:15 Uhr") are excluded by the look-ahead.
+
+### Images and links
+
+- `feeds.show_notes_images` (`ALWAYS`, `WIFI_ONLY`, `TAP_TO_LOAD`; default `TAP_TO_LOAD`): remote images reveal the listener's IP address to arbitrary hosts, so they are not fetched until the user taps "Load images" in that episode (or changes the setting) — consistent with [N3](../PLAN.md#22-non-functional-requirements). Images load through Coil's IMAGE client (no cookies).
+- Links open outside the app (08 decides the mechanism); `mailto:` opens the mail app.
+
+---
+
+## Add podcast flow
+
+Serves R3.1 (hand-off), R1.9, N3. Delivered in M1 (direct feed URLs, scheme normalisation, preview, subscribe, unsubscribe), M7 (host recognition, autodiscovery, chooser, intents), M8 (YouTube branch). Honours [D24](../PLAN.md#3-key-decisions).
+
+```kotlin
+// :core:domain
+interface AddPodcastResolver {
+    suspend fun resolve(input: String, credentials: BasicCredentials? = null): AddResolution
+    suspend fun preview(feedUrl: String): Outcome<FeedPreview, AddPodcastError>   // PodcastPreviewKey(feedUrl)
+}
+sealed interface AddResolution {
+    data class Feed(val preview: FeedPreview) : AddResolution
+    data class Choose(val candidates: List<FeedCandidate>) : AddResolution
+    data class YouTube(val ref: YtRef) : AddResolution                     // 04 continues
+    data class Failure(val error: AddPodcastError) : AddResolution
+}
+sealed interface AddPodcastError {
+    data class NotAUrl(val query: String) : AddPodcastError               // UI offers "Search for …"
+    data object InvalidUrl : AddPodcastError
+    data class Network(val error: NetError) : AddPodcastError
+    data class Http(val code: Int) : AddPodcastError
+    data class AuthRequired(val realm: String?) : AddPodcastError
+    data object NotAFeed : AddPodcastError
+    data object NoMedia : AddPodcastError
+    data object TooLarge : AddPodcastError
+    data object Malformed : AddPodcastError
+    data object UnsupportedListFeed : AddPodcastError
+    data object AppleOnlyShow : AddPodcastError                           // Apple lookup has no feedUrl
+    data object SpotifyShow : AddPodcastError                             // no RSS exists; explanation only (helper: v1.x)
+    data class SubscriptionList(val url: String) : AddPodcastError        // OPML → offer import (05)
+    data object DirectoryBusy : AddPodcastError                           // Apple token bucket empty
+    data object YouTubeNotYetSupported : AddPodcastError                  // builds before M8 only
+}
+```
+
+```kotlin
+// :core:model
+data class FeedPreview(
+    val previewId: String, val feedUrl: String, val title: String, val author: String?, val descriptionHtml: String?,
+    val artworkUrl: String?, val link: String?, val categories: List<List<String>>, val language: String?,
+    val explicit: Boolean?, val episodeCount: Int, val latestEpisodeAt: Long?,
+    val episodes: List<PreviewEpisode>,          // newest 200 for display
+    val hasOlderPages: Boolean, val isPrivate: Boolean, val alreadySubscribed: AlreadySubscribed?,
+    val emptyFeed: Boolean,
+)
+data class PreviewEpisode(val title: String, val pubDate: Long?, val durationMs: Long?, val snippet: String?,
+                          val imageUrl: String?, val isVideo: Boolean)
+data class FeedCandidate(val url: String, val title: String?, val episodeCount: Int?, val source: String)
+data class AlreadySubscribed(val podcastId: Long, val exact: Boolean)   // exact: URL identity; else same real podcast:guid
+data class BasicCredentials(val username: String, val password: String)
+```
+
+### Input normalisation
+
+`AddInputNormalizer.normalize(raw): NormalizedInput` (`:feeds`, pure; returns the fetch URL, `schemeGuessed`, extracted credentials, or "not a URL"):
+
+1. Trim; cap at 4,096 chars. If the text contains whitespace (share intents: "Listen to X https://…"), take the first token that is a URL (`https?://`, `feed:`, `pcast:`, `podcast:`, `itpc:`, `neutrodyne:`) or a bare `host.tld/…`; a lone `@handle` is kept for the YouTube classifier.
+2. `neutrodyne://subscribe?url=<enc>` → the decoded `url` (recursively, once).
+3. `feed:https://x` / `feed:http://x` → `https://x` / `http://x`; `feed://x`, `pcast://x`, `podcast://x`, `itpc://x` → `https://x` with `schemeGuessed = true`.
+4. Subscribe wrappers: `subscribeonandroid.com/<rest>` and `www.subscribeonandroid.com/<rest>` → `<rest>` (adding `https://` when scheme-less); `antennapod.org/deeplink/subscribe?url=<enc>` → the `url` parameter; `podcasts.google.com/feed/<base64url>` → decoded feed URL (**Unverified:** the encoding; the shut-down service's links still circulate).
+5. Scheme-less `host.tld/…` → `https://…` with `schemeGuessed = true`. When `schemeGuessed` and the `https` attempt fails with `CONNECTION`, `TLS_*` or `TIMEOUT`, the resolver retries once with `http://`.
+6. Reject anything that is not `http(s)` after unwrapping (`file:`, `content:`, `javascript:`, …) as `InvalidUrl`; text with no URL-like token and no dot → `NotAUrl(query = text)`.
+7. `UrlNormalizer.splitUserInfo` moves `user:pass@` into credentials.
+
+### Host recognition
+
+Order, first match wins (`HostRecognizer`):
+
+| Input | Action |
+|---|---|
+| `YouTubeUrlClassifier.classify(input)` returns a non-`Query` `YtRef` | `AddResolution.YouTube(ref)`; resolution, preview and subscribe per [04 Channel resolution](04-youtube.md#channel-resolution). Before M8: `YouTubeNotYetSupported` |
+| `podcasts.apple.com/…/id(\d+)`, `itunes.apple.com/…/id(\d+)`, `pod.link/(\d+)`, `overcast.fm/itunes(\d+)` | Apple lookup (`lookup?id=<id>&entity=podcast`, consumes one token of the [Apple bucket](#apple-itunes-search)) → `feedUrl` → fetch; no `feedUrl` → `AppleOnlyShow`; keep `artworkUrl600` as cover fallback |
+| `podcastindex.org/podcast/(\d+)` and a Podcast Index key exists | `podcasts/byfeedid?id=<id>` → `url` → fetch; no key → generic fetch |
+| `open.spotify.com/show/…` | `SpotifyShow` ("Spotify shows have no public RSS feed; search for the show by name instead") |
+| anything else (incl. `fyyd.de/podcast/…`, other podcast-app pages) | fetch and sniff |
+
+### Fetch, sniff and autodiscovery
+
+```mermaid
+flowchart TD
+  IN["input text or intent"] --> N["AddInputNormalizer"]
+  N -->|"not a URL"| Q["Failure NotAUrl, offer search"]
+  N --> Y{"YouTube?"}
+  Y -->|yes| YT["AddResolution.YouTube (04)"]
+  Y -->|no| H{"known host?"}
+  H -->|"Apple, pod.link, Overcast id"| L["Apple lookup"] --> FE
+  H -->|"Podcast Index id"| PI["byfeedid"] --> FE
+  H -->|Spotify| SP["Failure SpotifyShow"]
+  H -->|other| FE["fetch and sniff, no validators"]
+  FE -->|"RSS, Atom, RDF"| PV["parse in memory, dedupe"] --> FP["AddResolution.Feed"]
+  FE -->|HTML| AD["Autodiscovery"]
+  AD -->|"one candidate"| FE
+  AD -->|"several candidates"| CH["AddResolution.Choose"]
+  AD -->|none| NF["Failure NotAFeed"]
+  FE -->|OPML| OP["Failure SubscriptionList, offer import (05)"]
+  FE -->|"401 or 403 Basic"| AU["Failure AuthRequired"]
+```
+
+`Autodiscovery.candidates(html: InputStream, charset, pageUrl): List<DiscoveredFeed>` (`:feeds`, jsoup) and the resolver's probing:
+
+1. **`<link rel=alternate>`**: `head link[rel~=(?i)\balternate\b][href]` with `type` matching `(?i)^(application/(rss|atom)\+xml|application/x-rss\+xml|text/xml)$`, resolved against `<base href>` or the page URL ([RSS autodiscovery](https://www.rssboard.org/rss-autodiscovery)). Drop comment feeds (URL contains `/comments/` or title contains "comment"). Rank: title or URL containing `podcast`, `audio`, `mp3` or `episodes` first, then document order (the first link is the site's main feed).
+2. **Anchors** (only if step 1 found nothing): Apple Podcasts links (`podcasts.apple.com/…/id\d+`, first one → Apple lookup), then feed-looking anchors matching `(?i)(\.rss|\.xml)$|/feed/?$|/rss/?$|//feeds?\.` on the same site. 99percentinvisible.org has no `<link>` but links to Apple (tested), hence this step.
+3. **Probes** (only if steps 1–2 found nothing): `/feed/podcast`, `/podcast.xml`, `/feed`, `/rss`, `/rss.xml` relative to the site root, sequential `GET` with `sniffOnlyBytes = 65,536`, stop at the first RSS/Atom; at most 5 requests within 15 s.
+4. **Verification:** up to 5 candidates are fetched (2 in parallel) and parsed to obtain titles and episode counts; non-feeds are dropped. One survivor → preview it; several → `Choose`; none → `NotAFeed`.
+5. **WordPress blog feeds:** if a parsed feed has items but no accepted item and its path ends with `/feed`, probe `<path>/podcast` (the usual podcast feed) before returning `NoMedia`.
+
+### Preview and dedupe
+
+- Parse in memory with the same `FeedParser`; never persisted ([D24](../PLAN.md#3-key-decisions)). The parsed feed, fetch metadata (final and permanent URL, validators, SHA-256), pending credentials and the directory cover fallback go into `PreviewCache` (`:core:data`, in memory): at most 2 entries, 15-min TTL, keyed by `previewId`; eviction drops the credentials.
+- **Dedupe:** `forIdentity` of the input URL, final URL and permanent URL against `podcast.feedKey` and `podcast_url_alias.url` → `AlreadySubscribed(id, exact = true)` (the sheet shows "Already subscribed — Open"); a real `podcastGuid` equal to a subscribed podcast's real GUID → `AlreadySubscribed(id, exact = false)` ("You may already be subscribed to this show. Subscribe anyway?").
+- **Subscribe button rules:** disabled for `NoMedia` (items exist, none playable); enabled for an empty feed (new show, `emptyFeed = true`); `isPrivate` (from `PrivateFeedUrls`) shows a "Private feed" chip.
+- `PodcastPreviewKey(feedUrl)` (directory results) calls `preview(feedUrl)`, which reuses a cached entry or fetches anew.
+
+### Subscribe transaction
+
+```kotlin
+// :core:domain (interface; implemented in :core:data because it needs one multi-table transaction)
+interface SubscribeUseCase {
+    suspend operator fun invoke(previewId: String, groupIds: Set<Long>): Outcome<Long, SubscribeError>
+    suspend fun youTube(channel: ChannelResolution, variants: Int, groupIds: Set<Long>): Outcome<Long, SubscribeError>
+}
+sealed interface SubscribeError {
+    data class AlreadySubscribed(val podcastId: Long) : SubscribeError
+    data class Fetch(val error: AddPodcastError) : SubscribeError        // preview expired and re-fetch failed
+    data object NoMedia : SubscribeError
+    data object Storage : SubscribeError
+}
+```
+
+RSS subscribe (`invoke`), one `withWriteTransaction`:
+
+1. Look up `previewId`; if evicted, re-fetch and re-parse the preview URL first (outside the transaction).
+2. Re-check dedupe inside the transaction (a `feedKey` unique violation maps to `AlreadySubscribed`).
+3. Credentials (if any): `CredentialStore.put` (before the transaction; it writes `credential`).
+4. Insert `podcast`: `sourceType = RSS`, `feedUrl` = permanent URL if the chain was 301/308-only, else the requested URL; `feedKey`; metadata as in `applyFeedMetadata`; `status = ACTIVE`, `initialFetch = 0`, `subscribedAt = now`; validators, `contentSha256`, `parserVersion`, `lastParseOk = 1`, `lastFullFetchAt`, `lastSuccessAt = now`, `nextRefreshAt` per policy; `credentialId`; paging state "pending" when `feeds.backfill_paged_feeds` and a `next`/`prev-archive` link exist, else "older pages exist".
+5. Aliases: the normalised input URL and redirect sources when they differ from `feedKey` (`SUBSCRIBE_INPUT`, `REDIRECT`).
+6. Episodes: `FeedIngestor` in `INITIAL` mode inside the same transaction (no `isNew`; D67 is satisfied because nothing inserted now is new).
+7. Memberships: `INSERT OR IGNORE INTO podcast_group_member(groupId, podcastId, sortOrder, addedAt, source)` for `groupIds` (`MANUAL`).
+8. After commit: emit `NewEpisodes(initialFetch = true)`; pin artwork (M4+); `refreshNow(Podcasts([id]), pagesOnly = true)` when paging is pending; `reschedulePeriodic()`; drop the preview entry.
+
+YouTube subscribe (`youTube`, M8): insert `sourceType = YOUTUBE_CHANNEL`, `feedUrl` = canonical `https://www.youtube.com/feeds/videos.xml?channel_id={UC…}`, `youtubeChannelId`, `youtubeVariants`, title/avatar/banner from `ChannelResolution`, `status = PENDING_FIRST_FETCH`, `initialFetch = 1`, `nextRefreshAt = now`, memberships; then `refreshNow(Podcasts([id]))`. Dedupe by `feedKey` of the canonical URL.
+
+### Unsubscribe and other podcast operations
+
+```kotlin
+// :core:domain (03 owns the interface; library tile SQL: 02, rendering: 08)
+interface PodcastRepository {
+    fun observeLibraryTiles(groupId: Long?): Flow<List<LibraryTile>>   // 02 PodcastDao.observeLibraryTiles
+    fun observePodcast(podcastId: Long): Flow<PodcastDetail?>
+    fun observeFeedInfo(podcastId: Long): Flow<FeedInfo?>              // redacted URL, aliases, last refresh, error
+    suspend fun unsubscribe(podcastIds: List<Long>)
+    suspend fun setIncludeInAll(podcastId: Long, include: Boolean)
+    suspend fun setCustomTitle(podcastId: Long, title: String?)
+    suspend fun setCredentials(podcastId: Long, credentials: BasicCredentials): Outcome<Unit, AddPodcastError>
+    suspend fun editFeedUrl(podcastId: Long, input: String): Outcome<Unit, AddPodcastError>
+    suspend fun retry(podcastId: Long)
+    fun observeCategoryCounts(): Flow<List<CategoryCount>>             // suggested groups (M7)
+}
+interface EpisodeRepository {
+    fun observeEpisode(episodeId: Long): Flow<EpisodeDetail?>
+    fun observeShowNotes(episodeId: Long): Flow<ShowNotes?>
+    suspend fun setPlayed(episodeIds: List<Long>, played: Boolean)     // semantics: 06 Positions and played state
+    suspend fun markFeedPlayed(source: FeedSource, sortDateBefore: Long?)   // R2.6, SQL: 02 User-state writes
+    suspend fun setFavorite(episodeId: Long, favorite: Boolean)
+}
+```
+
+- **Unsubscribe** ([D24](../PLAN.md#3-key-decisions)), after the UI's confirmation: (1) if `PlaybackStateSource.nowPlaying` belongs to the podcast, `PlaybackController.pause()` (06 removes the item when its row disappears); (2) delete download files via `DownloadController.delete(ids, byUser = false)` (injected as `Optional<DownloadController>`, `@BindsOptionalOf`, present from M6); (3) 02's `deleteCascade` per podcast; (4) unpin artwork (M4+); (5) `reschedulePeriodic()`. Credentials no longer referenced by any podcast are deleted.
+- **Edit URL** (podcast settings, 05's import report): normalise the input, fetch and parse it in memory, then apply it as a move (alias reason `SUBSCRIBE_INPUT`) and ingest in REFRESH mode (INITIAL if still pending); a key collision merges.
+- `setPlayed`, `markFeedPlayed` and `setFavorite` use 02's column-scoped writes and 06's rules (marking played resets the position).
+
+---
+
+## Search and discovery
+
+Serves onboarding for R1/R2/R5 and N3. Delivered in M7. Honours [D26](../PLAN.md#3-key-decisions), [PO-3](../PLAN.md#po-3-podcast-index-api-key-handling) default B; mitigates risk L3.
+
+```kotlin
+// :core:domain
+interface SearchRepository {
+    fun search(query: String): Flow<SearchResults>               // emits after each provider answers
+    suspend fun charts(genre: ChartGenre?): Outcome<List<DirectoryHit>, ProviderStatus>
+    fun genreForGroupName(name: String): ChartGenre?
+    fun observeProviders(): Flow<List<ProviderInfo>>              // enabled providers, for the disclosure line
+}
+// :core:model
+enum class ProviderId { APPLE, FYYD, PODCAST_INDEX }
+data class DirectoryHit(val feedUrl: String, val title: String, val author: String?, val artworkUrl: String?,
+    val description: String?, val episodeCount: Int?, val lastEpisodeAt: Long?, val podcastGuid: String?,
+    val providers: Set<ProviderId>, val genres: List<String>, val explicit: Boolean?, val subscribedPodcastId: Long?)
+data class SearchResults(val query: String, val hits: List<DirectoryHit>, val statuses: Map<ProviderId, ProviderStatus>,
+                         val complete: Boolean)
+sealed interface ProviderStatus { data object Ok; data object Pending; data object RateLimited; data class Failed(val error: NetError?) }
+// :core:data (internal)
+internal interface PodcastSearchProvider {
+    val id: ProviderId
+    suspend fun enabled(): Boolean
+    suspend fun search(query: String, country: String, limit: Int = 50): List<DirectoryHit>
+}
+```
+
+The ViewModel debounces: search fires 600 ms after typing stops with ≥ 3 characters, or immediately on the IME search action. All providers use the API client (8 s call timeout, [01](01-foundation.md#one-client-family)); no cookies are stored.
+
+### Apple iTunes Search
+
+- Search `GET https://itunes.apple.com/search?media=podcast&entity=podcast&term=<q>&country=<cc>&limit=50`; lookup `GET https://itunes.apple.com/lookup?id=<id>[,<id>…]&entity=podcast` (batch works, tested).
+- Fields: `collectionId`, `collectionName`, `artistName`, `feedUrl`, `artworkUrl600`, `trackCount`, `releaseDate`, `genres`, `collectionExplicitness`. Parsed with kotlinx.serialization (`ignoreUnknownKeys`) whatever the `text/javascript` content type says. Hits without `feedUrl` are dropped (about 1 in 100, tested); at most 100 results arrive even with larger limits.
+- **Rate limit:** "approximately 20 calls per minute (subject to change)". `TokenBucket(capacity = 20, refill = 1 per 3 s)` shared by search, lookup (add flow) and charts; an empty bucket returns `RateLimited` at once (no queueing). A 403 or 429 drains the bucket for 60 s ("Search is busy, try again").
+- Results cache: in-memory LRU, 50 entries, 30 min, keyed by (provider, country, lowercased trimmed query).
+- Country: `discover.country`, else `Locale.getDefault().country`, else `US`.
+- Terms: Apple's page frames the API around promoting Apple content and grants no explicit licence for directory use; every major open-source player uses it (risk L3, [Search API](https://performance-partners.apple.com/search-api)).
+
+### fyyd
+
+`GET https://api.fyyd.de/0.2/search/podcast?title=<q>&count=50` (the `/0.2/` prefix is mandatory, otherwise v0.1 answers); no key; fields `data[].title`, `xmlURL`, `htmlURL`, `imgURL`, `language`, `status`. No published rate limit or terms (Unverified); on by default in every locale (canonical default). Docs: [fyyd API](https://codeberg.org/eazy/fyyd-api).
+
+### Podcast Index
+
+- Base `https://api.podcastindex.org/api/1.0`; `search/byterm?q=<q>&max=50`, `podcasts/byfeedid?id=`, `podcasts/byitunesid?id=`, `podcasts/trending`. Fields used: `url`, `title`, `author`, `artwork`/`image`, `description`, `podcastGuid`, `dead`, `medium`, `episodeCount`, `newestItemPubdate` (names other than `dead`, `medium`, `podcastGuid`, `artwork`: Unverified against [the spec](https://podcastindex-org.github.io/docs-api/pi_api.json)).
+- Headers: `User-Agent` (01), `X-Auth-Key: <key>`, `X-Auth-Date: <unix seconds>`, `Authorization: sha1hex(key + secret + date)` (lowercase). The date window is 3 min: on 401, if the response `Date` differs from the device clock by > 60 s, retry once with the server-derived time and keep the offset in memory. 403 without a key (tested).
+- Filter `dead == 1`; hits with `medium` other than `podcast`, `video` or absent are down-ranked (score × 0.5).
+- **Key ([PO-3](../PLAN.md#po-3-podcast-index-api-key-handling)):** `BuildInfo.podcastIndexKey/Secret` (empty in every build until written permission, 01) or a user key from Settings › Discover › "Use my own Podcast Index API key", stored by `CredentialStore.put(origin = "podcastindex", username = key, secret)`. The provider is enabled only when a key exists and `discover.podcastindex_enabled` is on; otherwise it is hidden. The terms forbid embedding credentials in open-source projects ([Podcast Index ToS §4.2.1](https://github.com/Podcastindex-org/legal/blob/main/TermsOfService.md)); rate limits are undocumented.
+
+### Aggregation
+
+1. Run enabled providers in parallel, each wrapped in `withTimeoutOrNull(8 s)`; emit `SearchResults(complete = false)` after each answer and a final `complete = true`.
+2. Merge with reciprocal-rank fusion: `score = Σ 1 / (10 + rank)` over providers listing the hit; ties by provider order APPLE, PODCAST_INDEX, FYYD.
+3. Dedupe by `UrlNormalizer.forIdentity(feedUrl)`, then by real `podcastGuid`. Merged fields: first non-blank title; artwork Apple 600 › Podcast Index › fyyd; `podcastGuid` from Podcast Index or fyyd; max `episodeCount`.
+4. Annotate `subscribedPodcastId` via `feedKey`/alias lookup (one query, ≤ 150 keys).
+5. A failing provider yields partial results and a per-provider status (M7 acceptance 1).
+
+### Charts and genres
+
+- Top list: `https://rss.marketingtools.apple.com/api/v2/<cc>/podcasts/top/100/podcasts.json` (100 works, 200 fails, tested) → IDs (`feed.results[].id`, path Unverified) → one batch lookup → hits in chart order.
+- Per genre: legacy `https://itunes.apple.com/<cc>/rss/toppodcasts/limit=100/genre=<id>/json` (tested; undocumented; entry ID path `feed.entry[].id.attributes["im:id"]` Unverified) → batch lookup. Both fail soft ("Charts unavailable"); in-memory cache 6 h.
+
+| `ChartGenre` | Apple ID | Group-name synonyms (`genreForGroupName`, NFC, case-insensitive) |
+|---|---|---|
+| TECHNOLOGY | 1318 (tested) | tech, technology, technik |
+| NEWS | 1489 (tested) | news, nachrichten, actualités, noticias |
+| FICTION | 1483 (tested) | fiction, stories, audio drama, hörspiel |
+| COMEDY | 1303 (tested) | comedy, humour, humor |
+| SCIENCE / HISTORY / SPORTS / TRUE_CRIME / BUSINESS / ARTS / EDUCATION / HEALTH_FITNESS / KIDS_FAMILY / MUSIC / SOCIETY_CULTURE / TV_FILM / RELIGION / GOVERNMENT / LEISURE | 1533 / 1487 / 1545 / 1488 / 1321 / 1301 / 1304 / 1512 / 1305 / 1310 / 1324 / 1309 / 1314 / 1511 / 1502 (**Unverified**, checked in M7) | the English and German genre name, e.g. science/wissenschaft, history/geschichte, sport/sports, true crime/crime |
+
+"Popular in <genre>" appears when a group's name maps to a genre (group screens, 08).
+
+### Suggested groups
+
+`PodcastRepository.observeCategoryCounts()` counts subscribed podcasts per top-level `itunes:category` (first path element of `categoriesJson`), excludes categories whose NFC-lowercased name equals an existing group's `nameKey`, drops counts < 2, sorts descending, returns ≤ 5. 08's onboarding card ([08 Onboarding and empty states](08-ui-ux.md#onboarding-and-empty-states)) offers them; a tap creates the group with those members through 05's `GroupRepository`.
+
+### Privacy
+
+Only the query text and the country go to directories; subscriptions and feed URLs never do. Discover shows "Searches are sent to Apple and fyyd" (plus "and Podcast Index" when enabled) under the search field (M7 acceptance 6); `PRIVACY.md` lists the hosts ([09 Privacy](09-quality-and-release.md#privacy)). gpodder.net is not used (toplist a decade stale, tested).
+
+---
+
+## Deep links and share targets
+
+Serves R3.1 (links), onboarding. Delivered in M7 (M1 handles the same schemes only when typed into the add sheet). Routing: [01 Intent routing](01-foundation.md#intent-routing) maps every match to `AddPodcastKey(input)`; nothing subscribes without the user tapping Subscribe.
+
+```xml
+<!-- :app manifest, inside <activity android:name=".MainActivity" android:exported="true"> -->
+<intent-filter>   <!-- feed:, pcast:, podcast:, itpc: (each filter keeps scheme-only data: no host cross-product) -->
+  <action android:name="android.intent.action.VIEW" />
+  <category android:name="android.intent.category.DEFAULT" />
+  <category android:name="android.intent.category.BROWSABLE" />
+  <data android:scheme="feed" /> <data android:scheme="pcast" />
+  <data android:scheme="podcast" /> <data android:scheme="itpc" />
+</intent-filter>
+<intent-filter>   <!-- neutrodyne://subscribe?url=…  (host restricts it: neutrodyne://open/… stays internal) -->
+  <action android:name="android.intent.action.VIEW" />
+  <category android:name="android.intent.category.DEFAULT" />
+  <category android:name="android.intent.category.BROWSABLE" />
+  <data android:scheme="neutrodyne" android:host="subscribe" />
+</intent-filter>
+<intent-filter>   <!-- Apple Podcasts web links; not App Links (no autoVerify), the user picks the app -->
+  <action android:name="android.intent.action.VIEW" />
+  <category android:name="android.intent.category.DEFAULT" />
+  <category android:name="android.intent.category.BROWSABLE" />
+  <data android:scheme="https" android:host="podcasts.apple.com" />
+</intent-filter>
+<intent-filter>   <!-- share text or a URL into the app -->
+  <action android:name="android.intent.action.SEND" />
+  <category android:name="android.intent.category.DEFAULT" />
+  <data android:mimeType="text/plain" />
+</intent-filter>
+```
+
+- Within one `<intent-filter>`, `<data>` attributes combine as a cross-product, so schemes and hosts of unrelated forms are never mixed in one filter ([data element](https://developer.android.com/guide/topics/manifest/data-element)). Scheme matching is case-sensitive; the router lowercases before matching (01).
+- Not registered: `itunes.apple.com` (also music and app links), `http(s)` with RSS MIME types (browsers rarely hand them off; content URIs would need copying), OPML/ZIP files (05's `ExternalImportActivity`).
+- Unwrapping of wrapper URLs: [Input normalisation](#input-normalisation). Shared text keeps only the first URL-like token (`EXTRA_TEXT` capped at 4 KB by the router).
+- Spotify links: `SpotifyShow` explanation only; a "search by title" helper is v1.x ([PLAN 6](../PLAN.md#6-feature-scope)).
+
+---
+
+## New-episode notifications
+
+Serves R2.7. Delivered in M2. Honours [D36](../PLAN.md#3-key-decisions), [D45](../PLAN.md#3-key-decisions), [D66](../PLAN.md#3-key-decisions). Channel IDs: `new_episodes` (default) and `new_episodes_{groupUuid}` in channel group `grp_new_episodes`; their creation, renaming and deletion with groups is 05's.
+
+`NewEpisodeNotifier.post(batch: List<NewEpisodes>)` is called once per engine run with the run's `newEpisodes` (not via `IngestionEvents`, so one run yields at most one notification per channel even across 300 feeds):
+
+1. Drop events with `initialFetch = true` or empty `episodeIds`.
+2. Load the rows (episode title, podcast display title, `artworkKey`, group memberships) in one query; drop episodes hidden by 04's visibility rules (the `VISIBLE` fragment, [02 Key queries](02-data-model.md#key-queries)).
+3. Per podcast, resolve the effective notification setting (podcast override → on if any of its groups has it on → global `feeds.notify_new_episodes`, default off) with `EffectiveSettingsResolver`; skip podcasts resolving to off.
+4. **Channel:** the first group by `sortOrder` among the podcast's groups whose own notification setting is on → `new_episodes_{uuid}`; none (the podcast or global setting enabled it) → `new_episodes`. An episode is therefore notified once even if its podcast is in two notifying groups.
+5. Per channel: merge with the currently shown notification of that channel (read `nd.episode_ids` from `NotificationManager.getActiveNotifications()` extras), keep the newest 50.
+6. Build: one episode → title = podcast title, text = episode title, large icon = cover from `ArtworkStore` (M4+, ≤ 256 px), tap → `neutrodyne://open/episode/{id}`; several → title "N new episodes", subtext = group name, `InboxStyle` with up to 6 lines "Podcast — Episode", tap → `neutrodyne://open/group/{groupUuid}` (default channel: the launcher intent, which opens Feeds). `setOnlyAlertOnce(true)`, `setAutoCancel(true)`, explicit `PendingIntent`s to `MainActivity` with `FLAG_IMMUTABLE`, no action buttons in v1.
+7. Post with `notify(tag = channelId, id = 5000, …)` (ID range 5000+); the system bundles ≥ 4 notifications, so no summary notification is posted.
+8. Before posting: `ensureChannels()` creates `new_episodes` and `grp_new_episodes` idempotently and, as a safety net, a missing group channel with the group's current name. Posting is skipped (and counted in diagnostics) when `POST_NOTIFICATIONS` is not granted (API 33+), `areNotificationsEnabled()` is false, or the channel's importance is `NONE`.
+
+**Permission rule:** never at launch. When the user switches a new-episode setting on (global, group or podcast — screens by 05/08) on API 33+ without the permission, the screen requests `POST_NOTIFICATIONS` right then; if denied, the setting stays on with an inline "Notifications are blocked — Open settings" row ([notification permission](https://developer.android.com/develop/ui/views/notifications/notification-permission)). Media notifications are exempt (06).
+
+---
+
+## Settings
+
+Keys follow 01's `SettingKey` registry ([01 DataStore files](01-foundation.md#datastore-files-and-typed-setting-keys)). Per-podcast and per-group refresh intervals and notification switches live in `podcast_settings`/`podcast_group_settings` (`refreshIntervalMinutes`, `notifyNewEpisodes`; UI by 05).
+
+| Key | Type | Default | File | UI location | Milestone |
+|---|---|---|---|---|---|
+| `feeds.refresh_interval_minutes` | Int32 ∈ {0 = manual only, 60, 120, 240, 480, 720, 1440} | 240 | `settings` | Settings › Feeds | M1 |
+| `feeds.refresh_wifi_only` | Bool | false | `settings` | Settings › Feeds | M1 |
+| `feeds.refresh_on_app_open` | Bool | true | `settings` | Settings › Feeds | M1 |
+| `feeds.backfill_paged_feeds` | Bool | true | `settings` | Settings › Feeds ("Load older episodes when subscribing") | M1 |
+| `feeds.show_notes_images` | Choice `ShowNotesImages` {ALWAYS, WIFI_ONLY, TAP_TO_LOAD} | TAP_TO_LOAD | `settings` | Settings › Feeds | M1 |
+| `feeds.notify_new_episodes` | Bool | false | `settings` | Settings › Notifications section of Feeds | M2 |
+| `discover.country` | Text ("" = device locale) | "" | `settings` | Settings › Discover | M7 |
+| `discover.apple_enabled` | Bool | true | `settings` | Settings › Discover | M7 |
+| `discover.fyyd_enabled` | Bool | true | `settings` | Settings › Discover | M7 |
+| `discover.podcastindex_enabled` | Bool (effective only with a key) | true | `settings` | Settings › Discover | M7 |
+| `discover.suggested_groups_dismissed` | Bool | false | `device_settings` | onboarding card (08) | M7 |
+| `feeds.scheduled_tick_minutes`, `feeds.scheduled_tick_unmetered` | Int32 (−1 = none), Bool | −1, false | `device_settings` | internal | M1 |
+| `feeds.last_run_finished_at`, `feeds.last_run_summary`, `feeds.last_run_stop_reason` | Int64, Text (JSON), Int32 | 0, "", −1 | `device_settings` | diagnostics (09) | M1 |
+
+The user's Podcast Index key and Basic-auth passwords are never in DataStore; they are `credential` rows ([Basic auth and CredentialStore](#basic-auth-and-credentialstore)).
+
+---
+
+## Testing
+
+Infrastructure, runners and CI wiring: [09 Test strategy](09-quality-and-release.md#test-strategy). Mitigates risk T8.
+
+### Golden corpus (`feeds/src/test/resources/feeds/`)
+
+Each fixture `<name>.xml` has `<name>.golden.json` (the `ParsedFeed` serialised with sorted keys and `explicitNulls = false`); a test compares them and 09's golden-update switch rewrites them. Real-world fixtures are trimmed and their text replaced, keeping structure and quirks; `README.md` records each origin URL. At least these 48 fixtures (M1 acceptance 1):
+
+| Area | Fixtures |
+|---|---|
+| Namespaces | `itunes-undeclared-prefix`, `itunes-uri-case-variant`, `itunes-custom-prefix`, `pc20-canonical-ns`, `pc20-github-alias-ns` (reference-feed quirks: `application.x-mpegURL`, `application/srt`, chapters typed `application/json`, deprecated `podcast:images`), `media-ns-no-trailing-slash` |
+| Text and encoding | `nbsp-outside-cdata`, `raw-html-in-description`, `double-escaped-html`, `cdata-description`, `windows1252-declared-utf8`, `utf16-bom`, `utf8-bom-utf16-declaration`, `latin1-declared`, `leading-whitespace-before-declaration` |
+| Identity | `duplicate-guids`, `missing-guids`, `missing-guid-and-enclosure`, `guid-is-permalink-false` |
+| Enclosures | `multiple-enclosures-audio-video`, `media-content-only`, `media-group-content`, `atom-link-enclosure`, `enclosure-type-missing`, `enclosure-octet-stream`, `enclosure-length-zero`, `hls-enclosure` |
+| Formats | `rss2-minimal`, `atom-xhtml-content`, `rdf-rss1`, `youtube-atom-channel`, `youtube-atom-playlist-title-videos` |
+| Paging and moves | `rfc5005-page1`, `rfc5005-page2`, `rfc5005-loop`, `fh-complete`, `new-feed-url-self`, `new-feed-url-other` |
+| P2.0 and chapters | `psc-chapters`, `item-persons-replace-channel`, `funding-and-transcripts`, `alternate-enclosure-integrity`, `medium-podcastL`, `update-frequency-complete` |
+| Dates and durations | `dates-rfc822-variants` (wrong weekday, `PDT`, `UT`, `Z`, two-digit year, German and French months), `dates-iso-variants` (offset, no zone, date only, space separator, garbage), `durations-variants` (`H:MM:SS`, `M:SS`, seconds, fraction, empty, > 48 h) |
+| Artwork | `artwork-precedence` (itunes text-only href, `podcast:image` widths, RSS image fallback) |
+| Hostile | `hostile-entity-doctype`, `hostile-deep-nesting`, `oversized-text` |
+| Scale | `large-831-items` (generated, 3.5 MB, structure of 99% Invisible): parses in < 1 s on the JVM |
+
+Also: `no-media-blog` and `empty-channel` for acceptance rules. The corpus runs (a) on the JVM with kxml2, (b) under Robolectric with `android.util.Xml.newPullParser()`, (c) once per CI `main` run as an instrumented test on GMD with the platform parser; all three must match the goldens (kxml2 vs AOSP differences).
+
+### Unit and integration tests
+
+| Test | Env | Cases | Milestone |
+|---|---|---|---|
+| `FeedDatesTest`, `DurationsTest`, `EnclosureTypesTest`, `UrlNormalizerTest`, `EpisodeKeysTest`, `PodcastGuidTest`, `PrivateFeedUrlsTest`, `TimestampLinkifierTest`, `AddInputNormalizerTest` | JVM, TestParameterInjector tables | every row of the rules in this document; `PodcastGuid.derive` reproduces both spec examples; `forIdentity` idempotent; times of day not linkified | M1 (normaliser wrappers M7) |
+| `ShowNotesSanitizerTest` | JVM | script/style/iframe removed, `javascript:` links dropped, 1×1 pixels removed, plain text paragraphs, double-escaped input, caps | M1 |
+| `FeedFetcherTest` | MockWebServer | 304 with validators; weak ETag sent verbatim; `If-Modified-Since` echoes the server string; no validators after a parser bump and on the fortnightly unmetered fetch; gzip body; 32 MB cap; HTML 200 → `NOT_A_FEED`; 401 Basic → challenge flagged; 401 Bearer; UA required by the server; 429 with seconds and HTTP-date `Retry-After`; 503; 410; redirect loop; 301→301→200 sets `permanentUrl`; 301→302→200 and 302 alone do not | M1 |
+| `IngestDiffTest` | JVM + in-memory DB (02 `TestDb`) | subscribe → v2 with rewritten GUIDs → v3 with removed items: no duplicates, `episode_state` kept, removed items `inFeed = 0` (M1 acceptance 3); duplicate GUIDs in one document; enclosure prefix rotation; query-only change; title edit updates `contentHash`; future-dated item clamped; undated feed order stable; back-catalogue dump guard; re-published old episode not new; `INITIAL` never new; partial-window rule for paged and YouTube documents; empty channel and HTML body change nothing; unique violation aborts only that feed; older-key-version rekey (test-only `EpisodeKeys` v2) | M1 |
+| `FeedMovesTest` | MockWebServer + DB | 301 chain updates `feedUrl` only after a successful parse; alias written; collision merges into the key owner; `new-feed-url` self-reference ignored, implausible target stays pending, plausible target adopted; scheme-only change without alias | M1 |
+| `PagingTest` | MockWebServer + DB | 50-page cap; loop; no-new-keys stop; refresh never rewinds a session; imports do not backfill; "Load older" resumes | M1 |
+| `RefreshEngineTest` | WorkManager `TestDriver` + fakes + `TestClock` | only due feeds fetched; slack; force marks due and survives continuation; mutex; ≤ 6 concurrent and ≤ 2 per host (MockWebServer dispatcher counts); deadline enqueues `refresh-continuation` and cancelling mid-run leaves no partial ingest (M1 acceptance 4); `nextRefreshAt` table; possibly-dead derivation | M1 |
+| `RefreshSchedulerTest` | JVM | tick = min effective interval with 60-min floor; manual-only cancels; unchanged spec does not re-enqueue; API < 31 request not expedited | M1, M2 |
+| `CredentialStoreTest` | JVM with software `CipherProvider`; instrumented with Keystore | round trip; one row per origin; AAD mismatch fails; key loss sets `needsCredentials`; `awaitLoaded` before first lookup | M1 |
+| `NewEpisodeNotifierTest` | Robolectric | channel choice; one notification per channel per run (M2 acceptance 7); merge with an active notification; initial fetch silent; permission denied posts nothing; hidden YouTube items skipped | M2 |
+| `AddPodcastResolverTest` | MockWebServer + fakes | direct feed; Apple link via recorded lookup JSON (M7 acceptance 4); autodiscovery fixtures: `<link rel=alternate>` page, Apple-link-only page, WordPress `/feed/podcast`, several candidates → `Choose` (M7 acceptance 3); OPML → `SubscriptionList`; Spotify; NoMedia vs empty feed; credentials flow; already subscribed exact and by GUID; preview eviction → re-fetch | M1, M7 |
+| `SearchRepositoryTest` | MockWebServer with recorded JSON + `TestClock` | merged, de-duplicated Apple + fyyd for "news"; one failing provider → partial results; hits without `feedUrl` dropped (M7 acceptance 1); ≤ 20 Apple requests per minute (M7 acceptance 2); PI hidden without key, visible with a user key stored encrypted (M7 acceptance 5); PI auth header for a fixed clock; clock-skew retry; RRF order; cache hit | M7 |
+
+**Nightly live canary** (non-blocking, workflow owned by 09): fetch and parse the ~30 public feeds in `feeds/canary/feeds.txt` (including the Podcasting 2.0 reference feed) on the JVM and report new warnings or parse failures; it never gates merges and never runs YouTube.
+
+---
+
+## Delivery by milestone
+
+| Milestone | Delivered in this area |
+|---|---|
+| [M1](../PLAN.md#m1-subscribe-and-ingest-rss) | `:feeds` parser, model, namespaces, dates, durations, enclosure types, artwork candidates, `EpisodeKeys`, `UrlNormalizer`, `PodcastGuid`, `PrivateFeedUrls`, `ShowNotesSanitizer` + block model + snippet + linkifier, golden corpus ≥ 40; `FeedFetcher`, `FeedIngestor`, `FeedRefresher`, `RssSourceAdapter`, `RefreshWorker`, `RefreshScheduler` (`refresh-periodic`, `refresh-now`, `refresh-continuation`), app-foreground trigger, `CredentialStore`, moves, aliases, merges, RFC 5005 paging; add by URL for direct feed URLs with scheme normalisation, in-memory preview, `SubscribeUseCase` (RSS), unsubscribe, `PodcastRepository`/`EpisodeRepository` basics; refresh settings |
+| [M2](../PLAN.md#m2-groups-and-group-feeds) | `RefreshScope.Group` and `refreshFeed(source)`; effective refresh intervals in tick computation (05 resolver); `NewEpisodeNotifier` with per-group channels, permission rule; `markFeedPlayed`; `IngestionEvents` consumers start |
+| [M3](../PLAN.md#m3-import-export-and-backup) | Engine API for `ImportFetchWorker` (`FeedRefresher.run`, `events`, outcomes incl. `Merged`, `firstIngest`, `sameGuidAs`); pending-podcast rules (autodiscovery once, no backfill); `editFeedUrl`; `PrivateFeedUrls` consumed by 05's export warning |
+| [M4](../PLAN.md#m4-playback-core) | Artwork pin requests on subscribe and artwork change; notification large icons; unsubscribe pauses current playback |
+| [M5](../PLAN.md#m5-playback-features-and-system-surfaces) | Show-notes timestamp spans wired to 06's seek (M5 acceptance 5) |
+| [M6](../PLAN.md#m6-downloads) | Unsubscribe and merge delete download files through `DownloadController` |
+| [M7](../PLAN.md#m7-discovery) | `SearchRepository` with Apple, fyyd, Podcast Index (BYOK); charts and genre mapping; suggested groups; host recognition, autodiscovery, probes, chooser, wrapper unwrapping; `MainActivity` VIEW/SEND filters; Spotify explanation; provider disclosure |
+| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | `YouTubeSourceAdapter` hooks (rules by 04), `YouTubeOutageMonitor`, `SubscribeUseCase.youTube`, `AddResolution.YouTube` live (removes `YouTubeNotYetSupported`) |
+| [M9](../PLAN.md#m9-youtube-playback-and-downloads-in-foss) | `afterIngest` enrichment call (`foss`) |
+| [M11](../PLAN.md#m11-release-hardening-and-v10) | Diagnostics content (run summary, stop reasons, parse warnings), nightly live canary, performance check of the 300-feed refresh |
+
+---
+
+## New names introduced here
+
+| Name | Kind | Module |
+|---|---|---|
+| `ParsedFeed`, `ParsedEpisode`, `Enclosure`, `AlternateEnclosure`, `ArtworkCandidate`, `Person`, `Funding`, `TranscriptRef`, `InlineChapter`, `Paging`, `ParseWarning`, `WarningCode`, `FeedFormat` | parser model | `:feeds` |
+| `FeedParser.parse`, `ParseResult`, `ParseFailure`, `ParseLimits`, `PullParserFactory`, `Namespaces`, `HtmlEntities`, `InnerXml`, `PrologGuard`, `FeedDates`, `Durations`, `EnclosureTypes`, `FeedSniffer` | parsing | `:feeds` |
+| `KeyInput`, `EpisodeKeys.primary/fallbacks`, `EpisodeContentHash`, `TitleMatch`, `UrlNormalizer` members, `PrivateFeedUrls` | identity | `:feeds` |
+| `ShowNotesDocument`, `NoteBlock`, `NoteSpan`, `PlainTextSnippet`, `TimestampLinkifier` | show notes | `:feeds` |
+| `AddInputNormalizer`, `NormalizedInput`, `HostRecognizer`, `Autodiscovery`, `DiscoveredFeed` | add flow | `:feeds` |
+| `AppleSearchParser`, `AppleChartParser`, `FyydSearchParser`, `PodcastIndexParser`, `AppleGenres` | directory parsers | `:feeds` |
+| `FeedErrorKind` values, `RefreshScope`, `RefreshStatus`, `FeedPreview`, `PreviewEpisode`, `FeedCandidate`, `AlreadySubscribed`, `BasicCredentials`, `DirectoryHit`, `ProviderId`, `ProviderStatus`, `ProviderInfo`, `SearchResults`, `ChartGenre`, `ShowNotes`, `ShowNoteBlock`, `ShowNoteSpan`, `ShowNotesImages`, `LibraryTile`, `PodcastDetail`, `EpisodeDetail`, `FeedInfo`, `CategoryCount` | model types | `:core:model` |
+| `AddResolution`, `AddPodcastError`, `SubscribeError`; `RefreshController.refreshFeed/loadOlderEpisodes`; `PodcastRepository`/`EpisodeRepository` members above | domain contracts | `:core:domain` |
+| `FeedFetcher` types `FeedRequest`, `FetchOutcome`, `Sniff`; `FeedTempFiles`; `FeedIngestor`, `IngestContext`, `IngestMode`, `FetchMeta`, `RowHint`, `IngestResult`; `FeedRefresher` types `RefreshRequest`, `RefreshOrigin`, `RefreshReport`, `FeedOutcome`, `FeedRunEvent`; `SourceAdapter`, `FetchMode`, `AdapterResult`, `RssSourceAdapter`, `YouTubeSourceAdapter`, `YouTubeOutageMonitor`; `RefreshForegroundObserver`; `PreviewCache`; `CipherProvider`; `IngestionEventBus`; `PodcastSearchProvider`, `AppleSearchProvider`, `FyydSearchProvider`, `PodcastIndexSearchProvider`, `TokenBucket` | implementation | `:core:data` |
+| `DueFeed` | name for 02's `dueForRefresh` projection | `:core:database` (02) |
+| `feeds.*`, `discover.*` keys in [Settings](#settings) | setting keys | `:core:model` registry |
+| Keystore alias `neutrodyne_credentials_v1`; notification extra `nd.episode_ids`; notification ID 5000 with tag = channel ID | constants | `:core:data` |
+
+---
+
+## Open questions
+
+1. **Architect review: show-notes block model placement.** Following 01's default (option b), `:feeds` produces `ShowNotesDocument` and `:core:data` maps it 1:1 into the `:core:model` mirror `ShowNotes` that 08 renders. Allowing `:feeds → :core:model` (option a) would remove the duplicate types and the mapper; this document recommends (a) and changes only the type location if adopted.
+2. **Architect review: `refresh-now` not expedited on API 26–30.** The skeleton lists `refresh-now` as expedited; below API 31 that requires a foreground notification (`getForegroundInfo`). This document drops expedition there instead of adding a refresh notification channel. 05's `import-{sessionId}` has the same constraint.
+3. **Architect review: one credential per origin.** `CredentialLookup` (01) is keyed by origin only, so two private feeds on one host with different accounts cannot coexist. Supporting them would need a per-request credential hint (request tag) in `AuthInterceptor` and 06/07's enclosure requests.
+4. **Owner 02:** add `DueFeed` as the named `dueForRefresh` projection; give `updateFeedFields` the null-preserving rule for `durationMs`, `imageUrl`/`artworkKey`, `chaptersUrl`; add an enrichment write (`durationMs`, `availability`) for 04's `afterIngest`.
+5. **Owner 04:** confirm the `SourceAdapter` contract (`RowHint`, `partial = true`, transient 404, ≥ 15 min schedule) and the name and location of `YouTubeOutageMonitor`.
+6. Show-notes images default `TAP_TO_LOAD` is a privacy-first product choice (proposed as a PO question).
+7. Dump-guard numbers (20 qualifying → newest 3) and the fortnightly unmetered full fetch are first estimates; M11 diagnostics data may tune them.
+8. Unverified facts to check in their milestone: Apple genre IDs other than 1318/1489/1483/1303 and the chart JSON paths (M7); Podcast Index response field names (M7); Google Podcasts link encoding (M7); fyyd rate limits and terms; Android 17's exact "local network" address set (01).
+9. Apple's search terms grant no explicit licence for directory use (risk L3); if Apple objects, fyyd becomes the default and Apple an opt-in.
+
+---
+
+## Sources
+
+Checked 2026-10-04 by the research behind this plan unless marked otherwise.
+
+Parsing and formats:
+- AOSP KXmlParser (`relaxed`, BOM and declaration sniffing, `defineEntityReplacementText`) — https://android.googlesource.com/platform/libcore/+/refs/heads/main/xml/src/main/java/com/android/org/kxml2/io/KXmlParser.java
+- kxml2 2.3.0 — https://repo1.maven.org/maven2/net/sf/kxml/kxml2/2.3.0/kxml2-2.3.0.pom
+- prof18 RSS-Parser 6.1.8 (rejected) — https://repo1.maven.org/maven2/com/prof18/rssparser/rssparser/maven-metadata.xml · https://github.com/prof18/RSS-Parser · https://raw.githubusercontent.com/prof18/RSS-Parser/master/rssparser/src/commonMain/kotlin/com/prof18/rssparser/internal/RssKeyword.kt
+- ROME 2.1.0 (rejected) — https://repo1.maven.org/maven2/com/rometools/rome/maven-metadata.xml
+- AntennaPod licence (GPL-3.0, behaviour reference only) — https://raw.githubusercontent.com/AntennaPod/AntennaPod/develop/LICENSE
+- Podcasting 2.0 namespace (URI and GitHub alias, tags, `images` deprecation) — https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/1.0.md
+- `podcast:guid` UUIDv5 — https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/tags/guid.md
+- `podcast:chapters`, JSON chapters, `podcast:transcript` — https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/tags/chapters.md · https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/examples/chapters/jsonChapters.md · https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/tags/transcript.md
+- Podcasting 2.0 reference feed quirks — https://feeds.podcastindex.org/pc20.xml
+- Podlove Simple Chapters — https://podlove.org/simple-chapters/
+- Apple: `itunes:duration` forms, artwork 1400–3000 px — https://help.apple.com/itc/podcasts_connect/en.lproj/itcb54353390.html
+- Apple: change the RSS feed URL (301 + `new-feed-url` for ≥ 4 weeks, stable GUIDs) — https://podcasters.apple.com/support/change-the-rss-feed-url
+- RFC 5005 Feed Paging and Archiving (not re-fetched) — https://www.rfc-editor.org/rfc/rfc5005
+- RSS autodiscovery — https://www.rssboard.org/rss-autodiscovery
+- jsoup 1.23.2 and `Safelist` — https://repo1.maven.org/maven2/org/jsoup/jsoup/ · https://jsoup.org/apidocs/org/jsoup/safety/Safelist.html
+- Compose `AnnotatedString.fromHtml` (fallback considered) — https://developer.android.com/jetpack/androidx/releases/compose-ui · https://developer.android.com/develop/ui/compose/text/style-text
+- Real-world feeds used for facts: 99% Invisible (3.5 MB, 831 items, weak ETag, `max-age=3600`, self-referential `new-feed-url`) — https://feeds.simplecast.com/BqbsxVfO · YouTube channel feed (15 entries, no validators, `max-age=900`) — https://www.youtube.com/feeds/videos.xml?channel_id=UCBJycsmduvYEL83R_U4JriQ
+
+Networking and platform:
+- OkHttp 5.5.0 changelog — https://raw.githubusercontent.com/square/okhttp/master/CHANGELOG.md
+- Network security config (cleartext, user CAs, Certificate Transparency) — https://developer.android.com/privacy-and-security/security-config
+- Android 17 local network permission and behaviour changes — https://developer.android.com/privacy-and-security/local-network-permission · https://developer.android.com/about/versions/17/behavior-changes-17
+- `security-crypto` deprecation — https://developer.android.com/jetpack/androidx/releases/security
+- Android Keystore (not re-checked 2026-10-04) — https://developer.android.com/privacy-and-security/keystore
+- WorkManager 2.12.0 and limits (periodic minimum, expedited quota, `getForegroundInfo` before Android 12, backoff) — https://developer.android.com/jetpack/androidx/releases/work · https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work
+- Expedited job constraints — https://developer.android.com/reference/android/app/job/JobInfo.Builder#setExpedited(boolean)
+- Long-running workers (10-minute window) — https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running
+- Android 16 job quotas and stop reasons — https://developer.android.com/about/versions/16/behavior-changes-all · quota table https://developer.android.com/topic/performance/power/power-details
+- Battery and standby buckets, no exemption requests — https://developer.android.com/develop/background-work/background-tasks/optimize-battery · https://developer.android.com/training/monitoring-device-state/doze-standby
+- Notification runtime permission — https://developer.android.com/develop/ui/views/notifications/notification-permission
+- Manifest `<data>` matching — https://developer.android.com/guide/topics/manifest/data-element
+- Play target API — https://developer.android.com/google/play/requirements/target-sdk
+
+Directories:
+- Apple iTunes Search API (no key, ~20 calls/min) — https://performance-partners.apple.com/search-api
+- Podcast Index API 1.12.1 — https://podcastindex-org.github.io/docs-api/pi_api.json
+- Podcast Index Terms of Service §4.2.1 — https://github.com/Podcastindex-org/legal/blob/main/TermsOfService.md
+- AntennaPod's committed Podcast Index key (not followed) — https://raw.githubusercontent.com/AntennaPod/AntennaPod/develop/net/discovery/build.gradle
+- fyyd API v0.2 — https://codeberg.org/eazy/fyyd-api
+- gpodder.net state (not used) — https://forum.antennapod.org/t/gpodder-down/423
+- F-Droid NonFreeNet anti-feature — https://f-droid.org/docs/Anti-Features/
+
+Prior art:
+- AntennaPod refresh scheduler and 20 s manual cooldown (`FeedUpdateManagerImpl.java`, `FeedUpdateWorker.java`), duplicate guesser behaviour (`FeedItemDuplicateGuesser`) — https://github.com/AntennaPod/AntennaPod
+- AntennaPod: exact-time refresh impossible — https://forum.antennapod.org/t/option-to-refresh-podcasts-at-specific-time/5222
+- Kasts 26.04 (same-server updates sequential) — https://apps.kde.org/kasts/
+- Google Podcasts malformed OPML (refugee input) — https://forum.antennapod.org/t/cant-import-google-podcasts-opml-file/5363
+- Spotify has no public audio URL — https://openrss.org/work/156

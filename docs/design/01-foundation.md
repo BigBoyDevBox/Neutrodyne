@@ -171,6 +171,7 @@ androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", versi
 androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity" }
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+androidx-compose-runtime = { module = "androidx.compose.runtime:runtime" }
 androidx-compose-ui = { module = "androidx.compose.ui:ui" }
 androidx-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
 androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
@@ -398,7 +399,7 @@ Root `build.gradle.kts` contains only `plugins { alias(libs.plugins.neutrodyne.q
 |---|---|---|
 | `neutrodyne.android.application` | `:app` | `com.android.application`; [common Android config](#common-android-configuration); `applicationId`, version from `gradle.properties`; flavors and build types ([Build flavors](#build-flavors)); `androidResources.generateLocaleConfig = true`; `dependenciesInfo { includeInApk = false; includeInBundle = false }`; `bundle.language.enableSplit = false` (Unverified necessity for per-app language with AABs; harmless); applies `app.cash.licensee`, `com.jraska.module.graph.assertion`, `com.mikepenz.aboutlibraries.plugin`; registers [`verifyDependencyPolicy`, `verifyManifestPermissions`](#gradle-side-policy-tasks); applies `neutrodyne.android.lint` and `neutrodyne.android.testing` |
 | `neutrodyne.android.library` | every Android library | `com.android.library`; common Android config; `namespace` derived from the path; `consumerProguardFiles("consumer-rules.pro")` when present; `buildFeatures { buildConfig = false; aidl = false; shaders = false }`; applies `neutrodyne.android.lint` and `neutrodyne.android.testing` |
-| `neutrodyne.android.compose` | `:app`, `:core:designsystem`, `:core:ui`, features | `org.jetbrains.kotlin.plugin.compose`; `buildFeatures.compose = true`; `platform(compose-bom)` on `implementation`, `androidTestImplementation`, `testImplementation`; `ui-tooling-preview`; `debugImplementation(ui-tooling, ui-test-manifest)`; `composeCompiler { stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf")); if (-PcomposeReports) reportsDestination/metricsDestination = build/compose }`. Adds `-opt-in=androidx.compose.material3.ExperimentalMaterial3Api` **only** when the project path is `:core:designsystem` |
+| `neutrodyne.android.compose` | `:app`, `:core:designsystem`, `:core:ui`, features | `org.jetbrains.kotlin.plugin.compose`; `buildFeatures.compose = true`; `platform(compose-bom)` on `implementation`, `androidTestImplementation`, `testImplementation`; `ui-tooling-preview`; `debugImplementation(ui-tooling, ui-test-manifest)`; `composeCompiler { stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf")); if (-PcomposeReports) reportsDestination/metricsDestination = build/compose }`. Adds `-opt-in=androidx.compose.material3.ExperimentalMaterial3Api` **only** when the project path is `:core:designsystem`; `Nd*` wrappers therefore must not expose experimental Material 3 types in their public signatures ([08 Theming and colour](08-ui-ux.md#theming-and-colour)) |
 | `neutrodyne.android.feature` | `:feature:*` | applies `neutrodyne.android.library`, `neutrodyne.android.compose`, `neutrodyne.hilt`; adds `:core:{domain, model, common, designsystem, ui, navigation}`, `lifecycle-runtime-compose`, `lifecycle-viewmodel-compose`, `lifecycle-viewmodel-navigation3`, `hilt-lifecycle-viewmodel-compose`, `navigation3-runtime`, `adaptive-navigation3`, `paging-compose`, `kotlinx-collections-immutable`. `:*:api` modules are added explicitly per feature |
 | `neutrodyne.android.testing` | applied by application/library plugins | Hook only; content owned by [09 Test infrastructure](09-quality-and-release.md#test-infrastructure) (Robolectric `sdk=36`, JDK 21, `de_DE` + `America/St_Johns`, golden switch, `okhttp-bom` and Robolectric forcing, orchestrator, GMD definitions). Adds `testImplementation(project(":core:testing"))` except in `:core:testing` itself |
 | `neutrodyne.android.lint` | all modules (JVM modules via `com.android.lint`) | Hook only; gates owned by [09 Static analysis](09-quality-and-release.md#static-analysis) (`warningsAsErrors`, baseline, SARIF, `checkDependencies` in `:app`) |
@@ -443,8 +444,8 @@ These run in `check`; CI (09) only invokes Gradle.
 | `licenseeFossRelease`, `licenseePlayRelease` | `:app` | a runtime dependency's licence is not allowed ([allow-list](#licensee-allow-list)) |
 | `verifyDependencyPolicy` | `:app` | `playReleaseRuntimeClasspath` contains `project :youtube:streams`, `com.github.teamnewpipe:*`, `com.github.TeamNewPipe:*`, `org.mozilla:rhino*`, or any artifact whose Licensee report SPDX is GPL/LGPL/AGPL/MPL (except `desugar_jdk_libs*`); **either** release classpath contains a banned artifact (list above); `fossReleaseRuntimeClasspath` contains Google Play services / Firebase / Play Core / Crashlytics / Sentry |
 | `verifyManifestPermissions` | `:app` | the merged manifest of `fossRelease` or `playRelease` (`SingleArtifact.MERGED_MANIFEST`) declares a `uses-permission` not listed in `app/policy/permissions.txt`, or lacks one listed there |
-| `checkSpdxHeaders` | root | a `*.kt`/`*.java`/`*.kts` under `youtube/streams/` lacks `// SPDX-License-Identifier: GPL-3.0-or-later` as its first line, or any file elsewhere contains `SPDX-License-Identifier: (A\|L)?GPL` or `MPL` |
-| `checkBannedApis` | root | source outside `core/designsystem/` contains `ExperimentalMaterial3Api` or `ExperimentalMaterial3ExpressiveApi`; any source contains `okhttp3.Cache(`, `.cache(Cache(`, `OkHttpClient()` or `OkHttpClient.Builder()` outside `core/network/`, `GlobalScope`, `override fun onBackPressed`, `collectAsState()` in `feature/`, or `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` |
+| `checkSpdxHeaders` | root | a `*.kt`/`*.java`/`*.kts` under `youtube/streams/` lacks `// SPDX-License-Identifier: GPL-3.0-or-later` as its first line, or any `*.kt`/`*.java`/`*.kts` file elsewhere contains `SPDX-License-Identifier: (A\|L)?GPL` or `MPL` (Markdown and other docs are not scanned) |
+| `checkBannedApis` | root | scans only `*/src/main/**` Kotlin sources and manifests (tests may build their own clients): source outside `core/designsystem/` contains `ExperimentalMaterial3Api` or `ExperimentalMaterial3ExpressiveApi`; any source contains `okhttp3.Cache(`, `.cache(Cache(`, `OkHttpClient()` or `OkHttpClient.Builder()` outside `core/network/`, `GlobalScope`, `override fun onBackPressed`, `collectAsState()` in `feature/`, or `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` |
 
 `checkBannedApis` is a plain text scan (fast, configuration-cache safe); false positives are fixed by rewording, never by suppression lists.
 
@@ -462,21 +463,21 @@ Every module except `:benchmark` (M11), `:playback:cast` and `:feature:widgets` 
 | `:core:model` | `neutrodyne.jvm.library` | — | — | M0 |
 | `:core:common` | `.jvm.library`, `.hilt` | — | coroutines-core, dagger (for `javax.inject`) | M0 |
 | `:core:domain` | `.jvm.library`, `.hilt` | `api`: `:core:{model, common}`, `:playback:api`, `:download:api`, `:youtube:api` | `api(paging-common)`, coroutines-core | M0 |
-| `:core:navigation` | `.android.library`, `kotlin.plugin.serialization` | — | `api(navigation3-runtime)`, kotlinx-serialization-json | M0 |
+| `:core:navigation` | `.android.library`, `kotlin.plugin.serialization` | — | `api(navigation3-runtime)`, `api(compose-runtime)` via the BOM (for `staticCompositionLocalOf`; no Compose compiler plugin), kotlinx-serialization-json | M0 |
 | `:core:database` | `.android.library`, `.hilt`, `.room` | `:core:{model, common}` | (from `neutrodyne.room`), kotlinx-serialization-json | M1 |
 | `:core:datastore` | `.android.library`, `.hilt` | `:core:{model, common}` | datastore-preferences | M0 |
 | `:core:network` | `.android.library`, `.hilt` | `:core:{model, common}` | `api(okhttp)` via BOM, okhttp-coroutines, okio | M0 |
-| `:core:data` | `.android.library`, `.hilt`, `kotlin.plugin.serialization` | `:core:{domain, model, common, database, datastore, network, artwork}`, `:feeds`, `:youtube:api` | work-runtime, androidx-hilt-work (+ compiler), okhttp-coroutines, kotlinx-serialization-json, lifecycle-process | M1 (M0: stub with the `SettingsRepository` binding placeholder) |
+| `:core:data` | `.android.library`, `.hilt`, `kotlin.plugin.serialization` | `:core:{domain, model, common, database, datastore, network, artwork}`, `:feeds`, `:youtube:api` | work-runtime, androidx-hilt-work (+ compiler), okhttp-coroutines, kotlinx-serialization-json, lifecycle-process | M1 (M0: stub that binds `CredentialLookup.None`) |
 | `:core:artwork` | `.android.library`, `.hilt` | `:core:{model, common, database, network}`, `:youtube:api` | coil-core, coil-network-okhttp, work-runtime, androidx-hilt-work (+ compiler); M10: material-color-utilities | M1 (Coil components), M4 (store) |
 | `:core:designsystem` | `.android.library`, `.android.compose` | `:core:model` | compose-core bundle, material3-adaptive-navigation-suite, graphics-shapes, coil-compose, kotlinx-collections-immutable; M10: material-color-utilities | M0 |
 | `:core:ui` | `.android.library`, `.android.compose` | `:core:{designsystem, model, common}` | coil-compose, kotlinx-collections-immutable, reorderable (M4) | M1 |
 | `:core:testing` | `.android.library`, `.hilt` | `:core:{domain, model, common}`, `:playback:api`, `:download:api`, `:youtube:api` | `api`: junit4, truth, turbine, coroutines-test, coil-test, hilt-android-testing | M0 |
 | `:feeds` | `.jvm.library`, `kotlin.plugin.serialization` | — | jsoup, kotlinx-serialization-json; `compileOnly` + `testImplementation(kxml2)` | M1 |
-| `:playback:api` | `.jvm.library` | `:core:{model, common}` | coroutines-core | M0 |
+| `:playback:api` | `.jvm.library`, `.hilt` (JVM: `@Inject`/qualifiers only) | `:core:{model, common}` | coroutines-core | M0 |
 | `:playback:impl` | `.android.library`, `.hilt` | `:playback:api`, `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}` | media3-exoplayer, -session, -datasource-okhttp, -common-ktx, -inspector (M5), kotlinx-coroutines-guava | M4 |
-| `:download:api` | `.jvm.library` | `:core:{model, common}` | coroutines-core | M0 |
+| `:download:api` | `.jvm.library`, `.hilt` (JVM) | `:core:{model, common}` | coroutines-core | M0 |
 | `:download:impl` | `.android.library`, `.hilt` | `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}` | work-runtime, androidx-hilt-work (+ compiler), okhttp-coroutines | M6 |
-| `:youtube:api` | `.jvm.library` | `:core:{model, common}` | coroutines-core | M3 (classifier), M8 |
+| `:youtube:api` | `.jvm.library`, `.hilt` (JVM) | `:core:{model, common}` | coroutines-core | M3 (classifier), M8 |
 | `:youtube:impl` | `.android.library`, `.hilt` | `:youtube:api`, `:core:{model, common, network}` | okhttp-coroutines, kotlinx-serialization-json, jsoup | M8 |
 | `:youtube:streams` | `.android.library`, `.hilt` — **GPL-3.0-or-later** | `:youtube:api`, `:core:{model, common, network}` | M9: newpipe-extractor, rhino + rhino-engine (strict 1.8.1) | M9 (M0 stub) |
 | `:feature:feeds` | `neutrodyne.android.feature` | + `:playback:api`, `:download:api`, `:youtube:api` | — | M1 (All), M2 |
@@ -500,7 +501,7 @@ Every module except `:benchmark` (M11), `:playback:cast` and `:feature:widgets` 
 
 ## Dependency rules
 
-Serves N11, N8. Delivered in M0 (enforced from the first commit). Implements PLAN [5.1](../PLAN.md#51-module-graph) rules 1–5 and the canonical rule list verbatim, plus explicit rules for the modules that list leaves open (marked ⊕; consistent with the PLAN 5.1 graph).
+Serves N11, N8. Delivered in M0 (enforced from the first commit). Rules 1–9 expand PLAN [5.1](../PLAN.md#51-module-graph) rules 1–5 module by module; rules 10–13 (marked ⊕) make explicit the edges the PLAN 5.1 graph implies but its rule list leaves open.
 
 | # | Rule |
 |---|---|
@@ -739,7 +740,7 @@ interface AppInitializer {
 | Order | Initializer | Module | Owner | From |
 |---|---|---|---|---|
 | 10 | Notification channels and the `grp_new_episodes` group (each module registers its own; posting code also calls the idempotent `ensureChannels()`) | `:playback:impl`, `:download:impl`, `:core:data` | 06, 07, 03/05 | M2–M6 |
-| 100 | Open the database off the main thread (runs migrations, fires Room `onCreate` on a fresh install) | `:core:database` | 02 | M1 |
+| 100 | `DatabaseOpener.awaitOpen()` on IO: opens the database, runs migrations or recovery, fires Room `onCreate` on a fresh install ([02](02-data-model.md#conventions)) | `:core:database` | 02 | M1 |
 | 110 | First-launch restore check (fresh DB + `files/backup/auto-snapshot.zip`) | `:core:data` | 05 | M3 |
 | 200 | Unique periodic work: `refresh-periodic` (03), `backup-auto-snapshot` (05), `download-cleanup` (07), `db-maintenance` (02), all `UPDATE` | owning modules | 03, 05, 07, 02 | M1, M3, M6, M11 |
 | 210 | `download-reconcile` one-time `KEEP` | `:download:impl` | 07 | M6 |
@@ -765,15 +766,16 @@ sequenceDiagram
     S->>S: 10 channels, 100 database open, 110 restore check, 200 periodic work, 210 reconcile
   end
   Z->>M: onCreate (launcher, notification or deep link)
-  M->>M: installSplashScreen, keep while StartupState not ready, at most 400 ms
+  M->>M: installSplashScreen, keep until device_settings loaded and database open, at most 400 ms
   M->>M: enableEdgeToEdge, route intent, setContent
+  M->>M: StartupGate shown until database open, then NavDisplay
 ```
 
 ```kotlin
 @HiltAndroidApp
 class NeutrodyneApplication : Application(), Configuration.Provider, SingletonImageLoader.Factory {
     @Inject lateinit var initializers: dagger.Lazy<Set<@JvmSuppressWildcards AppInitializer>>
-    @Inject @ApplicationScope lateinit var appScope: dagger.Lazy<CoroutineScope>
+    @Inject @field:ApplicationScope lateinit var appScope: dagger.Lazy<CoroutineScope>
 
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(base)
@@ -796,7 +798,12 @@ class NeutrodyneApplication : Application(), Configuration.Provider, SingletonIm
 }
 ```
 
-**Splash hold rule:** `installSplashScreen().setKeepOnScreenCondition { !startup.ready.value }` where `StartupViewModel.ready` becomes true when `DeviceSettingsStore` has emitted its first value (the persisted tab and group selection needed for the first frame) or after 400 ms, whichever is first. The splash never waits for the network, the database, migrations or a restore; screens show their own loading states (cold-start budget N5, [09 Performance budgets](09-quality-and-release.md#performance-budgets)).
+**Splash and start-up gate.** `StartupViewModel` (`:app`) exposes `StartupState(deviceSettingsLoaded, database: Pending | Ready | Recovered(cause) | Failed)`, fed by the first `DeviceSettingsStore` emission (the persisted tab and group selection needed for the first frame) and by `DatabaseOpener.awaitOpen()` ([02 Error handling and recovery](02-data-model.md#error-handling-and-recovery)).
+
+1. `installSplashScreen().setKeepOnScreenCondition { !state.deviceSettingsLoaded || (state.database == Pending && elapsed < 400 ms) }`: the system splash covers the normal case (opening an up-to-date database takes milliseconds) and never stays longer than 400 ms (cold-start budget N5, [09 Performance budgets](09-quality-and-release.md#performance-budgets)).
+2. The root composable renders `StartupGate` (visuals: [08](08-ui-ux.md#onboarding-and-empty-states)) instead of `NavDisplay` while `database == Pending`, so **no feature ViewModel, and therefore no repository, is constructed before the database is open** (02's `requireDatabase()` throws on the main thread before that). A long migration shows "Updating your library…" there; `Recovered`/`Failed` show 02's recovery messages.
+3. Nothing in start-up waits for the network or a snapshot restore; restore progress is shown by 05's flow after the gate opens.
+4. Before M1 (no database) `database` starts as `Ready`.
 
 **Process model:** single main process plus ACRA's `:acra`. No component is `directBootAware`; media-button events before first unlock are ignored by the platform, which is acceptable.
 
@@ -857,7 +864,7 @@ Serves N11. Delivered in M0 (graph skeleton), extended per milestone. Honours [D
 | Base `OkHttpClient`, `@HttpClient(kind)` derived clients, `UserAgentInterceptor`, `AuthInterceptor`, `NetErrorClassifier`, `NetworkMonitor` → `ConnectivityNetworkMonitor` | `:core:network` `NetworkModule` | Singleton | `@Singleton` |
 | `CredentialLookup` | M0: `:core:data` stub binds `CredentialLookup.None`; M1: `CredentialStore` (03) | Singleton | `@Singleton` |
 | `SQLiteDriver` | `:core:database` `SqliteDriverModule` (`BundledSQLiteDriver()`) | Singleton | `@Singleton` |
-| `NeutrodyneDatabase`, DAOs | `:core:database` `DatabaseModule` | Singleton | DB `@Singleton`; DAO providers unscoped (Room caches them) |
+| `DatabaseOpener`, `NeutrodyneDatabase` (provided as `opener.requireDatabase()`), DAOs | `:core:database` `DatabaseModule` ([02](02-data-model.md#error-handling-and-recovery)) | Singleton | `@Singleton`; DAO providers unscoped (Room caches them) |
 | `@SettingsDataStore(...) DataStore<Preferences>`, `SettingsStore`, `DeviceSettingsStore` | `:core:datastore` | Singleton | `@Singleton` |
 | `:core:domain` repository and use-case interfaces | `:core:data` `@Binds` modules | Singleton | `@Singleton` |
 | `PlaybackController`, `PlaybackStateSource`, `PlayerConnection` | `:playback:impl` | Singleton | `@Singleton` (connection lifecycle: [06 UI boundary](06-playback.md#ui-boundary)) |
@@ -880,7 +887,8 @@ Rules:
 2. **`NeutrodyneApplication` injects only `dagger.Lazy`/`Provider` fields** so the `:acra` process constructs nothing.
 3. **JVM modules** use `javax.inject` annotations (`@Inject`, `@Qualifier`, `@Singleton`) and the plain Dagger processor for factories; their interfaces are bound by Hilt modules in Android modules.
 4. **Cross-module objects of external types** (for example a Media3 `Player` that a feature's `media3-ui-compose` state holder needs) are bound by the impl module under a qualifier annotation declared in its JVM `:*:api` module; whether `:feature:player` uses this is decided by [06 UI boundary](06-playback.md#ui-boundary).
-5. **No Hilt module binds the same interface in both `main` and a flavor source set.** Interfaces whose implementation differs per flavor are bound only in the two `FlavorModule`s, and `:youtube:streams` may ship Hilt modules for its internal wiring (`OkHttpNpeDownloader`) but never binds `:youtube:api` interfaces itself.
+5. **Empty multibindings are declared:** `CoreModule` declares `@Multibinds abstract fun initializers(): Set<AppInitializer>`, so the graph compiles before any module contributes (Hilt fails on an undeclared empty set).
+6. **No Hilt module binds the same interface in both `main` and a flavor source set.** Interfaces whose implementation differs per flavor are bound only in the two `FlavorModule`s, and `:youtube:streams` may ship Hilt modules for its internal wiring (`OkHttpNpeDownloader`) but never binds `:youtube:api` interfaces itself.
 
 ### Flavor modules
 
@@ -955,7 +963,7 @@ object NdSceneMetadata {                           // overlay metadata understoo
 }
 ```
 
-`:core:navigation` applies no Compose compiler plugin; `navigation3-runtime` brings `NavKey`, `EntryProviderScope` and the Compose runtime needed by `staticCompositionLocalOf`.
+`:core:navigation` applies no Compose compiler plugin; it declares `api` dependencies on `navigation3-runtime` (`NavKey`, `EntryProviderScope`) and on `androidx.compose.runtime:runtime` (for `staticCompositionLocalOf`), versioned by the Compose BOM.
 
 ### Feature entry installers
 
@@ -1042,7 +1050,7 @@ sealed interface Route {
 | `…/open/downloads` | no | `Navigate(DownloadsKey, [])` |
 | `…/open/player` | no | `ExpandPlayer` |
 | `…/open/import/{sessionId}` | no | `Navigate(LibraryKey, [ImportKey(sessionId)])` |
-| `…/open/settings/{page}` | no | `Push(SettingsKey(SettingsPage.valueOf(page)))` |
+| `…/open/settings/{page}` | no | `Push(SettingsKey(SettingsPage.valueOf(page.uppercase(Locale.ROOT))))` |
 | `…/open/diagnostics` | no | `Push(DiagnosticsKey)` |
 | anything else, malformed IDs, unknown pages | — | `None` (logged at WARN, redacted) |
 
@@ -1147,7 +1155,7 @@ internal object NetworkModule {
 | Kind | Consumer (owner) | Timeouts (connect / read / call) | Extras |
 |---|---|---|---|
 | FEED | `FeedFetcher` (03) | 15 s / 30 s / 120 s | 32 MB cap and streaming SHA-256 in 03; no `Accept-Encoding` override (OkHttp gzip) |
-| API | Apple, fyyd, Podcast Index search (03); oEmbed and HTML channel resolution (04) | 15 s / 30 s / 8 s | per-provider timeout = call timeout (canonical 8 s) |
+| API | Apple, fyyd, Podcast Index search (03); small JSON calls such as oEmbed (04) | 15 s / 30 s (inherited) / 8 s | the 8 s call timeout caps the whole call and equals the canonical per-provider timeout |
 | IMAGE | Coil `OkHttpNetworkFetcherFactory` (08) | 15 s / 20 s / 60 s | Coil disk cache only |
 | MEDIA | Media3 `OkHttpDataSource.Factory` (06) | 15 s / 30 s / none | `Accept-Encoding: identity` (byte-exact ranges, `SimpleCache` keys) |
 | DOWNLOAD | `RssTransferSource`, `YouTubeTransferSource` (07) | 15 s / 60 s / none | `Accept-Encoding: identity`; 07 asserts it in tests |
@@ -1166,7 +1174,10 @@ internal object NetworkModule {
 data class Origin(val scheme: String, val host: String, val port: Int) {   // lowercase scheme/host, explicit port
     companion object { fun of(url: HttpUrl) = Origin(url.scheme, url.host.lowercase(), url.port) }
 }
-fun interface CredentialLookup { fun basicAuthorization(origin: Origin): String? }   // in-memory, non-blocking; "Basic …" or null
+fun interface CredentialLookup {                       // in-memory, non-blocking; returns "Basic …" or null
+    fun basicAuthorization(origin: Origin): String?
+    companion object { val None = CredentialLookup { null } }   // M0 binding until CredentialStore (M1)
+}
 
 internal class AuthInterceptor @Inject constructor(private val lookup: CredentialLookup) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -1517,13 +1528,13 @@ flowchart LR
 
 - **Method:** with `BundledSQLiteDriver` on a GMD: (a) insert an `episode` with a missing `podcastId` → expect a constraint error; (b) delete a `podcast` → its `episode` rows cascade; (c) run `PRAGMA foreign_keys` on the writer and on reader connections (`useReaderConnection`) of the WAL pool → expect 1 on each.
 - **Pass:** all three hold.
-- **Fallback:** enable the pragma explicitly per connection through Room 3's open/configure hook (Unverified which hook is per-connection), else delete children explicitly inside the same write transaction and run `PRAGMA foreign_key_check` in `db-maintenance`; 02 records which.
+- **Fallback:** 02's `ForeignKeysDriver` — a `SQLiteDriver` decorator whose `open()` runs `PRAGMA foreign_keys = ON` on every new connection, bound in `SqliteDriverModule` around the production and test drivers ([02 Conventions](02-data-model.md#conventions)); 02 records which.
 
 ### S4 Robolectric with AndroidSQLiteDriver
 
 - **Method:** Robolectric 4.17, `sdk=36`, JDK 21: build `NeutrodyneDatabase` in memory and in a file with `AndroidSQLiteDriver`; run one DAO test and a `room3-testing` `MigrationTestHelper` create-v1 → validate test. Also try `BundledSQLiteDriver` and record the failure mode. Query `SELECT sqlite_version()`.
-- **Pass:** DAO and migration tests green with `AndroidSQLiteDriver`; Robolectric's SQLite ≥ 3.25 (window functions available in JVM tests).
-- **Fallback:** if the version is lower, SQL using window functions / row values is tested only on GMD (09 marks those tests `androidTest`); if `MigrationTestHelper` fails under Robolectric, migration tests run only on GMD.
+- **Pass:** DAO and migration tests green with `AndroidSQLiteDriver`; the reported SQLite version is recorded (02 keeps all SQL compatible with SQLite 3.18, so no minimum beyond that is needed).
+- **Fallback:** if `MigrationTestHelper` fails under Robolectric, migration tests run only on GMD (09); if DAO tests fail, DAO tests move to GMD and 09 re-plans the unit-test budget.
 
 ### S5 Nav3 1.2 API names and scenes
 
@@ -1535,7 +1546,7 @@ flowchart LR
 
 - **Method:** build `fossRelease` with and without `sqlite-bundled`; `zipalign -c -P 16 -v 4 app-foss-release.apk`; `llvm-readelf -l lib/arm64-v8a/*.so` → every `LOAD` segment `Align 0x4000`; compare APK size per ABI.
 - **Pass:** aligned; size delta recorded (budget context: `foss` APK < 25 MB, N5).
-- **Fallback:** `AndroidSQLiteDriver` in production with SQL limited to SQLite 3.18 features (no window functions, `UPSERT`, `RETURNING`) — changes [D9](../PLAN.md#3-key-decisions), PLAN amendment required.
+- **Fallback:** `AndroidSQLiteDriver` in production — a one-line change in `SqliteDriverModule`, cheap because 02 already restricts SQL to SQLite 3.18 features; still changes [D9](../PLAN.md#3-key-decisions), PLAN amendment required.
 
 ### Verification log
 
@@ -1568,8 +1579,8 @@ Test infrastructure, runners and CI wiring: [09 Test strategy](09-quality-and-re
 | `IntentRouter` | Robolectric | every row of the [routing table](#intent-routing); upper-case scheme; 1 MB `EXTRA_TEXT` truncated to 4 KB; non-numeric IDs → `None`; unknown settings page → `None`; no route performs a write (verified with fakes recording calls) |
 | Hilt graph | Robolectric `@HiltAndroidTest` in `:app` (both flavors) | graph builds; every canonical `NavKey` has exactly one installer entry; `Set<AppInitializer>` orders are unique; `Distribution` matches the flavor; `TestSqliteDriverModule` replaces the driver |
 | Navigation | Robolectric + Compose v2 rule + `StateRestorationTester` | push/pop per tab; back from a non-start root returns to Feeds; two `PodcastKey`s get different ViewModels; stacks restored after state restoration; sheet key renders as overlay |
-| Application | Robolectric | in a simulated `:acra` process `onCreate` resolves no `Lazy` (fake initializer never runs); initializer failure does not stop later ones |
-| Startup gate | Robolectric | splash condition clears on first `device_settings` emission; clears after 400 ms with a never-emitting fake |
+| Initializer runner | JVM (`runInitializers` is a plain suspend function) | runs in ascending `order`; a throwing initializer is logged and later ones still run; cancellation propagates. The `:acra` early return is checked manually once (ACRA crash dialog appears, no WorkManager or session start in its process) |
+| Startup gate | Robolectric | splash condition clears when `device_settings` emitted and the database is `Ready`; clears after 400 ms with a database still `Pending`; `StartupGate` is shown and no feature ViewModel is created while `Pending`; `NavDisplay` appears on `Ready` |
 | Build policy | Gradle (CI `static` job) | `assertModuleGraph`, Licensee ×2, `verifyDependencyPolicy`, `verifyManifestPermissions`, `checkSpdxHeaders`, `checkBannedApis`, KGP assertion; negative checks once per the [verification log](#verification-log) |
 | Smoke | GMD API 26, 36, 37 (16 KB) | launch, five labelled destinations, rotation, dark-mode switch, Settings → About shows flavor and version, Licences non-empty |
 
@@ -1582,7 +1593,7 @@ Fixtures: none beyond inline tables; `FakeNetworkMonitor` and `TestClock` in `:c
 | Milestone | Foundation work |
 |---|---|
 | [M0](../PLAN.md#m0-scaffold-and-ci) | Everything in the [M0 scaffold checklist](#m0-scaffold-checklist): toolchain, catalog, convention plugins, all module stubs, dependency rules and policy tasks, flavors and build types, `:core:common`, `:core:model` basics, `:core:navigation`, `:core:datastore`, `:core:network` (base + derived clients, interceptors, DNS guard, error taxonomy, NSC), Hilt skeleton, Nav3 host, `IntentRouter` (internal routes), `NeutrodyneApplication` start-up and initializer runner, manifest subset, M0 backup rule files, About/Licences, ACRA wiring, CONTRIBUTING/PR template, spikes S1–S6 |
-| [M1](../PLAN.md#m1-subscribe-and-ingest-rss) | `:core:database` with `SqliteDriverModule` and the S2–S4 outcomes applied; database-open initializer (100); `CredentialStore` replaces `CredentialLookup.None`; FEED and IMAGE clients in use; `SettingsRepository` implementation; `refresh-periodic` initializer (200); router: `AddPodcastKey` for direct feed URLs and `feed:`/`pcast:`/`podcast:`/`itpc:` (filters by 03) |
+| [M1](../PLAN.md#m1-subscribe-and-ingest-rss) | `:core:database` with `SqliteDriverModule` and the S2–S4 outcomes applied; database-open initializer (100) and `StartupGate` wired to `DatabaseOpener`; `CredentialStore` replaces `CredentialLookup.None`; FEED and IMAGE clients in use; `SettingsRepository` implementation; `refresh-periodic` initializer (200); router: `AddPodcastKey` for direct feed URLs and `feed:`/`pcast:`/`podcast:`/`itpc:` (filters by 03) |
 | [M2](../PLAN.md#m2-groups-and-group-feeds) | Channel initializer for `new_episodes` and `grp_new_episodes` (10); router `SelectFeed` |
 | [M3](../PLAN.md#m3-import-export-and-backup) | `ExternalImportActivity` and `FileProvider` manifest entries; final backup rule XML (05); restore-check initializer (110); `backup-auto-snapshot` scheduling; `import_backup` channel |
 | [M4](../PLAN.md#m4-playback-core) | Playback service, permissions and `ArtworkProvider` manifest entries; MEDIA client; `kotlinx-coroutines-guava`; `playback`/`alerts` channels |
@@ -1615,8 +1626,8 @@ Fixtures: none beyond inline tables; `FakeNetworkMonitor` and `TestClock` in `:c
 | `SqliteDriverModule`, `TestSqliteDriverModule` | Hilt modules | `:core:database`, `:app/src/test` |
 | `CoreModule`, `WorkEntryPoint`, `ImageEntryPoint`, `ArtworkProviderEntryPoint` | Hilt module / entry points | `:app` (`ArtworkProviderEntryPoint`: `:core:artwork`) |
 | `TopLevelKey`, `LocalAppNavigator`, `NdSceneMetadata` | navigation | `:core:navigation` |
-| `NavigationState`, `NeutrodyneNavHost`, `NdBottomSheetSceneStrategy`, `NdDialogSceneStrategy`, `IntentRouter`, `Route`, `StartupViewModel` | navigation / start-up | `:app` |
-| `UiText`, `UserMessage` | UI-state helpers | `:core:ui` (`UiText` also usable by ViewModels: declared in `:core:model`) |
+| `NavigationState`, `NeutrodyneNavHost`, `NdBottomSheetSceneStrategy`, `NdDialogSceneStrategy`, `IntentRouter`, `Route`, `StartupViewModel`, `StartupState`, `StartupGate` | navigation / start-up | `:app` |
+| `UiText`, `UserMessage` | UI-state helpers (used by feature ViewModels and screens) | `:core:ui` |
 | `assertModuleGraph` rules file `ModuleRules.kt`; tasks `verifyDependencyPolicy`, `verifyManifestPermissions`, `checkSpdxHeaders`, `checkBannedApis` | build | `build-logic` |
 | `compose-stability.conf`, `app/policy/permissions.txt`, `proguard/app.pro`, `proguard/foss.pro`, `strings_flavor.xml`, `THIRD_PARTY_NOTICES.md`, `CONTRIBUTING.md` | files | repo |
 
