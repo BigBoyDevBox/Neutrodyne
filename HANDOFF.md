@@ -51,6 +51,7 @@ Neutrodyne is a planned open-source podcast player. So far the repository holds 
 - 18:47 UTC: the automatic 10-minute checkpoint job reached its 2-hour limit and stopped. Checkpoints are now made by hand.
 - ~19:1x UTC: `06` revised; revising `07` and `08`.
 - ~19:4x UTC: `07` revised; revising `08` and `09`. Still to do: review `10` and `11`; the critics; the fixer.
+- ~20:2x UTC: `08` revised; `09` is being revised and `10-sync.md` is under review. Still to do: review `11`; the critics; the fixer.
 
 ## 4. How to resume if this session stops
 
