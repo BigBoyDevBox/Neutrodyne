@@ -177,7 +177,7 @@ interface YouTubeAvailabilityRecorder { suspend fun record(episodeId: Long, avai
 | Every `suspend` API above | Main-safe. Network on `@Dispatcher(IO)`. Errors through `suspendRunCatching` (never swallows `CancellationException`) |
 | Blocking NewPipe calls | `NpeCalls.blocking { … }` (`:youtube:streams`): runs the block on `@Dispatcher(IO)`; `OkHttpNpeDownloader` registers every `Call` it executes in the thread's active scope, and coroutine cancellation (timeout, skipped item, closed screen) calls `Call.cancel()` on them and then interrupts the thread. `Thread.interrupt()` alone does not abort a blocking socket read, so `runInterruptible` is not enough |
 | Timeouts | `resolveAudio` 20 s; channel resolution 20 s overall; `enrich` 20 s per channel; `search` 10 s; `uploadsPage` 20 s (`withTimeout` → `Transient(TIMEOUT)`) |
-| Single flight | Concurrent `resolveAudio` calls with the same cache key share one `Deferred` (pre-resolve and playback race) |
+| Single flight | Concurrent `resolveAudio` calls with the same cache key share one `Deferred` (pre-resolve and playback race), started on `@ApplicationScope` with a waiter count; it is cancelled (and its OkHttp calls with it) when the last waiter is cancelled, so one caller's cancellation never fails another |
 | Concurrency caps | Enrichment: `Semaphore(2)` across channels. Downloads: 07's YouTube slot 1. Channel resolution during import: 2 concurrently (the same 2-per-host limit 03 applies to `www.youtube.com`, [D25](../PLAN.md#3-key-decisions)). Playback resolves: no cap beyond single flight. Search: latest wins (previous job cancelled) |
 | `ResolvedUrlCache` | `ConcurrentHashMap`, read from Media3's loader thread |
 | `YouTubeHealth` | `MutableStateFlow`; loaded from `device_settings` by an `AppInitializer` (01's initializer set; `awaitLoaded()` suspends until then); persistence launched on `@ApplicationScope`, conflated |
@@ -202,9 +202,9 @@ interface YouTubeAvailabilityRecorder { suspend fun record(episodeId: Long, avai
 | `YouTubeAlertNotifier`, `YouTubeChannelRepositoryImpl`, `YouTubeAvailabilityRecorderImpl` | `:core:data` | YouTube services |
 | `AdapterResult.Parsed.absenceFloor`, `AdapterResult.Deferred`, `SourceAdapter.afterIngest` returning the IDs to announce | additions to 03's internal adapter contract (requested from 03) | [Contract with 03's engine](#contract-with-03s-engine) |
 | `UrlListParser`; DTOs `NewPipeSubscriptionsFile`, `LibreTubeBackupFile`, `TakeoutRow`, `YouTubeImportEntry` | `:feeds` | Import formats |
-| `ImportFormat.URL_LIST` | enum constant appended to the canonical `ImportFormat` (requested from 02/05) | Plain list of URLs or IDs |
-| `podcast.channelMetadataAt` | column `Long?` (requested from 02) | Last channel-page/extractor metadata fetch; null = never |
-| `IngestDao.applyYouTubeFacts`, `EpisodeDao.youtubeEnrichmentCandidates`, `EpisodeDao.setAvailability`, `PodcastDao.applyYouTubeChannelMetadata` | DAO functions (requested from 02) | Writes described in [Atom feed ingestion](#atom-feed-ingestion) |
+| `ImportFormat.URL_LIST` | enum constant appended to the canonical `ImportFormat` (defined in 02, pipeline in 05) | Plain list of URLs or IDs |
+| `podcast.channelMetadataAt` | column `Long?` ([02 podcast](02-data-model.md#podcast)) | Last channel-page/extractor metadata fetch; null = never |
+| `IngestDao.applyYouTubeFacts`, `EpisodeDao.youtubeEnrichmentCandidates`, `EpisodeDao.setAvailability`, `PodcastDao.applyYouTubeChannelMetadata` | DAO functions ([02 Ingestion support](02-data-model.md#ingestion-support)) | Writes described in [Atom feed ingestion](#atom-feed-ingestion) |
 | `DnsFamilyHints` | `:core:network` (requested from 01) | googlevideo IP-family matching ([Stream resolution](#ip-family-matching)) |
 | `NOTIF_ID_YT_BREAKER = 4100` | notification ID on channel `alerts` | Breaker notice |
 | `youtube.*` keys | [Settings](#settings) | — |
@@ -438,8 +438,8 @@ Serves R3.2, R3.3, R3.4. Delivered in M8 (enrichment in M9). 03's refresh engine
 
 | 03 hook | YouTube behaviour |
 |---|---|
-| `fetchAndParse(feed, REFRESH)` | Variant fetches ([Fetch policy](#fetch-policy)), [merge](#merge-algorithm), returns `Parsed(feed = merged ParsedFeed, partial = true, meta, rowHints, absenceFloor)`, or `Unchanged(meta)` when the merged digest equals `podcast.contentSha256`, or `Failed(kind, http, retryAfterMs, transient = true)`, or `Deferred(untilMs)` during a feed outage or feed rate limit |
-| `rowHints` (`RowHint` per `externalMediaId`) | `isShort` (sticky `stored || parsed`), `availability = null` (keep stored), `isVideo = false` |
+| `fetchAndParse(feed, REFRESH or FULL)` (identical for YouTube; `OLDER_PAGE` is never requested because YouTube rows have no paging columns) | Variant fetches ([Fetch policy](#fetch-policy)), [merge](#merge-algorithm), returns `Parsed(feed = merged ParsedFeed, partial = true, meta, rowHints, absenceFloor)`, or `Unchanged(meta)` when the merged digest equals `podcast.contentSha256`, or `Failed(kind, http, retryAfterMs, transient = true)`, or `Deferred(untilMs)` during a feed outage or feed rate limit |
+| `rowHints` (`RowHint` per `externalMediaId`) | `isShort` (sticky: stored OR parsed), `availability = null` (keep stored), `isVideo = false` |
 | `nextRefreshAt(feed, result, base)` | `max(base, lastAttemptAt + 15 min)`; gap pull-in ([Gap detection](#gap-detection)) |
 | `afterIngest(podcastId, inserted, newIds): List<Long>` | [Enrichment step](#enrichment-step) and [channel art](#channel-metadata-refresh); returns the IDs to announce |
 | `hostKey` | `www.youtube.com` (03's 2-per-host limit applies) |
@@ -677,9 +677,9 @@ Enrichment re-checks `UPCOMING` and `LIVE` items for 30 days; a premiere or fini
 | `AVAILABLE` | shown | counted | `foss` yes, `play` no | `foss` per policy | yes | normal |
 | `isShort` with `SHORTS` off | hidden | no | no | no | no | — |
 | `UPCOMING`, `LIVE`, `MEMBERS_ONLY` | hidden | no | no | no | when it becomes `AVAILABLE` | — |
-| `AGE_RESTRICTED`, `REGION_BLOCKED`, `PRIVATE`, `KIDS_ONLY`, `UNAVAILABLE` | shown greyed with reason | **no** (requested change, below) | no | no | already sent, never retracted | "Watch on YouTube" |
+| `AGE_RESTRICTED`, `REGION_BLOCKED`, `PRIVATE`, `KIDS_ONLY`, `UNAVAILABLE` | shown greyed with reason | **no** (02 counts only `AVAILABLE`) | no | no | already sent, never retracted | "Watch on YouTube" |
 
-This confirms 02's v1 `VISIBLE` fragment (`NOT (e.isShort = 1 AND (p.youtubeVariants & 2) = 0) AND e.availability NOT IN ('UPCOMING','LIVE','MEMBERS_ONLY')`) and answers [02 Open questions](02-data-model.md#open-questions) item 5: `countYouTube = 1` in both flavors (in `play`, opening an item in YouTube marks it played by default, so counts stay meaningful). Requested change for 02: the group/All counts and the library `unplayedCount` add `AND e.availability = 'AVAILABLE'`, so greyed, unplayable items never inflate badges.
+This confirms 02's v1 `VISIBLE` fragment (`NOT (e.isShort = 1 AND (p.youtubeVariants & 2) = 0) AND e.availability NOT IN ('UPCOMING','LIVE','MEMBERS_ONLY')`). YouTube episodes count in unplayed badges in both flavors (in `play`, opening an item in YouTube marks it played by default, so counts stay meaningful), and 02's group/All counts and library `unplayedCount` add `AND e.availability = 'AVAILABLE'`, so greyed, unplayable items never inflate badges ([02 Feed counts](02-data-model.md#feed-counts)).
 
 Reason strings (08 owns the final text): `AGE_RESTRICTED` "Age-restricted — sign-in required on YouTube"; `MEMBERS_ONLY` "Members only"; `REGION_BLOCKED` "Not available in your country"; `PRIVATE` "Private video"; `KIDS_ONLY` "Made for kids — can't be played here"; `UNAVAILABLE` "No longer available"; `UPCOMING` "Premieres soon"; `LIVE` "Live now".
 
@@ -887,7 +887,7 @@ Export (05 writes the XML, [D31](../PLAN.md#3-key-decisions)): each channel as `
 ```
 
 - Import (`NewPipeSubscriptions.parse`): kotlinx.serialization, `ignoreUnknownKeys`; ≤ 10 MB, ≤ 10,000 entries. `service_id == 0` (YouTube) only; other services (1 SoundCloud, 2 media.ccc.de, 3 PeerTube, 4 Bandcamp) become `INVALID_URL` items with `errorDetail = "newpipe_service:{id}"`. Old exports contain `/user/` and `/c/` URLs, which take the resolution path.
-- Export (`NewPipeSubscriptions.write`), from 05's export dialog "NewPipe JSON (YouTube channels only)", whole library or one group: `app_version` = Neutrodyne `versionName`, `app_version_int` = `versionCode`, one entry per channel with `url = https://www.youtube.com/channel/{id}` and `name` = display title. File `neutrodyne-youtube-{yyyy-MM-dd}.json`. It is the de facto interchange format of NewPipe, LibreTube and Tubular. Unverified: whether NewPipe or LibreTube check `app_version*`; M8 imports our export into both apps manually.
+- Export (`NewPipeSubscriptions.write`), from 05's export dialog "NewPipe JSON (YouTube channels only)", offered for the full export only (08), i.e. every `YOUTUBE_CHANNEL` podcast: `app_version` = Neutrodyne `versionName`, `app_version_int` = `versionCode`, one entry per channel with `url = https://www.youtube.com/channel/{id}` and `name` = display title. File `neutrodyne-youtube-{yyyy-MM-dd}.json`. It is the de facto interchange format of NewPipe, LibreTube and Tubular. Unverified: whether NewPipe or LibreTube check `app_version*`; M8 imports our export into both apps manually.
 
 ### LibreTube backup JSON (import)
 
@@ -909,7 +909,7 @@ Export (05 writes the XML, [D31](../PLAN.md#3-key-decisions)): each channel as `
 
 ### URL list (import)
 
-`ImportFormat.URL_LIST` (accepted by 05; the constant is requested from 02; stored as TEXT, no migration): UTF-8 text ≤ 1 MB, ≤ 5,000 lines; lines trimmed; empty and `#` lines skipped; each line is an http(s) URL (RSS or YouTube), a `UC…` ID or an `@handle`. Sniffed when ≥ 80 % of the remaining lines are such tokens. Covers LibreTube's "list of URLs/IDs" export and hand-made lists.
+`ImportFormat.URL_LIST` (02's constant, 05's pipeline; stored as TEXT, no migration): UTF-8 text ≤ 1 MB, ≤ 5,000 lines; lines trimmed; empty and `#` lines skipped; each line is an http(s) URL (RSS or YouTube), a `UC…` ID or an `@handle`. Sniffed when ≥ 80 % of the remaining lines are such tokens. Covers LibreTube's "list of URLs/IDs" export and hand-made lists.
 
 ### Pipeline rules for YouTube items (05 implements)
 
@@ -1132,48 +1132,50 @@ Fixtures: `feeds/src/test/resources/corpus/youtube/` (`uulf_mkbhd.xml`, `channel
 ## Open questions
 
 1. **Architect review:** the window-aware `inFeed` rule means YouTube videos that merely scroll out of the 15-entry window are never retention-deleted ([D23](../PLAN.md#3-key-decisions)). A news channel at 20 uploads a day adds ~7,000 rows a year. Options: accept (rows are small; description is compressed), or extend D23 with "YouTube episodes older than 365 days that are unprotected". Proposed: accept for v1, measure in M11 with `SeedDatabase(youtubeChannels = 30)`.
-2. **Architect review:** new column `podcast.channelMetadataAt` (Long?) must be added to 02's v1 schema before M1 ships; without it the 30-day avatar refresh and lazy banner cannot be scheduled.
-3. **Architect review:** `ImportFormat.URL_LIST` appended to the canonical enum (TEXT storage, no migration). Fallback if rejected: drop URL-list import to M15.
-4. **Architect review:** `YouTubeAvailabilityRecorder` writes `episode.availability` from playback and downloads, outside the refresh pipeline. It lives in `:core:data`'s YouTube ingestion code and writes only that column, but it is a second D15 exception next to restore stubs and retention.
-5. **Architect review:** two more flavor-bound interfaces (`YouTubeChannelSearch`, `ExtractorChannelLookup`) must be added to 01's `FlavorModule` sketches, and `DnsFamilyHints` to `:core:network`.
-6. Owner 02: add `AND e.availability = 'AVAILABLE'` to group/All counts and the library `unplayedCount`; provide `IngestDao.applyYouTubeFacts`, `EpisodeDao.youtubeEnrichmentCandidates`, `EpisodeDao.setAvailability`, `PodcastDao.applyYouTubeChannelMetadata`; exclude `channelMetadataAt` from `applyFeedMetadata`.
-7. Owner 05: implement the YouTube globals (`youtube.auto_download`, `youtube.auto_download_keep_latest`) in D45's auto-download resolution with the attribution "YouTube default".
-8. Unverified: NewPipe Extractor v0.26.5 API names used here (`ChannelTabInfo`, channel tab constants, `StreamInfoItem.isShortFormContent()`, content-availability accessor, DRC flag accessor, exception class names). M9 adapts names, not behaviour.
-9. Unverified: whether premieres appear in `UULF` before air time, whether members-only uploads appear in `UULF`, and whether `UULF`/`UUSH`/`UULV` return 404 for channels without such content. A daily `UUMO` poll to flag members-only items is deferred.
+2. **Architect review:** `YouTubeAvailabilityRecorder` (and "Check again") writes `episode.availability` from playback and downloads, outside the refresh pipeline. 02 records it as an exception to [D15](../PLAN.md#3-key-decisions) next to restore stubs and retention; D15 itself should name it.
+3. **Architect review:** the canonical cache key `yt:{videoId}:{itag}` is ambiguous because YouTube reuses one itag for DRC and dubbed variants. This document keeps the canonical form for single-track non-DRC formats and appends `-drc` / `~{audioTrackId}` otherwise ([Modules and public API](#modules-and-public-api)); PLAN 5.2 and 06 should say `yt:{videoId}:{formatId}`. 06's `Pin.YouTube.itag` and `removeResource("yt:$videoId:$oldItag")` must use `formatId`.
+4. **Architect review:** 03's internal `SourceAdapter` contract needs three additions (`Parsed.absenceFloor`, `Deferred`, `afterIngest` returning the IDs to announce and running before the emit, also after `Unchanged`); see [Contract with 03's engine](#contract-with-03s-engine). Without `absenceFloor`, 03's `min(sortDate)` rule wrongly flips scrolled-out Shorts when `UULF` and `UUSH` are both polled; without `Deferred`, an outage would add a failure to every channel.
+5. Owner 02: add `PodcastDao.youtubeChannelIds()` (`SELECT id FROM podcast WHERE sourceType = 'YOUTUBE_CHANNEL'`).
+6. Owner 07: store the YouTube `lmt` in `download.lastModified` and include it in the `.part` resume invariant; delete (not fail) `AUTO` rows whose resolve says `UPCOMING`/`LIVE`.
+7. Owner 03: `SubscribeUseCase.youTube` writes `channelMetadataAt` (now when the resolution carried an avatar) and uses `resolved.title ?: channelId` as the provisional title; 03's 404 row ("YouTube: never possibly dead") must follow [Fetch policy](#fetch-policy): never `gone`, but the derived badge appears after 7 days without success, with YouTube wording (08).
+8. Unverified: whether premieres appear in `UULF` before air time, whether members-only uploads appear in `UULF`, and whether `UULF`/`UUSH`/`UULV` return 404 or an empty feed for channels without such content. A daily `UUMO` poll to flag members-only items is deferred.
+9. Unverified: that premieres report `LIVE_STREAM_OFFLINE` through v0.26.5's ANDROID player (M9 recorded fixture); the channel-tab item fields (`getDuration()`, `getContentAvailability()`) on current YouTube responses.
 10. Unverified: the `views == 0` Atom signal as an "upcoming" heuristic for `play`. Not used in v1 because a false positive hides real new videos until the next refresh; revisit with recorded feeds of scheduled premieres.
 11. Unverified: googlevideo throttling of plain `Range` requests (NewPipe's `range`/`rn` query parameters) and the IPv4/IPv6 mismatch hypothesis; both are checked by the M9 device checklist with defined fallbacks.
 12. Unverified: the byte size of a channel page's `<head>`; decides the metered-network rule for imported channels' avatars (M8 measurement).
 13. PO (with counsel): is the corresponding-source bundle on GitHub releases sufficient for GPLv3 §6 across GitHub, IzzyOnDroid and Obtainium distribution?
-14. PO-9 follow-up: in `play`, premieres and live streams cannot be held back (no flags), so R3.2's "premieres appear only once playable" is `foss`-only. Accept, or add the Data API later (D51 says no for v1).
-15. Should a per-channel audio-quality override exist (research question)? v1 has the global setting only.
+14. PO (P1): accept Layer A's channel-page read in `play` given YouTube's "automated means" clause, or ship `play` with ID-only inputs ([Posture and emergency build](#posture-and-emergency-build))?
+15. PO-9 follow-up: in `play`, premieres, live streams and members-only uploads cannot be held back (no flags), so R3.2's "premieres appear only once playable" and "no members-only" are `foss`-only. Accept, or add the Data API later (D51 says no for v1).
+16. PO: should a per-channel audio-quality override exist? v1 has the global setting only ([D20](../PLAN.md#3-key-decisions) allows a `podcast_settings` column later).
 
 ---
 
 ## Sources
 
-All checked 2026-10-04 unless noted. Endpoints marked "tested" were exercised live by the research behind this document.
+All checked 2026-10-04 unless noted. Endpoints marked "tested" were exercised live by the research behind this document. NewPipe Extractor facts marked "v0.26.5 source" were read on 2026-10-05 in a clone of tag `v0.26.5` (commit `f9e6bb8`).
 
 - YouTube endpoints (tested): channel feed `https://www.youtube.com/feeds/videos.xml?channel_id=UCBJycsmduvYEL83R_U4JriQ` (15 entries, Shorts with `/shorts/` links, live included, `cache-control: public, max-age=900`, no `ETag`/`Last-Modified`, feed-level `yt:channelId` without `UC`); `…/feeds/videos.xml?playlist_id=UULF…` (and `UU`, `UUSH`, `UULV`, `UUMO`, `UUPS`, `UULP`, `UUPV` 200; `UUMF`, `UUMS`, `UUML`, `UUPP` 404; tested on MKBHD and NASA `UCLA_DiR1FfKNvjuUpBHmylQ`); `…?user=marquesbrownlee`; `PL6566A39B68523E18` playlist feed (first 15 in playlist order); channel page `https://www.youtube.com/@mkbhd` (RSS link, canonical, `itemprop=identifier`, `og:image` `=s900`, banner JSON, ~2.5 MB); InnerTube `https://www.youtube.com/youtubei/v1/navigation/resolve_url`; oEmbed `https://www.youtube.com/oembed?url=…&format=json`; thumbnails `https://i.ytimg.com/vi/3iRUwVzRDZQ/{maxresdefault,hq720,sddefault,hqdefault,mqdefault,default}.jpg`; VISIONOS player response (`expiresInSeconds` 21540, itags 139/140/249/250/251, IP-bound URLs, tested once).
 - Atom feed outages: https://discuss.ai.google.dev/t/youtube-rss-feed-endpoint-returns-404-errors/113379 · https://feeder.co/help/rss/youtube-feeds/
 - Shorts definition (≤ 3 min, square or vertical, from 2024-10-15): https://support.google.com/youtube/answer/15424877
 - NewPipe Extractor (licence, releases, v0.26.5, VISIONOS client, SABR workaround `82b7e410`, unreleased `9ed62db3` and `676dd716`, channel tabs): https://github.com/TeamNewPipe/NewPipeExtractor · https://github.com/TeamNewPipe/NewPipeExtractor/releases · https://jitpack.io/com/github/teamnewpipe/NewPipeExtractor/v0.26.5/NewPipeExtractor-v0.26.5.pom · https://jitpack.io/api/builds/com.github.teamnewpipe/NewPipeExtractor/latest
+- NewPipe Extractor v0.26.5 source (client sequence in `YoutubeStreamExtractor.onFetchPage`, `checkPlayabilityStatus` exception mapping incl. `SignInConfirmNotBotException` and the raw-status `ContentNotAvailableException`, `POST_LIVE_STREAM` streams with `isUrl = false`, `ItagItem.isDrc()`, `AudioTrackType` mapping of `dubbed-auto`, `ChannelTabs` constants, `StreamInfoItem.getContentAvailability()`/`isShortFormContent()`, `DateWrapper.isApproximation()`, `SOCS=CAE=` consent cookie, `navigation/resolve_url` in `YoutubeChannelHelper`, runtime dependencies in `extractor/build.gradle.kts`, Maven Central snapshot note in `README.md`): https://github.com/TeamNewPipe/NewPipeExtractor/tree/v0.26.5
 - NewPipe Takeout parser documentation (`YoutubeSubscriptionExtractor.java`) and subscription JSON (`SubscriptionData.kt`, `ImportExportJsonHelper.kt`): https://github.com/TeamNewPipe/NewPipeExtractor · https://github.com/TeamNewPipe/NewPipe
 - NewPipe on Play and F-Droid: https://github.com/TeamNewPipe/NewPipe/blob/dev/README.md · https://gitlab.com/fdroid/fdroiddata/-/raw/master/metadata/org.schabi.newpipe.yml · https://f-droid.org/packages/org.schabi.newpipe/
 - LibreTube (backup format with groups, SABR client, PoToken WebView): https://github.com/libre-tube/LibreTube
 - Podcini discontinuation: https://github.com/XilinJia/Podcini
 - AntennaPod YouTube stance: https://antennapod.org/documentation/getting-started/subscribe · https://forum.antennapod.org/t/cant-add-youtube-entries-to-queue/5937/7
 - Podcast Addict uses YouTube API Services: https://podcastaddict.com/privacy
-- yt-dlp (default clients `visionos`, `web`; `CHUNK_SIZE = 10 << 20`): https://github.com/yt-dlp/yt-dlp · https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_video.py · PO-Token guide https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide · android_vr SABR test https://github.com/yt-dlp/yt-dlp/issues/16150
+- yt-dlp (default clients `visionos`, `web`; `CHUNK_SIZE = 10 << 20`; DRC formats share the itag and get format ID `{itag}-drc`): https://github.com/yt-dlp/yt-dlp · https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_video.py · PO-Token guide https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide · android_vr SABR test https://github.com/yt-dlp/yt-dlp/issues/16150
 - Plan C libraries: https://github.com/LuanRT/YouTube.js · https://github.com/LuanRT/googlevideo · https://github.com/LuanRT/BgUtils
 - android-youtube-player 13.0.0: https://github.com/PierfrancescoSoffritti/android-youtube-player
-- Media3 1.11.1, supported formats, `ResolvingDataSource` may block, `DefaultLoadErrorHandlingPolicy` backoff: https://developer.android.com/jetpack/androidx/releases/media3 · https://developer.android.com/media/media3/exoplayer/supported-formats · https://github.com/androidx/media
+- Media3 1.11.1, supported formats, `ResolvingDataSource` may block, `DefaultLoadErrorHandlingPolicy` backoff, `Cache.getContentMetadata`/`removeResource` and `ContentMetadata.getContentLength` (read 2026-10-05): https://developer.android.com/jetpack/androidx/releases/media3 · https://developer.android.com/media/media3/exoplayer/supported-formats · https://github.com/androidx/media · https://github.com/androidx/media/blob/release/libraries/datasource/src/main/java/androidx/media3/datasource/cache/Cache.java
 - Coil 404 caching (3.4.0+): https://coil-kt.github.io/coil/changelog/
 - YouTube Data API (quotas, channels, videos): https://developers.google.com/youtube/v3/determine_quota_cost · https://developers.google.com/youtube/v3/revision_history · https://developers.google.com/youtube/v3/docs/channels/list · https://developers.google.com/youtube/v3/docs/videos
-- YouTube API Developer Policies (III.E.1.a, III.E.1.b, III.I.7, III.I.9, III.E.4.d): https://developers.google.com/youtube/terms/developer-policies · Required Minimum Functionality: https://developers.google.com/youtube/terms/required-minimum-functionality · YouTube Terms of Service: https://www.youtube.com/static?template=terms
+- YouTube API Developer Policies (III.E.1.a, III.E.1.b, III.I.7, III.I.9, III.E.4.d): https://developers.google.com/youtube/terms/developer-policies · Required Minimum Functionality: https://developers.google.com/youtube/terms/required-minimum-functionality · YouTube Terms of Service (effective 2023-12-15; download and "automated means" clauses re-read 2026-10-05): https://www.youtube.com/static?template=terms · robots.txt (read 2026-10-05; disallows `/feeds/videos.xml`, `/youtubei/`): https://www.youtube.com/robots.txt
 - Google Play policies: Device and Network Abuse https://support.google.com/googleplay/android-developer/answer/9888379 · Intellectual Property https://support.google.com/googleplay/android-developer/answer/9888072
 - F-Droid Anti-Features: https://f-droid.org/docs/Anti-Features/
 - Invidious instances and takedown demand: https://docs.invidious.io/instances/ · https://alternativeto.net/news/2023/6/youtube-legal-team-asked-invidious-developers-to-take-down-the-service-within-7-days
 - SponsorBlock API and licence: https://sponsor.ajay.app/api/skipSegments · https://github.com/ajayyy/SponsorBlockServer
-- Licensing: Unlicense GPL compatibility https://en.wikipedia.org/wiki/Unlicense · combined works https://en.wikipedia.org/wiki/GNU_General_Public_License · GPLv3 text (not fetched on 2026-10-04) https://www.gnu.org/licenses/gpl-3.0.html
+- Licensing: Unlicense GPL compatibility https://en.wikipedia.org/wiki/Unlicense · combined works https://en.wikipedia.org/wiki/GNU_General_Public_License · GPLv3 §6(d) text (read 2026-10-05 from the copy in NewPipe Extractor's `LICENSE`; gnu.org itself was unreachable) https://www.gnu.org/licenses/gpl-3.0.html · https://github.com/TeamNewPipe/NewPipeExtractor/blob/v0.26.5/LICENSE
 - Developer verification: https://developer.android.com/developer-verification
 - CSV format: RFC 4180 https://www.rfc-editor.org/rfc/rfc4180 (not re-checked)
