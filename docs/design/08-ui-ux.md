@@ -71,7 +71,7 @@ Serves R2.4, R5.1, R4.6. Delivered in M0 (shell) and per screen milestone. Honou
 
 ### Destinations
 
-Five top-level destinations in a `NavigationSuiteScaffold` (bar on compact, collapsed wide rail otherwise): **Feeds · Library · Up next · Downloads · Discover**. Settings is a gear action in every top-level top app bar and the rail's footer item. Icons are Material Symbols Rounded (outlined when unselected, filled when selected): `dynamic_feed`, `grid_view`, `queue_music`, `download`, `explore`; gear `settings`.
+Five top-level destinations in a `NavigationSuiteScaffold` whose type is navigation-suite 1.4.0's default `NavigationSuiteScaffoldDefaults.navigationSuiteType(adaptiveInfo)`: `ShortNavigationBarCompact` for compact width, `ShortNavigationBarMedium` for tabletop posture or compact height (landscape phones), `WideNavigationRailCollapsed` (96 dp wide) otherwise ([navigation-suite 1.4.0 sources](https://dl.google.com/android/maven2/androidx/compose/material3/material3-adaptive-navigation-suite-android/1.4.0/material3-adaptive-navigation-suite-android-1.4.0-sources.jar)). Destinations: **Feeds · Library · Up next · Downloads · Discover**. Settings is a gear action in every top-level top app bar and, while a rail is shown, the rail's footer item ([D54](../PLAN.md#3-key-decisions)). `WideNavigationRail` 1.4.0 has a `header` slot but no footer slot, so `NdNavigationSuiteScaffold` uses `NavigationSuiteScaffoldLayout` with its own `navigationSuite` for the rail types: a `Box(fillMaxHeight)` containing the stock `WideNavigationRail(header = null, arrangement = Arrangement.Top)` with the five items, plus an `NdTooltipIconButton(settings)` with the label "Settings" aligned `BottomCenter`, 16 dp above `WindowInsets.navigationBars`; its `traversalIndex` places it after Discover. Bars (compact, short windows) show no gear item: the top app bar's gear is enough. Icons are Material Symbols Rounded (outlined when unselected, filled when selected): `dynamic_feed`, `grid_view`, `queue_music`, `download`, `explore`; gear `settings`.
 
 | Destination | Purpose | Badge |
 |---|---|---|
@@ -201,11 +201,13 @@ Sheet keys (`AddPodcastKey`, `AddToGroupsKey`, `AllGroupsKey`, `SpeedKey`, `Slee
 | `Push(AddPodcastKey(input))` | The sheet opens over the current tab with `input` pre-filled and resolution started; nothing is written until Subscribe |
 | `Push(EpisodeKey(id))` | Pushed on the current tab; a missing episode shows "This episode is no longer available" with Back |
 | `Navigate(LibraryKey, [PodcastKey(id)])` | Library tab, its stack replaced by `[LibraryKey, PodcastKey]` |
-| `SelectFeed(groupUuid)` | Root writes `ui.feeds_selected_source = group:{uuid}`, then `selectTab(FeedsKey)` and `resetTab(FeedsKey)`; unknown UUID → All with a snackbar "That group no longer exists" |
+| `SelectFeed(groupUuid)` | Root writes `ui.feeds_selected_source = group:{uuid}` (`all` when `groupUuid == null`), then `selectTab(FeedsKey)` and `resetTab(FeedsKey)`; unknown UUID → All with a snackbar "That group no longer exists" |
 | `Navigate(DownloadsKey, [])` | Downloads root |
 | `ExpandPlayer` | Expands the sheet (or reveals the side panel); no-op when nothing is loaded |
 | `Navigate(LibraryKey, [ImportKey(id)])` | Import screen in the state of that session |
 | `Push(SettingsKey(page))`, `Push(DiagnosticsKey)` | Pushed on the current tab (back returns to where the user was) |
+
+A route that arrives while the [startup gate](#banners-and-the-startup-gate) is shown is held by the root and applied once `NavDisplay` exists (01's start-up test). Routes only navigate; every write still needs a tap on the destination (01 security rule).
 
 ### Back handling order
 
@@ -287,11 +289,26 @@ Serves R1.1–R1.9 (screens), R2.1–R2.8, R3.1, R3.7, R4.6, R5.1–R5.6, N4, N6
 | Offline | offline banner; list works from the database |
 | Error (paging) | footer "Couldn't load episodes" + Retry |
 
-Actions: page header Play → `PlaybackController.playFeed(source, prefs.filters, prefs.playOrder, null)` (results: [Results and events](#issues-results-and-events)); row tap → `pushDetail(EpisodeKey)`; row play → `playFeed(source, prefs.filters, prefs.playOrder, startEpisodeId = row.id)` (06 open question 3); long-press → [selection mode](#selection-mode) (Mark played/unplayed, Play next, Play last, Download, Delete download); page overflow (group pages): Refresh this group, Mark all as played…, Download all unplayed… (M6), Share as OPML (M3), Import OPML into this group (M3), Edit group, Group settings, Delete group (05 [Group actions](05-groups-opml-backup.md#group-actions)); All/Ungrouped overflow: Refresh, Mark all as played…, Hide older than…; top bar overflow: Manage groups, Show Ungrouped tab (toggle `groups.show_ungrouped_tab`).
+Actions: page header Play → `PlaybackController.playFeed(source, prefs.filters, prefs.playOrder, null)` (results: [Results and events](#issues-results-and-events)); row tap → `pushDetail(EpisodeKey)`; row play → `playFeed(source, prefs.filters, prefs.playOrder, startEpisodeId = row.id)` (06 open question 3); long-press → [selection mode](#selection-mode) (Mark played/unplayed, Play next, Play last, Download, Delete download); page overflow (group pages): Refresh this group, Mark all as played…, Download all unplayed… (M6), Hide older than… (`setHideOlderThanDays`, values 05's {off, 1, 3, 7, 14, 30, 90, 365} days), Share as OPML (M3), Import OPML into this group (M3), Edit group, Group settings, Delete group (05 [Group actions](05-groups-opml-backup.md#group-actions)); All/Ungrouped overflow: Refresh, Mark all as played…, Hide older than…; top bar overflow: Manage groups, Show Ungrouped tab (toggle `groups.show_ungrouped_tab`).
+
+Startup metric: the Feeds route calls `ReportDrawnWhen { selectedPage.loadState.refresh is LoadState.NotLoading }` (activity-compose), so 09's `ColdStartToFeeds` journey also records time to full display.
 
 ### All groups sheet
 
-`AllGroupsKey`, `:feature:feeds`, M2. A three-column grid of [`GroupMosaic`](#groupmosaic-and-group-tab-label) tiles: section "Recent" (up to 4 groups by `lastViewedAt`) then "All groups" A–Z (Collator), including groups with `showAsTab = false` (marked with `visibility_off`). Tap → select that group in Feeds (hidden groups become a [transient tab](#selection-persistence-and-fallback)) and close. Buttons: "New group" → `GroupEditKey(null)`, "Manage groups" → `GroupsManageKey`. Empty: "No groups yet" + "New group".
+`AllGroupsKey`, `:feature:feeds`, M2.
+
+```
+| ----                                             |  drag handle; sheet opens half height, drags to full
+| All groups              (+ New group) (Manage)   |
+| RECENT                                           |
+| [mosaic] [mosaic] [mosaic]                       |  up to 4 by lastViewedAt
+|  tech      news    fiction                       |
+| ALL GROUPS                                       |
+| [mosaic] [mosaic] [mosaic(eye-off)]              |  A-Z; hidden-from-tabs groups marked
+|  comedy    fiction   science                     |
+```
+
+A three-column grid of [`GroupMosaic`](#groupmosaic-and-group-tab-label) tiles: section "Recent" (up to 4 groups by `lastViewedAt`) then "All groups" A–Z (Collator), including groups with `showAsTab = false` (marked with `visibility_off`). Tap → select that group in Feeds (hidden groups become a [transient tab](#selection-persistence-and-fallback)) and close. Buttons: "New group" → `GroupEditKey(null)`, "Manage groups" → `GroupsManageKey`. Empty: "No groups yet" + "New group".
 
 ### Library
 
@@ -322,7 +339,7 @@ Groups segment: a grid of [`GroupMosaic`](#groupmosaic-and-group-tab-label) tile
 - Chips: All, Ungrouped, then groups in `sortOrder`; selection persisted in `ui.library_group_filter`. Data: `PodcastRepository.observeLibraryTiles(groupId)` ([03](03-feeds-and-discovery.md#unsubscribe-and-other-podcast-operations)); Ungrouped = all tiles minus podcasts with any membership (from `GroupRepository.observeMemberships()`, requested from 05).
 - Selection mode actions: Add to group… (`AddToGroupsKey(ids)`), Unsubscribe (confirmation "Unsubscribe from 3 podcasts? 12 downloaded episodes will be deleted." → `UnsubscribeUseCase`), Refresh (`refreshNow(Podcasts(ids))`), Mark all played (per podcast `markFeedPlayed(Podcast(id), null)`, confirmation with count), Select all.
 - Overflow: Grid size, Show titles, Manage groups, Import subscriptions… (picker, 05), Export subscriptions… (`ExportKey(null)`), Backup and restore (`BackupKey`).
-- States: empty library → onboarding empty state; filter chip with no members → "No podcasts in 'tech'" + "Add podcasts"; restore running → restore banner.
+- States: loading → 12 skeleton tiles in `surfaceContainer`; empty library → onboarding empty state; filter chip with no members → "No podcasts in 'tech'" + "Add podcasts"; a selected group chip whose group was deleted → chip filter falls back to All silently; banners per [Banners and the startup gate](#banners-and-the-startup-gate) (restore running, foreign Android-backup snapshot, import in progress, offline). Library needs no network: offline only adds the banner.
 
 ### Podcast detail
 
@@ -353,15 +370,35 @@ Groups segment: a grid of [`GroupMosaic`](#groupmosaic-and-group-tab-label) tile
 
 - Top bar: refresh (`refreshNow(Podcasts([id]))`), gear → `PodcastSettingsKey(id)`, overflow. Header: [`PodcastHeader`](#podcast-header); colours from [`ArtworkTheme`](#artwork-scoped-schemes) with the podcast cover seed (M10); status bar icons per [System bars](#status-bar-and-system-bars).
 - Feed-state banner (03 [Per-feed states](03-feeds-and-discovery.md#per-feed-states)): Pending "Fetching episodes…" (spinner); NeedsCredentials "This feed needs a password" → credentials dialog (`PodcastRepository.setCredentials`); Gone "This feed no longer exists" → Edit URL / Unsubscribe; PossiblyDead "This feed hasn't updated since {date} — it may have moved" → Edit URL / Try again (`retry`); a failing feed shows `FeedErrorText(lastErrorKind)` only on this screen, never as a toast.
-- List: `FeedRepository.pagedFeed(FeedSource.Podcast(id), transientFilters, order)`; `EpisodeRow` style `PODCAST` (no thumbnail unless the episode has its own art, date block 48 dp, season/episode overline from `episodeDisplay`). Row play → `playFeed(Podcast(id), filters, order, startEpisodeId)`.
+- List: `FeedRepository.pagedFeed(FeedSource.Podcast(id), transientFilters, order)`; `EpisodeRow` style `PODCAST` (no thumbnail unless the episode has its own art, date block 48 dp, season/episode overline from `episodeDisplay` — a field 02's `EpisodeRow` does not carry yet, requested in [Open questions](#open-questions); until it exists the overline shows only `episodeType` "Trailer"/"Bonus"). Row play → `playFeed(Podcast(id), filters, order, startEpisodeId)`. The "Newest v" chip calls `FeedRepository.setFeedOrder(FeedSource.Podcast(id), order)` (persisted in `podcast.episodeOrder`, 05); the filter chips are transient ViewModel state (05 throws on `setFilters` for podcasts). Row swipes follow `appearance.swipe_*` (on by default outside Feeds, D55).
 - "Load older episodes": RSS when older pages exist → `RefreshController.loadOlderEpisodes(id)`; YouTube when `YouTubeCapabilities.backCatalogue` → `YouTubeChannelRepository.loadOlder(id)` with result "Loaded 30 more" / "No more episodes" / failure text. YouTube channels call `YouTubeChannelRepository.ensureChannelArt(id)` on open (04).
 - Overflow: Podcast settings, Share (website link `link`; the feed URL only through "Copy feed address" with the private-URL warning when `isPrivate`), Watch on YouTube (channel page, YouTube only), Open website, Mark all as played…, Unsubscribe (confirmation with downloaded count).
 - Preview mode: Subscribe button + group chips (multi-select, "+ New group" inline), episode rows without play or download buttons ("Subscribe to play"), "Already subscribed — Open" when `alreadySubscribed.exact`, "You may already be subscribed to this show. Subscribe anyway?" otherwise; failures as in the [Add podcast sheet](#add-podcast-sheet).
-- Data needed from 03's `PodcastDetail` (fields requested in [Open questions](#open-questions)): display title, author, description (`ShowNotes`), `ArtworkRef`, `bannerUrl`, `sourceType`, `link`, episode count, `latestEpisodeAt`, status and error fields (`gone`, `needsCredentials`, `failureCount`, `lastSuccessAt`, `lastErrorKind`), `isPrivate`, `episodeOrder`/`showType`, older-pages flag.
+- Data: 03's `PodcastDetail` (display title, author, description as `ShowNotes`, `artwork`, `bannerUrl`, `sourceType`, `link`, `episodeCount`, `latestEpisodeAt`, `status`, `health: FeedHealth` with the derived `possiblyDead`, `isPrivate`, `episodeOrder`, `showType`, `hasOlderPages`) and `ArtworkRepository.observeColors(detail.artwork.key)` for the header scheme.
+- States: loading → header skeleton (cover box in the monogram tone) + 6 skeleton rows; `observePodcast` emits null (unsubscribed elsewhere, merged into another podcast) → pop with snackbar "This podcast was removed"; offline → offline banner, list from the database, refresh disabled with a tooltip; feed with no episodes → "No episodes yet" (`emptyFeed`, new show); YouTube channel with no visible episodes → "No long-form videos yet. This channel may post only Shorts or live streams." + "Podcast settings" (variants, 04 [UI per flavor](04-youtube.md#ui-per-flavor-hand-off-to-08-flavor-differences-in-ui)); preview resolution failure → the [Add podcast sheet](#add-podcast-sheet) failure texts with Retry.
 
 ### Podcast settings
 
 `PodcastSettingsKey(podcastId)`, `:feature:podcast`. Sections (rows appear in the milestone that delivers their semantics):
+
+```
++--------------------------------------------------+
+| (<-) Settings · Show title                       |
+| GENERAL                                          |
+|  Custom title          The Daily (feed title)    |
+|  Show in All                              [on]   |
+|  Episode order                   Newest first    |
+| PLAYBACK                                         |
+|  Speed           1.0x · App default              |  attribution subtitle
+|  While playing from 'news': 1.5x                 |  group hint
+|  Skip silence    Off · App default               |
+| DOWNLOADS ... NOTIFICATIONS ... REFRESH ...      |
+| FEED                                             |
+|  Feed address    https://ex…/feed (tap to show)  |  redacted until tapped
+|  Last refresh    2 h ago · OK                    |
+|  Edit feed address · Username and password       |
++--------------------------------------------------+
+```
 
 | Section | Rows | Owner of semantics |
 |---|---|---|
@@ -371,9 +408,9 @@ Groups segment: a grid of [`GroupMosaic`](#groupmosaic-and-group-tab-label) tile
 | Notifications (M2) | New episodes (permission prompt per [Permission prompts](#permission-prompts)) | 03, 05 |
 | Refresh (M2) | Refresh interval (Inherit / 1 h … 24 h) | 03, 05 |
 | YouTube (M8) | Include Shorts, Include past live streams (`YouTubeChannelRepository.setVariants`) | 04 |
-| Feed (M1) | Feed address (redacted, `FeedInfo`), aliases, last refresh and last error, Edit URL, Username and password, Remove password | 03 |
+| Feed (M1) | Feed address (`FeedInfo.redactedUrl`; the full `feedUrl` only after a tap, with "Copy feed address" and the private-URL warning when `isPrivate`), moves (`FeedInfo.moves`), last refresh and last error ([`FeedErrorText`](#feed-error-text)), Edit feed address ([dialog](#dialogs), RSS only), Username and password (`setCredentials`). There is no "remove password" in v1 (03 has no API for it) | 03 |
 
-Each override row opens a chooser whose first option is "Use default ({effective inherited value}, {source})" ([`AttributionText`](#attribution-text)). Data: 05's `ScopeSettingsRepository.observePodcast` (`ScopedSettingsView`).
+Each override row opens a chooser whose first option is "Use default ({effective inherited value}, {source})" ([`AttributionText`](#attribution-text)); choosing it writes `null` through `updatePodcast { it.copy(field = null) }`. Data: 05's `ScopeSettingsRepository.observePodcast` (`ScopedSettingsView`: `own`, `effective`, `sources`, `groupHints`) and 03's `observeFeedInfo`; `observePodcast` emitting null pops the screen. Rows a YouTube channel cannot use in this build (`SettingSource.NotSupported`, e.g. auto-download in `play`) are hidden, not disabled. Writes that return 01's `SettingsError.OutOfRange` show the field's inline error (cannot happen from the fixed choosers; defensive).
 
 ### Episode detail
 
@@ -400,10 +437,10 @@ Each override row opens a chooser whose first option is "Use default ({effective
 
 - Primary button: Play / Pause / Resume (`playEpisode(id)`, 06 open question 3); YouTube in `play` or unavailable: "Watch on YouTube" (04 [Watch on YouTube](04-youtube.md#watch-on-youtube), with the 5 s Undo snackbar for mark-played-on-open).
 - Icon buttons with labels: Download state (same states as the [row](#episoderow)), Up next (menu: Play next / Play last; `QueueRepository.addNext/addLast`), Mark played/unplayed (`EpisodeRepository.setPlayed`), Favourite (`setFavorite`, in overflow).
-- Overflow: Go to podcast, Open episode web page (`link`), Watch on YouTube (YouTube, foss, with `&t=` per 04), Copy link, Delete download.
+- Overflow: Go to podcast, Open episode web page (`link`), Watch on YouTube (YouTube, foss, with `&t=` per 04), Check again (`foss`, greyed YouTube episode with `REGION_BLOCKED`, `PRIVATE` or `UNAVAILABLE`: `YouTubeChannelRepository.recheckAvailability(id)`; null result → snackbar "Couldn't check — try again later", 04 [Content flags and filtering](04-youtube.md#content-flags-and-filtering)), Copy link, Delete download.
 - Show notes: [`ShowNotes`](#show-notes-renderer) renderer from `EpisodeRepository.observeShowNotes`. Chapters: `ChapterRepository.observe(id)` (06); tap → seek per 06 [Current chapter and commands](06-playback.md#current-chapter-and-commands).
 - Unavailable YouTube episode: a reason line under the meta (`AvailabilityText`, [Flavor differences in UI](#flavor-differences-in-ui)).
-- States: missing episode (deleted by retention or unsubscribe) → "This episode is no longer available"; notes loading → 3 skeleton paragraphs; notes empty → "No show notes".
+- States: missing episode (deleted by retention or unsubscribe) → "This episode is no longer available"; notes loading → 3 skeleton paragraphs; notes empty → "No show notes"; offline and not downloaded → primary button shows `cloud_off` "Offline" and taps give the offline snackbar; images in notes stay unloaded offline (no error).
 
 ### Group editor
 
@@ -432,7 +469,19 @@ Each override row opens a chooser whose first option is "Use default ({effective
 
 ### Manage groups
 
-`GroupsManageKey`, `:feature:groups`, M2. A reorderable list (`sh.calvin.reorderable` 3.1.0): drag handle, 48 dp mosaic, name, "14 unplayed · 3 new", "Hidden from Feeds" label when `showAsTab = false`, overflow (Edit, Group settings, Show in Feeds toggle, Delete). FAB "New group". Drop → `GroupRepository.reorder(idsInOrder)`; failure (`NotFound`, list changed meanwhile) → reload and snackbar "Groups changed, try again". Accessibility: custom actions "Move up", "Move down", "Move to top" ([Custom actions catalogue](#custom-actions-catalogue)). Empty: "No groups yet" + "New group" + the [suggested groups card](#suggested-groups-card) when it has suggestions.
+`GroupsManageKey`, `:feature:groups`, M2.
+
+```
++--------------------------------------------------+
+| (<-) Manage groups                        (gear) |
+| = [mos] tech        14 unplayed · 3 new      (:) |  drag handle "=" starts the drag
+| = [mos] news         9 unplayed              (:) |
+| = [mos] fiction     Hidden from Feeds        (:) |
+|                                  ( + New group ) |  extended FAB above the mini player
++--------------------------------------------------+
+```
+
+A reorderable list (`sh.calvin.reorderable` 3.1.0): drag handle, 48 dp mosaic, name, "14 unplayed · 3 new", "Hidden from Feeds" label when `showAsTab = false`, overflow (Edit, Group settings, Show in Feeds toggle, Delete). FAB "New group". Drop → `GroupRepository.reorder(idsInOrder)`; failure (`NotFound`, list changed meanwhile) → reload and snackbar "Groups changed, try again". Accessibility: custom actions "Move up", "Move down", "Move to top" ([Custom actions catalogue](#custom-actions-catalogue)). Empty: "No groups yet" + "New group" + the [suggested groups card](#suggested-groups-card) when it has suggestions.
 
 ### Group settings
 
@@ -440,7 +489,17 @@ Each override row opens a chooser whose first option is "Use default ({effective
 
 ### Add to groups sheet
 
-`AddToGroupsKey(podcastIds)`, `:feature:groups`, M2. Title "Add 3 podcasts to groups". Tri-state `NdFilterChip`s per group in `sortOrder` (checked: all selected podcasts are members; indeterminate: some; unchecked: none); tapping cycles checked ↔ unchecked (indeterminate is never re-entered). "+ New group" opens an inline name field (validated as the editor) that creates the group checked. Done → `applyMembership(podcastIds, add, remove)` with only the chips the user changed (05 [Membership](05-groups-opml-backup.md#membership)); snackbar "Updated groups for 3 podcasts".
+`AddToGroupsKey(podcastIds)`, `:feature:groups`, M2.
+
+```
+| ----                                             |
+| Add 3 podcasts to groups                         |
+| [v *tech] [- *news] [ *fiction] [ *science]      |  v checked, - indeterminate, blank unchecked
+| [+ New group]                                    |
+|                              (Cancel)  ( Done )  |
+```
+
+Title "Add 3 podcasts to groups" ("Groups for {title}" for one podcast). Tri-state `NdFilterChip`s per group in `sortOrder` (checked: all selected podcasts are members; indeterminate: some; unchecked: none); tapping cycles checked ↔ unchecked (indeterminate is never re-entered). "+ New group" opens an inline name field (validated as the editor) that creates the group checked. Done → `applyMembership(podcastIds, add, remove)` with only the chips the user changed (05 [Membership](05-groups-opml-backup.md#membership)); snackbar "Updated groups for 3 podcasts". Initial chip states come from one `GroupRepository.observeMemberships()` collection (05); a podcast unsubscribed while the sheet is open is dropped from `podcastIds` before Done; `GroupError.NotFound` (a group deleted meanwhile) → reload and snackbar "Groups changed, try again".
 
 ### Up next
 
@@ -484,8 +543,10 @@ Each override row opens a chooser whose first option is "Use default ({effective
 +--------------------------------------------------+
 ```
 
-- Row actions follow 07's [Wait reasons](07-downloads.md#wait-reasons) table: `QUEUED` with `NONE`/`SLOT`/`CHARGING`/`SYSTEM` → "Download now" (`promote`) and Cancel (`cancel`); `UNMETERED_NETWORK` → "Use mobile data" (`setAllowMetered(ids, true)`, manual lane) or "Download now" (`promote`, auto lane); `STORAGE` → "Manage storage" (`ACTION_MANAGE_STORAGE`); `BACKOFF` → "Retry now" (`retry`); `NEEDS_FOREGROUND` → tap resumes (`resume`); `DOWNLOADING` → Pause (`pause`), bytes "12.3 MB of 48.0 MB · 1.2 MB/s"; `PAUSED` → Resume; `FAILED` → Retry (`retry`) and Dismiss (`cancel`); `COMPLETED` → tap opens the episode, swipe or (x) deletes (`delete(ids, byUser = true)`, no undo: the file is gone), play button plays it. Section buttons: "Pause all"/"Resume all" (`pauseAll`/`resumeAll`), "Retry all" (`retry(failed ids)`).
-- "Play all" → `playFeed` with the Downloads context ([05 Context per entry point](05-groups-opml-backup.md#context-per-entry-point)). Selection mode: Delete (confirmation "Delete 12 downloads (640 MB)?"), Select all completed / played.
+- Rows are `DownloadEntryRow` (`:feature:downloads`), not `EpisodeRow`: they render 07's `DownloadEntry` (title, podcast, `artwork`, `DownloadStatus`, `played`, `favorite`), which lacks the feed fields `EpisodeRow` needs. They share `CoverArt` (THUMB, 56 dp), [`DownloadStateButton`](#episoderow) and [`DownloadStatusText`](#download-status-text) with `EpisodeRow`; live bytes for visible in-progress rows come from `DownloadProgressSource.observe(visibleIds)` with 07's merge rule ([07 Inputs to live row state](07-downloads.md#inputs-to-live-row-state)). One TalkBack stop per row with the [custom actions](#custom-actions-catalogue) of a Downloads row.
+- Row actions follow 07's [Wait reasons](07-downloads.md#wait-reasons) table: `QUEUED` with `NONE`/`SLOT`/`CHARGING`/`SYSTEM` → "Download now" (`promote`; a `NeedsMeteredDecision` result opens the [metered dialog](#dialogs)) and Cancel (`cancel`); `UNMETERED_NETWORK` → "Use mobile data" (`setAllowMetered(ids, true)`, manual lane) or "Download now" (`promote`, auto lane); `STORAGE` → "Manage storage" (`ACTION_MANAGE_STORAGE`); `BACKOFF` → "Retry now" (`retry`); `NEEDS_FOREGROUND` → tap resumes (`resume`); `DOWNLOADING` → Pause (`pause`), bytes "12.3 MB of 48.0 MB · 1.2 MB/s"; `PAUSED` → Resume; `FAILED` → Retry (`retry`) and Dismiss (`cancel`); `COMPLETED` → tap opens the episode, swipe or (x) deletes (`delete(ids, byUser = true)`, no undo: the file is gone), play button plays it. Section buttons: "Pause all"/"Resume all" (`pauseAll`/`resumeAll`), "Retry all" (`retry(failed ids)`).
+- "Play all" and a completed row's play button start the `DOWNLOADS` context ([05 Context per entry point](05-groups-opml-backup.md#context-per-entry-point)): 06's `nd.PLAY_CONTEXT` handles `DOWNLOADS`, but `PlaybackController.playFeed` takes a `FeedSource`, which has no Downloads value, so 08 calls `PlaybackController.playDownloads(startEpisodeId: Long? = null): PlayResult` — a member requested from 06 ([Open questions](#open-questions)); until it exists, "Play all" is hidden and the row's play button calls `playEpisode(id)`. Selection mode: Delete (confirmation "Delete 12 downloads (640 MB)?"), Select all completed / played.
+- States: loading → skeleton rows; storage bar shows "—" while `observeStorage()` has not emitted; the screen is fully usable offline (rows show "Waiting for a connection").
 - `DownloadsOverview.notices` render as `NdBanner`s above the lists (at most two, in 07's table order) with 07's texts adopted as the final wording ([07 Notices](07-downloads.md#notices)): `DATA_SAVER` (open the data-restriction settings), `BACKGROUND_RESTRICTED`, `NOTIFICATIONS_OFF` (Allow → the contextual prompt, [Permission prompts](#permission-prompts)), `CAP_REACHED`, `STORAGE_LOW` (Manage storage), `ROOT_UNAVAILABLE`, `YOUTUBE_PAUSED` (04's breaker text with "Try now" → `YouTubeHealth.retryNow()`; shown above the YouTube rows), `MOVE_IN_PROGRESS`, `ORPHAN_FILES` (Delete → confirmation → `deleteOrphanFiles()`). `play` cross-grade leftovers: completed YouTube files are listed with Delete only (04, 07).
 - Empty: "Downloaded episodes play offline" + storage summary + "Auto-download settings" (`SettingsKey(DOWNLOADS)`).
 
@@ -512,10 +573,25 @@ Each override row opens a chooser whose first option is "Use default ({effective
 - Provider status: a provider in `Failed`/`RateLimited` shows "Apple search is busy, showing fyyd results"; all failed → "Search isn't available right now" + Retry.
 - "Search YouTube channels" (`foss`, `YouTubeCapabilities.channelSearch`, M9): runs only on that explicit action (04); hits open `AddPodcastKey("https://www.youtube.com/channel/{id}")`.
 - Offline: chips and import still work; search shows "You're offline".
+- Loading: charts show 5 skeleton tiles per row; inline search results show a 2 dp indeterminate `NdProgress.Linear` under the field (results of the previous query stay visible). Charts failing → the section is hidden (no error card); "Popular in {group}" appears only for groups whose name matches a genre (03 [Charts and genres](03-feeds-and-discovery.md#charts-and-genres)).
 
 ### Directory results
 
-`DirectoryKey(query, genreId)`, `:feature:discover`, M7. A list of `DirectoryHit` cards: 64 dp cover, title, author, "120 episodes · updated 3 days ago", providers line ("Apple, fyyd"), "Subscribed" chip when `subscribedPodcastId != null`. Tap → `PodcastKey(subscribedPodcastId)` or `pushDetail(PodcastPreviewKey(feedUrl))`. Partial results banner per provider status; empty: "No podcasts found for 'xyz'" + "Add by URL".
+`DirectoryKey(query, genreId)`, `:feature:discover`, M7.
+
+```
++--------------------------------------------------+
+| (<-) "history"                            (gear) |  or the genre name
+| [!] fyyd didn't answer, showing Apple results    |  partial-results banner
+| +-----+ Show title                   [Subscribed]|
+| | 64dp| Author                                   |
+| +-----+ 120 episodes · updated 3 days ago        |
+|         Apple, fyyd                              |
+| ...                                              |
++--------------------------------------------------+
+```
+
+A list of `DirectoryHit` cards: 64 dp cover, title, author, "120 episodes · updated 3 days ago", providers line ("Apple, fyyd"), "Subscribed" chip when `subscribedPodcastId != null`. Tap → `PodcastKey(subscribedPodcastId)` or `pushDetail(PodcastPreviewKey(feedUrl))`. Partial results banner per provider status; loading: 6 skeleton cards; empty: "No podcasts found for 'xyz'" + "Add by URL"; all providers failed: "Search isn't available right now" + Retry; offline: "You're offline" + Retry. Results are not persisted: after process death the query re-runs.
 
 ### Add podcast sheet
 
@@ -531,7 +607,7 @@ Each override row opens a chooser whose first option is "Use default ({effective
 | |cover | Author · 214 episodes · last 2 Oct      |
 | +------+ [Private feed]                          |
 | Add to groups: [*tech] [*news] [+ New group]     |
-| This show also has a podcast feed (Use it)       |  YouTube + suggest_rss card (04)
+| This show also has a podcast feed  (Use podcast) |  YouTube + suggest_rss card (04)
 |                       (Cancel)    ( Subscribe )  |
 +--------------------------------------------------+
 ```
@@ -541,12 +617,15 @@ Each override row opens a chooser whose first option is "Use default ({effective
 | resolving | progress line "Looking up…" (cancellable) |
 | `Feed(preview)` | preview card; Subscribe disabled for `NoMedia`; "Already subscribed — Open" for exact duplicates |
 | `Choose(candidates)` | "This page has several feeds" list (title, episodes, source) |
-| `YouTube(ref)` | channel avatar, title, "Long-form uploads only — change in podcast settings" note, RSS suggestion card |
-| `Failure(NotAUrl(q))` | "Search for 'q'" → `DirectoryKey(q, null)` |
+| `YouTube(ref)` (M8) | the ViewModel continues with 04's [Subscribe flow](04-youtube.md#subscribe-flow): `YouTubeChannelResolver.resolve(ref, AVATAR)` and, in parallel, `findRssAlternative(title)` (8 s); the card shows avatar (monogram while loading or when `title == null`, then the channel ID as title), title, "Long-form uploads only — change in podcast settings"; the RSS card "This show also has a podcast feed — Subscribe to the podcast instead" appears only when a match arrives, and "Use podcast" re-runs `resolve(hit.feedUrl)` in the same sheet; resolution failures use 04's error table (Edit / Retry); Subscribe → `SubscribeUseCase.youTube(resolved, variants, groupIds)` |
+| `Failure(NotAUrl(q))` | "Search for 'q'" → `DirectoryKey(q, null)` (M7; before M7: "Enter a feed address") |
 | `Failure(AuthRequired)` | username/password fields → `resolve(input, credentials)` |
-| `Failure(SubscriptionList(url))` | "This is a subscription list" + "Import it" (05 `ImportRepository.create`) |
-| other failures | [`AddPodcastErrorText`](#error-handling-and-failure-modes) message + Retry/Edit |
+| `Failure(SubscriptionList(url))` | "This is a subscription list" + "Import it" (05 `ImportRepository.create(ImportSource(url, null))` → `ImportKey(sessionId)`) |
+| other failures | [`AddPodcastError` text](#error-handling-and-failure-modes) + Retry / Edit |
+| `SubscribeError` | `AlreadySubscribed(id)` → "Already subscribed" + "Open"; `Fetch(e)` → the `AddPodcastError` text of `e` + Retry; `NoMedia` → "This feed has no audio or video episodes"; `Storage` → "Not enough storage space" |
 | subscribed | sheet closes; snackbar "Subscribed to {title}" + "Open" → `PodcastKey` |
+
+The empty field's helper text is "Paste a podcast feed, website, Apple Podcasts or YouTube link" (`play` and `foss` alike); every "Add a YouTube channel" and "Add by URL" entry point opens this same sheet with `AddPodcastKey(null)`. The sheet's state (input, preview id, chosen groups) is `rememberSaveable`; after process death the preview is re-resolved from the saved input (previews are memory-only, D24).
 
 ### Import
 
@@ -565,42 +644,108 @@ PREVIEW                                         FETCHING / DONE
 |  feeds (142) [off] looks like a container |   |  +--+ Show C  Needs a password (Enter)     |
 | OPTIONS                                   |   | ALREADY SUBSCRIBED (GROUPS UPDATED) · 3    |
 |  Treat existing episodes as played [off]  |   | NO AUDIO OR VIDEO FOUND · 2  (Remove all)  |
-|  Notify me about new episodes      [off]  |   | NOT IMPORTED · 4                           |
-| [All] [Only new] [Not imported]  (search) |   | Re-download 23 episodes (1.1 GB)  (M6)     |
-| [v] AB  Show title    host.com  [Private] |   +-------------------------------------------+
-| [ ] CD  Show title    host.com  [Already] |
-|            ( Subscribe to 139 )           |   sticky bottom button
-+-------------------------------------------+
+|  Notify me about new episodes      [off]  |   | MERGED WITH EXISTING · 1                   |
+| [All] [Only new] [Not imported]  (search) |   | WILL LOAD LATER · 2                        |
+| [v] AB  Show title    host.com  [Private] |   | NOT IMPORTED · 4                           |
+| [ ] CD  Show title    host.com  [Already] |   | Re-download 23 episodes (1.1 GB)  (M6)     |
+|            ( Subscribe to 139 )           |   +-------------------------------------------+
++-------------------------------------------+   sticky bottom button on the left
 ```
 
-- Preview rows show monograms only (05: covers never load in the preview), title and host (never the full URL), chips YouTube / Already subscribed / Duplicate / Invalid / Private feed. Group proposals: switch, rename (validated with `GroupNames` rules), excluded reason text.
-- Progress and report rows show covers as each feed resolves (`podcastId` present → `CoverArt` of the podcast). Actions call `ImportRepository.retry/editUrl/enterPassword/remove` (05 [Report and fix-ups](05-groups-opml-backup.md#8-report-and-fix-ups)).
-- Backup sessions (`format = NEUTRODYNE_BACKUP`) show the **restore preview** instead: 05's preview sentence, checkboxes Listening history / Up next / Settings, mode Merge (default) / Replace, and for Replace a confirmation dialog naming its effect; confirming Replace first calls `PlaybackController.pause()`. After restore the same screen shows the report. Restore progress comes from `BackupRepository.observeRestore()`.
-- Errors before a session exists (picker): [`ImportError` texts](#error-handling-and-failure-modes) in a dialog. Cancel in PREVIEW → `cancel(sessionId)` and pop.
+- Preview rows show monograms only (05: covers never load in the preview), title and host (never the full URL), chips YouTube / Already subscribed / Duplicate / Invalid / Private feed. Group proposals: switch, rename (validated with `GroupNames` rules), excluded reason text. Header warnings map 05's codes: `SALVAGED` "This file is damaged; folders could not be read", `IGNORED_OUTLINES` "{n} entries were ignored: episode lists" (05's wording), `TRUNCATED_NAMES` "{n} group names were shortened to 40 characters", `LINKED_LISTS` "{n} linked subscription lists were not opened" (`include`/`link` outlines are never fetched, 05). Filter chips map to `ImportItemFilter` (`ALL`, `NEW_ONLY`, `NOT_IMPORTED`; `NEEDS_ATTENTION` in the report); the search box narrows on title and host. Turning on "Notify me about new episodes" runs the [notification permission prompt](#permission-prompts).
+- Progress and report sections follow 05's item-status table ([05 Session and item states](05-groups-opml-backup.md#session-and-item-states)): Done (`SUBSCRIBED`), Need attention (`NOT_A_FEED`, `AUTH_REQUIRED`, `GONE`, `FETCH_FAILED` except `DEFERRED`), Already subscribed (groups updated), Merged with existing, No audio or video found (with "Remove all"), Will load later (`FETCH_FAILED` with `errorDetail = DEFERRED`: "YouTube isn't responding; this channel loads with a later refresh", no actions), Not imported. Rows show covers as each feed resolves (`podcastId` present → `CoverArt` of the podcast); need-attention rows show [`FeedErrorText`](#feed-error-text) of `errorDetail`. Actions call `ImportRepository.retry/editUrl/enterPassword/remove` (05 [Report and fix-ups](05-groups-opml-backup.md#8-report-and-fix-ups)); Remove is offered only for items this session created. Cancel during FETCHING → confirmation "Stop importing? Podcasts added so far stay in your library and load later." → `cancel(sessionId)`.
+- Backup sessions (`format = NEUTRODYNE_BACKUP`) show the **restore preview** instead: 05's preview sentence from `BackupRepository.inspect(sessionId)` (`BackupPreview`), checkboxes Listening history / Up next / Settings (Merge preselects history and Up next; switching to Replace checks all three), mode Merge (default) / Replace, and for Replace a confirmation dialog naming its effect ("Removes 9 podcasts and 2 groups that are not in the backup, and replaces your listening history"); confirming Replace first calls `PlaybackController.pause()`, then `restore(sessionId, RestoreRequest(mode, categories))`. `inspect` errors show 05's `BackupError` texts with "Choose another file". Restore progress comes from `BackupRepository.observeRestore()` ("Restoring… {phase} {done} of {total}"); `RestoreRunning` → "A restore is already running". After restore the same screen shows the report, including the M6 re-download offer, whose tap calls `DownloadController.request(ids, MANUAL, null)` from this visible screen (05 [After restore](05-groups-opml-backup.md#after-restore)).
+- Errors before a session exists (picker): [`ImportError` texts](#error-handling-and-failure-modes) in a dialog. Cancel in PREVIEW → `cancel(sessionId)` and pop. `observeSession` emitting null (session cleaned up after 7 days, or cancelled elsewhere) → "This import is no longer available" + Back.
 
 ### Backup and restore
 
 `BackupKey`, `:feature:importexport`, M3; also reachable as Settings › Backup.
 
+```
++--------------------------------------------------+
+| (<-) Backup and restore                          |
+| EXPORT                                           |
+|  Export subscriptions (OPML)                     |
+|  Export YouTube channels (NewPipe)         (M8)  |
+| BACKUP                                           |
+|  Include passwords for private feeds      [off]  |
+|  ( Create backup )      Last backup: 3 days ago  |
+| RESTORE                                          |
+|  Restore from file…                              |
+| ANDROID BACKUP                                   |
+|  Include your library in Android backup   [on]   |
+|  Updated today · 1.2 MB                          |
++--------------------------------------------------+
+```
+
 | Section | Rows |
 |---|---|
-| Export | "Export subscriptions (OPML)" → `ExportKey(null)`; "Export YouTube channels (NewPipe)" (M8, via the same dialog) |
-| Backup | "Create backup" → `CreateDocument("application/zip")` named `neutrodyne-backup-{yyyy-MM-dd-HHmm}.zip` → `BackupRepository.createBackup(uri, includePasswords)`; "Include passwords" switch (off each time) with "Passwords are stored unencrypted in the file"; "Last backup: 3 days ago" |
-| Restore | "Restore from file…" → picker → `ImportKey(sessionId)` (restore preview) |
-| Android backup | Switch "Include your library in Android backup" (`backup.auto_snapshot_enabled`) with "Requires a screen lock"; status line from `observeSnapshotStatus()` ("Updated today, 1.2 MB", or 05's failure texts); "Android backup needs a screen lock" when `KeyguardManager.isDeviceSecure` is false |
-| Debug builds only | "Write snapshot now" (05's `bmgr` procedure; needs a debug member on `BackupRepository`, requested from 05) |
+| Export | "Export subscriptions (OPML)" → `ExportKey(null)`; "Export YouTube channels (NewPipe)" (M8, the same dialog with NewPipe JSON preselected) |
+| Backup | "Include passwords for private feeds" switch (off each time, never remembered) with "Passwords are stored unencrypted in the file"; "Create backup" → `BackupRepository.preflight(includePasswords)`; when `privateLinks > 0` or `passwords > 0` the [private-links warning](#dialogs) ("This backup contains private access links for N feeds. Anyone with the file can listen to them." / "…and N passwords in plain text.", Continue / Cancel); then `CreateDocument("application/zip")` named `neutrodyne-backup-{yyyy-MM-dd-HHmm}.zip`; then `createBackup(uri, includePasswords)` (runs on `@ApplicationScope`, so leaving the screen does not cancel it; a spinner row "Creating backup…" while running); result snackbar "Backup saved (2.4 MB)" or 05's `BackupError` text; "Last backup: 3 days ago" from `backup.last_manual_backup_at` |
+| Restore | "Restore from file…" → `OpenDocument(arrayOf("*/*"))` picker → `ImportRepository.create` → `ImportKey(sessionId)` (restore preview, [Import](#import)) |
+| Android backup | Switch "Include your library in Android backup" (`backup.auto_snapshot_enabled`, written through `BackupRepository.setSnapshotEnabled`) with "Requires a screen lock"; status line from `observeSnapshotStatus()` ("Updated today, 1.2 MB"; `lastError = "too_large"` → "Android backup couldn't be updated: library too large"); "Android backup needs a screen lock" when `KeyguardManager.isDeviceSecure` is false; when `foreignPending` the row "A backup from another installation is waiting" with Restore (`restoreAndroidBackup()` → `ImportKey(sessionId)`) and Discard (`discardAndroidBackup()`, confirmation) |
+| Debug builds only | "Write snapshot now" → `BackupRepository.writeSnapshotNow()` (05's `bmgr` procedure) |
 
 ### Export dialog
 
-`ExportKey(groupId)`, `:feature:importexport`, M3. Title "Export subscriptions" or "Share 'tech' as OPML". Options and warnings are 05's ([05 Options and warnings](05-groups-opml-backup.md#options-and-warnings)): Format (Grouped / Flat list) radio, Include YouTube channels switch (subtitle "Other podcast apps may not be able to play these"), Include passwords switch (off each time), NewPipe JSON radio (M8, full export only). Buttons: "Save to file" (SAF `CreateDocument("text/x-opml")`) and "Share". The private-URL warning is a second dialog (Continue / Cancel). Result: snackbar "Saved" with "Share", or 05's `ExportError` text.
+`ExportKey(groupId)`, `:feature:importexport`, M3.
+
+```
++------------------------------------------+
+| Export subscriptions                     |  or "Share 'tech' as OPML"
+| (o) Grouped (recommended)                |  backup.opml_layout
+| ( ) Flat list                            |
+| ( ) NewPipe JSON (YouTube channels)      |  M8, full export only
+| Include YouTube channels          [on]   |  "Other podcast apps may not be able to play these"
+| Include passwords for private feeds [off]|
+|               (Share)   (Save to file)   |
++------------------------------------------+
+```
+
+Options and warnings are 05's ([05 Options and warnings](05-groups-opml-backup.md#options-and-warnings), [05 Destinations](05-groups-opml-backup.md#destinations)); the layout and YouTube switch start from `backup.opml_layout` / `backup.opml_include_youtube` and write them back on export; passwords start off every time. Both buttons run the same flow: `ExportRepository.prepare(ExportRequest(groupId, format, layout, includeYouTube, includePasswords))` → if `privateLinks > 0` or `passwords > 0`, the [private-links warning](#dialogs) (Continue / Cancel) **before** the file leaves the app → "Save to file": `CreateDocument(export.mimeType)` launched with `export.fileName`, then `saveTo(export, uri)`; "Share": `ACTION_SEND` of `export.shareUri` wrapped in `Intent.createChooser` (with `ClipData` and `FLAG_GRANT_READ_URI_PERMISSION`, 05). Result: snackbar "Saved" with "Share", or 05's `ExportError` text; a cancelled document picker shows nothing.
 
 ### Settings screens
 
-`SettingsHomeKey` (list) and `SettingsKey(page)` (detail), `:feature:settings`, M0. The home list shows one row per `SettingsPage` with an icon and a summary; pages are described in [Settings screen structure](#settings-screen-structure). `LicencesKey` renders AboutLibraries data with `Nd*` components (01 [AboutLibraries and the Licences screen](01-foundation.md#aboutlibraries-and-the-licences-screen)): a searchable list (name, version, licence) → detail with the full licence text; `foss` from M9 adds the NewPipe Extractor notice at the top (04 [Notices](04-youtube.md#notices)).
+`SettingsHomeKey` (list) and `SettingsKey(page)` (detail), `:feature:settings`, M0.
+
+```
++--------------------------------------------------+
+| (<-) Settings                                    |
+| (palette)  Appearance    System theme, wallpaper |
+| (feed)     Feeds         Every 4 hours           |
+| (explore)  Discover      Apple, fyyd             |
+| (play)     Playback      1.0x, skip silence off  |
+| (download) Downloads     Wi-Fi only, 1.2 GB      |
+| (yt)       YouTube       Long-form only          |  shown when YouTube subscriptions exist or M8+
+| (backup)   Backup        Android backup on       |
+| (shield)   Privacy                               |
+| (info)     About         1.0.0 (foss)            |
++--------------------------------------------------+
+```
+
+The home list shows one row per `SettingsPage` with an icon and a summary of its most relevant current values; pages are described in [Settings screen structure](#settings-screen-structure). A page row is shown from the milestone that delivers its first setting (M0: Appearance, About; the YouTube row from M8). On ≥ 2 partitions the home list is the list pane and the Appearance page opens beside it. `LicencesKey` renders AboutLibraries data with `Nd*` components (01 [AboutLibraries and the Licences screen](01-foundation.md#aboutlibraries-and-the-licences-screen)): a searchable list (name, version, licence) → detail with the full licence text; `foss` from M9 adds the NewPipe Extractor notice at the top (04 [Notices](04-youtube.md#notices)).
 
 ### Diagnostics
 
-`DiagnosticsKey`, `:feature:settings`, M11. Visual shell only; contents are 09's ([09 Crash reporting and diagnostics](09-quality-and-release.md#crash-reporting-and-diagnostics)). Cards in a single scrolling column: Refresh (last run, summary, stop reason), Background (standby bucket, battery-optimisation state with "Open battery settings" → `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`, never a direct exemption request), Jobs (stop reasons), Downloads, YouTube (`foss`: breaker, rate limit, feed outage), Database (`diagnostics.db_quick_check_failed_at`), Parse warnings (expandable list), Log (last 500 lines, monospace, redacted). Bottom bar: "Copy diagnostics", "Report a problem" (opens the issue tracker), "Export database copy" (09). All text selectable.
+`DiagnosticsKey`, `:feature:settings`, M11. Visual shell only; contents and actions are 09's ([09 Crash reporting and diagnostics](09-quality-and-release.md#crash-reporting-and-diagnostics)).
+
+```
++--------------------------------------------------+
+| (<-) Diagnostics                       (refresh) |
+| Detailed log for 24 hours                 [off]  |  diagnostics.verbose_log_until
+| APP         1.0.0 (1000095) foss · Android 16    |
+| REFRESH     last run 10:42 · 212 ok, 3 failed    |
+| BACKGROUND  bucket ACTIVE · (!) Data Saver on    |  WARNING / PROBLEM lines tinted
+|             (Open battery settings)              |
+| JOBS ... DOWNLOADS ... YOUTUBE ... DATABASE ...  |
+| NOTIFICATIONS ... PARSE WARNINGS (12) v          |  expandable
+| LOG (500 lines, monospace)                     v |
+|------------------------------------------------- |
+| (Copy diagnostics) (Report a problem) (Export DB)|  bottom bar
++--------------------------------------------------+
+```
+
+One card per `DiagnosticsSection` of `DiagnosticsRepository.snapshot()`, in 09's `DiagnosticsSectionId` order (`APP`, `REFRESH`, `BACKGROUND`, `JOBS`, `DOWNLOADS`, `YOUTUBE`, `DATABASE`, `NOTIFICATIONS`, `PARSE_WARNINGS`, `LOG`); each `DiagnosticsLine` is a key/value row, `WARNING` in `tertiary`, `PROBLEM` in `error` with an icon (never colour alone). `PARSE_WARNINGS` and `LOG` are collapsed by default; the log reads `observeLogLines()`. The Background card has "Open battery settings" → `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` (fallback `ACTION_APPLICATION_DETAILS_SETTINGS`), never a direct exemption request. Bottom bar: "Copy diagnostics" (`toPlainText`, snackbar "Copied"), "Report a problem" (09's issue URL), "Export database copy" (confirmation that subscriptions, titles and history are included, then share; `DiagnosticsError.NOT_ENOUGH_SPACE` → "Not enough storage space"). Loading: skeleton cards while `snapshot()` runs (≤ 2 s per section, 09); an unavailable section shows 09's "unavailable" line. All text selectable.
 
 ---
 
@@ -614,7 +759,7 @@ Serves R5.1, R5.2, R5.4, R5.6, R5.8, R4.6, N4. Delivered in M1 (`CoverArt`, `Cov
 
 ```kotlin
 // :core:ui
-enum class EpisodeRowStyle { FEED, PODCAST, QUEUE, DOWNLOADS }
+enum class EpisodeRowStyle { FEED, PODCAST, QUEUE }            // Downloads uses DownloadEntryRow (:feature:downloads)
 @Immutable data class RowCaps(val inAppPlayback: Boolean, val downloads: Boolean,  // from YouTubeCapabilities for YouTube rows
                               val swipe: SwipeConfig?, val offline: Boolean)
 @Immutable data class SwipeConfig(val startToEnd: SwipeAction, val endToStart: SwipeAction)
@@ -631,7 +776,10 @@ sealed interface EpisodeAction {
     data class OpenPodcast(override val episodeId: Long, val podcastId: Long) : EpisodeAction
     data class WatchOnYouTube(override val episodeId: Long, val videoId: String) : EpisodeAction
     data class Select(override val episodeId: Long) : EpisodeAction             // long-press / toggle in selection mode
+    data class CheckAvailability(override val episodeId: Long) : EpisodeAction  // foss greyed YouTube rows (04 "Check again")
 }
+@Composable fun DownloadStateButton(state: DownloadState?, waitReason: WaitReason?, progress: Float?, // null = indeterminate
+                                    onClick: () -> Unit, modifier: Modifier = Modifier)            // shared with DownloadEntryRow
 @Composable fun EpisodeRow(
     row: EpisodeRow, live: RowLive?, style: EpisodeRowStyle, caps: RowCaps,
     highlightNew: Boolean, selected: Boolean?,          // null = not in selection mode
@@ -641,18 +789,18 @@ sealed interface EpisodeAction {
 
 **Anatomy** (min height 72 dp, grows with font scale; 16 dp horizontal and 8 dp vertical padding):
 
-| Slot | `FEED`, `QUEUE`, `DOWNLOADS` | `PODCAST` |
+| Slot | `FEED`, `QUEUE` | `PODCAST` |
 |---|---|---|
 | Leading | 56 dp square [`CoverArt`](#coverart-and-covertile) (8 dp corners) of `row.artwork` (episode art when it differs, else the cover); YouTube rows: 100 × 56 dp 16:9 thumbnail, or the square avatar when `appearance.youtube_row_art = CHANNEL_AVATAR` | 48 dp date block (day `titleMedium`, month `labelSmall`); the episode's own art (if any) replaces it at 56 dp |
 | Overline | — | `episodeDisplay` ("S2 E14", "Trailer", "Bonus") in `labelSmall` when present |
 | Title | `titleSmall`, max 2 lines; 8 dp `primary` dot before it when `highlightNew` | same |
-| Meta | `bodySmall`, 1 line: "{podcastTitle} · {date} · {duration}" (`QUEUE`/`DOWNLOADS` add the size) | "{duration}" plus badges |
+| Meta | `bodySmall`, 1 line: "{podcastTitle} · {date} · {duration}" | "{duration}" plus badges |
 | Badges (inline 16 dp) | `check` when played; `videocam` when `isVideo`; `smart_display` when YouTube; `favorite` when favourite | same |
 | Progress | 3 dp `NdProgress.Linear` plus "{n} min left" (`labelSmall`) when `startedAt != null && playedAt == null` and a position is known | same |
 | Status line | first of: unavailable reason; download failure or wait text; nothing | same |
 | Trailing | download button then play button, each 48 dp with 24 dp icons | same |
 
-Dates: Today / Yesterday / weekday name within 6 days / "d MMM" this year / "d MMM yyyy" otherwise (`DateFormat.getBestDateTimePattern(locale, "dMMM")`), computed from `pubDate ?: sortDate` in the device zone. Durations: "45 min", "1 h 5 min"; unknown (YouTube from Atom, `play` always) → omitted in rows, "—" in episode detail (04 [UI per flavor](04-youtube.md#ui-per-flavor-hand-off-to-08-flavor-differences-in-ui)). Remaining = duration − position in content time.
+Dates: Today / Yesterday / weekday name within 6 days / "d MMM" this year / "d MMM yyyy" otherwise (`DateFormat.getBestDateTimePattern(locale, "dMMM")`), computed from `pubDate ?: sortDate` in the device zone. Durations (`live.durationMs ?: row.durationMs`): "45 min", "1 h 5 min"; unknown (YouTube from Atom, `play` always) → omitted in rows, "—" in episode detail (04 [UI per flavor](04-youtube.md#ui-per-flavor-hand-off-to-08-flavor-differences-in-ui)). Remaining = duration − position in content time (not divided by speed), rounded up to whole minutes; hidden when the duration is unknown.
 
 **Playback states** (from `row` plus `live`):
 
@@ -665,7 +813,7 @@ Dates: Today / Yesterday / weekday name within 6 days / "d MMM" this year / "d M
 | Now playing, paused | container `secondaryContainer` | `play_arrow` "Resume" |
 | Played | title and meta `onSurfaceVariant`, check badge, no progress | `play_arrow` "Play again" |
 | Offline and not downloaded | play icon `cloud_off`, 60 % alpha | tap → offline snackbar |
-| Unavailable (`availability` not `AVAILABLE`, foss) | row at 60 % alpha, reason in the status line | `open_in_new` "Watch on YouTube" |
+| Unavailable (`availability` not `AVAILABLE`, foss) | row at 60 % alpha, reason in the status line; custom action "Check again" for `REGION_BLOCKED`, `PRIVATE`, `UNAVAILABLE` (`CheckAvailability`) | `open_in_new` "Watch on YouTube" |
 | External (YouTube, `!caps.inAppPlayback`) | normal; status "Opens in YouTube" | `open_in_new` replaces both buttons |
 
 **Download states** (`live.downloadState ?: row.downloadState`, `live.waitReason`; hidden for YouTube when `!caps.downloads`):
@@ -682,9 +830,11 @@ Dates: Today / Yesterday / weekday name within 6 days / "d MMM" this year / "d M
 | `FAILED` | `error`, `error` colour | short error text | Retry |
 | `MISSING` | `error` outline | "File missing" | Re-download (`request(ids, MANUAL, null)`) |
 
+Every `request`/`promote` call from a row, episode detail, selection mode or "Download all" handles 07's `RequestResult` the same way (`DownloadRequestHandler`, `:core:ui`): `NeedsMeteredDecision` → the [metered dialog](#dialogs); `Queued(askNotificationPermission = true)` → the [notification prompt](#permission-prompts); `Queued.rejected` non-empty → one snackbar for the first reason: `EPISODE_GONE` "This episode is no longer available", `NOT_DOWNLOADABLE` "This episode has no file to download", `UNSUPPORTED_STREAM` "This episode can only be streamed", `YOUTUBE_NOT_SUPPORTED` "YouTube episodes open in YouTube", `UNAVAILABLE` "This episode isn't available" (prefixed "{n} episodes skipped: " when several were requested); `Queued(queued = 0, alreadyPresent > 0)` → nothing. Requests always come from visible UI, so 07 can schedule its user-initiated job (D47).
+
 **Interaction.** Tap row → `Open`; tap play → `PlayToggle` (the screen decides between `playFeed` with a start item, `playEpisode`, `pause()` or `play()`; [Feeds](#feeds)); long-press or right-click → `Select` (enters [selection mode](#selection-mode)); swipe per `caps.swipe` (null in Feeds unless `appearance.feeds_row_swipe`), backgrounds `primaryContainer` (add) / `tertiaryContainer` (played) / `errorContainer` (delete) with icon and label; a swipe past 40 % commits on release.
 
-**Accessibility.** One merged node: `semantics(mergeDescendants = true)` with `contentDescription` = [row summary](#row-summary), `stateDescription` = "40 percent played" or "Downloading, 34 percent", custom actions per the [catalogue](#custom-actions-catalogue); inner buttons use `clearAndSetSemantics {}` so TalkBack stops once per row; the cover is decorative. At `fontScale ≥ 1.5` the row stacks: leading art and title on the first line, meta and status below, the two buttons right-aligned on a third line.
+**Accessibility.** One merged node: `semantics(mergeDescendants = true)` with `contentDescription` = [row summary](#row-summary), `stateDescription` = "40 percent played" or "Downloading, 34 percent", custom actions per the [catalogue](#custom-actions-catalogue); inner buttons use `clearAndSetSemantics {}` so TalkBack stops once per row; the cover is decorative. At `fontScale ≥ 1.5` the row stacks: leading art and title on the first line, meta and status below, the two buttons end-aligned on a third line.
 
 `UpNextList` (`:core:ui`) renders `List<UpNextItem>` with drag handles (`reorderable`), `Modifier.animateItem()` and the `QUEUE` style; it is used by Up next and the player's Up next tab.
 
@@ -701,7 +851,7 @@ enum class CoverAspect { SQUARE, WIDE_16_9 }
 )
 ```
 
-- `AsyncImage(model = Covers.request(ref, tier, px), placeholder = ColorPainter(avg), error = MonogramPainter(spec), fallback = MonogramPainter(spec), contentScale = Crop)`; `avg` = `avgArgb` (M10) or the monogram background tone (never grey, R5.4); `spec = Monogram.spec(fallbackTitle)`. `ref == null` or a monogram key (`m-…`) draws `MonogramPainter` directly (crisper and theme-aware than the raster file).
+- `AsyncImage(model = remember(ref, tier) { Covers.request(context, ref, tier, density, aspect, crossfade = !LocalReducedMotion.current) }, placeholder = ColorPainter(avg), error = MonogramPainter(spec), fallback = MonogramPainter(spec), contentScale = Crop)` ([Request tiers and memory keys](#request-tiers-and-memory-keys)); `avg` = `avgArgb` (M10) or the monogram background tone (never grey, R5.4); `spec = Monogram.spec(fallbackTitle)`. `ref == null` or a monogram key (`m-…`) draws `MonogramPainter` directly (crisper and theme-aware than the raster file).
 - Transparent images draw on `surfaceContainerHighest`. Non-square images are centre-cropped. `AsyncImage` only, never `SubcomposeAsyncImage` in lazy lists ([Coil README](https://github.com/coil-kt/coil/blob/main/coil-compose/README.md)).
 
 `CoverTile` (`:core:ui`): square `CoverArt` with 12 dp corners; badges: unplayed count (`NdBadge`, "99+" cap) top-end; status badge bottom-end (pending: 16 dp ring; `needsCredentials`: `lock`; `gone`: `link_off`; possibly dead: `error_outline`; failing below the possibly-dead threshold: none); YouTube glyph `smart_display` bottom-start (never the YouTube logo). Monogram tiles of ≥ 96 dp draw the title (2 lines, `labelMedium`) inside the monogram under the initials, so titles are never ambiguous when titles are hidden. Selection: scrim, check circle and a 0.92× scale (animated with `NeutrodyneMotion.spatial`). Content description: "{title}, {n} unplayed{, needs a password}" when titles are hidden; otherwise the cover is decorative and the merged tile reads the title text.
@@ -726,7 +876,7 @@ enum class CoverAspect { SQUARE, WIDE_16_9 }
 | Heading level 1–2 / 3–6 | `titleMedium` / `titleSmall`, 16 dp before |
 | ListBlock | bullet "•" or "1." in a 24 dp gutter per nesting level (≤ 4) |
 | Quote | 4 dp start border in `outlineVariant`, 12 dp indent |
-| Image | `CoverArt`-like `AsyncImage` at the intrinsic aspect (max width, max height 480 dp), loaded per `feeds.show_notes_images` (`ALWAYS`; `WIFI_ONLY` when `!isMetered`; `TAP_TO_LOAD` after the episode's "Load images" tap, remembered per episode for the screen's lifetime); not loaded → a 48 dp row "Image: {alt}" |
+| Image | `AsyncImage` with a plain URL `String` (so the cover-only `ArtworkRefMapper` and `TinyImageInterceptor` do not apply), `contentDescription = alt`, at the intrinsic aspect (max width, max height 480 dp; the box is pre-sized from `width`/`height` when present so text does not jump), loaded per `feeds.show_notes_images` (`ALWAYS`; `WIFI_ONLY` when `!NetworkMonitor.status.isMetered`; `TAP_TO_LOAD` after the episode's "Load images" tap, remembered per episode for the screen's lifetime); not loaded or failed → a 48 dp row "Image: {alt}" |
 | Rule | `HorizontalDivider` |
 | Text styles BOLD/ITALIC/UNDERLINE/CODE | `SpanStyle` weight, style, decoration, monospace |
 | Link | `LinkAnnotation.Url` with `TextLinkStyles(primary, underline)`; opens via `ACTION_VIEW` + `CATEGORY_BROWSABLE` (no Custom Tabs dependency); `mailto:` via `ACTION_SENDTO`; `ActivityNotFoundException` → "No app can open this link" with "Copy link" |
@@ -740,7 +890,7 @@ enum class CoverAspect { SQUARE, WIDE_16_9 }
 
 - `NdBanner` (`:core:designsystem`): a `surfaceContainerHigh` card at the top of a screen's list with icon, one or two lines and up to two text buttons; `liveRegion = Polite` when it appears due to a state change. Screens show at most two banners; [priorities](#banners-and-the-startup-gate).
 - `EmptyState` (`:core:ui`): 96 dp Material Symbol in `primary`, title `titleMedium`, body `bodyMedium`, one primary and up to two secondary buttons; centred, max width 400 dp.
-- Snackbars: one `SnackbarHostState` at the root (`LocalSnackbarHost`), positioned above the mini player. ViewModels emit `UserMessage`s (01); screens show them and acknowledge. Duration `Short` for confirmations, `Long` (10 s) for anything with Undo. Undo catalogue: group delete (05 token, 10 s), membership chip removal (re-add), Up next remove and clear (re-add at the old indices), swipe "Mark played" (`setPlayed(false)`; the position is not restored because marking played resets it, 06), mark-played-on-open for YouTube (04, 5 s).
+- Snackbars: one `SnackbarHostState` at the root (`LocalSnackbarHost`), positioned above the mini player. ViewModels emit `UserMessage`s (01); screens show them and acknowledge. Duration `Short` for confirmations, `Long` (10 s) for anything with Undo. Undo catalogue: group delete (05 token, 10 s; `GroupError.UndoExpired` → snackbar "Too late to undo"), membership chip removal (re-add), Up next remove and clear (re-add at the old indices with `addLast` + `move`), swipe "Mark played" (`setPlayed(false)`; neither the position nor an Up next entry comes back, because 03's mark-played chain resets the position and removes the episode from Up next — [Open questions](#open-questions)), mark-played-on-open for YouTube (04, 5 s). "Mark all as played" and download deletes have no undo (confirmation dialogs instead).
 
 ### Selection mode
 
@@ -757,6 +907,11 @@ Entered by long-press, right-click or the "Select" overflow action; the top app 
 | Download all unplayed | Group action (M6) | text from `DownloadAllEstimate` ("Download 37 episodes (about 1.9 GB, 3 sizes unknown)?"; "200 newest of 1,234" when capped) |
 | Enter password | Credentials needed | username, password (masked, show toggle) → `setCredentials` / `enterPassword` |
 | Edit feed address | Podcast settings, import report | URL field → `editFeedUrl` / `ImportRepository.editUrl`; inline error text |
+| Private links warning ([R1.9](../PLAN.md#21-functional-requirements)) | `PreparedExport` or `BackupRepository.preflight` with `privateLinks > 0` or `passwords > 0` | "This file contains private access links for {n} feeds. Anyone with the file can listen to them." (backup: "This backup contains…") plus, with passwords, "It also contains {n} passwords in plain text." · Continue → save or share · Cancel |
+| Stop importing? | Cancel while FETCHING | Stop (→ `ImportRepository.cancel`) · Keep importing |
+| Discard Android backup? | `foreignPending` banner or Backup page | Discard (→ `discardAndroidBackup()`) · Cancel |
+
+All dialogs are `NdDialog` (window-based), keep their input in `rememberSaveable`, and close on back. Destructive confirm buttons use the `error` colour role.
 
 ### String mappers
 
@@ -819,7 +974,7 @@ Serves R4.7, R4.8, R5.2, R5.5, R5.7, N4. Delivered in M4 (sheet, mini and full p
 
 ### Structure and states
 
-`NeutrodyneRoot` (`:app`) composes `Box { NdNavigationSuiteScaffold { NavDisplay(…) }; PlayerSheet(…) }`: the sheet overlays the whole window, including the navigation bar, so it can grow over it without resizing the scaffold. When `LocalPaneLayout.playerPanel` is true the sheet is not composed; `PlayerSidePanel` is laid out beside the content instead ([Side panel, medium widths and tabletop](#side-panel-medium-widths-and-tabletop)). With `nowPlaying == null` neither exists and `LocalMiniPlayerInset` is 0.
+`NeutrodyneRoot` (`:app`) composes `Box(Modifier.semantics { testTagsAsResourceId = true }) { NdNavigationSuiteScaffold { Row { Box(Modifier.weight(1f)) { NeutrodyneNavHost(…) }; if (layout.playerPanel) PlayerSidePanel(…) } }; if (!layout.playerPanel) PlayerSheet(…) }` (`testTagsAsResourceId` lets 09's UI Automator journeys find Compose nodes by resource ID): the sheet overlays the whole window, including the navigation bar, so it can grow over it without resizing the scaffold. When `LocalPaneLayout.playerPanel` is true the sheet is not composed and `PlayerSidePanel` takes its fixed width at the end of the content row ([Side panel, medium widths and tabletop](#side-panel-medium-widths-and-tabletop)). With `nowPlaying == null` neither exists and `LocalMiniPlayerInset` is 0. Switching between the two (unfolding, resizing a window) never carries the sheet's value: a sheet created after the panel starts `Collapsed`.
 
 ```mermaid
 stateDiagram-v2
@@ -837,11 +992,14 @@ stateDiagram-v2
 // :feature:player
 enum class PlayerSheetValue { Collapsed, Expanded, Dismissed }
 @Stable class PlayerSheetState(initial: PlayerSheetValue) {
-    val drag = AnchoredDraggableState(initialValue = initial)          // foundation 1.12 API
+    val drag = AnchoredDraggableState(initialValue = initial)          // foundation 1.12: anchors set later via updateAnchors
     val progress: Float get() = drag.progress(PlayerSheetValue.Collapsed, PlayerSheetValue.Expanded)
     val isExpanded: Boolean get() = drag.currentValue == PlayerSheetValue.Expanded
-    suspend fun expand() = drag.animateTo(PlayerSheetValue.Expanded)
-    suspend fun collapse() = drag.animateTo(PlayerSheetValue.Collapsed)
+    fun setAnchors(collapsedPx: Float, dismissible: Boolean) = drag.updateAnchors(DraggableAnchors {
+        PlayerSheetValue.Expanded at 0f; PlayerSheetValue.Collapsed at collapsedPx
+        if (dismissible) PlayerSheetValue.Dismissed at collapsedPx + dismissDistancePx })
+    suspend fun expand() = drag.animateTo(PlayerSheetValue.Expanded, NeutrodyneMotion.spatial)
+    suspend fun collapse() = drag.animateTo(PlayerSheetValue.Collapsed, NeutrodyneMotion.spatial)
     companion object { val Saver: Saver<PlayerSheetState, String> }    // saves Collapsed/Expanded (Dismissed → Collapsed)
 }
 @Composable fun rememberPlayerSheetState(): PlayerSheetState      // rememberSaveable(saver = Saver)
@@ -849,12 +1007,12 @@ enum class PlayerSheetValue { Collapsed, Expanded, Dismissed }
                             vm: PlayerViewModel = hiltViewModel())
 ```
 
-`PlayerViewModel` (activity-scoped, created by `:app` outside `NavDisplay`) combines `PlaybackStateSource` (`nowPlaying`, `sleepTimer`, `currentChapter`, `effectivePlayback`, `events`), `QueueRepository.observeUpNext()` (count and tab), `ChapterRepository.observe(current)`, `EpisodeRepository.observeShowNotes(current)` (only while the Notes tab is open), `ArtworkRepository.observeColors(now.artwork.key)` ([Artwork pipeline](#artwork-pipeline)), `YouTubeHealth.state` and the `playback.*`/`appearance.*` settings it displays, into one `PlayerUiState`. `positionTicks` (1 Hz) drive the mini player's progress line; the expanded scrubber reads `now.position.positionAt(frameTimeMillis)` inside `withFrameMillis` only while the full player is visible and `advancing` (06), so no 60 Hz flow exists.
+`PlayerViewModel` (activity-scoped, created by `:app` outside `NavDisplay`) combines `PlaybackStateSource` (`nowPlaying`, `sleepTimer`, `currentChapter`, `effectivePlayback`, `events`), `QueueRepository.observeUpNext()` (count and tab), `ChapterRepository.observe(current)`, `EpisodeRepository.observeShowNotes(current)` (only while the Notes tab is open), `ArtworkRepository.observeColors(now.artwork.key, fallbackPodcastId = now.podcastId)` (the episode art's colours, else the podcast cover's — a streamed episode's own art and a YouTube thumbnail are usually not in the store, [Colour extraction](#colour-extraction)), `YouTubeHealth.state` and the `playback.*`/`appearance.*` settings it displays, into one `PlayerUiState`. `positionTicks` (1 Hz) drive the mini player's progress line; the expanded scrubber runs a `withFrameMillis` loop only while the full player is visible and `now.position.advancing` (06), and on each frame reads `now.position.positionAt(SystemClock.elapsedRealtime())` — never the frame time itself: Choreographer frame times are in the `System.nanoTime()` (uptime) base, `PositionSnapshot.sampledAtElapsedMs` is elapsed realtime, and the two differ by the device's total deep-sleep time ([Choreographer.FrameCallback](https://developer.android.com/reference/android/view/Choreographer.FrameCallback#doFrame(long)), [SystemClock](https://developer.android.com/reference/android/os/SystemClock)). So no 60 Hz flow exists.
 
 ### Anchors and gestures
 
-- Anchors (px, measured in `BoxWithConstraints` over the full window): `Expanded = 0`; `Collapsed = contentBottom − 64 dp − 8 dp`, where `contentBottom` is the bottom edge of the `NavDisplay` container measured while the navigation suite is shown (frozen while it is hidden, so anchors never jump); `Dismissed = Collapsed + 96 dp`, present only while `!now.isPlaying`.
-- `Modifier.anchoredDraggable(state.drag, Orientation.Vertical)` on the sheet surface (mini player: whole surface; full player: the top bar and artwork area, not the scrubber or the tabs panel). Positional threshold 50 %, velocity threshold 125 dp/s, settle spec `NeutrodyneMotion.spatial`.
+- Anchors (px, measured in `BoxWithConstraints` over the full window, applied with `state.setAnchors` from a `LaunchedEffect` keyed on the measured values and `now.isPlaying`): `Expanded = 0`; `Collapsed = contentBottom − 64 dp − 8 dp`, where `contentBottom` is the bottom edge of the `NavDisplay` container measured while the navigation suite is shown (frozen while it is hidden, so anchors never jump); `Dismissed = Collapsed + 96 dp`, present only while `!now.isPlaying` (when playback starts while the sheet sits on `Dismissed`, `updateAnchors` moves it to the closest anchor, `Collapsed`).
+- `Modifier.anchoredDraggable(state.drag, Orientation.Vertical, flingBehavior = AnchoredDraggableDefaults.flingBehavior(state.drag, positionalThreshold = { it * 0.5f }, animationSpec = NeutrodyneMotion.spatial))` on the sheet surface (mini player: whole surface; full player: the top bar and artwork area, not the scrubber or the tabs panel). In foundation 1.12 thresholds live on the fling behaviour, not the state (the state constructor with thresholds is deprecated); the velocity threshold is the built-in 125 dp/s (`AnchoredDraggableMinFlingVelocity`, not configurable) ([foundation 1.12.1 sources](https://dl.google.com/android/maven2/androidx/compose/foundation/foundation-android/1.12.1/foundation-android-1.12.1-sources.jar)).
 - Settling at `Dismissed` calls `PlaybackController.dismiss()` (06 `nd.DISMISS`), then snaps back to `Collapsed` (the sheet disappears when `nowPlaying` becomes null).
 - No horizontal swipe-to-skip on the mini player (it would fight the Feeds pager).
 - Starting playback from the sheet is always `PlaybackController.play*` from visible UI ([D43](../PLAN.md#3-key-decisions)).
@@ -909,10 +1067,10 @@ Compact portrait layout; other layouts in [Side panel, medium widths and tableto
 +--------------------------------------------------+
 ```
 
-- Transport: skip back/forward labels and a11y use `playback.skip_back_ms`/`skip_forward_ms` ("Back 10 seconds"); `|<`/`>|` are `previousChapter`/`nextChapter` when the episode has chapters, else `skipToPrevious`/`skipToNext` (`>|` disabled when `!hasNext`). The play button morphs between a rounded square and a circle (`graphics-shapes` 1.1.0) only when animations are enabled.
+- Transport: skip back/forward labels and a11y use `playback.skip_back_ms`/`skip_forward_ms` ("Back 10 seconds"); `|<`/`>|` are `previousChapter`/`nextChapter` when the episode has chapters (labels "Previous chapter"/"Next chapter"), else `skipToPrevious`/`skipToNext` ("Previous episode"/"Next episode"; `>|` disabled when `!hasNext`); with chapters, the overflow's "Next episode" (`skipToNext()`) keeps episode skipping one tap away. The play button morphs between a rounded square and a circle (`graphics-shapes` 1.1.0) only when animations are enabled.
 - Scrubber: `NdSlider`, chapter start ticks drawn in `drawBehind`; dragging shows the target time in a bubble and seeks on release (`seekTo`); `stateDescription` "12 minutes 4 seconds of 45 minutes"; custom actions Back/Forward {n} seconds; no live-region announcements of the position.
 - Secondary row: speed (label "1.2×" → `SpeedKey`), sleep (icon, or "23 min" while running → `SleepTimerKey`), Up next (count → opens the tabs panel), share (episode web link or YouTube watch URL). `play` flavor v1.x adds the Output Switcher here (PO-6).
-- Overflow: Go to episode (`EpisodeKey`), Go to podcast, Mark played and skip (`EpisodeRepository.setPlayed(listOf(id), true)`, then `skipToNext()`), Download / Delete download, Watch on YouTube (YouTube in `foss`), Stop and close (`dismiss()`).
+- Overflow: Go to episode (`EpisodeKey`), Go to podcast, Next episode (only when chapters own `>|`), Mark played and skip (`EpisodeRepository.setPlayed(listOf(id), true)` **only**: 06's projector advances when the current item is marked played, so an extra `skipToNext()` would skip two episodes, 06 open question 12), Download / Delete download (per [`RowCaps`](#episoderow); results through `DownloadRequestHandler`), Watch on YouTube (YouTube in `foss`), Stop and close (`dismiss()`).
 - Colours: the whole sheet is wrapped in `ArtworkTheme(colors?.seedArgb)` (M10; app scheme before).
 
 ### Tabs panel
@@ -933,9 +1091,9 @@ A nested panel at the bottom of the full player with its own `AnchoredDraggableS
 | Set for this podcast                             |  AttributionText of effectivePlayback.speed
 ```
 
-Chips and the slider (on release) call `setSpeed(value, scope)`; the switch calls `setSkipSilence(enabled, scope)`. The scope selector defaults to the current source (`Podcast` → This podcast, `Group` → Group, otherwise All). "Group 'news'" is enabled only when `NowPlaying.context.type == GROUP` (06 returns `NO_CONTEXT_GROUP` otherwise; then the option shows "Only when playing from a group"). Choosing a broader scope while a narrower override exists shows "This also removes this podcast's own speed (1.5×)" (06/05 rule). "Edit presets" opens a dialog editing the comma-separated list (validated to 2–8 values in range).
+Chips and the slider (on release) call `setSpeed(value, scope)`; the switch calls `setSkipSilence(enabled, scope)`. `ScopeWriteResult.NO_CONTEXT_GROUP` (the context changed meanwhile) → snackbar "Only possible while playing from a group" and the selector falls back to This podcast; `NOTHING_PLAYING` → the sheet closes. The scope selector defaults to the current source (`Podcast` → This podcast, `Group` → Group, otherwise All). "Group 'news'" is enabled only when `NowPlaying.context.type == GROUP` (06 returns `NO_CONTEXT_GROUP` otherwise; then the option shows "Only when playing from a group"). Choosing a broader scope while a narrower override exists shows "This also removes this podcast's own speed (1.5×)" (06/05 rule). "Edit presets" opens a dialog editing the comma-separated list (validated to 2–8 values in range).
 
-`SleepTimerKey` (M5): Off → chips 5, 10, 15, 30, 45, 60, 90 min, "Custom…" (1–240), "End of episode"; the last choice (`playback.sleep_last_minutes`) is preselected. `Running` → large remaining time ("23:41"), "Waiting while paused" when `!counting`, buttons "+5 min", "+15 min" (`extendSleepTimer`), "Turn off". `EndOfEpisode` → "Stops at the end of this episode" + "Turn off". Calls: `setSleepTimer(SleepTimerMode…)`.
+`SleepTimerKey` (M5): Off → chips 5, 10, 15, 30, 45, 60, 90 min, "Custom…" (1–240), "End of episode"; the last minutes choice (`playback.sleep_last_minutes`, written by the sheet through `SettingsRepository` when a duration is picked) is preselected. `Running` → large remaining time ("23:41"), "Waiting while paused" when `!counting`, buttons "+5 min", "+15 min" (`extendSleepTimer`), "Turn off". `EndOfEpisode` → "Stops at the end of this episode" + "Turn off". Calls: `setSleepTimer(SleepTimerMode…)`.
 
 ### Issues, results and events
 
@@ -953,7 +1111,7 @@ Chips and the slider (on release) call `setSpeed(value, scope)`; the switch call
 | | `NeedsMeteredConsent` | "Stream on mobile data?" [dialog](#dialogs) |
 | | `MeteredBlocked` | snackbar "Streaming on mobile data is off" + Settings |
 | | `Offline` | snackbar "You're offline — downloaded episodes still play" |
-| | `NotPlayable(id, reason)` | snackbar: `Http(404/410)` "This episode's audio file is gone"; `AuthRequired` "This feed needs a password" + Enter; `UnsupportedFormat` "This file format can't be played"; `NoMedia` "This episode has no audio"; `YouTube(a)` availability text; `YouTubeExtraction` "YouTube playback failed — try again later"; `NotInThisBuild` → the row opens YouTube instead (never reached from the UI) |
+| | `NotPlayable(id, reason)` | snackbar: `Http(404/410)` "This episode's audio file is gone"; `AuthRequired` "This feed needs a password" + Enter (opens the Enter password [dialog](#dialogs) for the episode's podcast, `PodcastRepository.setCredentials`); `UnsupportedFormat` "This file format can't be played"; `NoMedia` "This episode has no audio"; `YouTube(a)` availability text; `YouTubeExtraction` "YouTube playback failed — try again later"; `NotInThisBuild` → the row opens YouTube instead (never reached from the UI) |
 | | `ServiceUnavailable` | snackbar "Couldn't start playback" + Retry |
 | `PlaybackStateSource.events` | `Skipped(id, title, reason)` | snackbar "Skipped “{title}”: {reason}" |
 | | `MarkedPlayed`, `SleepTimerFired` | nothing |
@@ -1042,11 +1200,11 @@ stateDiagram-v2
 
 ### Pages, paging and scroll memory
 
-- `HorizontalPager(beyondViewportPageCount = 1, key = { tabs[it].ref }, userScrollEnabled = !rowSwipe)`; `PrimaryScrollableTabRow` (`NdTabRow`, edge padding 12 dp) above it with [`GroupTabLabel`](#groupmosaic-and-group-tab-label)s and, outside the scrolling row, the "All groups" `NdIconButton` (`grid_view`) → `AllGroupsKey`. With one tab (no groups) the tab row is not composed.
+- `HorizontalPager(beyondViewportPageCount = 1, key = { tabs[it].ref.encode() }, userScrollEnabled = !rowSwipe)` — the key is the encoded `String`, never the `FeedSourceRef` object: pages hold saveable state, and Compose's `SaveableStateHolder` requires keys that can be stored in a `Bundle` (a sealed-interface key crashes on the first page); `PrimaryScrollableTabRow` (`NdTabRow`, edge padding 12 dp) above it with [`GroupTabLabel`](#groupmosaic-and-group-tab-label)s and, outside the scrolling row, the "All groups" `NdIconButton` (`grid_view`) → `AllGroupsKey`. With one tab (no groups) the tab row is not composed.
 - `pagingFor(source)`: an LRU of 3 entries (current ± 1, matching 05's paging hand-off) keyed by `FeedSource`; each entry owns a child `CoroutineScope` of `viewModelScope` in which the flow is built as `observePrefs(source).flatMapLatest { feedRepository.pagedFeed(source, it.filters, it.feedOrder) }.map { it.insertDayHeaders(clock, zone) }.flowOn(Default).cachedIn(entryScope)`; eviction cancels that scope (no leaked `cachedIn` collectors).
 - Day headers: `insertSeparators` between rows whose local dates (from `sortDate`) differ; labels as the row dates ("Today", "Yesterday", weekday, date). Headers are ordinary items (`contentType = 0`), not sticky: `stickyHeader` would require declaring every header in the `LazyColumn` DSL, which with placeholders means looping over tens of thousands of items per composition.
-- Scroll memory per page: each page is wrapped in `rememberSaveableStateHolder().SaveableStateProvider(ref.encode())` and uses `rememberLazyListState()`, so a page keeps its position after being disposed by the pager, across tab switches and process death.
-- Lists: `items(count, key = itemKey { … }, contentType = itemContentType { … })` with content types Day 0, RSS row 1, YouTube row 2 (05 asks for distinct types for 16:9 thumbnails); placeholders render skeleton rows.
+- Scroll memory per page: one `rememberSaveableStateHolder()` hoisted to the Feeds route (outside the pager); each page is wrapped in `holder.SaveableStateProvider(ref.encode())` and uses `rememberLazyListState()`, so a page keeps its position after being disposed by the pager, across tab switches and process death. When a group disappears from the tabs, `holder.removeState(ref.encode())` drops its state. A page composes its `LazyColumn` only once its `LazyPagingItems` has a non-empty snapshot or `loadState.refresh` is `NotLoading` (skeleton rows before), so a restored `LazyListState` index is not clamped to 0 by an empty first measure; with placeholders enabled (05's `PagingConfig`) the restored index then shows placeholders until Paging loads around it.
+- Lists: `items(count, key = itemKey { … }, contentType = itemContentType { … })` with keys `"d:{epochDay}"` for day headers and the episode `id` (`Long`) for rows, and content types Day 0, RSS row 1, YouTube row 2 (05 asks for distinct types for 16:9 thumbnails); placeholders render skeleton rows.
 
 ### Header, chips and actions
 
@@ -1119,7 +1277,7 @@ Merge rules per ID:
 | Field | Rule |
 |---|---|
 | `isNowPlaying`, `isPlaying` | `now?.episodeId == id`; `now.isPlaying` |
-| `positionMs` | now-playing row: `tick?.positionMs ?: now.position.positionMs` (1 Hz); others: `episode_position.positionMs` |
+| `positionMs` | now-playing row: `tick.positionMs` when `tick?.episodeId == id`, else `now.position.positionMs` (a tick can still belong to the previous item right after a transition); others: `episode_position.positionMs` |
 | `durationMs` | now-playing: player duration; else `episode_position.durationMs ?: episode_state.measuredDurationMs` |
 | `downloadState` | the live entry's state when `DownloadProgressSource` has one (`RESOLVING`, `DOWNLOADING`, `VERIFYING`), else the `download` row (07 [Inputs to live row state](07-downloads.md#inputs-to-live-row-state)) |
 | `waitReason`, `nextAttemptAt`, `lastError` | `download` row |
@@ -1204,7 +1362,7 @@ Serves R5.5, R5.6, R5.4, N4. Delivered in M0 (app scheme, light/dark, tokens, `N
 }
 ```
 
-- `AppearancePrefs` is read once by `MainActivity` from `appearance.*` keys and passed in (the theme never touches repositories).
+- `AppearancePrefs` is collected by `MainActivity` from the `appearance.*` keys (`SettingsRepository`, `collectAsStateWithLifecycle`) and passed in, so a change applies immediately; the theme itself never touches repositories. To avoid a light-to-dark flash on cold start, the first frame must not render before the first emission of the portable `settings` file: 01's splash keep-condition waits for `device_settings` only, so it must also wait for `settings` within the same 1 s cap (requested from 01, [Open questions](#open-questions)); after the cap the keys' defaults are used.
 - `BRAND_SEED` is a placeholder until PO-17 delivers brand assets (M10); until M10 the brand scheme is the M3 baseline `lightColorScheme()`/`darkColorScheme()`, so M0 needs no colour library.
 - MCU → Compose mapping (M10): start from `lightColorScheme()`/`darkColorScheme()` and `copy(…)` every role from `MaterialDynamicColors` (named arguments, so roles added by later M3 versions keep their defaults). `ColorScheme.copy` exists in 1.4.0 ([sources jar](https://dl.google.com/android/maven2/androidx/compose/material3/material3-android/1.4.0/material3-android-1.4.0-sources.jar)).
 - Pure black: `background`, `surface`, `surfaceContainerLowest`, `surfaceDim` = `#000000`; `surfaceContainerLow` `#0B0B0C`, `surfaceContainer` `#111113`, `surfaceContainerHigh` `#18181A`, `surfaceContainerHighest` `#1F1F22`.
@@ -1268,7 +1426,7 @@ enum class MonogramMode { LIGHT, DARK, RASTER }
 |---|---|
 | Typography `NeutrodyneType` | M3 default type scale with the platform font (Roboto / device font); `sp` sizes and `sp` line heights; brand typeface only if PO-17 asks (variable downloadable font) |
 | Shapes `NeutrodyneShapes` | thumbnails 8 dp; tiles 12 dp; mini player 16 dp; podcast and player art 24 dp; sheets 28 dp (top corners) |
-| Motion `NeutrodyneMotion` | `spatial = spring(dampingRatio = 0.8f, stiffness = 380f)`; `effects = tween(200)`; `emphasized = tween(400)`; when `LocalReducedMotion` (system animator duration scale 0, read via `Settings.Global.ANIMATOR_DURATION_SCALE`) every spec becomes `snap()` and Coil crossfade is off. Expressive's `MotionScheme` replaces it in one place when adopted (PO-4). Unverified: that every Compose animation already honours the animator scale; wrapping all specs makes it explicit |
+| Motion `NeutrodyneMotion` | `spatial = spring(dampingRatio = 0.8f, stiffness = 380f)`; `effects = tween(200)`; `emphasized = tween(400)`; when `LocalReducedMotion` (system animator duration scale 0, read from `Settings.Global.ANIMATOR_DURATION_SCALE` and kept current by a `ContentObserver` on `Settings.Global.getUriFor(ANIMATOR_DURATION_SCALE)` in `rememberReducedMotion()`) every spec becomes `snap()` and Coil crossfade is off (per request, [Request tiers and memory keys](#request-tiers-and-memory-keys)). Expressive's `MotionScheme` replaces it in one place when adopted (PO-4). Unverified: that every Compose animation already honours the animator scale; wrapping all specs makes it explicit |
 | Elevation | tonal only (surface containers); `dropShadow` only for player and header artwork |
 | Spacing | 4 dp grid; screen edge 16 dp; list item vertical 8 dp |
 
@@ -1367,7 +1525,7 @@ interface ArtworkStore {
 
 ### ArtworkSyncWorker
 
-Unique work `artwork-sync` (one-time, `NetworkType.CONNECTED` + storage not low, `APPEND_OR_REPLACE`, tag `artwork`, `@HiltWorker` in `:core:artwork`). `ArtworkSyncScheduler.request()` debounces calls for 2 s and enqueues one request, so 300 `pin` calls during an import produce one or two runs.
+Unique work `artwork-sync` (one-time, `NetworkType.CONNECTED` + storage not low, `APPEND_OR_REPLACE`, tag `artwork`, `@HiltWorker` in `:core:artwork`). `ArtworkSyncScheduler.request()` debounces calls for 2 s on `@ApplicationScope` and enqueues one request, so 300 `pin` calls during an import produce one or two runs; `enqueueNow()` skips the debounce (used for the worker's own continuation, which must not be lost if the process dies within the debounce window).
 
 ```
 doWork():
@@ -1380,7 +1538,7 @@ doWork():
            .filterNot { backoffActive(it.row?.lastError, it.row?.fetchedAt) }
            .sortedWith(nowPlaying podcast first, SUBSCRIPTION by latestEpisodeAt desc, DOWNLOAD, MONOGRAM, MOSAIC)
   for batch in wanted.chunked(8):
-    if elapsedRealtime > deadline: scheduler.request(); return success   // continuation, APPEND_OR_REPLACE
+    if elapsedRealtime > deadline: scheduler.enqueueNow(); return success  // continuation: immediate APPEND_OR_REPLACE, no debounce
     results = batch.mapParallel(4) { produce(it) }                        // fetch or render
     ArtworkDao.applyBatch(results)                                        // one transaction per batch (02 write rule 4)
     index.update(results)
@@ -1406,8 +1564,12 @@ Triggers: 03 (subscribe; `artworkUrl` changed, including 04's avatar refresh), 0
 Features read colours through a domain interface, because they cannot see `:core:artwork`:
 
 ```kotlin
-// :core:domain (new); implemented by ArtworkRepositoryImpl in :core:data over ArtworkDao.observe(key) (02, requested)
-interface ArtworkRepository { fun observeColors(key: String): Flow<ArtworkColors?> }
+// :core:domain (new); implemented by ArtworkRepositoryImpl in :core:data over 02's ArtworkDao.observe(key)
+interface ArtworkRepository {
+    /** Colours of [key]; when that row has no seed (not stored: streamed episode art, YouTube thumbnails) and
+     *  [fallbackPodcastId] is given, the colours of that podcast's artworkKey (looked up once per call). */
+    fun observeColors(key: String, fallbackPodcastId: Long? = null): Flow<ArtworkColors?>
+}
 // :core:model (new)
 data class ArtworkColors(val key: String, val version: Int, val seedArgb: Int?, val avgArgb: Int?)
 ```
@@ -1451,13 +1613,13 @@ class NeutrodyneImageLoaderFactory @Inject constructor(
         .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.20).build() }
         .memoryCacheMaxSizePercentWhileInBackground(0.25)   // non-experimental since Coil 3.5
         .diskCache { DiskCache.Builder().directory(context.cacheDir.resolve("coil")).maxSizeBytes(256L * 1024 * 1024).build() }
-        .crossfade(if (animationsEnabled(context)) 150 else 0)
         .build()
 }
 ```
 
 - `ArtworkRefMapper` uses `store.pinnedPath(key)` (in-memory, no `exists()`), so mapping on the main thread does no disk I/O; a vanished file fails the request and the monogram shows until the next sync repairs the index.
-- `TinyImageInterceptor`: a successful result whose decoded size is below the requested size on both axes **and** below 128 px on the longer side becomes an error result (monogram).
+- `TinyImageInterceptor`: only for requests whose data is an `ArtworkRef` (covers and episode art; never show-notes or chapter images, which are plain URLs): a successful result whose decoded size is below the requested size on both axes **and** below 128 px on the longer side becomes an error result (monogram).
+- Crossfade (150 ms, off with reduced motion) is set per request by `Covers.request`, not on the loader, so a change of the system animator scale applies without rebuilding the singleton.
 - Coil ignores `Cache-Control` by default ([coil-network-core README](https://github.com/coil-kt/coil/blob/main/coil-network-core/README.md)); freshness of covers is handled by the store's monthly refresh, not by HTTP caching. Cleartext `http://` covers load because cleartext is allowed app-wide ([D28](../PLAN.md#3-key-decisions)).
 - Tests use `coil-test`'s `FakeImageLoaderEngine` via `:core:testing`'s `fakeImageLoader`.
 
@@ -1467,11 +1629,17 @@ class NeutrodyneImageLoaderFactory @Inject constructor(
 // :core:designsystem
 object Covers {
     fun thumbPx(d: Density) = with(d) { 128.dp.roundToPx() }.coerceAtMost(384)           // rows, tiles, mini player
-    fun request(ctx: Context, ref: ArtworkRef, tier: CoverTier, d: Density): ImageRequest =
+    fun request(ctx: Context, ref: ArtworkRef, tier: CoverTier, d: Density,
+                aspect: CoverAspect = CoverAspect.SQUARE, crossfade: Boolean = true): ImageRequest =
         ImageRequest.Builder(ctx).data(ref)
-            .size(if (tier == CoverTier.THUMB) thumbPx(d) else 1024)
+            .apply { when {
+                tier == CoverTier.HERO -> size(1024)
+                aspect == CoverAspect.WIDE_16_9 -> size(320, 180)   // 16:9 row thumbs: keeps 04's chain on mqdefault
+                else -> size(thumbPx(d))
+            } }
             .memoryCacheKey("art:${ref.key}:v${ref.version}:${if (tier == CoverTier.THUMB) "t" else "h"}")
             .apply { if (tier == CoverTier.HERO) placeholderMemoryCacheKey("art:${ref.key}:v${ref.version}:t") }
+            .crossfade(if (crossfade) 150 else 0)
             .build()
 }
 ```
@@ -1486,7 +1654,7 @@ Coil 3's computed memory key omits the size unless transformations are set, so w
 2. Try `YouTubeThumbnails.chainFor(requestedWidthPx)` in order (≤ 320 px → `mqdefault`; otherwise `maxresdefault`, `hq720`, `mqdefault`), each as `chain.withRequest(…).proceed()`; the first success wins. Non-2xx responses are failures; Coil caches eligible 404s since 3.4.0, so a missing `maxresdefault` is not re-fetched on every bind ([Coil changelog](https://coil-kt.github.io/coil/changelog/)).
 3. Last resort: `hqdefault` with `LetterboxCrop169` (crops the central 16:9 band, rows 45–315 of 360) applied before any square crop, so letterbox bars never show (R5.8).
 
-Row thumbnails are 100 × 56 dp (≤ 320 px at 3×, so `mqdefault` 320 × 180 suffices); the episode-detail hero requests 1024 px and gets `maxresdefault`/`hq720` when they exist. The square avatar is used for system surfaces and, by setting, for rows (06 [Artwork rule](06-playback.md#artwork-rule)).
+Row thumbnails are 100 × 56 dp and are requested at 320 × 180 px (`Covers.request` with `WIDE_16_9`), so `chainFor(320)` stays on `mqdefault` (320 × 180, 04's `episode.imageUrl`) and rows never download 1280 px images; the episode-detail hero requests 1024 px and gets `maxresdefault`/`hq720` when they exist. The square avatar is used for system surfaces and, by setting, for rows (06 [Artwork rule](06-playback.md#artwork-rule)).
 
 ### Failure and fallback rules
 
@@ -1505,7 +1673,7 @@ Row thumbnails are 100 × 56 dp (≤ 320 px at 3×, so `mqdefault` 320 × 180 su
 
 ### Memory and storage budgets
 
-A 384 px ARGB thumb is ≈ 590 KB, 20 visible tiles ≈ 12 MB; a 1024 px hero ≈ 4 MB, at most two alive. Coil's memory cache is 20 % of the app's memory class and shrinks to 25 % of that while backgrounded (an audio app spends hours in the background with an FGS; Android 17 adds RAM-based limits, 01 P18). Hero bitmaps are never held in ViewModels. Disk: Coil 256 MB in `cacheDir/coil` (purgeable); `ArtworkStore` ≈ 120 KB per 1024 px cover, ≈ 36 MB for 300 podcasts plus ≈ 80 KB per downloaded episode with its own art and ≈ 60 KB per mosaic.
+A 384 px ARGB thumb is ≈ 590 KB, 20 visible tiles ≈ 12 MB; a 1024 px hero ≈ 4 MB, at most two alive. Coil's memory cache is 20 % of the app's memory class and shrinks to 25 % of that while backgrounded (an audio app spends hours in the background with an FGS; Android 17 adds RAM-based limits, 01 P18). Hero bitmaps are never held in ViewModels. Disk: Coil 256 MB in `cacheDir/coil` (purgeable); `ArtworkStore`: Unverified estimate 100–250 KB per 1024 px JPEG q88 cover (graphic podcast art compresses well, photos less), so ≈ 30–75 MB for 300 podcasts, plus ≈ 30–80 KB per downloaded episode with its own art (YouTube `mqdefault` 320 × 180 is ≈ 20 KB) and ≈ 60 KB per 512 px mosaic; measured on the seeded library in M10.
 
 ---
 
