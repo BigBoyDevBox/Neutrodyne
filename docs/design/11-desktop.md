@@ -40,10 +40,10 @@ Packages follow `ch.lkmc.neutrodyne` + module path; `:desktopApp` uses `ch.lkmc.
 | `:playback:engine` | `neutrodyne.desktop.library` (JVM, `jvmTarget` 25) | `AudioEngine`, `FfAudioEngine`, `EngineItem`, `EngineState`, `EngineEvent`, `DesktopSourceResolver`, `ResolvedSource`, `ByteSource`, `FileByteSource`, `HttpByteSource`, `SpanCache`, `AvioBridge`, `DemuxerFactory`, `FfDemuxer`, `DecoderFactory`, `FfDecoder`, `FfmpegLibrary`, `SilenceSkipper`, `Sonic`, `GainStage`, `TimelineClock`, `LookAheadLoader`, `EngineWindowDiff`; `MpvAudioEngine` only if MD0 chooses the fallback | `:playback:native`, `:core:network:okhttp`, `:core:{model, common}` |
 | `:playback:native` | `neutrodyne.desktop.library` + `neutrodyne.desktop.native` | `ndmedia` C/C++/Objective-C sources and CMake project, `NdmediaLibrary`, `NdOutput`, the OS-shim bindings, `playback/native/ffmpeg/build.sh`, `ffoffsets.c`, `native-components.lock` | — |
 | `:playback:desktop` | `neutrodyne.desktop.library` | `DesktopPlaybackController`, `DesktopQueueProjector`, `DesktopEpisodeSourceResolver` (implements `DesktopSourceResolver`), `DesktopChapterExtractor`, `DesktopPlaybackModule` | `:playback:core`, `:playback:engine`, `:desktop:system`, `:download:api`, `:youtube:api`, `:core:artwork`, `:core:database`, `:core:datastore` |
-| `:desktop:system` | `neutrodyne.desktop.library` | `SystemMediaSession`, `WindowsSmtcSession`, `MacNowPlayingSession`, `LinuxMprisSession`, `PowerMonitor`, `IdleSleepInhibitor`, `AudioRouteMonitor`, `TrayController`, `LoginItemRegistrar` (`WindowsRunKeyRegistrar`, `MacLoginItemRegistrar`, `XdgAutostartRegistrar`), `DesktopNotifier` | `:playback:native` (shims), `:playback:api` (state types), `:core:{model, common}` |
+| `:desktop:system` | `neutrodyne.desktop.library` | `SystemMediaSession`, `WindowsSmtcSession`, `MacNowPlayingSession`, `LinuxMprisSession`, `IdleSleepInhibitor`, `AudioRouteMonitor`, `TrayController`, `LoginItemRegistrar` (`WindowsRunKeyRegistrar`, `MacLoginItemRegistrar`, `XdgAutostartRegistrar`); implementations of the `:core:common` ports `OsPowerMonitor`, `OsDesktopNotifier`, `DbusDesktopPortal` | `:playback:native` (shims), `:playback:api` (state types), `:core:{model, common}` |
 | `:youtube:ytdlp-desktop` | `neutrodyne.desktop.library` | `YtxProcess`, `StdioYtxTransport`, `PythonRuntimeLocator`, `DesktopEngineStorePaths`, `DesktopEngineUpdateLane`, `QuickJsBridge` (only with the JS provider); PBS bundling; `python-components.lock` | `:youtube:engine`, `:youtube:api`, `:core:datastore` |
 
-Desktop code that lives in other owners' modules and follows this document's rules: `AppDirs` and `JobLane` (`:core:common` `desktopMain`); `DesktopJobRunner`, `DesktopRefreshLane`, `DesktopUpdateCheckLane`, `DesktopUpdateNotifier`, `DesktopSecretStore`, `DesktopMaintenanceLane` (`:core:data` `desktopMain`); `DesktopDownloadLane`, `DesktopMoveLane` (`:download:impl` `desktopMain`, 07); `DesktopArtworkLane` (`:core:artwork`, 08); `DesktopSyncLane` (`:sync:impl`, 10); `DesktopNetworkMonitor` (`:core:network`, 01); the `PlatformActions` implementations (`:core:ui` `desktopMain`, 08). Only `:youtube:ytdlp-desktop` may start a process; only `:playback:native` and `:desktop:system` make FFM downcalls into our own native code; `:playback:engine` makes FFM downcalls into FFmpeg only ([PLAN 5.1](../PLAN.md#51-module-graph) rule 6, which names only `:playback:native` and `:desktop:system` and needs `:playback:engine` added, as [D86](../PLAN.md#3-key-decisions) and the change brief's module table already place `FfmpegLibrary` there; `checkBannedApis`, [01 Dependency rules](01-foundation.md#dependency-rules)). The desktop-only edges are `:playback:desktop` → `:playback:engine`, `:playback:core`, `:desktop:system`; `:playback:engine` → `:playback:native`; `:desktop:system` → `:playback:native` and the contract `:playback:api`.
+Desktop code that lives in other owners' modules and follows this document's rules: `AppDirs` and `JobLane` (`:core:common` `desktopMain`); `DesktopJobRunner`, `DesktopRefreshLane`, `DesktopImportBackupLane` (05), `DesktopUpdateCheckLane`, `DesktopUpdateNotifier`, `DesktopSecretStore`, `DesktopMaintenanceLane` (`:core:data` `desktopMain`); `DesktopDownloadLane`, `DesktopMoveLane` (`:download:impl` `desktopMain`, 07); `DesktopArtworkLane` (`:core:artwork`, 08); `DesktopSyncLane` (`:sync:impl`, 10); `DesktopNetworkMonitor` (`:core:network`, 01); the `PlatformActions` implementations (`:core:ui` `desktopMain`, 08). Only `:youtube:ytdlp-desktop` may start a process; only `:playback:native` and `:desktop:system` make FFM downcalls into our own native code; `:playback:engine` makes FFM downcalls into FFmpeg only ([PLAN 5.1](../PLAN.md#51-module-graph) rule 6, amended 2026-10-05 to add `:playback:engine` for FFmpeg; `checkBannedApis`, [01 Dependency rules](01-foundation.md#dependency-rules)). The desktop-only edges are `:playback:desktop` → `:playback:engine`, `:playback:core`, `:desktop:system`; `:playback:engine` → `:playback:native`; `:desktop:system` → `:playback:native` and the contract `:playback:api`.
 
 ### Threading model
 
@@ -191,7 +191,7 @@ Steps in detail:
 
 ### DesktopAppGraph
 
-`DesktopAppGraph` (Metro, [D82](../PLAN.md#3-key-decisions)) is the desktop composition root. It contributes the desktop implementations of the shared interfaces and nothing that Android has: `AppDirs`, `BuildInfo`, `PlatformInfo`, `DesktopNetworkMonitor`, `DesktopSecretStore`, `DesktopJobRunner` with the `Set<JobLane>` multibinding, `DesktopPlaybackController` bound as `PlaybackController` and `PlaybackStateSource`, `SystemMediaSession` (the per-OS implementation chosen at graph creation by `BuildInfo.os`), `PowerMonitor`, `IdleSleepInhibitor`, `AudioRouteMonitor`, `TrayController`, `LoginItemRegistrar`, `DesktopNotifier` (bound as the shared notifier interfaces of 03, 07 and 09), the `PlatformActions` of `:core:ui`, and `DesktopYouTubeBindingsModule` (external-only implementations until MD3, then `:youtube:ytdlp-desktop`; external-only in the `-Pneutrodyne.youtubeEngine=false` build, [01 YouTube bindings](01-foundation.md#youtube-bindings)). One graph test checks that every `NavKey` has an entry installer and every lane is bound ([01 Dependency injection](01-foundation.md#dependency-injection)).
+`DesktopAppGraph` (Metro, [D82](../PLAN.md#3-key-decisions)) is the desktop composition root. It contributes the desktop implementations of the shared interfaces and nothing that Android has: `AppDirs`, `BuildInfo`, `PlatformInfo`, `DesktopNetworkMonitor`, `DesktopSecretStore`, `DesktopJobRunner` with the `Set<JobLane>` multibinding, `DesktopPlaybackController` bound as `PlaybackController` and `PlaybackStateSource`, `SystemMediaSession` (the per-OS implementation chosen at graph creation by `BuildInfo.os`), `IdleSleepInhibitor`, `AudioRouteMonitor`, `TrayController`, `LoginItemRegistrar`, the `:core:common` ports `JobLanePoker` (the runner), `PowerMonitor` (`OsPowerMonitor`), `DesktopNotifier` (`OsDesktopNotifier`, called by the desktop notifiers of 03, 04, 07, 09 and 10) and `LinuxDesktopPortal` (`DbusDesktopPortal`, Linux only), the `PlatformActions` of `:core:ui`, and `DesktopYouTubeBindingsModule` (external-only implementations until MD3, then `:youtube:ytdlp-desktop`; external-only in the `-Pneutrodyne.youtubeEngine=false` build, [01 YouTube bindings](01-foundation.md#youtube-bindings)). One graph test checks that every `NavKey` has an entry installer and every lane is bound ([01 Dependency injection](01-foundation.md#dependency-injection)).
 
 ```kotlin
 // :desktopApp — build-time identity of this image (a resource written by the packaging pipeline)
@@ -429,10 +429,22 @@ The desktop has no OS scheduler integration ([D85](../PLAN.md#3-key-decisions) r
 ### Runner contract
 
 ```kotlin
-// :core:common desktopMain
+// :core:common desktopMain — ports (2026-10-05): shared modules may not depend on :core:data or :desktop:system
+// (PLAN 5.1 rules 4 and 6), so they reach the runner and the OS services through these; DesktopAppGraph binds them
 interface JobLane {
     val name: String                      // refresh, downloads-manual, … (table below)
     suspend fun run(now: Instant)         // does what is due, then returns; cancellable; reads its own persisted state
+}
+fun interface JobLanePoker { fun poke(name: String) }   // run soon; coalesced; unknown names are a programming error
+interface PowerMonitor { val events: Flow<PowerEvent> } // implemented in :desktop:system (Power, below)
+enum class PowerEvent { Suspending, Resumed }
+interface DesktopNotifier { suspend fun post(n: DesktopNotification); fun cancel(id: String) }   // :desktop:system
+data class DesktopNotification(val id: String, val kind: NotificationKind, val title: String,
+                               val body: String, val route: String?)   // route = neutrodyne://open/…
+enum class NotificationKind { NEW_EPISODES, DOWNLOAD_FAILED, STORAGE_FULL, APP_UPDATE, ENGINE_ALERT, SYNC_HELD }
+interface LinuxDesktopPortal {                           // :desktop:system (dbus-java); null binding off Linux
+    suspend fun showItems(file: String): Boolean         // org.freedesktop.FileManager1.ShowItems
+    suspend fun chooseDirectory(title: String, start: String?): String?   // portal FileChooser; null = no portal
 }
 
 // :core:data desktopMain
@@ -440,10 +452,10 @@ class DesktopJobRunner(
     private val lanes: Set<JobLane>,                 // Metro multibinding (@ContributesIntoSet)
     private val clock: Clock, private val power: PowerMonitor, private val network: NetworkMonitor,
     @ApplicationScope private val scope: CoroutineScope,
-) {
+) : JobLanePoker {
     val status: StateFlow<Map<String, LaneStatus>>
     fun start()                                      // AppInitializer band 200
-    fun poke(name: String)                           // run soon; coalesced; unknown names are a programming error
+    override fun poke(name: String)                  // bound as JobLanePoker for 07's DesktopDownloadScheduler and 10's DesktopSyncLane
     suspend fun stop(grace: Duration)                // ShutdownCoordinator
 }
 data class LaneStatus(val running: Boolean, val lastStartAt: Instant?, val lastEndAt: Instant?,
@@ -454,7 +466,7 @@ data class LaneStatus(val running: Boolean, val lastStartAt: Instant?, val lastE
 
 1. `start()` waits until the database is open (band 100 has completed), then 5 s more so the first frame and the session restore are not competing with I/O.
 2. **Tick** every 60 s on `@ApplicationScope`, or earlier when `poke(name)` arrives or `PowerMonitor` emits `Resumed`.
-3. Per tick, for each lane in the fixed order `sync`, `refresh`, `downloads-manual`, `downloads-auto`, `downloads-move`, `artwork`, `app-update-check`, `engine-update`, `maintenance`:
+3. Per tick, for each lane in the fixed order `sync`, `refresh`, `import-backup`, `downloads-manual`, `downloads-auto`, `downloads-move`, `artwork`, `app-update-check`, `engine-update`, `maintenance`:
    - running already → if poked, set `rerun = true` and continue;
    - in backoff (`backoffUntil > now`) and not poked → skip;
    - otherwise launch `lane.run(now)` as a supervised child coroutine on the lane's dispatcher (`Dispatchers.IO` for I/O lanes; `Dispatchers.Default.limitedParallelism(2)` for `artwork`'s colour extraction).
@@ -467,6 +479,7 @@ data class LaneStatus(val running: Boolean, val lastStartAt: Instant?, val lastE
 | Lane | Class (module) | Owner of the work | Due when | Pokes |
 |---|---|---|---|---|
 | `refresh` | `DesktopRefreshLane` (`:core:data`) | [03 Desktop refresh](03-feeds-and-discovery.md#desktop-refresh) | feeds with `nextRefreshAt ≤ now` | start, window focus, manual refresh, network regained, wake |
+| `import-backup` (2026-10-05) | `DesktopImportBackupLane` (`:core:data`) | [05 Restore algorithm](05-groups-opml-backup.md#restore-algorithm), [05 7. Fetch](05-groups-opml-backup.md#7-fetch) | import sessions in `COMMITTED` or `FETCHING`, a session with `restoreRequestedAt` set and not yet `COMMITTED` (one restore at a time), and once per 24 h the interim import-session cleanup until `maintenance` takes it over (M11b) | import confirm and fix-ups, restore request, network regained, wake |
 | `downloads-manual` | `DesktopDownloadLane` (`:download:impl`, lane `MANUAL`) | [07 Desktop runners](07-downloads.md#desktop-runners) | runnable `MANUAL` rows | download request, network regained, storage freed, wake |
 | `downloads-auto` | `DesktopDownloadLane` (lane `AUTO`) | [07 Desktop runners](07-downloads.md#desktop-runners) | runnable `AUTO` rows, planner output | refresh ingested new episodes, cleanup, wake |
 | `downloads-move` | `DesktopMoveLane` (`:download:impl`) | [07 Moving between roots](07-downloads.md#moving-between-roots), [Change folder](#change-folder) | a pending folder move | "Change folder…" |
@@ -516,17 +529,13 @@ sealed interface RemoteCommand {
     data class SeekTo(val positionMs: Long) : RemoteCommand
     data class SetRate(val rate: Float) : RemoteCommand
 }
-interface PowerMonitor { val events: Flow<PowerEvent> }                    // Suspending, Resumed
-enum class PowerEvent { Suspending, Resumed }
+// PowerMonitor, PowerEvent and DesktopNotifier are :core:common desktopMain ports (Runner contract); implemented here
 interface IdleSleepInhibitor { fun acquire(reason: String); fun release() } // idempotent
 interface AudioRouteMonitor { val events: Flow<RouteEvent> }
 sealed interface RouteEvent { data class DeviceRemoved(val deviceId: String) : RouteEvent; data object DefaultChanged : RouteEvent }
 interface TrayController { fun show(); fun hide(); val actions: Flow<TrayAction> }   // Show, PlayPause, Next, Quit
 interface LoginItemRegistrar { fun state(): LoginItemState; fun register(); fun unregister() }
-interface DesktopNotifier { suspend fun post(n: DesktopNotification); fun cancel(id: String) }
-data class DesktopNotification(val id: String, val kind: NotificationKind, val title: String,
-                               val body: String, val route: String?)   // route = neutrodyne://open/…
-enum class NotificationKind { NEW_EPISODES, DOWNLOAD_FAILED, STORAGE_FULL, APP_UPDATE, ENGINE_ALERT, SYNC_HELD }
+class OsPowerMonitor : PowerMonitor; class OsDesktopNotifier : DesktopNotifier; class DbusDesktopPortal : LinuxDesktopPortal
 ```
 
 `DesktopPlaybackController` publishes on every state, rate, seek and transition change and every 5 s while playing, and consumes `commands`; command handling is posted to `nd-playback`, never run on the OS thread that delivered it.
@@ -601,7 +610,7 @@ Policy: `DeviceRemoved` for the device in use → pause and save; `DefaultChange
 
 ### Notifications
 
-`DesktopNotifier` implements the shared notifier interfaces of 03 (new episodes), 07 (download failures, storage full), 09 (app update), 04 (YouTube engine alert) and 10 (held mass change). Content, grouping and per-kind switches are the owners'; the desktop has no notification channels, so channel-level controls do not exist ([Behaviour differences from Android](#behaviour-differences-from-android)).
+`DesktopNotifier` is a `:core:common` `desktopMain` port ([Runner contract](#runner-contract)) implemented by `OsDesktopNotifier` here and bound in `DesktopAppGraph`; the owners' desktop notifiers call it — 03's `DesktopNewEpisodePoster` (`:desktopApp`), 07's download-failure and storage notices (`:download:impl` `desktopMain`), 09's `DesktopUpdateNotifier` (`:core:data` `desktopMain`), 04's engine alert and 10's held mass change (`:sync:impl` `desktopMain`) — so none of them depends on `:desktop:system`. Content, grouping and per-kind switches are the owners'; the desktop has no notification channels, so channel-level controls do not exist ([Behaviour differences from Android](#behaviour-differences-from-android)).
 
 | OS | Back end | Click | Fallback |
 |---|---|---|---|
@@ -760,7 +769,7 @@ fun interface DecoderFactory { fun create(track: AudioTrackInfo): Decoder }
 
 ### Engine thread and commands
 
-`FfAudioEngine` owns one platform thread, `nd-engine`, and a second, `nd-prepare`, that opens the next item's source, demuxer and decoder so a slow network open never stalls output. Commands from `nd-playback` go into a lock-free queue; the engine thread drains it between blocks. Because `nd-engine` may sit in a blocking AVIO read (up to the 30-s source wait) while the ring plays out, two commands also act outside the queue: `pause` calls `nd_out_stop` directly from `nd-playback` (miniaudio allows stopping a device from any thread except its data callback, [miniaudio](https://github.com/mackron/miniaudio)), so the user hears the pause at once and the read simply continues; `seekTo` and `setWindow` raise the pipeline's interrupt flag and call `ByteSource.abort()`, so the blocked read returns `AVERROR_EXIT` within one 1-s wait slice and the engine reopens at the new position.
+`FfAudioEngine` owns one platform thread, `nd-engine`, and a second, `nd-prepare`, that opens the next item's source, demuxer and decoder so a slow network open never stalls output. Commands from `nd-playback` go into a lock-free queue; the engine thread drains it between blocks. Because `nd-engine` may sit in a blocking AVIO read (up to the 30-s source wait) while the ring plays out, play and pause act on the device outside the queue through a **desired-state register** (2026-10-05): `nd-playback` writes an atomic `wantPlaying` with a generation number for both commands and then calls `nd_out_start` or `nd_out_stop` itself (miniaudio allows starting and stopping a device from any thread except its data callback, [miniaudio](https://github.com/mackron/miniaudio)), so the user hears play and pause at once — play starts the ring's buffered audio even while a read blocks — and the read simply continues; after every drain and before every `nd_out_start` it might make (a transition, a device re-open), the engine re-applies `wantPlaying` idempotently, so an older queued command can never restart a device the user has paused since (the earlier queued `play` with a no-op `pause` could: Play then Pause during a 30-s read left audio playing while the UI said paused); `seekTo` and `setWindow` raise the pipeline's interrupt flag and call `ByteSource.abort()`, so the blocked read returns `AVERROR_EXIT` within one 1-s wait slice and the engine reopens at the new position.
 
 ```mermaid
 stateDiagram-v2
@@ -779,7 +788,7 @@ stateDiagram-v2
 
 Loop of `nd-engine`, per iteration (one block ≈ 1,024 output frames):
 
-1. Drain commands: `setWindow`, `updateWindow`, `play` (`nd_out_start`), `pause` (the device is already stopped by `nd-playback`; the ring keeps its content, so resuming is seamless and `framesPlayed` stops while paused), `seekTo`, speed, skip silence, volume and fade (applied at the next block boundary).
+1. Drain commands: `setWindow`, `updateWindow`, `seekTo`, speed, skip silence, volume and fade (applied at the next block boundary); then re-apply `wantPlaying` — start the device if it is wanted and stopped and the ring holds audio, stop it if it is not wanted (play and pause themselves were applied by `nd-playback`; the ring keeps its content while paused, so resuming is seamless and `framesPlayed` stops).
 2. If no current pipeline exists, take the prepared one or ask `nd-prepare` to open it and report `Buffering`.
 3. If the ring has room for a block, produce one: read packets → decode → trim → convert to s16 at the source rate → `SilenceSkipper` → `Sonic` → `GainStage` (to f32) → resample to the device rate → `nd_out_write`, and push a timeline marker.
 4. If the ring is full, park 5 ms. If the current item's remaining media time is below 10 s and the next window item is not prepared, request it from `nd-prepare`.
@@ -945,7 +954,7 @@ Choosing a folder (`FilePicker` of `:core:ui`, 08):
 |---|---|
 | macOS | AWT `FileDialog` with `apple.awt.fileDialogForDirectories=true` (native open panel) |
 | Windows | Swing `JFileChooser` in directories-only mode with the system look and feel (AWT's `FileDialog` cannot pick folders on Windows); a native `IFileOpenDialog` through JNA is a v1.x polish |
-| Linux | The XDG portal `org.freedesktop.portal.FileChooser.OpenFile` with `directory: true` over D-Bus ([portal FileChooser](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.FileChooser.html)); `JFileChooser` when no portal answers |
+| Linux | `LinuxDesktopPortal.chooseDirectory` → the XDG portal `org.freedesktop.portal.FileChooser.OpenFile` with `directory: true` over D-Bus in `:desktop:system` ([portal FileChooser](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.FileChooser.html)); `JFileChooser` when no portal answers |
 
 Validation before the folder is accepted: it exists or can be created; a probe file `.neutrodyne-probe` can be created, written and deleted; it is not inside the installation directory, `<cache>` or `<state>`; free space is shown in the confirmation. A folder that fails shows the reason and keeps the previous setting.
 
@@ -961,13 +970,13 @@ Validation before the folder is accepted: it exists or can be created; a probe f
 
 ### Show in folder
 
-`RevealInFolder` (`:core:ui` `desktopMain`, R8.8) — labelled "Show in Explorer", "Show in Finder" or "Show in Files" — appears on downloaded episodes (episode detail overflow, Downloads row context menu) and on the folder row of Settings › Desktop.
+`RevealInFolder` (interface in `:core:ui`; its desktop implementation in `:core:ui` `desktopMain` receives the `LinuxDesktopPortal` port from `NeutrodyneWindow` through `rememberDesktopPlatformActions(portal)`, so `:core:ui` never uses dbus-java, R8.8) — labelled "Show in Explorer", "Show in Finder" or "Show in Files" — appears on downloaded episodes (episode detail overflow, Downloads row context menu) and on the folder row of Settings › Desktop.
 
 | OS | Mechanism | Fallback |
 |---|---|---|
 | macOS | `Desktop.browseFileDirectory(file)` (selects the file, [java.awt.Desktop](https://docs.oracle.com/en/java/javase/25/docs/api/java.desktop/java/awt/Desktop.html)) | `Desktop.open(parent)` |
 | Windows | `SHOpenFolderAndSelectItems` through JNA ([docs](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shopenfolderandselectitems)) | `Desktop.open(parent)` |
-| Linux | `org.freedesktop.FileManager1.ShowItems([file URI], "")` over D-Bus ([file manager interface](https://www.freedesktop.org/wiki/Specifications/file-manager-interface/)) | `Desktop.open(parent)` (folder without selection) |
+| Linux | `LinuxDesktopPortal.showItems` → `org.freedesktop.FileManager1.ShowItems([file URI], "")` over D-Bus in `:desktop:system` ([file manager interface](https://www.freedesktop.org/wiki/Specifications/file-manager-interface/)) | `Desktop.open(parent)` (folder without selection) |
 
 No `explorer.exe`, `open` or `xdg-open` process is started (only `:youtube:ytdlp-desktop` may start processes, [PLAN 5.1](../PLAN.md#51-module-graph) rule 6).
 
@@ -1272,7 +1281,7 @@ Our libraries (`ndmedia`, FFmpeg) load from `<resources>/native/` by absolute pa
 
 ### Windows MSI and ZIP
 
-- **MSI** `neutrodyne-{v}-windows-x64.msi` (jpackage with WiX 3.14 or 5.x on the runner; WiX is a build tool under MS-RL and nothing of it ships except jpackage's own `wixhelper.dll` custom action, which is GPL-2.0 with the Classpath Exception and covered by the runtime exception): per-user install without UAC, a Start-menu entry in "Neutrodyne", no desktop shortcut, no directory chooser, the `.opml` association; `msiPackageVersion` = `MAJOR.MINOR.PATCH` (≤ 255, ≤ 255, ≤ 65535); a newer MSI with the same `upgradeUuid` replaces the installed version and keeps every file outside the install directory.
+- **MSI** `neutrodyne-{v}-windows-x64.msi` (jpackage with WiX on the runner, one version pinned in the Windows job — 3.14 or 5.x; corrected 2026-10-05: WiX is not only a build tool — besides jpackage's own `wixhelper.dll` custom action (GPL-2.0 with the Classpath Exception, under the runtime exception), every MSI embeds WiX Util's custom action behind the `RemoveFolderEx` element jpackage always adds for the install directory, and, because `licenseFile` is set, the WixUI dialog library and its bitmaps; these unmodified WiX components are MS-RL, admitted by D3 as a named case with `wix-{wix}-src.tar.gz` attached to every release with an MSI ([01 Licence structure](01-foundation.md#licence-structure), [PO-48](../PLAN.md#48-further-product-owner-decisions)); dropping `licenseFile` would remove WixUI but not `RemoveFolderEx`): per-user install without UAC, a Start-menu entry in "Neutrodyne", no desktop shortcut, no directory chooser, the `.opml` association; `msiPackageVersion` = `MAJOR.MINOR.PATCH` (≤ 255, ≤ 255, ≤ 65535); a newer MSI with the same `upgradeUuid` replaces the installed version and keeps every file outside the install directory.
 - **Install location:** `%LOCALAPPDATA%\Programs\Neutrodyne\` through `installationPath = "Programs\\Neutrodyne"`, which the Compose plugin passes as `--install-dir`. This is mandatory, not cosmetic. Verified in the jpackage 25 source: a per-user MSI installs to `LocalAppDataFolder` + the relative install directory, which defaults to the app name, i.e. `%LOCALAPPDATA%\Neutrodyne\` — the data directory of [AppDirs](#appdirs) ([`PackageBuilder.java`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jpackage/share/classes/jdk/jpackage/internal/PackageBuilder.java), [`WixAppImageFragmentBuilder.java`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jpackage/windows/classes/jdk/jpackage/internal/WixAppImageFragmentBuilder.java)); and the MSI carries a `util:RemoveFolderEx On="uninstall"` component on its installation directory ("rm -rf" in the source), so an uninstall — and the removal of the old product during an upgrade — would delete the library, settings and downloads. `check-desktop-image.sh` therefore asserts on the Windows runner that the built MSI's `INSTALLDIR` resolves under `LocalAppDataFolder\Programs\` (read from the MSI's `Directory` table), and `AppDirs` refuses to start inside its own data directory ([AppDirs](#appdirs)). S13 confirms the result on a real install and upgrade.
 - **`WindowsShortcutIdentity`** (start-up band 0–99, packaged builds): on MSI installs it sets `System.AppUserModel.ID` = `ch.lkmc.neutrodyne` on the per-user Start-menu shortcut the MSI created, through `IPropertyStore` in the shim (`nd_win_shortcut_set_aumid`), because jpackage's shortcut carries no AppUserModelID and changing that in the MSI would need a changed `main.wxs`; on every install kind it also writes `HKCU\Software\Classes\AppUserModelId\ch.lkmc.neutrodyne` with `DisplayName` "Neutrodyne" and `IconUri` = the image's `Neutrodyne.ico` ([Notifications](#notifications)). The media flyout and toasts then show the app's name and icon (Unverified; MD2). Unverified: whether rewriting the MSI's shortcut makes Windows Installer offer a repair; if it does, MD2 drops the shortcut change and keeps only the registry identity.
 - **ZIP** `neutrodyne-{v}-windows-x64.zip`: the app image (`Neutrodyne\Neutrodyne.exe`, `app\`, `runtime\`); extracted anywhere writable except into the data directory, which the app refuses ([AppDirs](#appdirs)); no Start-menu entry, uninstaller or `.opml` association; links are registered at start like the MSI. Explorer's extraction propagates the Mark of the Web, so SmartScreen also asks on first start (Unverified).
@@ -1301,13 +1310,13 @@ Our libraries (`ndmedia`, FFmpeg) load from `<resources>/native/` by absolute pa
 
 | Duty | What the desktop build does | Enforced by |
 |---|---|---|
-| Unmodified runtime, one vendor and version per release | Temurin 25.0.x pinned in `desktopApp/runtime.lock` (vendor, version, per-target archive SHA-256, source tarball name and SHA-256); jlink only selects modules and strips debug data, headers and man pages; nothing of ours is placed in `runtime/` | `check-runtime-sources.sh`, three checks per image: `JAVA_VERSION` of `runtime/release` equals `runtime.lock` (jlink writes only `JAVA_VERSION` and `MODULES` there — no `IMPLEMENTOR` or `SOURCE` — and Compose's jlink step passes no `--release-info`, [`ReleaseInfoPlugin.java`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jlink/share/classes/jdk/tools/jlink/internal/plugins/ReleaseInfoPlugin.java), confirmed with a local jlink run); `java.vendor`, `java.vendor.version` and `java.runtime.version` from the smoke line equal the lock ([Smoke mode](#smoke-mode)); every native library under `runtime/` is byte-identical to the same file in the pinned Temurin archive (jlink's `--strip-debug` changes class files only). On macOS jpackage replaces Adoptium's signatures with the ad-hoc one when it seals the bundle, so there the comparison runs on copies of both files with their signatures removed (`codesign --remove-signature`; Unverified that both copies then match byte for byte, S13; fallback: compare the Mach-O `__TEXT` segments) and `RUNTIME-SOURCES.md` states the re-signing |
+| Unmodified runtime, one vendor and version per release | Temurin 25.0.x pinned in `desktopApp/runtime.lock` (vendor, version, per-target archive SHA-256, source tarball name and SHA-256); jlink only selects modules and strips debug data, headers and man pages; nothing of ours is placed in `runtime/` | `check-runtime-sources.sh`, three checks per image: `JAVA_VERSION` of `runtime/release` equals `runtime.lock` (jlink writes only `JAVA_VERSION` and `MODULES` there — no `IMPLEMENTOR` or `SOURCE` — and Compose's jlink step passes no `--release-info`, [`ReleaseInfoPlugin.java`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jlink/share/classes/jdk/tools/jlink/internal/plugins/ReleaseInfoPlugin.java), confirmed with a local jlink run); `java.vendor`, `java.vendor.version` and `java.runtime.version` from the smoke line equal the lock ([Smoke mode](#smoke-mode)); every native library under `runtime/` is byte-identical to the same file in the pinned Temurin archive. Corrected 2026-10-05: jlink's `--strip-debug` is not class-files-only — on Linux `DefaultStripDebugPlugin` also runs `strip-native-debug-symbols`, which rewrites every native library and command with the equivalent of `objcopy -g` ([`DefaultStripDebugPlugin.java`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jlink/share/classes/jdk/tools/jlink/internal/plugins/DefaultStripDebugPlugin.java), [`StripNativeDebugSymbolsPlugin.java`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jlink/linux/classes/jdk/tools/jlink/internal/plugins/StripNativeDebugSymbolsPlugin.java)); Temurin's libraries are already stripped, so the output matched byte for byte in a local test with binutils 2.42, but the Linux check does not rely on that: it compares each image file with the archive's copy after applying the same `objcopy -g` to that copy (fallback: compare the loadable segments). On macOS jpackage replaces Adoptium's signatures with the ad-hoc one when it seals the bundle, so there the comparison runs on copies of both files with their signatures removed (`codesign --remove-signature`; Unverified that both copies then match byte for byte, S13; fallback: compare the Mach-O `__TEXT` segments) and `RUNTIME-SOURCES.md` states the re-signing |
 | Keep the notices | `runtime/legal/` untouched (jlink copies each module's `legal/`) | `check-desktop-image.sh`; the Licences screen shows `LICENSE`, `ASSEMBLY_EXCEPTION`, `ADDITIONAL_LICENSE_INFO`, `gcc.md` and the third-party notices of the runtime |
 | Complete corresponding source from the same place | Every release with desktop assets carries `openjdk-{jdk}-temurin-sources.tar.gz` (Adoptium's source tarball of exactly that build, [Temurin 25 releases](https://github.com/adoptium/temurin25-binaries/releases)) and `RUNTIME-SOURCES.md` (GPL-2.0 §3: equivalent access from the same place) | `check-runtime-sources.sh` checks the tarball's SHA-256 against `runtime.lock`; the `publish` job refuses a release without both files ([09 release.yml](09-quality-and-release.md#releaseyml)) |
 | jpackage launcher and `wixhelper.dll` | Built from the same JDK source tree (`src/jdk.jpackage`), so the same tarball covers them | Named in `RUNTIME-SOURCES.md` |
 | Never commingle | No JDK file is copied into this repository; jpackage resource overrides (the DEB `control` and maintainer scripts, the RPM spec) are written from scratch | Review rule ([01 Copied code and contributions](01-foundation.md#copied-code-and-contributions)) |
 
-`RUNTIME-SOURCES.md` contains: vendor and version; the release URL; the per-target binary archive SHA-256s; the source tarball's name and SHA-256; the jlink module list and options per target; the components it covers (class library, HotSpot, jpackage launcher, `wixhelper.dll`, GCC runtime notes, VC++ redistributables); the statement that the runtime is unmodified; the licence texts' location in `runtime/legal/`.
+`RUNTIME-SOURCES.md` contains: vendor and version; the release URL; the per-target binary archive SHA-256s; the source tarball's name and SHA-256; the jlink module list and options per target, including the plugins applied (`--strip-debug`, which on Linux also strips native debug symbols with `objcopy -g`; `--no-header-files`; `--no-man-pages`); the components it covers (class library, HotSpot, jpackage launcher, `wixhelper.dll`, GCC runtime notes, VC++ redistributables); the other attached sources and why (FFmpeg, LGPL; python-build-standalone, its MPL-2.0 build patches; WiX, the MS-RL components of the MSI); the statement that the runtime is unmodified; the licence texts' location in `runtime/legal/`.
 
 ### FFmpeg LGPL obligations
 
@@ -1325,14 +1334,14 @@ Following FFmpeg's compliance checklist ([FFmpeg legal](https://ffmpeg.org/legal
 `scripts/ci/check-desktop-image.sh` runs on every image (PR builds on Linux x64, every target nightly and at release) and fails when an image:
 
 - contains a path matching `_dbm*`, `libdb*`, `_gdbm*`, `libreadline*`, `readline*` (other than libedit), `_tkinter*`, `libtcl*`, `libtk*`, `tcl9*`, `tk9*`, `site-packages/pip`, `ensurepip`, `mutagen`, `bgutil`, `qjs`, `qjs.exe`, `deno`, `node`, `bun`, `AppRun`, `libfuse*`, `proguard*`, `jextract*`, `javafx*`, `vlcj*`, `gstreamer*`, `libavfilter*`, `libswscale*`, `libpostproc*` or `libmpv*` (the last only while the fallback is not chosen);
-- lacks `runtime/legal/` or has a `runtime/release` that disagrees with `runtime.lock`;
+- lacks `runtime/legal/` or has a `runtime/release` whose `JAVA_VERSION` disagrees with `runtime.lock` (the full runtime check is `check-runtime-sources.sh`);
 - has FFmpeg libraries under other names, or an `ffmpeg-license.txt` (written by `buildFfmpeg` from `avcodec_license()` of the built library) other than "LGPL version 2.1 or later";
 - contains a JAR that is not on `:desktopApp`'s Licensee-checked runtime classpath;
 - has a Python tree whose component list differs from `python-components.lock`;
 - on Linux, contains an ELF file that needs a `GLIBC_` symbol version above 2.31;
 - contains test classes, fixture directories or entry points other than smoke mode;
 - on macOS, fails `codesign --verify --deep --strict`;
-- on Windows, is an MSI whose `INSTALLDIR` does not resolve under `LocalAppDataFolder\Programs\` ([Windows MSI and ZIP](#windows-msi-and-zip));
+- on Windows, is an MSI whose `INSTALLDIR` does not resolve under `LocalAppDataFolder\Programs\` ([Windows MSI and ZIP](#windows-msi-and-zip)), or whose `Binary` table holds an entry not listed in `desktopApp/wix.lock` (2026-10-05: only `wixhelper.dll`, WiX Util's custom action and the WixUI resources of the pinned WiX version, [Lockfiles](#lockfiles));
 - on Linux, is a DEB whose members are not xz-compressed or whose `Depends` differs from our `control`, or an RPM without our `Requires` ([Linux DEB, RPM and tar.gz](#linux-deb-rpm-and-targz)).
 
 ### Lockfiles
@@ -1341,7 +1350,8 @@ Following FFmpeg's compliance checklist ([FFmpeg legal](https://ffmpeg.org/legal
 |---|---|---|
 | `desktopApp/runtime.lock` | `vendor`, `version`, per target `{archiveUrl, sha256}`, `sourceTarball {name, url, sha256}` | `check-runtime-sources.sh`, the runner set-up |
 | `playback/native/native-components.lock` | Per component (FFmpeg, miniaudio, C++/WinRT headers): `name`, `version`, `spdx` (`LGPL-2.1-or-later`, `MIT-0`, `MIT`), `sourceUrl`, `sha256` | `checkNativeLicences` against D3's allow-list ([01 Python and native components](01-foundation.md#python-and-native-components)) |
-| `youtube/ytdlp-desktop/python-components.lock` | PBS release tag, CPython version, per target `{archive, sha256}`, the component list with SPDX IDs from `PYTHON.json` | `checkPythonLicences` |
+| `youtube/ytdlp-desktop/python-components.lock` | PBS release tag, CPython version, per target `{archive, sha256}`, the component list with SPDX IDs from `PYTHON.json`, and (2026-10-05) `pbsSource {name, url, sha256}` for `python-build-standalone-{pbsTag}-src.tar.gz` | `checkPythonLicences`; `check-runtime-sources.sh --release` |
+| `desktopApp/wix.lock` (2026-10-05) | WiX version, installer `{url, sha256}`, `source {name, url, sha256}` for `wix-{wix}-src.tar.gz`, and the expected entries of the MSI `Binary` table (`wixhelper.dll`, WiX Util's custom-action DLL, the WixUI bitmaps) | the Windows job's set-up; `check-desktop-image.sh` (MSI `Binary` table); `check-runtime-sources.sh --release` |
 
 ### Sizes
 
@@ -1675,6 +1685,7 @@ Serves N1, N4, N5, N7, N8, N11 for the desktop; risks T19, T20, T24, T25, T26. R
 | `TimelineClockTest` | `desktopTest` | position across speed changes, silence-skip markers, seeks and transitions; latency offset; lock-free reads from another thread | MD0, MD1a |
 | `SilenceSkipperParityTest`, `SonicParityTest` | `desktopTest` against committed golden PCM produced by Media3's own processors in a `:playback:impl` unit test | sample-exact equality for speech, music and silence fixtures at 0.5×, 1×, 1.5×, 2×, 3× | MD0, MD1a |
 | `FfAudioEngineTest` | `desktopTest`, null back-end, the generated corpus | play, pause, seek, speed 0.5–3.0×, skip silence: reported position within 50 ms of the reference timeline (MD1 AC1); a non-zero position never replaced by 0 (`PositionSaverTest` shared); transition gap ≤ 50 ms, no device restart (MD1 AC4); prepare failure of the next item → skipped | MD1a, MD1b |
+| `EnginePlayPauseRaceTest` (2026-10-05) | `desktopTest`, null back-end, a `ByteSource` that blocks for 30 s | Play then Pause (and Pause then Play) while `nd-engine` is blocked in a read: the device ends in the last requested state, `framesPlayed` matches it, and no stale queued command restarts it; Play while blocked starts the ring's buffered audio at once | MD1 |
 | `FfmpegCorpusTest` | nightly `desktop-matrix` on all four runners | per file of [MD0 spike and the libmpv fallback](#md0-spike-and-the-libmpv-fallback): reference sample counts (gapless and the fMP4 priming rule), chapters, seek within ±50 ms after decode-and-discard (MD0 AC1, MD1 AC4); `avcodec_license()` and library sizes (MD0 AC2) | MD0, MD1b |
 | `FfmpegLayoutTest` | nightly matrix | `ffmpeg-layout.json` majors equal the loaded libraries'; a library of another major is refused with the documented error | MD0 |
 | `DesktopPlaybackControllerTest` | `desktopTest` with a fake `AudioEngine` | "Play group tech" with two Up next items (M4 AC6 through `:playback:core`, MD1 AC3); sleep timer counts only while playing, fades over 10 s, end of episode marks played (MD1 AC5); session restored paused at start with nothing resolved; remote session ignored while playing; `EngineError` → `UnplayableReason` / `PlaybackIssue` per [Engine errors and recovery](#engine-errors-and-recovery) | MD1a, MD1b, MS3 |
@@ -1739,12 +1750,12 @@ S13 ([S13 desktop packaging and performance](#s13-desktop-packaging-and-performa
 | [MD0](../PLAN.md#md0-desktop-audio-engine-spike) | S18: FFmpeg build script and checks, FFM bindings and `ffoffsets.c`, AVIO bridge, `ndmedia` prototype with the OS shims, engine-thread prototype with the DSP ports, corpus on four targets, OS-integration prototypes; the go or fallback decision recorded in [MD0 spike and the libmpv fallback](#md0-spike-and-the-libmpv-fallback) and D86 |
 | [M1a](../PLAN.md#m1-subscribe-and-ingest-rss) | `DesktopJobRunner` with the `refresh` lane and the wake catch-up; Room on the desktop through `DesktopDatabaseFactory`; library, podcast and episode screens in the desktop window (M1 AC10) |
 | M1b | `DesktopSecretStore` for Basic-auth feeds (M1 AC12) |
-| [M3](../PLAN.md#m3-import-export-and-backup) | File dialogs, drag and drop of `.opml` and backup files onto the window, cross-platform backup and restore on the desktop (M3 AC11) |
+| [M3](../PLAN.md#m3-import-export-and-backup) | File dialogs, drag and drop of `.opml` and backup files onto the window, cross-platform backup and restore on the desktop (M3 AC11); the `import-backup` lane (`DesktopImportBackupLane`, 05) hosting imports, restores and the interim import-session cleanup across quits (M3 AC4, AC11) |
 | [M6](../PLAN.md#m6-downloads) | M6a: the default download folder, `downloads-manual` lane hosting, "Show in folder", disk-full handling, Windows path lengths (M6 AC14). M6b: `downloads-auto` and `downloads-move` hosting, "Change folder…" (M6 AC15) |
 | M8 | Desktop YouTube bindings external-only with `NOT_YET_AVAILABLE` and the browser as the external target |
 | [MD1](../PLAN.md#md1-desktop-playback) | MD1a: `:playback:engine` (sources, `SpanCache`, FFmpeg demux and decode, DSP ports, clock), `:playback:native` output, `DesktopPlaybackController` and the shared player UI on the desktop. MD1b: native build matrix in the nightly and release jobs, `ffmpeg-{ver}-neutrodyne-src.tar.xz` in every release, transitions, chapters and `DesktopChapterExtractor`, sleep timer, engine error recovery, device loss |
 | [MD2](../PLAN.md#md2-desktop-shell-behaviours-and-os-integration) | `:desktop:system` complete (SMTC, Now Playing, MPRIS, power, audio routes, tray, login items, `DesktopNotifier`); close behaviour; start at login; `UrlSchemeRegistrar`, `WindowsShortcutIdentity`, the `.opml` associations and the Linux desktop entry; `DesktopJobRunner` hardening and diagnostics |
-| [MS2](../PLAN.md#ms2-client-sync) | Hosting of the `sync` lane; the sync token in `DesktopSecretStore`; `NSLocalNetworkUsageDescription` and the macOS Local Network note in the help |
+| [MS2](../PLAN.md#ms2-client-sync) | Hosting of the `sync` lane; the sync token in `DesktopSecretStore`; `NSLocalNetworkUsageDescription` and the macOS Local Network note in the help; the desktop `PlaybackSyncPort` in `DesktopPlaybackController` (added 2026-10-05; PLAN MS2 depends on MD1a.2): `active`, the pause, stop and transition events after their saves commit, `onRemoteMarkedPlayed` through `:playback:core`'s `RemotePlayedGuard`, and the paused-item pickup ([06 Sync interplay](06-playback.md#sync-interplay)), which MS2 AC2's desktop position needs |
 | [MS3](../PLAN.md#ms3-live-updates-and-handoff) | SSE in the `sync` lane while the app runs; "Continue on this device" through `DesktopPlaybackController` |
 | [MD3](../PLAN.md#md3-desktop-youtube-engine) | `:youtube:ytdlp-desktop` (`YtxProcess`, `StdioYtxTransport`, `PythonRuntimeLocator`, `DesktopEngineStorePaths`, `DesktopEngineUpdateLane`, `QuickJsBridge` if the provider shipped); PBS fetch, trim and checks; `python-components.lock`; bindings switched to the engine; Settings › YouTube on the desktop |
 | [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) / [MD4](../PLAN.md#md4-desktop-ux-and-accessibility) | M10: desktop goldens of the shared components. MD4: `DesktopMenuBar`, the global shortcuts, context menus, drag-and-drop overlay, window sizing, Settings › Desktop, Java Access Bridge loading, the accessibility checklist and the Linux statement |
@@ -1762,11 +1773,13 @@ S13 ([S13 desktop packaging and performance](#s13-desktop-packaging-and-performa
 | `UrlSchemeRegistrar`, `WindowsShortcutIdentity`, `DesktopCrashReporter` | classes | `:desktopApp` |
 | `AppDirs`, `JobLane` | classes | `:core:common` `desktopMain` |
 | `DesktopJobRunner`, `LaneStatus`, `DesktopSecretStore` | classes | `:core:data` `desktopMain` |
+| Lane name `import-backup` (class `DesktopImportBackupLane`, owned by 05) *(2026-10-05)* | lane | `:core:data` `desktopMain` |
 | Lane names `refresh`, `downloads-manual`, `downloads-auto`, `downloads-move`, `artwork`, `app-update-check`, `engine-update`, `sync`, `maintenance` | strings | [Lanes](#lanes) |
 | `AudioEngine`, `FfAudioEngine`, `EngineItem`, `EngineWindowDiff`, `EngineState`, `EngineEvent`, `EngineError`, `TransitionReason`, `DiscontinuityReason`, `Gapless`, `DesktopSourceResolver`, `ResolvedSource`, `ByteSource`, `FileByteSource`, `HttpByteSource`, `SpanCache`, `LookAheadLoader`, `AvioBridge`, `DemuxerFactory`, `Demuxer`, `FfDemuxer`, `DecoderFactory`, `Decoder`, `FfDecoder`, `FfmpegLibrary`, `SilenceSkipper`, `Sonic`, `GainStage`, `TimelineClock`, `MpvAudioEngine` (fallback only) | classes | `:playback:engine` |
 | `ndmedia` (`nd_out_*`, `nd_events_init`, `nd_session_publish`, `nd_power_keep_awake`, `nd_notify_post`, `nd_win_*`, `nd_mac_login_item`), `NdmediaLibrary`, `NdOutput`, `ffoffsets.c`, `ffmpeg-layout.json`, `ffmpeg-license.txt` | native library, classes, files | `:playback:native` |
 | `DesktopPlaybackController`, `DesktopQueueProjector`, `DesktopEpisodeSourceResolver`, `DesktopPlaybackModule`, `DesktopChapterExtractor` | classes | `:playback:desktop` |
-| `SystemMediaSession`, `RemoteCommand`, `WindowsSmtcSession`, `MacNowPlayingSession`, `LinuxMprisSession`, `PowerMonitor`, `PowerEvent`, `IdleSleepInhibitor`, `AudioRouteMonitor`, `RouteEvent`, `TrayController`, `TrayAction`, `LoginItemRegistrar` (`WindowsRunKeyRegistrar`, `MacLoginItemRegistrar`, `XdgAutostartRegistrar`), `LoginItemState`, `DesktopNotifier`, `DesktopNotification`, `NotificationKind` | classes | `:desktop:system` |
+| `SystemMediaSession`, `RemoteCommand`, `WindowsSmtcSession`, `MacNowPlayingSession`, `LinuxMprisSession`, `IdleSleepInhibitor`, `AudioRouteMonitor`, `RouteEvent`, `TrayController`, `TrayAction`, `LoginItemRegistrar` (`WindowsRunKeyRegistrar`, `MacLoginItemRegistrar`, `XdgAutostartRegistrar`), `LoginItemState`, `OsPowerMonitor`, `OsDesktopNotifier`, `DbusDesktopPortal` | classes | `:desktop:system` |
+| `JobLanePoker`, `PowerMonitor`, `PowerEvent`, `DesktopNotifier`, `DesktopNotification`, `NotificationKind`, `LinuxDesktopPortal` *(ports, 2026-10-05)* | ports | `:core:common` `desktopMain` |
 | `YtxProcess`, `YtxChild`, `StdioYtxTransport`, `PythonRuntimeLocator`, `DesktopEngineStorePaths`, `DesktopEngineUpdateLane`, `QuickJsBridge`, `host_stdio.py`, `bootstrap.py` | classes, Python files | `:youtube:ytdlp-desktop`, `youtube/engine/python/neutrodyne_ytx/` |
 | Stdio message types `hello`, `call`, `ok`, `err`, `cancel`, `jsc`, `jsc_ok`, `jsc_err`, `status` | protocol | [Stdio protocol](#stdio-protocol) |
 | Threads `nd-playback`, `nd-engine`, `nd-prepare`, `nd-loader`, `nd-win-shim`, `nd-ytx-out`, `nd-ytx-err`, `nd-handshake` | thread names | [Threading model](#threading-model) |
@@ -1791,7 +1804,7 @@ Names fixed by PLAN and the change brief (`desktop.*` keys, `-Dneutrodyne.smoke`
 5. **Start at login on macOS (MD2).** `SMAppService` with an ad-hoc-signed app that changes identity with every update; if it fails, the row is hidden on macOS.
 6. **Narrator (MD4).** Whether Narrator reads the app through Java Access Bridge; if not, R8.10's "NVDA or Narrator" should read "NVDA (and other Java Access Bridge screen readers)".
 7. **Proxies (PO).** v1.0 uses no system proxy on the desktop: OkHttp follows the JVM's default `ProxySelector` (no OS proxy settings unless `java.net.useSystemProxies` is set) and the engine child runs with a cleared environment and its own CA file. Default: no proxy support in v1.0 (documented); `-Djava.net.useSystemProxies=true` for feeds and an OkHttp bridge for the engine in v1.x.
-8. **Hidden idle quit (PO).** A window closed while busy keeps the app running; the design quits it after 10 idle minutes so a paused episode can still be resumed from media keys. Default: 10 min.
+8. **Hidden idle quit (PO).** A window closed while busy keeps the app running; the design quits it after 10 idle minutes so a paused episode can still be resumed from media keys. Default: 10 min. Recorded 2026-10-05 in PLAN R8.3, N2 and D85 (with the opt-in `KEEP_RUNNING`); the PO may still change the duration.
 9. **Third-party JNI locations (S13).** Whether `sqlite-bundled` and quickjs-kt can load their natives from the image instead of a temporary or cache directory (N7); JNA can (`jna.boot.library.path`, `jna.nounpack`). If one cannot, N7's "native code loaded only from the app image" needs a recorded exception for that library's extraction into `<cache>/native/`.
 10. **Windows notifications (MD2).** Toast behaviour without a registered activator CLSID, and on ZIP installs (no shortcut); fallback is the AWT tray balloon.
 11. **AOT cache relocation (S13).** Whether the JDK 25 cache trained in the build directory is accepted after jpackage installs the image elsewhere.
