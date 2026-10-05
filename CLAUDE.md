@@ -4,7 +4,9 @@ Status: planning only; no code yet. [docs/PLAN.md](docs/PLAN.md) is the source o
 
 Standing owner conventions — apply them without asking:
 
-- **Package and ID prefix:** always `ch.lkmc`. Application ID and Kotlin base package `ch.lkmc.neutrodyne` (debug `ch.lkmc.neutrodyne.debug`).
-- **Distribution:** GitHub Releases only. No Google Play, F-Droid or other stores, and no product flavors for stores.
+- **Package and ID prefix:** always `ch.lkmc`. Application ID and Kotlin base package `ch.lkmc.neutrodyne` (no `.debug` suffix).
+- **Distribution:** GitHub Releases only. No Google Play, F-Droid or other stores, no product flavors for stores, no mirror and no beta channel.
+- **Debug builds only:** every published APK is a per-ABI debug build signed with the debug keystore committed to the repository. There is no release key or key ceremony.
+- **Updates:** the app only checks GitHub and notifies, linking to the release page and the APK for the device. It never downloads or installs APKs itself. YouTube engine (yt-dlp) updates are automatic, limited to versions approved by our own canary.
 - **No Google developer verification registration.** Install and update guidance covers the advanced flow instead.
 - **Licensing:** the repository is Unlicense. Never add GPL, LGPL or AGPL code or dependencies, neither Gradle nor Python. YouTube extraction uses yt-dlp (Unlicense) embedded via Chaquopy, never NewPipe Extractor.
