@@ -1,6 +1,6 @@
 # 03 — Feeds and discovery
 
-> Status: Draft v1, 2026-10-04; revised 2026-10-05 for the owner decisions (GitHub-only builds, YouTube engine and external mode); revised 2026-10-05 for PO-31–PO-35 (notify-only update check, published debug builds) · Implements: R1.3 (fetch side), R1.9 (feed-URL secrecy), R2.6 (refresh a group), R2.7 (refresh interval, new-episode notifications), R3.1 (add-flow hand-off; channel search by name is 04's and needs the YouTube engine), R3.3 (refresh-engine side), R4.8 (show-notes timestamps), R5.2 (artwork selection) / N1, N2, N3, N6, N9 · Milestones: M1, M2, M3, M4, M5, M6, M7, M8, M9 (M9a), M11 (M11b) · Honours: D1, D2, D10, D11, D15, D18, D19, D24, D25, D26 (amended), D27, D28, D36, D45, D66, D73, D77, D78; PO-3 · Owns: `:feeds` feed formats, feed fetching and HTTP policy, ingestion diff, feed moves, aliases, Basic auth and `CredentialStore`, RFC 5005 paging, refresh engine and scheduling, show-notes sanitising, add-podcast pipeline and autodiscovery, directory search and charts, subscribe intents, `IngestionEvents` and new-episode notifications
+> Status: Draft v1, 2026-10-04; revised 2026-10-05 for the owner decisions (GitHub-only builds, YouTube engine and external mode); revised 2026-10-05 for PO-31–PO-35 (notify-only update check, published debug builds — the latter superseded below); scope revision 2026-10-05 (S0–S13): the feed formats split into common `:feeds` and the JVM island `:feeds:jvm`, the fetch pipeline moves to common code on Ktor over OkHttp with a manual redirect chain, refresh gains the desktop's in-process `DesktopRefreshLane`, credentials move behind the `SecretStore` contract (Android Keystore, `DesktopSecretStore`), the add flow and new-episode notifications gain their desktop forms, and ingestion, merges and unsubscribes gain the sync hooks (parked state, first fetch of sync-added podcasts, `applying` writes) · Implements: R1.3 (fetch side), R1.9 (feed-URL secrecy; sync side with 10), R2.6 (refresh a group), R2.7 (refresh interval, new-episode notifications), R3.1 (add-flow hand-off; channel search by name is 04's and needs the YouTube engine), R3.3 (refresh-engine side), R4.8 (show-notes timestamps), R5.2 (artwork selection), R7.1 and R7.3 (ingestion side: sync-added subscriptions, parked state), R8.1 (feeds and discovery on the desktop), R8.3 (links into the add sheet), R8.7 (desktop refresh) / N1, N2, N3, N6, N9 · Milestones: M1 (M1a, M1b), M2, M3, M4, M5, M6, M7, M8, M9 (M9a), M11 (M11b), MD2, MD3, MS2 · Honours: D1, D2, D3, D10, D11, D14, D15, D18, D19, D24, D25, D26 (amended), D27, D28 (amended), D36, D45, D66, D73, D77, D78, D81, D82, D83, D85, D87, D90, D91, D92, D93, D96; PO-3, PO-13, PO-37, PO-44 · Owns: `:feeds` feed formats (common) and the `:feeds:jvm` feed parser and sanitiser, feed fetching and HTTP policy, ingestion diff, feed moves, aliases, Basic auth and the `SecretStore` contract (with `KeystoreCredentialStore`; `DesktopSecretStore`'s file format is 11's), RFC 5005 paging, refresh engine and scheduling on Android and the desktop (`DesktopRefreshLane`), show-notes sanitising, add-podcast pipeline and autodiscovery, directory search and charts, subscribe intents and desktop link inputs, `IngestionEvents` and new-episode notifications (content and grouping on both platforms)
 
 Contents: [Scope](#scope) · [Parser](#parser) · [Fetch pipeline](#fetch-pipeline) · [Ingestion and diff](#ingestion-and-diff) · [Feed moves, auth and paging](#feed-moves-auth-and-paging) · [Refresh scheduling](#refresh-scheduling) · [Show notes](#show-notes) · [Add podcast flow](#add-podcast-flow) · [Search and discovery](#search-and-discovery) · [Deep links and share targets](#deep-links-and-share-targets) · [New-episode notifications](#new-episode-notifications) · [Settings](#settings) · [Testing](#testing) · [Delivery by milestone](#delivery-by-milestone) · [New names introduced here](#new-names-introduced-here) · [Open questions](#open-questions) · [Sources](#sources)
 
@@ -8,106 +8,143 @@ Contents: [Scope](#scope) · [Parser](#parser) · [Fetch pipeline](#fetch-pipeli
 
 ## Scope
 
-Serves R1.3, R2.6, R2.7, R3.1, R3.3, N1, N2, N3, N6, N9. The phone polls every feed itself; there is no Neutrodyne server ([D1](../PLAN.md#3-key-decisions)). Engineers implement the `:feeds` module, the refresh engine in `:core:data`, the add-podcast pipeline and directory search from this document.
+Serves R1.3, R2.6, R2.7, R3.1, R3.3, R7.3 (ingestion side), R8.1, R8.3, R8.7, N1, N2, N3, N6, N9. Every app — Android and the desktop — polls every feed itself; there is no Neutrodyne-operated server, and the optional self-hosted sync server stores subscriptions and listening state but never fetches a feed, an enclosure or an image ([D1](../PLAN.md#3-key-decisions), [D94](../PLAN.md#3-key-decisions)). A subscription that arrives through sync is fetched by this device like an imported one ([Refresh of pending podcasts](#refresh-of-pending-podcasts)). Engineers implement the common `:feeds` module and its JVM island `:feeds:jvm`, the refresh engine in `:core:data` (common code with Android and desktop runners), the add-podcast pipeline and directory search from this document. Everything here is written once in `commonMain` unless a paragraph names Android or the desktop ([D81](../PLAN.md#3-key-decisions)).
 
 | Owned here | Not here (link instead) |
 |---|---|
-| `:feeds` feed-format API: `FeedParser`, namespaces, field mapping, dates, durations, enclosure types, artwork candidates, `EpisodeKeys`, `UrlNormalizer`, `PodcastGuid`, `PrivateFeedUrls`, `ShowNotesSanitizer`, `Autodiscovery`, `AddInputNormalizer`, directory-response parsers | Entities, column types, all SQL — [02 Tables](02-data-model.md#tables), [02 Key queries](02-data-model.md#key-queries) (this document lists only the columns it writes) |
-| `FeedFetcher`, the feed response-code policy, `FeedErrorKind` values | Shared `OkHttpClient`, `AuthInterceptor`, `LocalNetworkGuardDns`, `NetError` — [01 Networking baseline](01-foundation.md#networking-baseline) |
-| Ingestion diff and identity-key *computation*, `sortDate`, `isNew`, `inFeed` | Identity-key storage and versioning — [02 Identity keys](02-data-model.md#identity-keys) |
-| Feed moves, aliases, merge decisions, Basic auth, `CredentialStore`, private-URL heuristic, RFC 5005 paging, `podcast:guid` derivation | OPML, import pipeline, backup — [05](05-groups-opml-backup.md) |
-| Refresh engine (`FeedRefresher`), `RefreshWorker`, `RefreshScheduler`, `RefreshController` | YouTube Atom variants, entry rules, outage threshold, enrichment — [04 Atom feed ingestion](04-youtube.md#atom-feed-ingestion), plugged into this engine through `YouTubeSourceAdapter` |
+| `:feeds` feed-format API (common): `FeedParser`, `ShowNotesSanitizer` and `Autodiscovery` interfaces, models, dates, durations, enclosure types, `EpisodeKeys`, `UrlNormalizer`, `PodcastGuid`, `PrivateFeedUrls`, `AddInputNormalizer`, directory-response parsers; `:feeds:jvm` (island): `XmlPullFeedParser` (namespaces, field mapping, artwork candidates), `JsoupShowNotesSanitizer`, `JsoupAutodiscovery` | Entities, column types, all SQL — [02 Tables](02-data-model.md#tables), [02 Key queries](02-data-model.md#key-queries) (this document lists only the columns it writes); OPML reader and writer, backup models, `GroupNames` (also in `:feeds`/`:feeds:jvm`) — [05](05-groups-opml-backup.md) |
+| `FeedFetcher` (common, Ktor), the manual redirect chain, the feed response-code policy, `FeedErrorKind` values | The OkHttp client family, `NeutrodyneHttpClients`, `AuthInterceptor`, `LocalNetworkGuardDns`, `NetError`, `NetErrorClassifier` — [01 Networking baseline](01-foundation.md#networking-baseline) |
+| Ingestion diff and identity-key *computation*, `sortDate`, `isNew`, `inFeed`; the call of the sync ingestion hook | Identity-key storage and versioning — [02 Identity keys](02-data-model.md#identity-keys); what the hook does with parked state — [10 Client sync engine](10-sync.md#client-sync-engine) |
+| Feed moves, aliases, merge decisions, Basic auth, the `SecretStore` contract and `KeystoreCredentialStore`, private-URL heuristic, RFC 5005 paging, `podcast:guid` derivation | OPML, import pipeline, backup — [05](05-groups-opml-backup.md); `DesktopSecretStore`'s file and protection — [11 Desktop shell](11-desktop.md#desktop-shell); what syncs and how podcast identities merge across devices — [10 What syncs](10-sync.md#what-syncs), [10 Identity mapping](10-sync.md#identity-mapping) |
+| Refresh engine (`FeedRefresher`), `RefreshScheduler` and its runners (`RefreshWorker` on Android, `DesktopRefreshLane` on the desktop), `RefreshController` | YouTube Atom variants, entry rules, outage threshold, enrichment — [04 Atom feed ingestion](04-youtube.md#atom-feed-ingestion), plugged into this engine through `YouTubeSourceAdapter`; `DesktopJobRunner`, its tick and wake catch-up — [11 Background work](11-desktop.md#background-work) |
 | Show-notes sanitising, `ShowNotesDocument` block model, snippets, timestamp grammar | Rendering — [08 Components](08-ui-ux.md#components); seeking — [06 Chapters](06-playback.md#chapters) |
 | Add-podcast pipeline, in-memory preview, `SubscribeUseCase`, unsubscribe | YouTube channel resolution — [04 Channel resolution](04-youtube.md#channel-resolution); screens — [08 Screens](08-ui-ux.md#screens) |
-| Directory providers, charts, genre mapping, Podcast Index key handling (BYOK storage, optional release-build key) | Discover and Directory screens — [08 Screens](08-ui-ux.md#screens); YouTube channel search (YouTube engine only) — [04 Channel search](04-youtube.md#channel-search) |
-| VIEW/SEND intent filters of `MainActivity`, input unwrapping | Routing mechanics — [01 Intent routing](01-foundation.md#intent-routing); file intents — [05 Receiving files](05-groups-opml-backup.md#receiving-files) |
-| `IngestionEvents`, `NewEpisodeNotifier` (posting, channel choice, permission rule) | Channel create/rename/delete with groups — [05 Group model and lifecycle](05-groups-opml-backup.md#group-model-and-lifecycle); resolution rules — [05 Effective settings resolution](05-groups-opml-backup.md#effective-settings-resolution) |
+| Directory providers, charts, genre mapping, Podcast Index key handling (BYOK storage, optional build key in the published builds) | Discover and Directory screens — [08 Screens](08-ui-ux.md#screens); YouTube channel search (YouTube engine only) — [04 Channel search](04-youtube.md#channel-search) |
+| VIEW/SEND intent filters of `MainActivity`, the link and text inputs the desktop hands to the add sheet, input unwrapping | Routing mechanics — [01 Intent routing](01-foundation.md#intent-routing); desktop URL-scheme registration, file associations and `DesktopOpenHandler` — [11 Desktop shell](11-desktop.md#desktop-shell); file intents — [05 Receiving files](05-groups-opml-backup.md#receiving-files) |
+| `IngestionEvents`, `NewEpisodeNotifier` (selection, grouping, Android posting, channel choice, permission rule; the desktop notification's content) | Channel create/rename/delete with groups — [05 Group model and lifecycle](05-groups-opml-backup.md#group-model-and-lifecycle); resolution rules — [05 Effective settings resolution](05-groups-opml-backup.md#effective-settings-resolution); desktop notification back ends — [11 OS integration](11-desktop.md#os-integration) |
 | PSC chapter rows, chapter and transcript references at ingest | Chapter fetching and source priority — [06 Chapters](06-playback.md#chapters) |
 
 ```mermaid
 flowchart LR
-  subgraph FEEDS[":feeds (pure JVM)"]
-    FP["FeedParser"]
-    KEYS["EpisodeKeys, UrlNormalizer, PodcastGuid"]
-    SNS["ShowNotesSanitizer"]
-    DISC["AddInputNormalizer, Autodiscovery"]
+  subgraph FEEDS[":feeds (KMP, commonMain only)"]
+    FPI["FeedParser, ShowNotesSanitizer, Autodiscovery (interfaces)"]
+    KEYS["EpisodeKeys, UrlNormalizer, PodcastGuid, FeedDates"]
+    DISC["AddInputNormalizer, HostRecognizer"]
     DIRP["directory parsers"]
   end
-  subgraph DATA[":core:data"]
-    RW["RefreshWorker, RefreshScheduler"]
+  subgraph ISL[":feeds:jvm (JVM island)"]
+    XP["XmlPullFeedParser"]
+    JS["JsoupShowNotesSanitizer, JsoupAutodiscovery"]
+  end
+  subgraph DATA[":core:data commonMain"]
     FR["FeedRefresher"]
     SA["RssSourceAdapter, YouTubeSourceAdapter"]
-    FF["FeedFetcher"]
+    FF["FeedFetcher (Ktor)"]
     FI["FeedIngestor"]
-    CS["CredentialStore"]
     APR["AddPodcastResolverImpl, PreviewCache"]
     SUB["SubscribeUseCaseImpl"]
     SR["SearchRepositoryImpl"]
     NN["NewEpisodeNotifier"]
     BUS["IngestionEventBus"]
   end
-  RW --> FR --> SA --> FF
-  SA --> FP
+  subgraph AND[":core:data androidMain"]
+    RW["RefreshWorker, WorkManagerRefreshScheduler"]
+    KCS["KeystoreCredentialStore"]
+    ANP["AndroidNewEpisodePoster"]
+  end
+  subgraph DESK[":core:data desktopMain"]
+    DRL["DesktopRefreshLane, DesktopRefreshScheduler"]
+    DSS["DesktopSecretStore"]
+  end
+  RW --> FR
+  DRL --> FR
+  FR --> SA --> FF
+  SA --> FPI
+  XP -.->|implements| FPI
+  JS -.->|implements| FPI
   FR --> FI --> KEYS
   FI --> BUS
-  FR --> NN
+  FI -->|"after commit"| HOOK["SyncIngestHook (10)"]
+  FR --> NN --> ANP
+  NN --> DNP["DesktopNewEpisodePoster in :desktopApp over DesktopNotifier (11)"]
   APR --> FF
   APR --> DISC
   SUB --> FI
   SR --> DIRP
-  FF -.->|"Basic auth via CredentialLookup"| CS
+  FF -.->|"Basic auth via CredentialLookup"| KCS
+  FF -.->|"Basic auth via CredentialLookup"| DSS
   BUS --> AD["AutoDownloadPlanner (07)"]
   IMP["ImportFetchWorker (05)"] --> FR
 ```
 
 | Module | Contents from this document |
 |---|---|
-| `:feeds` (JVM) | The packages in [Package layout](#package-layout) |
-| `:core:model` | `FeedErrorKind`, `FeedPreview`, `PreviewEpisode`, `FeedCandidate`, `AlreadySubscribed`, `BasicCredentials`, `DirectoryHit`, `ProviderId`, `ProviderStatus`, `ProviderInfo`, `SearchResults`, `ChartGenre`, `ShowNotes` (mirror of `ShowNotesDocument`), `ShowNotesImages`, read models `LibraryTile`, `PodcastDetail`, `FeedHealth`, `EpisodeDetail`, `FeedInfo`, `CategoryCount` |
-| `:core:domain` | `PodcastRepository`, `EpisodeRepository`, `RefreshController` with its `RefreshScope` and `RefreshStatus`, `AddPodcastResolver`, `AddResolution`, `AddPodcastError`, `SubscribeUseCase`, `SubscribeError`, `UnsubscribeUseCase`, `SearchRepository`, `IngestionEvents` |
-| `:core:data` | Implementations, plus `FeedFetcher`, `FeedTempFiles`, `FeedIngestor`, `FeedRefresher`, `SourceAdapter`s, `RefreshWorker`, `RefreshScheduler`, `CredentialStore`, `PreviewCache`, search providers, `NewEpisodeNotifier`, `IngestionEventBus`, `RefreshForegroundObserver`; uses 02's `FetchStateBatcher`; hosts 04's `YouTubeSourceAdapter` and `YouTubeOutageMonitor` (M8) |
+| `:feeds` (KMP, `commonMain` only; its JVM variant also runs in `:sync:server`) | The common packages in [Package layout](#package-layout): models, the `FeedParser`/`ShowNotesSanitizer`/`Autodiscovery` interfaces, `FeedDates`, `Durations`, `EnclosureTypes`, `FeedSniffer`, identity, `PrivateFeedUrls`, `TimestampLinkifier`, add-input normalisation, directory parsers |
+| `:feeds:jvm` (JVM island, bytecode 17) | `XmlPullFeedParser` with `PullParserFactory`, `Namespaces`, `HtmlEntities`, `InnerXml`, `PrologGuard`; `JsoupShowNotesSanitizer`; `JsoupAutodiscovery`; the live-canary source set; the golden-corpus tests |
+| `:core:model` | `FeedErrorKind`, `FeedPreview`, `PreviewEpisode`, `FeedCandidate`, `AlreadySubscribed`, `BasicCredentials`, `ChangeOrigin`, `DirectoryHit`, `ProviderId`, `ProviderStatus`, `ProviderInfo`, `SearchResults`, `ChartGenre`, `ShowNotes` (mirror of `ShowNotesDocument`), `ShowNotesImages`, read models `LibraryTile`, `PodcastDetail`, `FeedHealth`, `EpisodeDetail`, `FeedInfo`, `CategoryCount` |
+| `:core:domain` | `PodcastRepository`, `EpisodeRepository`, `RefreshController` with its `RefreshScope` and `RefreshStatus`, `AddPodcastResolver`, `AddResolution`, `AddPodcastError`, `SubscribeUseCase`, `SubscribeError`, `UnsubscribeUseCase`, `SearchRepository`, `IngestionEvents`, `SecretStore` and `StoredSecret`, `NewEpisodePoster` and `NewEpisodeNotice` |
+| `:core:data` `commonMain` | Implementations, plus `FeedFetcher`, `FeedTempFiles`, `FeedIngestor`, `FeedRefresher`, `SourceAdapter`s, the `RefreshScheduler` interface and `NextRefreshRebaser`, `PreviewCache`, search providers, `NewEpisodeNotifier`, `IngestionEventBus`; uses 02's `FetchStateBatcher`; hosts 04's `YouTubeSourceAdapter` and `YouTubeOutageMonitor` (M8) |
+| `:core:data` `androidMain` | `RefreshWorker`, `WorkManagerRefreshScheduler`, `RefreshForegroundObserver`, `KeystoreCredentialStore` with `CipherProvider`, `AndroidNewEpisodePoster`, the Android `PullParserFactory` binding |
+| `:core:data` `desktopMain` | `DesktopRefreshLane`, `DesktopRefreshScheduler`, `DesktopSecretStore` (implements this document's `SecretStore`; file format: 11), the desktop `PullParserFactory` binding |
 | `:feature:discover` | Add-podcast sheet, Discover, Directory screens (visuals: 08) |
 | `:app` | `MainActivity` intent filters ([Deep links and share targets](#deep-links-and-share-targets)) |
+| `:desktopApp` | `DesktopNewEpisodePoster` (a few lines mapping `NewEpisodeNotice` onto 11's `DesktopNotifier`; it lives in the shell because `:core:data` may not see the desktop-only `:desktop:system`, [PLAN 5.1](../PLAN.md#51-module-graph) rule 6) |
 
-Everything specified here runs in the main process. The YouTube engine's `:ytx` process runs no `AppInitializer`, opens neither Room nor DataStore and hosts none of these classes ([D73](../PLAN.md#3-key-decisions), [01 Application start-up](01-foundation.md#application-start-up)), so refresh runs, `CredentialStore`, previews, directory search and notifications never execute there. Only 04's engine-backed implementations (enricher, channel lookup, channel search) talk to `:ytx`, from the main process through `YtDlpClient`.
+**Processes.** On Android everything specified here runs in the main process. The YouTube engine's `:ytx` process runs no `AppInitializer`, opens neither Room nor DataStore and hosts none of these classes ([D73](../PLAN.md#3-key-decisions), [01 Application start-up](01-foundation.md#application-start-up)), so refresh runs, `SecretStore`, previews, directory search and notifications never execute there. On the desktop everything runs in the single app process, on `Dispatchers.IO`/`Default` and never on the Swing event thread; the CPython engine child hosts none of it ([D85](../PLAN.md#3-key-decisions), [D90](../PLAN.md#3-key-decisions)). Only 04's engine-backed implementations (enricher, channel lookup, channel search) talk to the engine, through `YtDlpClient` over the host's `YtxTransport` ([04 Shared engine module](04-youtube.md#shared-engine-module)).
 
 ---
 
 ## Parser
 
-Serves N9, R5.2. Delivered in M1 ([D11](../PLAN.md#3-key-decisions)); Atom entries with `yt:` fields mapped generically from M1, interpreted by 04 from M8.
+Serves N9, R5.2. Delivered in M1 (M1a, [D11](../PLAN.md#3-key-decisions)); Atom entries with `yt:` fields mapped generically from M1, interpreted by 04 from M8.
 
 A hand-written streaming `XmlPullParser` maps RSS 2.0, Atom, RSS 1.0/RDF, iTunes, Podcasting 2.0, Media RSS and Podlove Simple Chapters onto one normalised model. prof18 RSS-Parser (Apache-2.0, 6.1.8) was rejected: no Podcasting 2.0 namespace, one enclosure per item, dates as strings, no paging links, literal-prefix tag matching ([RSS-Parser source](https://raw.githubusercontent.com/prof18/RSS-Parser/master/rssparser/src/commonMain/kotlin/com/prof18/rssparser/internal/RssKeyword.kt)). AntennaPod's parser is GPL-3.0: its behaviour may be studied, its code never copied ([N8](../PLAN.md#22-non-functional-requirements), risk L4).
+
+**Split (scope revision 2026-10-05, [D11](../PLAN.md#3-key-decisions), [D81](../PLAN.md#3-key-decisions)).** `XmlPullParser` and jsoup are JVM-only, so the parser, the sanitiser and HTML autodiscovery live in the JVM island `:feeds:jvm`; everything the apps *and* the sync server must compute identically — models, keys, the URL normaliser, dates, `podcast:guid`, the private-URL heuristic, the add-input normaliser and the directory parsers — is common code in `:feeds` ([D94](../PLAN.md#3-key-decisions): the server runs `:feeds`' JVM variant, so all three runtimes execute the same code). Android parses with the platform `XmlPullParser` (AOSP's KXmlParser), the desktop with kxml2 2.3.0 at run time; both are reached through `XmlPullParserFactory`-style factories, and the golden corpus runs on both ([Testing](#testing)).
 
 ### Package layout
 
 ```
-feeds/src/main/kotlin/ch/lkmc/neutrodyne/feeds/
+feeds/src/commonMain/kotlin/ch/lkmc/neutrodyne/feeds/          (:feeds — common only)
   model/      ParsedFeed, ParsedEpisode, Enclosure, AlternateEnclosure, ArtworkCandidate, Person, Funding,
               TranscriptRef, InlineChapter, Paging, ParseWarning, WarningCode, FeedFormat
-  parse/      FeedParser, PullParserFactory, ParseLimits, Namespaces, HtmlEntities, InnerXml, PrologGuard,
-              FeedDates, Durations, EnclosureTypes, FeedSniffer
+  parse/      FeedParser (interface), ParseResult, ParseFailure, ParseLimits, FeedDates, Durations, EnclosureTypes, FeedSniffer
   identity/   EpisodeKeys, KeyInput, EpisodeContentHash, TitleMatch, UrlNormalizer, PodcastGuid, PrivateFeedUrls
-  html/       ShowNotesSanitizer, ShowNotesDocument (NoteBlock, NoteSpan), PlainTextSnippet, TimestampLinkifier
-  discovery/  AddInputNormalizer, NormalizedInput, HostRecognizer, Autodiscovery, DiscoveredFeed
+  html/       ShowNotesSanitizer (interface), ShowNotesDocument (NoteBlock, NoteSpan), TimestampLinkifier
+  discovery/  AddInputNormalizer, NormalizedInput, HostRecognizer, Autodiscovery (interface), DiscoveredFeed
   directory/  AppleSearchParser, AppleChartParser, FyydSearchParser, PodcastIndexParser, AppleGenres
-  opml/, backup/ (05) · youtube/ formats (04)
+  text/       the expect text helpers (NFC for 05's GroupNames, NFKC for TitleMatch, IDNA toASCII for UrlNormalizer)
+  opml/, backup/, GroupNames (05) · youtube/ formats (04)
+feeds/jvm/src/main/kotlin/ch/lkmc/neutrodyne/feeds/jvm/       (:feeds:jvm — JVM island)
+  parse/      XmlPullFeedParser, PullParserFactory, Namespaces, HtmlEntities, InnerXml, PrologGuard
+  html/       JsoupShowNotesSanitizer (incl. the plain-text snippet), JsoupAutodiscovery
+  opml/       XmlPullOpmlReader (05)
 ```
 
-`:feeds` has no project dependencies, no Android and no I/O beyond reading the streams it is handed ([01 Dependency rules](01-foundation.md#dependency-rules)). kxml2 2.3.0 is `compileOnly` + `testImplementation` because `org.xmlpull.v1` is in `android.jar` ([kxml2 POM](https://repo1.maven.org/maven2/net/sf/kxml/kxml2/2.3.0/kxml2-2.3.0.pom)).
+`:feeds` has no project dependencies, no `java.*` or `android.*` (rule 1 of 01's `checkBannedApis`) and no I/O beyond reading the Okio `Source`s it is handed ([01 Dependency rules](01-foundation.md#dependency-rules)); its external dependencies are kotlinx-serialization, kotlinx-datetime and Okio (`Source` and `ByteString`'s SHA-1/SHA-256, which Okio provides in common code since 2.9/2.10, [Okio changelog](https://raw.githubusercontent.com/square/okio/master/CHANGELOG.md)). Its few platform needs — Unicode NFC/NFKC normalisation and IDNA `toASCII` — are `expect`s whose `androidMain` and `desktopMain` `actual`s are the same JVM calls (`java.text.Normalizer`, `java.net.IDN`), so Android, the desktop and the server normalise identically. `:feeds:jvm` depends only on `:feeds` (01 rule 14); jsoup 1.23.2 is `implementation`; kxml2 2.3.0 is `compileOnly` + `testImplementation` because `org.xmlpull.v1` is in `android.jar`, and `:desktopApp` adds it as `runtimeOnly` ([kxml2 POM](https://repo1.maven.org/maven2/net/sf/kxml/kxml2/2.3.0/kxml2-2.3.0.pom)). The kxml2 2.3.0 JAR bundles the `org.xmlpull.v1` API and registers `org.kxml2.io.KXmlParser` in `META-INF/services/org.xmlpull.v1.XmlPullParserFactory` (JAR contents checked 2026-10-05, [kxml2 2.3.0 JAR](https://repo1.maven.org/maven2/net/sf/kxml/kxml2/2.3.0/kxml2-2.3.0.jar)), so the island can create a parser on the desktop without naming a kxml2 class.
 
 ```kotlin
-// :feeds — ch.lkmc.neutrodyne.feeds.parse
-fun interface PullParserFactory { fun create(): XmlPullParser }
-// device (bound in :core:data): PullParserFactory { android.util.Xml.newPullParser() }  — AOSP KXmlParser
-// JVM tests:                     PullParserFactory { org.kxml2.io.KXmlParser() }
-
-class FeedParser(private val factory: PullParserFactory, private val limits: ParseLimits = ParseLimits()) {
+// :feeds (commonMain) — ch.lkmc.neutrodyne.feeds.parse
+interface FeedParser {
     /** Pure: reads only through [open] (called a second time for a charset re-parse); never throws for
      *  malformed input. [baseUrl] resolves relative URLs (xml:base and atom links win when present). */
-    fun parse(open: () -> InputStream, httpCharset: String?, baseUrl: String): ParseResult
-    companion object { const val VERSION = 1 }
+    fun parse(open: () -> okio.Source, httpCharset: String?, baseUrl: String): ParseResult
+    companion object { const val VERSION = 1 }   // one version for every implementation (Limits and version policy)
 }
+
+// :feeds:jvm — ch.lkmc.neutrodyne.feeds.jvm.parse
+fun interface PullParserFactory {
+    fun create(): XmlPullParser
+    companion object {   // desktop and JVM tests: XmlPull discovery finds kxml2 through its services file
+        val Discovered = PullParserFactory { XmlPullParserFactory.newInstance().newPullParser() }
+    }
+}
+// Android (bound in :core:data androidMain): PullParserFactory { android.util.Xml.newPullParser() } — AOSP KXmlParser
+// desktop (bound in :core:data desktopMain): PullParserFactory.Discovered — org.kxml2.io.KXmlParser 2.3.0
+class XmlPullFeedParser(private val factory: PullParserFactory, private val limits: ParseLimits = ParseLimits()) : FeedParser {
+    override fun parse(open: () -> okio.Source, httpCharset: String?, baseUrl: String): ParseResult  // wraps open() in buffer().inputStream()
+}
+// :feeds (commonMain)
 sealed interface ParseResult {
     data class Ok(val feed: ParsedFeed) : ParseResult
     data class Failed(val reason: ParseFailure, val detail: String) : ParseResult
@@ -118,7 +155,7 @@ data class ParseLimits(val maxDepth: Int = 64, val maxItems: Int = 10_000, val m
 ```
 
 ```kotlin
-// :feeds — ch.lkmc.neutrodyne.feeds.model (immutable, @Serializable for golden tests)
+// :feeds (commonMain) — ch.lkmc.neutrodyne.feeds.model (immutable, @Serializable for golden tests)
 data class ParsedFeed(
     val format: FeedFormat,                              // RSS2, ATOM, RDF
     val title: String?, val author: String?, val descriptionHtml: String?, val link: String?,
@@ -149,6 +186,8 @@ data class ParseWarning(val code: WarningCode, val itemIndex: Int?, val detail: 
 `showType` and `episodeType` stay lowercase strings in `:feeds` (it cannot see `:core:model`); `:core:data` maps them to `ShowType`/`EpisodeType` (02) and drops unknown values.
 
 ### Parser setup and charset
+
+These steps run in `XmlPullFeedParser` (`:feeds:jvm`) with either platform parser; AOSP's KXmlParser is a maintained fork of kxml2, so behavioural differences (BOM handling, relaxed-mode details) are caught by running the golden corpus through both ([Testing](#testing)).
 
 1. **Prolog guard** (`PrologGuard`, before any parser): scan the first 64 KiB up to the first element start tag; if it contains `<!ENTITY` (case-insensitive) return `Failed(HOSTILE)`. `FEATURE_PROCESS_DOCDECL` stays off, and no external DTD is ever fetched ([N9](../PLAN.md#22-non-functional-requirements)).
 2. `setFeature(FEATURE_PROCESS_NAMESPACES, true)`; `runCatching { setFeature("http://xmlpull.org/v1/doc/features.html#relaxed", true) }` (relaxed tolerates undefined prefixes, unescaped `&`, bad attributes, unknown entities, which stay as literal `&name;` text).
@@ -235,13 +274,13 @@ Precedence left to right; the first non-blank value wins.
 
 ### Dates
 
-`FeedDates.parse(raw): Long?` (epoch ms UTC). `DateTimeFormatter.RFC_1123_DATE_TIME` is unusable: it rejects a wrong weekday and `PDT`/`UT`/`Z`/ISO forms (tested on JDK 21). Algorithm:
+`FeedDates.parse(raw): Long?` (epoch ms UTC) is common code in `:feeds` (the sync server and both apps use it), so it uses no `java.time`: a hand-written tokenizer for the RFC 822 family plus kotlinx-datetime 0.8.0 (`LocalDate`, `LocalDateTime`, `UtcOffset`, `DateTimeComponents.Formats.ISO_DATE_TIME_OFFSET`) for ISO forms, with `kotlin.time.Instant` (stable since Kotlin 2.3.0, [What's new in Kotlin 2.3](https://kotlinlang.org/docs/whatsnew23.html); [kotlinx-datetime](https://github.com/Kotlin/kotlinx-datetime)). A strict RFC 1123 formatter would be unusable anyway: `java.time`'s `RFC_1123_DATE_TIME` rejects a wrong weekday and `PDT`/`UT`/`Z`/ISO forms (tested on JDK 21). Algorithm:
 
 1. Trim; collapse whitespace; drop a leading weekday token (`^\p{L}{2,}\.?,?\s`), even a wrong or localised one (`Mié,`).
 2. Normalise localised month abbreviations to English (German, French, Spanish, Italian, Dutch, Portuguese tables, e.g. `Okt`→`Oct`, `Mai`→`May`, `janv.`→`Jan`; heuristic).
 3. Replace a trailing zone token: `UT, UTC, GMT, Z → +0000`, `EST -0500`, `EDT -0400`, `CST -0600`, `CDT -0500`, `MST -0700`, `MDT -0600`, `PST -0800`, `PDT -0700`.
-4. Parse with a case-insensitive `Locale.ENGLISH` builder `d MMM [yyyy][yy] H:mm[:ss][.SSS]` + optional `+HHMM` or `+HH:MM`, defaulting the offset to UTC.
-5. Fallbacks in order: `OffsetDateTime.parse` (ISO-8601/RFC 3339), `LocalDateTime.parse` (as UTC; a space between date and time is replaced by `T` first), `LocalDate.parse` (UTC midnight).
+4. Tokenise `d MMM yyyy|yy H:mm[:ss[.fff]] [±HHMM|±HH:MM]` case-insensitively (English month abbreviations; day 1–31 validated against the month with `LocalDate`; hour 0–23, minute and second 0–59), defaulting the offset to UTC; a two-digit year maps by RFC 5322's obsolete-syntax rule (00–49 → 20xx, 50–99 → 19xx, [RFC 5322 §4.3](https://www.rfc-editor.org/rfc/rfc5322#section-4.3)); then `LocalDateTime(…).toInstant(UtcOffset(…))`.
+5. Fallbacks in order: an ISO-8601/RFC 3339 date-time with offset (`DateTimeComponents.Formats.ISO_DATE_TIME_OFFSET`), `LocalDateTime.parse` (as UTC; a space between date and time is replaced by `T` first), `LocalDate.parse` (UTC midnight). Unverified: the exact lenience of kotlinx-datetime 0.8.0's ISO formats for fraction lengths and `±HHMM` offsets without a colon; `FeedDatesTest` pins every variant of the `dates-iso-variants` fixture and adds a pre-normalisation step where a format refuses one.
 6. Unparsable → `null` + warning `UNKNOWN_DATE`. The parser applies **no** plausibility window (it is clock-free); ingestion does ([sortDate and clock](#sortdate-and-clock)).
 
 ### Durations
@@ -287,13 +326,16 @@ Episode art: item `itunes:image@href` (or text) › item `podcast:image` › `me
 
 ## Fetch pipeline
 
-Serves N3, N6, N9. Delivered in M1. Honours [D10](../PLAN.md#3-key-decisions) (no OkHttp `Cache`), [D28](../PLAN.md#3-key-decisions) (cleartext allowed, LAN unsupported).
+Serves N3, N6, N9. Delivered in M1 (M1a; spike [S12](01-foundation.md#s12-ktor-fetch-pipeline) in M0a). Honours [D10](../PLAN.md#3-key-decisions) (Ktor over the island's OkHttp, no OkHttp `Cache`), [D28](../PLAN.md#3-key-decisions) (cleartext allowed; LAN feeds unsupported on Android, allowed on the desktop).
+
+`FeedFetcher` is common code in `:core:data`: it uses the Ktor `HttpClient` of kind FEED from 01's `NeutrodyneHttpClients`, which runs on the OkHttp engine with the island's FEED client passed as `preconfigured`, so feeds share the app's connection pool, DNS chain, User-Agent and `AuthInterceptor` on both platforms ([01 One client family](01-foundation.md#one-client-family)). The FEED client has redirects off in OkHttp and in Ktor, because the move rules need every hop: `FeedFetcher` follows the chain itself ([Request rules](#request-rules)). If S12 fails for feeds, the fallback is 01's `FeedHttp` interface implemented with OkHttp in the island, behind the same `FeedFetcher` contract.
 
 ```kotlin
-// :core:data (internal)
-internal class FeedFetcher @Inject constructor(
-    @HttpClient(HttpClientKind.FEED) private val client: OkHttpClient,   // 15 s / 30 s / 120 s (01)
-    private val credentials: CredentialStore, private val temp: FeedTempFiles,
+// :core:data commonMain (internal)
+@Inject internal class FeedFetcher(
+    clients: NeutrodyneHttpClients,                // client(FEED): 15 s / 30 s / 120 s, redirects off (01)
+    private val credentials: CredentialLookup,     // SecretStore (Android KeystoreCredentialStore, desktop DesktopSecretStore)
+    private val temp: FeedTempFiles,               // Okio FileSystem + StoragePaths.cacheDir
     private val classifier: NetErrorClassifier, private val clock: Clock,
 ) { suspend fun fetch(req: FeedRequest): FetchOutcome }
 
@@ -302,15 +344,17 @@ data class FeedRequest(val url: String, val etag: String?, val lastModified: Str
                        val credentials: BasicCredentials? = null)   // not-yet-stored credentials (add flow, setCredentials probe)
 sealed interface FetchOutcome {
     data class NotModified(val maxAgeSec: Long?, val serverDateMs: Long?) : FetchOutcome
-    data class Body(val file: File, val sha256Hex: String, val requestedUrl: String, val finalUrl: String,
+    data class Body(val file: okio.Path, val sha256Hex: String, val requestedUrl: String, val finalUrl: String,
         val permanentUrl: String?,                 // URL reached by the leading run of 301/308 hops, else null (Request rules)
+        val hops: List<RedirectHop>,               // every followed redirect, in order (aliases at subscribe)
         val etag: String?, val lastModified: String?, val charset: String?, val maxAgeSec: Long?,
         val serverDateMs: Long?, val sniff: Sniff) : FetchOutcome
     data class Http(val code: Int, val retryAfterMs: Long?, val basicChallenge: Boolean, val realm: String?) : FetchOutcome
     data class Network(val error: NetError) : FetchOutcome
     data object TooLarge : FetchOutcome
-    data object RedirectLoop : FetchOutcome        // OkHttp "Too many follow-up requests"
+    data object RedirectLoop : FetchOutcome        // more than 20 follow-ups, or a URL repeated in the chain
 }
+data class RedirectHop(val url: String, val status: Int)   // the request URL of the hop and its 3xx status
 enum class Sniff { RSS, ATOM, RDF, OPML, HTML, JSON, OTHER }
 ```
 
@@ -320,18 +364,19 @@ enum class Sniff { RSS, ATOM, RDF, OPML, HTML, JSON, OTHER }
 |---|---|
 | `Accept` | `application/rss+xml, application/atom+xml;q=0.9, application/xml;q=0.8, text/xml;q=0.8, */*;q=0.5` |
 | `User-Agent` | set by `UserAgentInterceptor` (01); feeds.podcastindex.org returns 403 to generic UAs (tested) |
-| `Accept-Encoding` | never set: OkHttp adds gzip and decompresses only when the caller did not set it |
-| `If-None-Match` / `If-Modified-Since` | only when `conditional`; the stored `etag` (weak `W/"…"` sent verbatim) and the stored `Last-Modified` **string** (never a locally formatted date) |
-| `Authorization` | normally never set by `FeedFetcher`: `AuthInterceptor` adds stored Basic credentials when the hop's origin equals the credential's origin, re-evaluated on every hop ([01 Interceptors](01-foundation.md#interceptors)). Only when `FeedRequest.credentials` is non-null (credentials typed in the add sheet or "Enter password", not stored yet) does `FeedFetcher` set `Authorization: Basic …` itself; `AuthInterceptor` then leaves the header alone and OkHttp drops it on a redirect to another scheme/host/port, so it never leaks cross-origin |
+| `Accept-Encoding` | never set: OkHttp's bridge adds gzip and decompresses only when the caller did not set it; Ktor's `ContentEncoding` plugin is not installed (S12 checks that gzip still arrives decompressed through Ktor) |
+| `If-None-Match` / `If-Modified-Since` | only when `conditional`; the stored `etag` (weak `W/"…"` sent verbatim) and the stored `Last-Modified` **string** (never a locally formatted date); repeated on every hop of a redirect chain, as OkHttp's own follow-ups did |
+| `Authorization` | normally never set by `FeedFetcher`: `AuthInterceptor` (an OkHttp network interceptor in the island) adds stored Basic credentials when the hop's origin equals the credential's origin; each hop of the manual chain is a new call, so it is evaluated per hop ([01 Interceptors](01-foundation.md#interceptors)). Only when `FeedRequest.credentials` is non-null (credentials typed in the add sheet or "Enter password", not stored yet) does `FeedFetcher` set `Authorization: Basic …` itself — and only on hops whose origin (scheme, host, port) equals the first request's, so a redirect to another scheme, host or port never carries it; `AuthInterceptor` leaves an existing header alone |
 | Before the call | `credentials.awaitLoaded()` so a cold start never fetches a private feed without its credentials |
-| Redirects | OkHttp follows up to 20 follow-ups. Collect the hop list by walking `priorResponse` from the final response back to hop 0, reverse it, and count the **leading** hops whose status is 301 or 308: `k = 0` → `permanentUrl = null`; otherwise `permanentUrl` = the request URL of hop `k` (for `A -301→ B -302→ C`, `permanentUrl = B`: B is the permanent new home that currently redirects temporarily; for `A -302→ B -301→ C`, `null`) |
-| Cleartext | `http://` is fetched as given (network security config allows it, PO-13 default); only scheme-less user input tries `https://` first ([Input normalisation](#input-normalisation)) |
+| Redirects | The FEED client follows nothing; `FeedFetcher` loops: a 301, 302, 303, 307 or 308 with a `Location` header is resolved against the hop's URL (Ktor `URLBuilder.takeFrom`), checked to be `http(s)` and appended as `RedirectHop(url, status)`; the next hop is a new GET. More than 20 follow-ups (OkHttp's former limit) or a URL already in the chain → `RedirectLoop`; a 3xx without a usable `Location` is the final response (`HTTP_CLIENT`). Count the **leading** hops whose status is 301 or 308: `k = 0` → `permanentUrl = null`; otherwise `permanentUrl` = the request URL of hop `k` (for `A -301→ B -302→ C`, `permanentUrl = B`: B is the permanent new home that currently redirects temporarily; for `A -302→ B -301→ C`, `null`) |
+| Cleartext | `http://` is fetched as given (Android: the network security config allows it, PO-13 default; the desktop has no cleartext restriction); an `https → http` hop is followed but never carries explicit credentials (origin rule above); only scheme-less user input tries `https://` first ([Input normalisation](#input-normalisation)) |
+| Cancellation | coroutine cancellation (deadline, worker stop, desktop quit) cancels the Ktor call and with it the OkHttp `Call`, so the socket closes ([S12](01-foundation.md#s12-ktor-fetch-pipeline) verifies it against MockWebServer) |
 
 ### Body, hashing and sniffing
 
-1. Stream the response body into `cacheDir/feeds/{uuid}.tmp` through Okio `HashingSink.sha256`, counting decompressed bytes; above `maxBytes` cancel the call, delete the file and return `TooLarge` (also bounds gzip bombs).
+1. Stream the response body (`bodyAsChannel()`) into `<cache>/feeds/{uuid}.tmp` — Android `cacheDir`, the desktop's cache directory of [11 AppDirs](11-desktop.md#appdirs), both through 01's `StoragePaths` — via Okio `HashingSink.sha256` on the injected Okio `FileSystem`, counting decompressed bytes in the copy loop; above `maxBytes` stop reading (which cancels the call), delete the file and return `TooLarge` (also bounds gzip bombs).
 2. `sniffOnlyBytes` (probes in [Autodiscovery](#fetch-sniff-and-autodiscovery)) stops after N bytes.
-3. `FeedSniffer` reads at most the first 64 KiB (the prolog-guard window; long comments or DOCTYPEs before the root exist): skip BOM (UTF-8/16/32), whitespace, `<?xml…?>`, comments and `<!DOCTYPE …>` (except `<!DOCTYPE html`), then classify the first element: `rss` → RSS, `feed` → ATOM, `RDF`/`rdf:RDF` → RDF, `opml` → OPML, `html` or `<!DOCTYPE html` → HTML; a first non-space byte `{` or `[` → JSON; otherwise OTHER.
+3. `FeedSniffer` (common, byte-level) reads at most the first 64 KiB (the prolog-guard window; long comments or DOCTYPEs before the root exist): skip BOM (UTF-8/16/32), whitespace, `<?xml…?>`, comments and `<!DOCTYPE …>` (except `<!DOCTYPE html`), then classify the first element: `rss` → RSS, `feed` → ATOM, `RDF`/`rdf:RDF` → RDF, `opml` → OPML, `html` or `<!DOCTYPE html` → HTML; a first non-space byte `{` or `[` → JSON; otherwise OTHER.
 4. `FeedTempFiles` deletes each file in a `finally` after parsing; `sweep()` at every engine start deletes files older than 1 h.
 
 ### Response handling
@@ -352,7 +397,7 @@ enum class Sniff { RSS, ATOM, RDF, OPML, HTML, JSON, OTHER }
 | other 5xx / 4xx | `HTTP_SERVER` / `HTTP_CLIENT` | failure backoff |
 | too many redirects | `REDIRECT_LOOP` | failure backoff |
 | body over 32 MB | `TOO_LARGE` | failure backoff |
-| `IOException` | `NetErrorClassifier` → kind below | `OFFLINE` changes no column (reported as `FeedOutcome.Failed(OFFLINE)`, the feed stays due); a cancelled call (`NetError.Cancelled`: deadline, worker stop) produces no outcome; `LOCAL_NETWORK_UNSUPPORTED` → `nextRefreshAt = now + 24 h`; others failure backoff |
+| transport exception (`IOException` from the island's OkHttp, or a Ktor exception wrapping one) | `NetErrorClassifier` → kind below (it inspects the cause chain, [01 Network error taxonomy](01-foundation.md#network-error-taxonomy)) | `OFFLINE` changes no column (reported as `FeedOutcome.Failed(OFFLINE)`, the feed stays due); a cancelled call (`NetError.Cancelled`: deadline, worker stop, desktop quit) produces no outcome; `LOCAL_NETWORK_UNSUPPORTED` (Android only) → `nextRefreshAt = now + 24 h`; others failure backoff |
 
 ### Error kinds
 
@@ -375,24 +420,27 @@ enum class FeedErrorKind {   // 24 values
 | `STORAGE` | `SQLITE_FULL` or no space for the temp file |
 | `UNKNOWN` | anything else (`NetError.Other`) |
 
-Android 17 specifics: `LocalNetworkGuardDns` fails LAN hosts fast on API 37+ (v1 never requests `ACCESS_LOCAL_NETWORK`, [D28](../PLAN.md#3-key-decisions)); the UI text is "Feeds on your local network aren't supported yet". Certificate Transparency is enforced for targetSdk 37 and surfaces as `TLS_CERTIFICATE_TRANSPARENCY` per feed, never silently ([Local network permission](https://developer.android.com/privacy-and-security/local-network-permission), [Network security config](https://developer.android.com/privacy-and-security/security-config)).
+Android 17 specifics: `LocalNetworkGuardDns` fails LAN hosts fast on API 37+ for the FEED client in every case — `ACCESS_LOCAL_NETWORK` is requested only in sync setup for a sync server on the local network, and only the SYNC client may then pass the guard ([D28](../PLAN.md#3-key-decisions), [01 Interceptors](01-foundation.md#interceptors)); the UI text is "Feeds on your local network aren't supported yet". Certificate Transparency is enforced for targetSdk 37 and surfaces as `TLS_CERTIFICATE_TRANSPARENCY` per feed, never silently ([Local network permission](https://developer.android.com/privacy-and-security/local-network-permission), [Network security config](https://developer.android.com/privacy-and-security/security-config)).
+
+Desktop specifics: there is no LAN guard, so LAN feeds work; after sync carries such a podcast to an Android device it shows Android's LAN error there ([D28](../PLAN.md#3-key-decisions)). TLS uses the bundled runtime's unmodified trust store with no user-CA override; Unverified: the JDK performs no Certificate Transparency check by default, so `TLS_CERTIFICATE_TRANSPARENCY` should not occur on the desktop ([01 Network security config](01-foundation.md#network-security-config)).
 
 ### Validators
 
 - `etag`, `lastModified`, `contentSha256` and `parserVersion` are written **only inside the ingest transaction that commits the parsed body**, or — for an `Unchanged` outcome, whose body equals the last committed one — `etag`, `lastModified` and `lastFullFetchAt` through 02's batched `updateFetchStates` (its `PodcastFetchState` partial row must carry these three columns and `lastParseOk`, filled from the response or, when absent, from the `DueFeed` snapshot; requested from 02); a `PARSE_ERROR` writes `lastParseOk = 0` the same way. A crash before commit can therefore never strand a feed in "304 forever". `lastFullFetchAt` = time of the last unconditional 200 that was ingested or `Unchanged`.
-- Validators are not sent when `parserVersion < FeedParser.VERSION`, when `lastParseOk = 0`, for previews, for `new-feed-url` probes, for paging requests, and for the **fortnightly full fetch**: when `lastFullFetchAt < now − 14 d` **and** the current network is unmetered (`NetworkMonitor.status.isMetered == false`), the request is unconditional. This catches servers that answer 304 forever although the feed changed (prior-art pitfall: constant ETag / stale `Last-Modified`), while keeping the extra data on Wi-Fi.
+- Validators are not sent when `parserVersion < FeedParser.VERSION`, when `lastParseOk = 0`, for previews, for `new-feed-url` probes, for paging requests, and for the **fortnightly full fetch**: when `lastFullFetchAt < now − 14 d` **and** the current network is unmetered (`NetworkMonitor.status.isMetered == false`; always true on the desktop, whose networks count as unmetered in v1.0, [D85](../PLAN.md#3-key-decisions)), the request is unconditional. This catches servers that answer 304 forever although the feed changed (prior-art pitfall: constant ETag / stale `Last-Modified`), while keeping the extra data on Wi-Fi.
 - A URL change (move) discards the old validators; the new URL's validators are stored from the response that was ingested.
-- Feed requests never use OkHttp's `Cache` ([D10](../PLAN.md#3-key-decisions)): simplecast sends `max-age=3600` (tested), which an HTTP cache would honour on pull-to-refresh; `max-age` is used only as a lower bound for success scheduling.
+- Feed requests never use an HTTP cache — neither OkHttp's `Cache` nor Ktor's `HttpCache` plugin ([D10](../PLAN.md#3-key-decisions)): simplecast sends `max-age=3600` (tested), which an HTTP cache would honour on pull-to-refresh; `max-age` is used only as a lower bound for success scheduling.
 
 ---
 
 ## Ingestion and diff
 
-Serves N1, R2.3, R2.8 (inputs), R3.3. Delivered in M1. Honours [D15](../PLAN.md#3-key-decisions), [D18](../PLAN.md#3-key-decisions), [D19](../PLAN.md#3-key-decisions), [D66](../PLAN.md#3-key-decisions). DAO primitives: [02 Ingestion support](02-data-model.md#ingestion-support).
+Serves N1, R2.3, R2.8 (inputs), R3.3, R7.3 (parked state). Delivered in M1 (common code, both platforms); the sync hook in MS2. Honours [D15](../PLAN.md#3-key-decisions), [D18](../PLAN.md#3-key-decisions), [D19](../PLAN.md#3-key-decisions), [D66](../PLAN.md#3-key-decisions), [D93](../PLAN.md#3-key-decisions). DAO primitives: [02 Ingestion support](02-data-model.md#ingestion-support).
 
 ```kotlin
-// :core:data (internal)
-internal class FeedIngestor @Inject constructor(/* db, IngestDao, PodcastDao, Clock, ArtworkPinner?, IngestionEventBus */) {
+// :core:data commonMain (internal)
+@Inject internal class FeedIngestor(/* db, IngestDao, PodcastDao, Clock, ArtworkPinner?, IngestionEventBus,
+                                       ShowNotesSanitizer (snippets) */) {
     suspend fun ingest(podcast: DueFeed, parsed: ParsedFeed, ctx: IngestContext): IngestResult  // opens one withWriteTransaction
     suspend fun ingestInTransaction(podcast: DueFeed, parsed: ParsedFeed, ctx: IngestContext): IngestResult // caller's transaction (SubscribeUseCase)
 }
@@ -404,11 +452,12 @@ data class FetchMeta(val finalUrl: String, val permanentUrl: String?, val etag: 
                      val sha256Hex: String, val serverDateMs: Long?, val maxAgeSec: Long?)
 data class RowHint(val availability: Availability?, val isShort: Boolean?, val isVideo: Boolean?)
 data class IngestResult(val inserted: List<Long>, val newIds: List<Long>, val updated: Int, val accepted: Int,
-                        val flippedOut: Int, val firstIngest: Boolean, val artworkChanged: Boolean,
+                        val flippedOut: Int, val rekeyed: Int,              // rekeyed: step 4 and 5 in-place re-keys (sync hook)
+                        val firstIngest: Boolean, val artworkChanged: Boolean,
                         val warnings: List<ParseWarning>)
 ```
 
-`IngestMode.INITIAL` is used when `podcast.initialFetch = 1` and by `SubscribeUseCase`; `OLDER_PAGE` by [paging](#rfc-5005-paging). `DueFeed` is 02's `dueForRefresh` row ([Refresh selection](02-data-model.md#refresh-selection-and-fetch-state-writes)).
+`IngestMode.INITIAL` is used when `podcast.initialFetch = 1` (imports, restores, YouTube subscribes and podcasts added by sync) and by `SubscribeUseCase`; `OLDER_PAGE` by [paging](#rfc-5005-paging). `DueFeed` is 02's `dueForRefresh` row ([Refresh selection](02-data-model.md#refresh-selection-and-fetch-state-writes)). Ingestion writes only feed-derived columns ([D15](../PLAN.md#3-key-decisions)); while sync is linked, 02's capture triggers record the few synced podcast fields it changes (a move's `feedUrl` and `feedKeys`, changed display hints `title`, `artworkUrl` and `link`, a real `podcastGuid`) and the `rekey` of an episode known to sync, without any call from here; episode feed columns are never synced ([02 Sync capture triggers](02-data-model.md#sync-capture-triggers), [10 What syncs](10-sync.md#what-syncs)).
 
 ### Accepted items
 
@@ -425,7 +474,8 @@ An item is **accepted** only if it has a primary enclosure or an `externalMediaI
 ### Episode keys and matching helpers
 
 ```kotlin
-// :feeds — ch.lkmc.neutrodyne.feeds.identity (algorithm owned here, storage format: 02 Identity keys)
+// :feeds (commonMain) — ch.lkmc.neutrodyne.feeds.identity (algorithm owned here, storage format: 02 Identity keys;
+// the sync server runs the same code, 10 Identity mapping)
 object EpisodeKeys {
     const val VERSION = 1
     fun primary(e: ParsedEpisode): String       // g: → u: → t: → l: → h: (02 grammar)
@@ -437,10 +487,10 @@ object EpisodeKeys {
 data class KeyInput(val guid: String?, val enclosureUrl: String?, val title: String?, val pubDate: Long?,
                     val link: String?, val descriptionHead: String?)
 object EpisodeContentHash { fun of(e: ParsedEpisode): Long }   // first 8 bytes (big-endian) of SHA-256
-object TitleMatch { fun normalise(title: String): String }     // NFKC, lowercase ROOT, quotes/dashes folded, spaces collapsed
+object TitleMatch { fun normalise(title: String): String }     // NFKC (expect helper), lowercase, quotes/dashes folded, spaces collapsed
 ```
 
-- `g:` = `guid.trim()` (non-blank); `u:` = `UrlNormalizer.forIdentity(primaryEnclosure.url)` (non-null); `t:` (needs a non-blank title and a parsed `pubDate`) = sha1hex(`title.trim().lowercase(Locale.ROOT)` + `"|"` + `Instant.ofEpochMilli(pubDate).truncatedTo(ChronoUnit.DAYS).toString()`), exactly 02's grammar ([02 Episode identityKey](02-data-model.md#episode-identitykey)); `l:` = sha1hex(`link.trim()`); `h:` = sha1hex(`title.orEmpty() + description.orEmpty().take(500)`). `primary` takes the first applicable kind in that order (`h:` always applies). Enclosure URLs that are not absolute `http(s)` are dropped at parse time (`BAD_URL`), so a primary enclosure always yields a `u:` key.
+- `g:` = `guid.trim()` (non-blank); `u:` = `UrlNormalizer.forIdentity(primaryEnclosure.url)` (non-null); `t:` (needs a non-blank title and a parsed `pubDate`) = sha1hex(`title.trim().lowercase()` + `"|"` + the UTC day of `pubDate` as `yyyy-MM-ddT00:00:00Z`), exactly 02's grammar ([02 Episode identityKey](02-data-model.md#episode-identitykey)) — Kotlin's common `lowercase()` is locale-invariant like `lowercase(Locale.ROOT)`, and the day text is formatted explicitly (kotlinx-datetime `LocalDate` + `"T00:00:00Z"`), which equals what `java.time`'s `Instant.truncatedTo(DAYS).toString()` printed, so keys do not depend on the runtime; `l:` = sha1hex(`link.trim()`); `h:` = sha1hex(`title.orEmpty() + description.orEmpty().take(500)`). SHA-1 and SHA-256 come from Okio's common `ByteString` (`encodeUtf8().sha1().hex()`). `EpisodeKeysTest` pins every kind with fixed vectors that the app's and the server's builds share. `primary` takes the first applicable kind in that order (`h:` always applies). Enclosure URLs that are not absolute `http(s)` are dropped at parse time (`BAD_URL`), so a primary enclosure always yields a `u:` key.
 - `EpisodeContentHash` hashes, separated by U+001F (list entries by U+001E): title, pubDate (or rawPubDate), primary enclosure url/type/length, isVideo, durationMs, season, seasonName, episodeNumber, episodeDisplay, episodeType, explicit, chosen image URL, link, chaptersUrl/Type, externalMediaId, SHA-256 of the description, transcripts, alternate enclosures, persons, funding, inline chapters. `feedOrder` is excluded, so re-ordering alone causes no write.
 
 ### Diff algorithm
@@ -449,20 +499,20 @@ All CPU work runs before the transaction on `@Dispatcher(Default)`; the transact
 
 **Prepare (outside the transaction)**
 
-1. Filter accepted items; compute for each: key candidates, normalised enclosure URL and its query-less variant (`UrlNormalizer.forIdentityNoQuery`), `TitleMatch` + UTC day, `contentHash`, encoded description (`EpisodeDescriptionCodec`, 02), snippet ([Show notes](#show-notes)), child rows (transcripts, alternate enclosures, persons, funding, PSC chapters).
+1. Filter accepted items; compute for each: key candidates, normalised enclosure URL and its query-less variant (`UrlNormalizer.forIdentityNoQuery`), `TitleMatch` + UTC day, `contentHash`, encoded description (`EpisodeDescriptionCodec`, 02), snippet (`ShowNotesSanitizer.snippet`, implemented with jsoup in the island, [Show notes](#show-notes)), child rows (transcripts, alternate enclosures, persons, funding, PSC chapters).
 2. **In-document key dedupe**, document order: if an item's primary key was already used by an earlier item (a generator that repeats GUIDs), try its `fallbacks()` in order; if every key is taken, drop the item with `DUPLICATE_ITEM`; record `DUPLICATE_GUID`.
 
 **Transaction**
 
 3. Load `IngestDao.existing(podcastId)`; build `byKey`, `byEnclosure`, `byEnclosureNoQuery`, `byTitleDay` maps.
-4. **Pass 1 (exact):** for each item, the first of `candidates(item)` present in `byKey` and not yet matched matches; a match on an older-version key rewrites the row's key in place (`IngestDao.rekey`).
+4. **Pass 1 (exact):** for each item, the first of `candidates(item)` present in `byKey` and not yet matched matches; a match on an older-version key rewrites the row's key in place (`IngestDao.rekey`; while linked, 02's `sync_cap_episode_rekey` turns a re-key of an episode known to sync into a `rekey` change, [10 Episode keys, match hints and rekey](10-sync.md#episode-keys-match-hints-and-rekey)).
 5. **Pass 2 (fallback, GUID rewrites):** for each unmatched item, consider only stored rows that are unmatched **and** whose `identityKey` is not a primary key of any item in this document. Match by normalised enclosure URL, then query-less enclosure URL, then `TitleMatch` + same UTC day with guards: both durations known ⇒ within 10 min; both MIME major types known ⇒ equal (behaviour of AntennaPod's duplicate guesser, re-implemented). A match calls `rekey(id, newKey, newGuid)`, preserving the row and all user state ([02 Uniqueness](02-data-model.md#uniqueness-and-in-place-re-keying)). Because in-document keys are unique and pass 1 runs first, the new key is never held by another stored row.
 6. **Matched rows:** if `contentHash` differs, `updateFeedFields` and `replaceChildren` (column rules below); if the stored `chaptersUrl` differs from the new non-null one, also delete the row's `chapter` rows with `source = PODCASTING20_JSON` so 06 re-fetches them ([06 Chapters](06-playback.md#chapters)); if `inFeed = 0`, flip to 1.
 7. **Unmatched items:** insert with `firstSeenAt`, `sortDate`, `isNew` (rules below), `lastSeenAt = firstSeenAt`, `inFeed = 1`, in **descending `feedOrder`** (02 invariant: the first item in the document gets the highest `id`), then their children; PSC chapters become `chapter` rows with `source = PSC` (start in Normal Play Time `hh:mm:ss.mmm`, `mm:ss` or seconds; ordered by start).
 8. **Absent rows:** only if `accepted ≥ 1` and mode is not `OLDER_PAGE`: stored rows not matched get `inFeed = 0`. If the document is **partial** (`paging.next` or `prevArchive` present without `fh:complete`, or the adapter says `partial = true`), only absent rows with `sortDate ≥ floor` are flipped, where `floor = ctx.absenceFloor ?: min(sortDate of the rows this document matched or inserted)` (04 supplies `absenceFloor` for merged YouTube variants; `Long.MAX_VALUE` flips nothing); older rows outside the window are left alone (they are on older pages, or beyond YouTube's 15-entry window). Ingestion never deletes an episode.
 9. `touchSeen(podcastId, now)`.
 10. Moves accepted for this body ([Permanent redirects](#permanent-redirects), renormalisation) are applied first in the same transaction. Then `applyFeedMetadata` (02; for `YOUTUBE_CHANNEL` rows its `YouTubeFeedMetadata` variant, which additionally leaves `artworkUrl`, `artworkKey`, `bannerUrl`, `descriptionHtml`, `link` and `youtubeChannelId` to 04): feed metadata (title only when non-blank; `customTitle`, `includeInAll`, `episodeOrder`, `youtubeVariants`, `autoDownloadEligibleAfter`, `channelMetadataAt` are never touched), categories as `categoriesJson`, `artworkUrl`/`artworkKey`, `bannerUrl`, `podcastGuid` (real one, `podcastGuidDerived = 0`; else keep a stored real one; else derive once, `podcastGuidDerived = 1`), `ttlMinutes`, `updateFrequencyRrule`, `hubUrl`, `usesPodping`, paging columns ([RFC 5005 paging](#rfc-5005-paging)), `latestEpisodeAt = max(sortDate)`, validators, `parserVersion = VERSION`, `lastParseOk = 1`, `contentSha256`, `lastFullFetchAt`, scheduling columns ([nextRefreshAt policy](#nextrefreshat-policy)), `failureCount = 0`, `lastErrorKind = null`, and on the first accepted ingest `status = ACTIVE`, `initialFetch = 0`.
-11. After commit: if `artworkUrl` changed and `ArtworkStore` exists (M4+), request a pin of the new key (08 enqueues `artwork-sync`; the old key is garbage-collected by 02's reference query); then the engine calls `ids = adapter.afterIngest(podcastId, inserted, newIds)` ([Source adapters](#source-adapters); RSS returns `newIds` unchanged; 04's enrichment, which runs only with the YouTube engine, may drop IDs, e.g. upcoming premieres); then emit `NewEpisodes` with `ids` ([Events](#events)). The emission runs in a `finally` under `NonCancellable`, so a deadline cancellation inside `afterIngest` never loses the event (a cancelled `afterIngest` emits `newIds`).
+11. After commit: if `artworkUrl` changed and `ArtworkStore` exists (M4+), request a pin of the new key (08: `artwork-sync` on Android, the `artwork` lane on the desktop; the old key is garbage-collected by 02's reference query); then, when the commit inserted or re-keyed at least one row (any mode), the engine calls `SyncIngestHook.afterIngest(podcastId)` (MS2; `:core:domain` port implemented by 10's `SyncParkedStateApplier`, which applies parked played state, positions, favourites and Up next to the episodes this ingest made matchable, in its own transaction with `applying = 1`; it returns at once while sync is not configured and costs one indexed query when nothing is parked, [10 Client sync engine](10-sync.md#client-sync-engine)); then the engine calls `ids = adapter.afterIngest(podcastId, inserted, newIds)` ([Source adapters](#source-adapters); RSS returns `newIds` unchanged; 04's enrichment, which runs only with the YouTube engine, may drop IDs, e.g. upcoming premieres); then emit `NewEpisodes` with `ids` ([Events](#events)). The sync hook runs before the emission so that an episode another device already played is played when 07's planner and the notifier look at it (both skip played episodes). The hook and the emission run in a `finally` under `NonCancellable`, so a deadline cancellation inside `afterIngest` never loses the event (a cancelled `afterIngest` emits `newIds`) and parked state never waits for an ingest that inserts nothing; a failing hook is logged and leaves the rows parked until a later ingest ([10 Parked state and stubs](10-sync.md#parked-state-and-stubs)).
 
 A `SQLITE_CONSTRAINT_UNIQUE` from step 4–7 rolls the feed back and records `IDENTITY_CONFLICT` (a bug or a hostile feed); the next refresh retries.
 
@@ -473,7 +523,7 @@ newFloor = max(previousLatestEpisodeAt ?: Long.MIN_VALUE, podcast.subscribedAt) 
 isNew    = mode == REFRESH && podcast.initialFetch == 0 && (pubDateValid ?: now) ≥ newFloor
 ```
 
-- `INITIAL` and `OLDER_PAGE` ingests never set `isNew` ([D66](../PLAN.md#3-key-decisions)); imports, restores and subscribes therefore produce no notifications and no auto-downloads.
+- `INITIAL` and `OLDER_PAGE` ingests never set `isNew` ([D66](../PLAN.md#3-key-decisions)); imports, restores, subscribes and podcasts added by sync therefore produce no notifications and no auto-downloads on this device.
 - A host re-adding old episodes, or a podcast with no episodes yet receiving its back catalogue, fails the floor.
 - **Dump guard:** if more than 20 inserted items qualify in one ingest, only the newest 3 by `(sortDate, feedOrder)` keep `isNew = 1`; warning `BACK_CATALOGUE_DUMP`.
 - `isNew` is never cleared by user actions (02); "new since last visit" is 05's `isNew && firstSeenAt > lastViewedAt`.
@@ -501,10 +551,12 @@ isNew    = mode == REFRESH && podcast.initialFetch == 0 && (pubDateValid ?: now)
 - **Automatic merge** happens only on URL identity: when an accepted move (301/308 chain, validated `new-feed-url`, user "Edit URL") produces a `feedKey` that is another podcast's `feedKey` or alias. Winner = the podcast that owns that key; loser = the moving podcast. The engine detects the collision **before** opening the ingest transaction (`feedKey`/alias lookup of the new key) and then:
   1. flushes `FetchStateBatcher`; matches loser episodes to winner episodes in Kotlin exactly as 02's merge does (`identityKey`, then normalised enclosure URL);
   2. (M6+) deletes, through `DownloadController.delete(ids, byUser = false)`, the downloads of **matched** loser episodes whose winner episode already has a `download` row — 02's `UPDATE OR IGNORE download` would otherwise leave that loser file orphaned. Downloads of unmatched loser episodes are kept: those episodes are re-parented to the winner with their `download` rows ([07 Unsubscribe, merge and retention](07-downloads.md#unsubscribe-merge-and-retention));
-  3. runs 02's merge transaction ([02 Unsubscribe and merge](02-data-model.md#unsubscribe-and-merge));
+  3. runs 02's merge transaction ([02 Unsubscribe and merge](02-data-model.md#unsubscribe-and-merge)); while sync is linked (MS2) its last step deletes the loser inside `SyncStateDao.withApplying` after `SyncOutboxDao.captureLiteral` has recorded the loser's move (`feedUrl` = the winner's URL, `feedKeys` = both podcasts' keys, under the loser's `syncId`) instead of an unsubscribe, so other devices merge the two podcasts rather than dropping the loser's history ([10 Feed moves](10-sync.md#feed-moves));
   4. ingests the already parsed body into the winner (mode `INITIAL` if the winner is still pending, else `REFRESH`; the loser's validators are discarded);
   5. reports `FeedOutcome.Merged(winnerId)` for the loser and calls `reschedulePeriodic()`.
-- Equal real `podcastGuid` alone never merges (an ad-free premium feed legitimately shares the public feed's GUID); the outcome carries `sameGuidAs` so 05's import report can say "possibly the same show as …".
+- Steps 1–3 are one routine, `PodcastRepository.merge(loserId, winnerId, origin)` ([Unsubscribe and other podcast operations](#unsubscribe-and-other-podcast-operations)), which 10's `SyncApplier` also calls when a server-side merge redirects a local podcast into another local one (`origin = SYNC`: the whole merge runs with `applying = 1` and captures nothing, because the server already merged the records, [10 Redirects on clients](10-sync.md#redirects-on-clients)).
+- **Across devices** a podcast is identified by its `syncId`, not its URL; two devices that subscribed to the same feed offline, or whose moves collide, are merged by the server by feed key and every device follows the redirect ([10 Identity mapping](10-sync.md#identity-mapping)). A merge never fetches anything; the next refresh of the survivor does.
+- Equal real `podcastGuid` alone never merges (an ad-free premium feed legitimately shares the public feed's GUID), locally or on the sync server; the outcome carries `sameGuidAs` so 05's import report can say "possibly the same show as …".
 
 ### Events
 
@@ -526,6 +578,7 @@ sequenceDiagram
   participant P as FeedParser
   participant I as FeedIngestor
   participant DB as Room
+  participant H as SyncIngestHook (10)
   participant B as IngestionEventBus
   E->>A: fetchAndParse(feed, mode)
   A->>F: fetch(url, validators)
@@ -541,6 +594,9 @@ sequenceDiagram
     E->>I: ingest(podcast, feed, context)
     I->>DB: one write transaction (diff, metadata, validators, schedule)
     I-->>E: IngestResult
+    opt rows inserted or re-keyed
+      E->>H: afterIngest(podcastId), applies parked sync state
+    end
     E->>A: afterIngest(podcastId, inserted, newIds)
     A-->>E: IDs to announce
     E->>B: emit NewEpisodes (finally, NonCancellable)
@@ -557,12 +613,12 @@ sequenceDiagram
 
 ## Feed moves, auth and paging
 
-Serves R1.9, N1, N3. Delivered in M1. Storage: [02 Podcast feedKey and aliases](02-data-model.md#podcast-feedkey-and-aliases), [02 credential](02-data-model.md#credential).
+Serves R1.9, N1, N3, R7.3 (moves and passwords through sync). Delivered in M1 (M1b: moves, merges, credentials on both platforms, paging), MS2 (sync side). Storage: [02 Podcast feedKey and aliases](02-data-model.md#podcast-feedkey-and-aliases), [02 credential](02-data-model.md#credential).
 
 ### URL normalisation
 
 ```kotlin
-// :feeds — ch.lkmc.neutrodyne.feeds.identity
+// :feeds (commonMain) — ch.lkmc.neutrodyne.feeds.identity; also computes feed keys on the sync server (10)
 object UrlNormalizer {
     const val VERSION = 1                                   // a change is an identity-key version change (02)
     fun forIdentity(url: String): String?                   // null if not http(s)
@@ -572,7 +628,7 @@ object UrlNormalizer {
 }
 ```
 
-`forIdentity` (scheme-free, so `http` and `https` compare equal): parse with `java.net.URI` (lenient fallback for unescaped spaces); host lowercased, IDN → ASCII, trailing dot removed; ports 80 and 443 dropped; empty path → `/`; percent-encoding normalised (unreserved characters decoded, other escapes uppercased); dot segments removed; one trailing `/` removed unless the path is `/`; query kept verbatim in order (empty `?` dropped); userinfo and fragment dropped. Output `host[:port]/path[?query]`, e.g. `HTTPS://Feeds.Example.com:443/Show/?a=1#x` → `feeds.example.com/Show?a=1`. Analytics prefixes (`dts.podtrac.com/redirect.mp3/…`, `chrt.fm/track/…`, `pdst.fm/e/…`) are **not** stripped: they rotate, so enclosure URLs are a secondary signal only.
+`forIdentity` (scheme-free, so `http` and `https` compare equal): parse with a small hand-written RFC 3986 splitter in common code (`java.net.URI` is JVM-only; lenient about unescaped spaces and other characters `java.net.URI` would reject, [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986)); host lowercased, IDN → ASCII (the `expect` IDNA helper, `java.net.IDN.toASCII` on both JVM targets, [IDN](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/net/IDN.html)), trailing dot removed; ports 80 and 443 dropped; empty path → `/`; percent-encoding normalised (unreserved characters decoded, other escapes uppercased); dot segments removed; one trailing `/` removed unless the path is `/`; query kept verbatim in order (empty `?` dropped); userinfo and fragment dropped. Output `host[:port]/path[?query]`, e.g. `HTTPS://Feeds.Example.com:443/Show/?a=1#x` → `feeds.example.com/Show?a=1`. Analytics prefixes (`dts.podtrac.com/redirect.mp3/…`, `chrt.fm/track/…`, `pdst.fm/e/…`) are **not** stripped: they rotate, so enclosure URLs are a secondary signal only. Because feed keys are compared across devices and by the sync server, the output must be identical everywhere: `UrlNormalizerTest` runs in `commonTest` with fixed vectors, and a `desktopTest` cross-check compares the splitter with `java.net.URI` on a corpus of real feed and enclosure URLs (the cases where `java.net.URI` throws are listed and expected to be accepted).
 
 ### Permanent redirects
 
@@ -581,36 +637,52 @@ object UrlNormalizer {
 - If only the scheme differs (`http` → `https`, same `feedKey`), `feedUrl` is updated without an alias.
 - After every successful refresh `feedKey` is recomputed from `feedUrl`; a difference (normaliser version change) is applied as a move with reason `RENORMALISED`.
 - Podcast info shows "Feed moved to … on <date>" from aliases with reason `REDIRECT`/`NEW_FEED_URL` (`PodcastRepository.observeFeedInfo`), which matters when a feed is hijacked.
+- **Sync (MS2).** While linked, an accepted move (any of the above, and "Edit URL") is captured by 02's triggers as the podcast's `feedUrl` and grown `feedKeys` set. Other devices apply it without fetching — update `feedUrl` and `feedKey`, insert the old key as an alias with reason `SYNC`, discard validators — and fetch the new URL at their next refresh; a move that collides with another podcast is merged by the server by feed key ([10 Feed moves](10-sync.md#feed-moves), [Podcast dedupe and merge](#podcast-dedupe-and-merge)). A renormalisation move (`RENORMALISED`) changes only `feedKey` and is captured the same way.
 
 ### itunes:new-feed-url
 
 1. Ignore it when `forIdentity(newFeedUrl)` equals the current `feedKey` (self-referential, as in 99% Invisible), is not `http(s)`, or equals an alias this podcast moved away from (loop).
 2. Otherwise store it in `podcast.pendingNewFeedUrl` (every ingest rewrites the column from the body, so it is cleared as soon as the publisher removes the tag) and, after the current ingest commits, probe it in the same run: unconditional `FeedRequest`, require a feed with ≥ 1 accepted item and plausibility — equal real `podcastGuid`, **or** at least one shared `g:` key among the newest 20 items, **or** normalised-title similarity ≥ 0.8 (1 − Levenshtein distance / max length on `TitleMatch` forms).
 3. Plausible → move (alias reason `NEW_FEED_URL`) and ingest the probed body in REFRESH mode in one transaction; `pendingNewFeedUrl = null`. Not plausible or failed → keep it pending; the probe is repeated only after a later ingest of a changed body (304 and `Unchanged` outcomes never probe), and an in-memory LRU (100 URLs, 24 h) of implausible targets prevents repeats within a process, so a stale or hostile tag costs at most one extra request per published episode. Diagnostics list podcasts with a pending URL. At most 5 hops (chained `new-feed-url`s) per run.
-Apple asks publishers to keep both the 301 and the tag for at least four weeks, so lazy adoption is safe ([Apple: change the RSS feed URL](https://podcasters.apple.com/support/change-the-rss-feed-url)).
+Apple asks publishers to keep both the 301 and the tag for at least four weeks, so lazy adoption is safe ([Apple: change the RSS feed URL](https://podcasters.apple.com/support/change-the-rss-feed-url)). A device that learns a move through sync needs no probe: the device that adopted it already checked plausibility.
 
 ### Basic auth and CredentialStore
 
+The heading keeps its name; since the scope revision the Android `CredentialStore` is `KeystoreCredentialStore`, one of two implementations of the common `SecretStore` contract, which also holds the user's Podcast Index key and 10's sync token ([PO-44](../PLAN.md#48-further-product-owner-decisions)).
+
 ```kotlin
-// :core:data — implements :core:network CredentialLookup (01) and replaces CredentialLookup.None in M1
-@Singleton internal class CredentialStore @Inject constructor(/* CredentialDao, CipherProvider, @ApplicationScope */) : CredentialLookup {
-    override suspend fun awaitLoaded()                                     // suspends until the first load completed
+// :core:domain (contract owned here; users: 03, 05's opted-in exports, 10's SyncTokenStore and opted-in `auth` field).
+// Implements 01's CredentialLookup, so AuthInterceptor reads it; replaces CredentialLookup.None in M1b.
+interface SecretStore : CredentialLookup {
+    override suspend fun awaitLoaded()                                     // suspends until the first load is decrypted into memory
     override fun basicAuthorization(origin: Origin): String?               // "Basic base64(user:pass)", non-blocking map read
-    suspend fun put(origin: String, username: String, secret: CharArray): Long   // replaces the row for that origin
-    suspend fun remove(id: Long)
-    suspend fun forPodcast(podcastId: Long): BasicCredentials?             // 05's opted-in exports
+    /** Replaces the entry for [origin]. Returns the `credential` row ID for feed and "podcastindex" origins
+     *  (podcast.credentialId); null for "sync:<host>" origins on the desktop, which have no row (02 credential). */
+    suspend fun put(origin: String, username: String, secret: CharArray, attributes: Map<String, String> = emptyMap()): Long?
+    suspend fun get(origin: String): StoredSecret?                          // 10: the sync token and its desktop fingerprint
+    suspend fun remove(origin: String)
+    suspend fun forPodcast(podcastId: Long): BasicCredentials?             // 05's opted-in exports, 10's opted-in `auth`
     suspend fun podcastIndexKey(): Pair<String, String>?                   // origin = "podcastindex"
 }
+class StoredSecret(val username: String, val secret: CharArray, val attributes: Map<String, String>)
+
+// :core:data androidMain
+@SingleIn(AppScope::class) @ContributesBinding(AppScope::class)
+@Inject internal class KeystoreCredentialStore(/* CredentialDao, CipherProvider, @ApplicationScope */) : SecretStore
+// :core:data desktopMain — file format, protection and fingerprint: 11 Desktop shell (Secrets)
+@SingleIn(AppScope::class) @ContributesBinding(AppScope::class)
+@Inject internal class DesktopSecretStore(/* CredentialDao, AppDirs, @ApplicationScope */) : SecretStore
 ```
 
-- **In-memory map:** keyed by `Origin` (01): the stored `credential.origin` string (`scheme://host[:port]`, default port omitted, [02 credential](02-data-model.md#credential)) is parsed into `Origin(scheme, host, port)` with 80/443 filled in, so it equals `Origin.of(request.url)`. The store collects `CredentialDao.observeAll()` on `@ApplicationScope` and rebuilds the map (decrypting only rows it has not seen), so rows removed by 02's unsubscribe cascade, merge or the `db-maintenance` sweep leave memory on the same commit; `awaitLoaded()` completes after the first emission.
-
-- **Crypto:** Android Keystore key alias `neutrodyne_credentials_v1`, AES-256-GCM, `PURPOSE_ENCRYPT or PURPOSE_DECRYPT`, `BLOCK_MODE_GCM`, no padding, 12-byte IV generated by the cipher, 128-bit tag, AAD = `origin + "\n" + username`; rows in `credential` (`secretCipher`, `iv`). `androidx.security:security-crypto` is deprecated and not used ([security releases](https://developer.android.com/jetpack/androidx/releases/security)). `CipherProvider` is an interface so JVM tests use a software AES key.
-- **One credential per origin:** `put` replaces an existing row with the same origin (all podcasts on that origin share it), because `AuthInterceptor` looks up by origin only. Two accounts on one host are not supported in v1 ([Open questions](#open-questions)).
-- **Input:** `https://user:pass@host/feed` in typed input, intents or OPML → `UrlNormalizer.splitUserInfo` (percent-decoded), stored via `put`, `podcast.credentialId` set, `feedUrl` without userinfo. A 401/403 with a `Basic` challenge in the add flow → `AddPodcastError.AuthRequired(realm)`; the sheet asks for user name and password and calls `resolve(input, credentials)`, which fetches with `FeedRequest.credentials` set; credentials are held only in the [preview cache](#preview-and-dedupe) until subscribe and are never written for a preview that is not subscribed.
+- **In-memory map (both):** keyed by `Origin` (01): the stored `credential.origin` string (`scheme://host[:port]`, default port omitted, [02 credential](02-data-model.md#credential)) is parsed into `Origin(scheme, host, port)` with 80/443 filled in, so it equals `Origin.of(request.url)`. The store collects `CredentialDao.observeAll()` on `@ApplicationScope` and rebuilds the map (decrypting only rows it has not seen), so rows removed by 02's unsubscribe cascade, merge or the `db-maintenance` sweep leave memory on the same commit (the desktop store also drops the file entry for that origin); `awaitLoaded()` completes after the first emission. `sync:<host>` entries never enter the HTTP map, so `AuthInterceptor` can never send the sync token to a feed host.
+- **Android crypto (`KeystoreCredentialStore`):** Android Keystore key alias `neutrodyne_credentials_v1`, AES-256-GCM, `PURPOSE_ENCRYPT or PURPOSE_DECRYPT`, `BLOCK_MODE_GCM`, no padding, 12-byte IV generated by the cipher, 128-bit tag, AAD = `origin + "\n" + username`; rows in `credential` (`secretCipher`, `iv`), including the sync token's row; `attributes` are not stored (10 needs them only on the desktop). `androidx.security:security-crypto` is deprecated and not used ([security releases](https://developer.android.com/jetpack/androidx/releases/security)). `CipherProvider` is an interface so host tests use a software AES key.
+- **Desktop (`DesktopSecretStore`, [PO-44](../PLAN.md#48-further-product-owner-decisions)):** feed and `podcastindex` entries keep a `credential` row with origin and username and `secretCipher`/`iv` null, so `podcast.credentialId`, the cascades and the sweeps work unchanged; the secret itself lives in the per-user file of [11 Secrets](11-desktop.md#secrets) (DPAPI on Windows, a `0600` file on macOS and Linux, written atomically). `sync:` entries live only in the file, with their `attributes` (10's installation fingerprint `fp`).
+- **One credential per origin:** `put` replaces an existing entry with the same origin (all podcasts on that origin share it), because `AuthInterceptor` looks up by origin only. Two accounts on one host are not supported in v1 ([Open questions](#open-questions)).
+- **Input:** `https://user:pass@host/feed` in typed input, intents, desktop links or OPML → `UrlNormalizer.splitUserInfo` (percent-decoded), stored via `put`, `podcast.credentialId` set, `feedUrl` without userinfo. A 401/403 with a `Basic` challenge in the add flow → `AddPodcastError.AuthRequired(realm)`; the sheet asks for user name and password and calls `resolve(input, credentials)`, which fetches with `FeedRequest.credentials` set; credentials are held only in the [preview cache](#preview-and-dedupe) until subscribe and are never written for a preview that is not subscribed.
 - **On refresh:** `HTTP_AUTH` → `needsCredentials = 1`; the podcast shows "Enter password"; `PodcastRepository.setCredentials(podcastId, credentials)` first probes `feedUrl` with `FeedRequest(credentials = …, conditional = false)`: 401/403 → `AuthRequired` (nothing stored); any other outcome → `put`, set `podcast.credentialId`, clear `needsCredentials` (after flushing `FetchStateBatcher`), then `refreshNow(Podcasts([id]))`.
-- **Key loss** (decrypt fails, e.g. Keystore reset): the row is deleted and every podcast referencing it gets `needsCredentials = 1`. Restored or imported podcasts never have credentials on a new device ([05 Full backup and restore](05-groups-opml-backup.md#full-backup-and-restore)).
-- Start-up: an `AppInitializer` (order 120, after the database at 100) calls `awaitLoaded()`; `FeedFetcher` also awaits it.
+- **Key loss** (Android: decrypt fails, e.g. Keystore reset; desktop: DPAPI cannot decrypt the file, e.g. a profile reset or a data directory copied to another account, or the file is unreadable): the entries are dropped, the feed rows deleted, and every podcast referencing them gets `needsCredentials = 1`. Restored or imported podcasts never have credentials on a new device unless the backup carried opted-in passwords ([05 Full backup and restore](05-groups-opml-backup.md#full-backup-and-restore)).
+- **Sync (MS2):** passwords travel only as the podcast record's `auth` field and only from a device whose "Share feed passwords" (`sync.share_feed_passwords`, off by default) is on; a receiver stores a received `auth` through `SecretStore.put` and sets `credentialId`; without one it keeps the podcast with `needsCredentials = 1` ("Enter password"), because the synced `needsCredentials` field means "this feed needs a password" ([10 Feed passwords and private feed URLs](10-sync.md#feed-passwords-and-private-feed-urls)). Typing a password on one device is a credential write, which 10 captures for `auth` only while that device shares passwords.
+- Start-up: an `AppInitializer` (order 120, after the database at 100; both apps) calls `awaitLoaded()`; `FeedFetcher` also awaits it.
 
 ### Private feed URLs
 
