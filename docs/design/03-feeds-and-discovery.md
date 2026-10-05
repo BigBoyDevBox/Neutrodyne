@@ -8,7 +8,7 @@ Contents: [Scope](#scope) · [Parser](#parser) · [Fetch pipeline](#fetch-pipeli
 
 ## Scope
 
-Serves R1.3, R2.6, R2.7, R3.1, R3.3, N1, N2, N3, N6, N9. The phone polls every feed itself; there is no Neutrodyne server ([D1](../PLAN.md#3-key-decisions)). This document is what an engineer implements the `:feeds` module, the refresh engine in `:core:data`, the add-podcast pipeline and directory search from.
+Serves R1.3, R2.6, R2.7, R3.1, R3.3, N1, N2, N3, N6, N9. The phone polls every feed itself; there is no Neutrodyne server ([D1](../PLAN.md#3-key-decisions)). Engineers implement the `:feeds` module, the refresh engine in `:core:data`, the add-podcast pipeline and directory search from this document.
 
 | Owned here | Not here (link instead) |
 |---|---|
@@ -64,7 +64,7 @@ flowchart LR
 |---|---|
 | `:feeds` (JVM) | The packages in [Package layout](#package-layout) |
 | `:core:model` | `FeedErrorKind`, `RefreshScope`, `RefreshStatus`, `FeedPreview`, `PreviewEpisode`, `FeedCandidate`, `AlreadySubscribed`, `BasicCredentials`, `DirectoryHit`, `ProviderId`, `ProviderStatus`, `SearchResults`, `ChartGenre`, `ShowNotes` (mirror of `ShowNotesDocument`), `ShowNotesImages`, `LibraryTile`, `CategoryCount` |
-| `:core:domain` | `PodcastRepository`, `EpisodeRepository`, `RefreshController`, `AddPodcastResolver`, `AddResolution`, `AddPodcastError`, `SubscribeUseCase`, `SubscribeError`, `SearchRepository`, `IngestionEvents` |
+| `:core:domain` | `PodcastRepository`, `EpisodeRepository`, `RefreshController`, `AddPodcastResolver`, `AddResolution`, `AddPodcastError`, `SubscribeUseCase`, `SubscribeError`, `UnsubscribeUseCase`, `SearchRepository`, `IngestionEvents` |
 | `:core:data` | Implementations, plus `FeedFetcher`, `FeedTempFiles`, `FeedIngestor`, `FeedRefresher`, `SourceAdapter`s, `RefreshWorker`, `RefreshScheduler`, `CredentialStore`, `PreviewCache`, search providers, `NewEpisodeNotifier`, `IngestionEventBus`, `RefreshForegroundObserver`, `YouTubeOutageMonitor` (M8) |
 | `:feature:discover` | Add-podcast sheet, Discover, Directory screens (visuals: 08) |
 | `:app` | `MainActivity` intent filters ([Deep links and share targets](#deep-links-and-share-targets)) |
@@ -788,10 +788,11 @@ internal interface SourceAdapter {
 enum class FetchMode { REFRESH, FULL, OLDER_PAGE }
 internal sealed interface AdapterResult {
     data class Parsed(val feed: ParsedFeed, val partial: Boolean, val meta: FetchMeta,
-                      val rowHints: Map<String, RowHint>, val htmlFallback: File? = null) : AdapterResult
+                      val rowHints: Map<String, RowHint>) : AdapterResult
     data class NotModified(val meta: FetchMeta?) : AdapterResult
     data class Unchanged(val meta: FetchMeta) : AdapterResult
-    data class Failed(val kind: FeedErrorKind, val http: Int?, val retryAfterMs: Long?, val transient: Boolean) : AdapterResult
+    data class Failed(val kind: FeedErrorKind, val http: Int?, val retryAfterMs: Long?, val transient: Boolean,
+                      val htmlBody: File? = null) : AdapterResult   // NOT_A_FEED with HTML: kept for pending autodiscovery
 }
 ```
 
@@ -954,7 +955,7 @@ sealed interface AddPodcastError {
 ```kotlin
 // :core:model
 data class FeedPreview(
-    val previewId: String, val feedUrl: String, val title: String, val author: String?, val descriptionHtml: String?,
+    val previewId: String, val feedUrl: String, val title: String, val author: String?, val description: ShowNotes?,
     val artworkUrl: String?, val link: String?, val categories: List<List<String>>, val language: String?,
     val explicit: Boolean?, val episodeCount: Int, val latestEpisodeAt: Long?,
     val episodes: List<PreviewEpisode>,          // newest 200 for display

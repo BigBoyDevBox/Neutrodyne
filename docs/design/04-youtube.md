@@ -74,7 +74,7 @@ sealed interface ChannelSearchResult {
     data object Unsupported : ChannelSearchResult
     data class Failed(val kind: TransientKind) : ChannelSearchResult
 }
-class SearchCursor(internal val opaque: Any)     // in-memory only
+class SearchCursor(val opaque: Any)              // in-memory only; contents owned by the implementation
 data class YouTubeCapabilities(val inAppPlayback: Boolean, val downloads: Boolean, val channelSearch: Boolean,
                                val enrichment: Boolean, val backCatalogue: Boolean)
 ```
@@ -122,7 +122,7 @@ sealed interface EnrichResult {
     data object Unsupported : EnrichResult
     data class Failed(val kind: TransientKind, val cause: Throwable?) : EnrichResult
 }
-class UploadsCursor(internal val opaque: Any)    // NewPipe Page; in-memory only, never persisted
+class UploadsCursor(val opaque: Any)             // NewPipe Page in foss; in-memory only, never persisted
 sealed interface UploadsPageResult {
     data class Ok(val items: List<VideoFacts>, val next: UploadsCursor?) : UploadsPageResult
     data object Unsupported : UploadsPageResult
@@ -181,7 +181,8 @@ interface YouTubeAvailabilityRecorder { suspend fun record(episodeId: Long, avai
 | `AudioQuality`, `AudioPref` fields, `ResolvedAudio`, `IpFamily`, `TransientKind`, `YouTubeResolveException`, `YouTubeFormatChangedException` | `:youtube:api` | Stream contract |
 | `VideoFacts`, `EnrichResult`, `UploadsCursor`, `UploadsPageResult` | `:youtube:api` | Enrichment and back catalogue |
 | `YouTubeHealth`, `YouTubeHealthState`, `BreakerState`, `ExtractionGate`, `ExtractionOutcome` | `:youtube:api`; impl `DefaultYouTubeHealth` in `:core:data` | Breaker, rate limit, feed outage |
-| `YouTubeIds`, `YouTubeChapters`, `AudioCandidate`, `AudioStreamSelector`, `ResolvedUrlCache`, `YtEntry`, `VariantResult`, `MergedChannel`, `ThumbVariant` | `:youtube:api` | Pure helpers |
+| `YouTubeIds`, `YouTubeChapters`, `ChapterSpec`, `AudioCandidate`, `AudioStreamSelector`, `ResolvedUrlCache`, `YtEntry`, `VariantResult`, `VariantUrl`, `MergedChannel`, `ThumbVariant`, `BannerSource` | `:youtube:api` | Pure helpers and their data types |
+| `RecordingDownloader`, `ReplayDownloader` | `:youtube:streams` test sources | Record and replay extractor HTTP traffic ([Recorded responses](#recorded-responses)) |
 | `DefaultYouTubeChannelResolver`, `ChannelPageParser`, `NoOpYouTubeEnricher`, `UnsupportedYouTubeChannelSearch`, `NoExtractorChannelLookup` | `:youtube:impl` | Layer A and `play` no-ops |
 | `NpeInitializer`, `NpeChannelSearch`, `NpeErrorClassifier`, `NpeAudioMapper` | `:youtube:streams` | Layer B |
 | `YouTubeChannelRepository`, `LoadOlderResult`, `RssAlternative`, `YouTubeAvailabilityRecorder` | `:core:domain` | Feature-facing YouTube operations |
@@ -775,7 +776,7 @@ The queue continues with the next playable item in every skip case (R3.8). If th
 
 ### Watch on YouTube
 
-`Intent(ACTION_VIEW, "https://www.youtube.com/watch?v={id}".toUri()).addCategory(CATEGORY_BROWSABLE)` without a package (Android routes it to the YouTube app as the verified link handler, else a browser; no `<queries>` needed, `ActivityNotFoundException` → snackbar). In `foss` it appends `&t={seconds}s` from the saved position and never changes played state. In `play` it is the primary action and, when `youtube.mark_played_on_open` is on (default), marks the episode played with a 5 s Undo snackbar.
+`Intent(ACTION_VIEW, "https://www.youtube.com/watch?v={id}".toUri()).addCategory(CATEGORY_BROWSABLE)` without a package (Android routes it to the YouTube app as the verified link handler, else a browser; no `<queries>` needed, `ActivityNotFoundException` → snackbar). In `foss`, for a playable episode, it is an overflow action that appends `&t={seconds}s` from the saved position and never changes played state. For an external episode (`play`) or a greyed, unavailable episode (`foss`) it is the primary action and, when `youtube.mark_played_on_open` is on (default), marks the episode played with a 5 s Undo snackbar.
 
 ---
 
