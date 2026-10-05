@@ -1,6 +1,6 @@
 # Handoff — state of the Neutrodyne planning work
 
-This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-05 18:57 UTC, during the replan for Kotlin Multiplatform, desktop and sync. Steps 1–2 are done (the reviews of the new docs are still pending); step 3 is partly done.**
+This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-05 18:57 UTC, during the replan for Kotlin Multiplatform, desktop and sync. Steps 1–3 are done; the critics (step 4) are running.**
 
 ## 1. What this repository is
 
@@ -53,6 +53,7 @@ Neutrodyne is a planned open-source podcast player. So far the repository holds 
 - ~19:4x UTC: `07` revised; revising `08` and `09`. Still to do: review `10` and `11`; the critics; the fixer.
 - ~20:2x UTC: `08` revised; `09` is being revised and `10-sync.md` is under review. Still to do: review `11`; the critics; the fixer.
 - ~20:4x UTC: one more of these finished (`09` revision or `10` review); `11-desktop.md` review started. Still to do: whichever of the `09` revision and `10` review is still running, the `11` review, the two critics and the fixer (which also rewrites `README.md`).
+- ~21:2x UTC: all drafting and per-doc reviews are done (`PLAN.md`, `01`–`11`); both critics are running. Still to do: the fixer (which also rewrites `README.md`), then the final checks and publishing (§3 step 6).
 
 ## 4. How to resume if this session stops
 
