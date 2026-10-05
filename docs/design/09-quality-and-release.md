@@ -102,7 +102,7 @@ Run on GMD (`:app/src/androidTest`) against the **real** `NeutrodyneApplication`
 | E9 | `FirstLaunchRestoreTest` | snapshot file + empty DB | 05's assertions ([05 Testing](05-groups-opml-backup.md#testing)) | M3 | `ci` |
 | E10 | `ProcessDeathResumeTest` | kill the app mid-download from `:benchmark` | 07's assertions ([07 Instrumented and device tests](07-downloads.md#instrumented-and-device-tests)) | M6 | nightly |
 
-`PlaybackServiceTest` (06), `UidtDownloadTest` and `DataSyncWorkerTest` (07) and the migration tests (02) are not journeys but run in the same instrumented jobs; their devices are listed in [Gradle Managed Devices](#gradle-managed-devices).
+Flavor-specific journeys guard themselves with `assumeTrue(BuildConfig.FLAVOR == "foss")` (E7) or `"play"` (E8), because the `instrumented` job runs the `:app` suite for both flavors. `PlaybackServiceTest` (06), `UidtDownloadTest` and `DataSyncWorkerTest` (07) and the migration tests (02) are not journeys but run in the same instrumented jobs; their devices are listed in [Gradle Managed Devices](#gradle-managed-devices).
 
 **E7 seam:** NewPipe Extractor's downloader is process-global (`NewPipe.init(downloader)`), so the test re-initialises it with `ReplayDownloader` after app start; recorded player responses are rewritten so stream URLs point at the test's MockWebServer. No Hilt test override is needed, which is what makes the test run against an R8-minified APK. Unverified: that a second `NewPipe.init` call fully replaces the first (M9 check; fallback: an `androidTest`-only Hilt module on a non-minified `foss` build plus the dex/R8 checks in [Build-output checks](#build-output-checks)).
 
@@ -111,7 +111,7 @@ Run on GMD (`:app/src/androidTest`) against the **real** `NeutrodyneApplication`
 Serves N9. Two complementary layers:
 
 1. **Hostile inputs with caps** — owned by the format documents: [03 Golden corpus](03-feeds-and-discovery.md#golden-corpus-feedssrctestresourcesfeeds) (entity DOCTYPE, deep nesting, oversized text) and 05's `HostileInputTest` (billion laughs, 10k nesting, 100k outlines, 10 MB attribute, zip bomb, zip-slip; PLAN M3 AC3).
-2. **`MutationRobustnessTest`** (09, `:feeds` and `:youtube:api`, JVM, TestParameterInjector): for every committed fixture of `FeedParser`, `OpmlReader`, `BackupCodec`, `NewPipeSubscriptions`, `LibreTubeBackupParser`, `TakeoutSubscriptionsParser` and for 200 seeded random strings of `YouTubeUrlClassifier`, apply seeded mutations — truncate at 10 offsets, flip 1–16 random bytes, duplicate a random 1 KB slice, insert `<!DOCTYPE x [<!ENTITY e "...">]>`, replace the declared encoding, insert NUL and lone surrogates. Assert: the call returns its declared result type (`ParseResult`/`Outcome` failure is fine), throws nothing except `CancellationException`, finishes in < 2 s, and stays within a 64 MB heap (the test JVM for this class runs with `-Xmx64m` via a dedicated `Test` task `mutationTest`, wired into `check`). PR runs use 20 mutations per fixture (seed = fixture name hash); nightly runs 1,000 per fixture (`-PmutationIterations=1000`) and prints the failing seed.
+2. **`MutationRobustnessTest`** (09, `:feeds` and `:youtube:api`, JVM, TestParameterInjector): for every committed fixture of `FeedParser`, `OpmlReader`, `BackupCodec`, `NewPipeSubscriptions`, `LibreTubeBackupParser`, `TakeoutSubscriptionsParser` and for 200 seeded random strings of `YouTubeUrlClassifier`, apply seeded mutations — truncate at 10 offsets, flip 1–16 random bytes, duplicate a random 1 KB slice, insert `<!DOCTYPE x [<!ENTITY e "...">]>`, replace the declared encoding, insert NUL and lone surrogates. Assert: the call returns its declared result type (`ParseResult`/`Outcome` failure is fine), throws nothing except `CancellationException`, finishes in < 2 s, and stays within a 64 MB heap (the class runs only in a dedicated `Test` task `mutationTest` with `-Xmx64m`, wired into `check`; the regular `test` task excludes it with `filter.excludeTestsMatching("*MutationRobustnessTest")`). PR runs use 20 mutations per fixture (seed = fixture name hash); nightly runs 1,000 per fixture (`-PmutationIterations=1000`) and prints the failing seed.
 
 ### Flakiness policy
 
@@ -158,10 +158,10 @@ internal fun Project.configureNeutrodyneTestTasks() = tasks.withType<Test>().con
 // build-logic: neutrodyne.android.testing (Android modules only)
 internal fun Project.configureAndroidTesting(ext: CommonExtension) {
     ext.defaultConfig.testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    ext.defaultConfig.testInstrumentationRunnerArguments += mapOf(
-        "clearPackageData" to "true",
-        "notAnnotation" to notAnnotationFor(providers.gradleProperty("neutrodyne.testScope").getOrElse("ci")),
-    )   // ci: Nightly + FlakyTest excluded; nightly and release: nothing excluded
+    ext.defaultConfig.testInstrumentationRunnerArguments["clearPackageData"] = "true"
+    if (providers.gradleProperty("neutrodyne.testScope").getOrElse("ci") == "ci")   // nightly/release scopes run everything
+        ext.defaultConfig.testInstrumentationRunnerArguments["notAnnotation"] =
+            "app.neutrodyne.core.testing.Nightly,androidx.test.filters.FlakyTest"
     ext.testOptions.unitTests.isIncludeAndroidResources = true   // Robolectric + Roborazzi need merged resources
     ext.testOptions.unitTests.isReturnDefaultValues = false      // unmocked android.* calls fail loudly
     ext.testOptions.animationsDisabled = true
@@ -175,6 +175,7 @@ internal fun Project.configureAndroidTesting(ext: CommonExtension) {
         "androidTestImplementation"(platform(libs.okhttp.bom))
         "androidTestImplementation"(libs.androidx.test.runner); "androidTestImplementation"(libs.androidx.test.ext.junit)
         "androidTestImplementation"(libs.truth); "androidTestUtil"(libs.androidx.test.orchestrator)
+        if (path != ":core:testing") { "testImplementation"(project(":core:testing")); "androidTestImplementation"(project(":core:testing")) }
     }
     configurations.configureEach { resolutionStrategy.eachDependency {   // media3-test-utils pulls Robolectric 4.16
         if (requested.group == "org.robolectric" && !requested.name.startsWith("android-all")) useVersion(libs.versions.robolectric.get())
@@ -274,10 +275,16 @@ abstract class GroupRepositoryContract {
     protected abstract fun subject(clock: TestClock): GroupRepository
     @Test fun nameKeyIsUniqueAcrossCaseAndNfc() = runTest {
         val repo = subject(TestClock())
-        assertThat(repo.create(GroupEdit.Create(name = "Tech"))).isInstanceOf(Outcome.Success::class.java)
-        assertThat(repo.create(GroupEdit.Create(name = "tech"))).isEqualTo(Outcome.Failure(GroupError.NameTaken))
+        val tech = (repo.create(GroupDraft(name = "Tech")) as Outcome.Success).value
+        assertThat(repo.create(GroupDraft(name = "tech"))).isEqualTo(Outcome.Failure(GroupError.NameTaken(tech)))
+        assertThat(repo.create(GroupDraft(name = "Cafe\u0301"))).isInstanceOf(Outcome.Success::class.java)
+        assertThat(repo.create(GroupDraft(name = "Caf\u00e9"))).isInstanceOf(Outcome.Failure::class.java)
     }
-    @Test fun reorderRejectsNonPermutation() = runTest { /* … */ }
+    @Test fun reorderRejectsNonPermutation() = runTest {
+        val repo = subject(TestClock())
+        val a = (repo.create(GroupDraft(name = "a")) as Outcome.Success).value
+        assertThat(repo.reorder(listOf(a, 999L))).isEqualTo(Outcome.Failure(GroupError.NotFound))
+    }
 }
 class FakeGroupRepositoryContractTest : GroupRepositoryContract() {             // :core:testing/src/test
     override fun subject(clock: TestClock) = FakeGroupRepository(clock)
@@ -297,15 +304,15 @@ class PodcastViewModelTest {
     @get:Rule val main = MainDispatcherRule()
     private val podcasts = FakePodcastRepository()
 
-    @Test fun `shows the podcast and then a failure message when unsubscribe fails`() = runTest {
-        podcasts.emitDetail(podcastDetail(id = 7, title = "Tech Talk"))
+    @Test fun `shows the podcast and then a message when editing the feed URL fails`() = runTest {
+        podcasts.emitDetail(podcastDetail(id = 7, title = "Tech Talk"))      // FakePodcastRepository test API
         val vm = PodcastViewModel(PodcastKey(7), podcasts)
         vm.uiState.test {                                       // stateIn(WhileSubscribed) starts on collection
             assertThat(awaitItem()).isEqualTo(PodcastUiState.Loading)
             val ready = awaitItem() as PodcastUiState.Ready
             assertThat(ready.header.title).isEqualTo("Tech Talk")
-            podcasts.failNext = SomeError
-            vm.onUnsubscribeConfirmed()
+            podcasts.failNext = AddPodcastError.NotAFeed
+            vm.onEditFeedUrl("https://example.invalid/page.html")       // calls PodcastRepository.editFeedUrl
             assertThat((awaitItem() as PodcastUiState.Ready).messages).hasSize(1)
             cancelAndIgnoreRemainingEvents()
         }
@@ -389,7 +396,7 @@ private fun Project.configureManagedDevices(md: ManagedDevices) = md.apply {
 - ATD images exist for API 31–36 x86_64 (Google's repository XML; the GMD page's "API 30 only" is stale). API 26 uses a full `aosp` image. Unverified: GMD below API 27 may need `android.experimental.testOptions.managedDevices.allowOldApiLevelDevices=true` (M0; fallback: android-emulator-runner for API 26).
 - API 37 exists only as `google_apis_ps16k` / `google_apis_playstore_ps16k`; Unverified whether GMD accepts those image sources, hence android-emulator-runner v2.38.0 for that job.
 - CI flags: `-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect`, `-Pandroid.experimental.androidTest.numManagedDeviceShards=2` (a 4-vCPU runner hosts two emulators).
-- Release-build runs: `testBuildType = providers.gradleProperty("testBuildType").getOrElse("debug")` in `:app` (the AntennaPod pattern), with `testProguardFiles("proguard/test.pro")`; nightly passes `-PtestBuildType=release` so instrumented tests run against the R8-minified APK, where AGP 9's unit tests cannot see R8 breakage.
+- Release-build runs: `testBuildType = providers.gradleProperty("testBuildType").getOrElse("debug")` in `:app` (the AntennaPod pattern), with `testProguardFiles("proguard/test.pro")`; nightly passes `-PtestBuildType=release` so instrumented tests run against the R8-minified APK, where AGP 9's unit tests cannot see R8 breakage. Only when that property is present and no `NEUTRODYNE_KEYSTORE` is set, `:app` signs `release` with the debug signing config so the minified APK can be installed; the release pipeline never passes the property.
 - Instrumented hygiene: orchestrator with `clearPackageData`; debug builds disable LeakCanary heap dumps when `ActivityManager.isRunningInUserTestHarness()` or the instrumentation is present; ACRA is off in debug ([ACRA configuration](#acra-configuration)).
 
 ### Out-of-process system tests
@@ -420,11 +427,11 @@ Serves N11. Delivered in M0 (`ci.yml`, `release.yml`, skeleton `nightly.yml`), e
 flowchart LR
   pr["pull_request"] --> st["static"]
   pr --> un["unit"]
-  pr --> as["assemble"]
+  pr --> asm["assemble"]
   lab["label run-instrumented"] --> ins["instrumented (GMD ci)"]
   main["push to main"] --> st
   main --> un
-  main --> as
+  main --> asm
   main --> ins
   cron["nightly.yml 02:17 UTC"] --> nj["instrumented-full, api37-16k, system-tests, repro, bmgr, screenshots-full, mutation-full, canaries"]
   tag["push tag v*"] --> rel["release.yml"]
@@ -470,11 +477,11 @@ The instrumented job's preamble (as AntennaPod does): `sudo rm -rf /usr/share/do
 
 ### `nightly.yml`
 
-`schedule: cron "17 2 * * *"` plus `workflow_dispatch`. A failing job runs `scripts/ci/report-nightly.sh <job>`, which opens or updates one issue per job (label `nightly-failure`, `permissions: issues: write`) and closes it after the next green run.
+`schedule: cron "17 2 * * *"` plus `workflow_dispatch` with input `scope` (`full`, default; `youtube-smoke` = only the release leg of `instrumented-full` on `api36`, filtered to `YouTubeReleaseSmokeTest` and `SmokeTest`, ≈ 12 min, used by the hotfix path). A failing job runs `scripts/ci/report-nightly.sh <job>`, which opens or updates one issue per job (label `nightly-failure`, `permissions: issues: write`) and closes it after the next green run.
 
 | Job | From | Runs | Blocks a release? |
 |---|---|---|---|
-| `instrumented-full` | M0 | matrix `testBuildType` ∈ {debug, release}: `./gradlew nightlyGroupDebugAndroidTest nightlyGroupFossDebugAndroidTest -Pneutrodyne.testScope=nightly -PtestBuildType=…` | yes (red nightly ⇒ no tag) |
+| `instrumented-full` | M0 | two matrix legs with `-Pneutrodyne.testScope=nightly`: **debug** `./gradlew nightlyGroupDebugAndroidTest nightlyGroupFossDebugAndroidTest api36PlayDebugAndroidTest`; **release** `./gradlew -PtestBuildType=release nightlyGroupFossReleaseAndroidTest` (minified `:app` suite; library modules have no release test variant) | yes (red nightly ⇒ no tag) |
 | `api37-16k` | M0 | android-emulator-runner (`api-level: 37`, `target: google_apis_ps16k`, `arch: x86_64`; Unverified target name): assert `getconf PAGE_SIZE` = 16384, install minified `fossRelease`, run E0 and 06's hardening `throw` test, `zipalign -c -P 16 -v 4` on the APK (PLAN M11 AC4) | yes |
 | `system-tests` | M6 | `:benchmark` system tests on `bench34` (E10) | yes |
 | `benchmark-dryrun` | M10 | Macrobenchmark journeys with `-Pandroid.testInstrumentationRunnerArguments.androidx.benchmark.dryRunMode.enable=true` (catches broken journeys; timings are meaningless on emulators) | no |
@@ -502,10 +509,11 @@ sequenceDiagram
   G->>R: tag event
   R->>E: wait for required reviewer
   M->>E: approve
+  R->>R: verify-tag.sh preconditions
   R->>C: repro-build.sh assembleFossRelease with app-signing key
   R->>C: repro-build.sh bundlePlayRelease with upload key (only if Play enabled)
   C-->>R: signed APK, AAB, mapping
-  R->>R: verify-tag, apksigner cert check, zipalign 16 KB, dex check
+  R->>R: apksigner certificate check, zipalign 16 KB
   R->>G: create release with APK, mapping, SHA256SUMS, source bundle, notes
   R->>R: verify-repro job rebuilds unsigned and runs apksigcopier compare
   G-->>M: Obtainium and IzzyOnDroid pick up the release
@@ -515,7 +523,7 @@ Steps, in order (target: tag → published release in < 30 min, N11 and PLAN M11
 
 1. `scripts/ci/verify-tag.sh`: tag equals `v` + `neutrodyne.versionName`; the tagged commit is on `main`; `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` exists; `ci.yml` concluded `success` for the commit (`gh api …/check-runs`).
 2. Decode `NEUTRODYNE_KEYSTORE_B64` to `$RUNNER_TEMP/release.p12`; build `assembleFossRelease` with `NEUTRODYNE_KEYSTORE*` set ([Gradle signing](#gradle-signing-configuration)).
-3. `apksigner verify --print-certs --min-sdk-version 26` must print `SHA-256 digest: ${{ vars.NEUTRODYNE_CERT_SHA256 }}`; `zipalign -c -P 16 -v 4`; `check-play-dex.sh` on the `play` AAB's universal APK when built.
+3. `apksigner verify --print-certs --min-sdk-version 26` must print `SHA-256 digest: ${{ vars.NEUTRODYNE_CERT_SHA256 }}`; `zipalign -c -P 16 -v 4`. (The `play` dex and size checks already passed in `assemble` for this commit, which `verify-tag.sh` requires.)
 4. From M9: `scripts/release/corresponding-source.sh` — `git archive` of the tag plus `third_party/` filled by `./gradlew :youtube:streams:collectGplSources` (a `Copy` task resolving the `-sources` artifacts of NewPipe Extractor, nanojson and Rhino) → `neutrodyne-{v}-foss-corresponding-source.tar.gz` ([04 Corresponding source](04-youtube.md#corresponding-source)).
 5. Stage `neutrodyne-{v}-foss.apk`, `neutrodyne-{v}-foss-mapping.txt`, the source bundle and `SHA256SUMS`; body from the changelog file plus the certificate fingerprint and, from M9, the corresponding-source line.
 6. `softprops/action-gh-release` (v3.0.3, SHA-pinned): `prerelease: ${{ contains(github.ref_name, '-') }}`, `make_latest` only for stable tags.
@@ -651,7 +659,7 @@ A new `CompositionLocal` requires adding its name here in the same PR (review po
 1. **Size:** universal `fossRelease` APK < 25 MB (N5) and `playRelease` APK < 25 MB, both blocking; sizes printed to the job summary and kept as a nightly artifact for trends.
 2. **16 KB:** `zipalign -c -P 16 -v 4` on both release APKs (only native code is `sqlite-bundled`, [01 S6](01-foundation.md#s6-sqlite-bundled-16-kb-alignment-and-size)); required for Play updates of apps with native code ([16 KB page sizes](https://developer.android.com/guide/practices/page-sizes)).
 3. **`play` dex:** `check-play-dex.sh` on `playRelease` ([04 GPL boundary](04-youtube.md#gpl-boundary), PLAN M9 AC4).
-4. **No dependency-info block:** `apksigner verify -v` output must not list an extra signing block (F-Droid rejects Google's `DEPENDENCY_INFO_BLOCK`; 01 disables it).
+4. **Metadata hygiene:** `unzip -l` on the release APK shows no `META-INF/version-control-info.textproto` ([vcsInfo off](#hygiene)). The dependency-info signing block (which F-Droid rejects; 01 disables it) only exists in signed APKs, so it is caught by `release.yml`'s `verify-repro` step, whose `apksigcopier compare` fails on extra signing blocks (Unverified: exact apksigcopier behaviour; F-Droid reported this failure as "Found extra signing block").
 
 ### PR template
 
@@ -760,9 +768,9 @@ stateDiagram-v2
 
 ### `scripts/release.sh`
 
-Usage: `scripts/release.sh <patch|minor|major|X.Y.Z|finalise> [--beta|--rc] [--dry-run]`. Algorithm:
+Usage: `scripts/release.sh <patch|minor|major|X.Y.Z|finalise> [--beta|--rc] [--hotfix] [--dry-run]`. Algorithm:
 
-1. Preconditions: on `main`, clean tree, `HEAD` equals `origin/main`, `ci.yml` and the last `nightly.yml` concluded `success` for `HEAD` (`gh run list --commit`), no open `nightly-failure` issue labelled `release-blocker`.
+1. Preconditions: on `main`, clean tree, `HEAD` equals `origin/main`, `ci.yml` concluded `success` for `HEAD` (`gh run list --commit`), no open issue labelled `release-blocker`, and either the latest scheduled `nightly.yml` run is green or (with `--hotfix`, PATCH only) a `nightly.yml` run dispatched with `scope: youtube-smoke` is green for `HEAD`.
 2. Compute the next `versionName` from the current one and the argument (`finalise` drops the pre-release suffix; `--beta` on a current `-beta.N` of the same X.Y.Z increments N). Compute `versionCode` per the table; refuse if it is ≤ the current code or if any existing tag has the same name.
 3. Require `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt`: non-empty, ≤ 500 characters. If `PLAY_PUBLISHING` is configured locally (`.release.env`), also require `app/src/play/play/release-notes/en-US/default.txt` updated in this release and free of the banned `play` words.
 4. Rewrite the two `gradle.properties` lines; commit `Release vX.Y.Z`; create an annotated (and, when the maintainer has signing configured, signed) tag `vX.Y.Z`.
@@ -1081,7 +1089,7 @@ fun installAcra(app: Application) = app.initAcra {
         ReportField.STACK_TRACE, ReportField.CUSTOM_DATA, ReportField.USER_COMMENT,
         ReportField.USER_CRASH_DATE, ReportField.IS_SILENT,
     )                                                         // never LOGCAT, BUILD_CONFIG (PI keys in play), SHARED_PREFERENCES, DEVICE_ID
-    alsoReportToAndroidFramework = BuildInfoHolder.distribution == Distribution.PLAY   // keep Android vitals for Play
+    alsoReportToAndroidFramework = BuildConfig.FLAVOR == "play"   // keep Android vitals for Play (Hilt is not ready here)
     mailSender {
         mailTo = BuildConfig.ACRA_MAILTO
         reportAsFile = true
@@ -1099,7 +1107,7 @@ fun installAcra(app: Application) = app.initAcra {
 
 Dialog text (en): "Neutrodyne stopped. You can send a crash report by email: your mail app opens with the report attached, and nothing is sent until you press Send there. The report contains the error, the app version, the Android version and the phone model — never your subscriptions, feed addresses or listening history."
 
-- **`CrashReportRedactor`** (`:app`): an ACRA `ReportingAdministrator` loaded through `META-INF/services/org.acra.config.ReportingAdministrator`; in `shouldSendReport` it replaces `STACK_TRACE` and each `CUSTOM_DATA` value with `Redactor.text(…)` and drops custom keys outside the allow-list, then returns `true` unless `privacy.crash_reports` is off. Unverified: that ACRA 5.14 persists the report after administrators run (so the redacted data is what the dialog and sender see); fallback: a delegating `ReportSenderFactory` that redacts before `EmailIntentSender` formats the file.
+- **`CrashReportRedactor`** (`:app`): an ACRA `ReportingAdministrator` loaded through `META-INF/services/org.acra.config.ReportingAdministrator`; in `shouldSendReport` it replaces `STACK_TRACE` and each `CUSTOM_DATA` value with `Redactor.text(…)` and drops custom keys outside the allow-list, then returns `true` (whether reports are offered at all is ACRA's own enabled flag, mirrored from `privacy.crash_reports`, see [Settings](#settings)). Unverified: that ACRA 5.14 persists the report after administrators run (so the redacted data is what the dialog and sender see); fallback: a delegating `ReportSenderFactory` that redacts before `EmailIntentSender` formats the file.
 - **Mail app visibility:** 01's merged manifest carries `<queries>` for `SENDTO mailto:` (Unverified need on API 30+); without any mail app ACRA cannot hand off, so the diagnostics screen's "Copy diagnostics" is the fallback.
 - **Play vitals:** `alsoReportToAndroidFramework` is on only in `play`, so Android vitals keep receiving crashes there. Unverified: whether the framework's crash dialog then appears in addition to ACRA's (M11 device check; fallback: off, rely on ACRA in both flavors).
 
@@ -1155,9 +1163,9 @@ The diagnostics screen (`DiagnosticsKey`, visuals in [08 Diagnostics](08-ui-ux.m
 // :core:model
 data class DiagnosticsReport(val generatedAt: Long, val sections: List<DiagnosticsSection>)
 data class DiagnosticsSection(val id: DiagnosticsSectionId, val lines: List<DiagnosticsLine>)
-data class DiagnosticsLine(val key: String, val value: String, val severity: Severity = Severity.INFO)   // English keys, redacted values
+data class DiagnosticsLine(val key: String, val value: String, val severity: DiagnosticsSeverity = DiagnosticsSeverity.INFO)   // English keys, redacted values
 enum class DiagnosticsSectionId { APP, REFRESH, BACKGROUND, JOBS, DOWNLOADS, YOUTUBE, DATABASE, NOTIFICATIONS, PARSE_WARNINGS, LOG }
-enum class Severity { INFO, WARNING, PROBLEM }
+enum class DiagnosticsSeverity { INFO, WARNING, PROBLEM }
 
 // :core:domain
 interface DiagnosticsContributor {                    // @IntoSet from :core:data, :download:impl, :playback:impl, :app
@@ -1188,7 +1196,7 @@ enum class DiagnosticsError { NOT_ENOUGH_SPACE, DATABASE_BUSY, FAILED }
 | `PARSE_WARNINGS` | per-feed parse warnings of the last ingest (in-memory LRU of 50) | 03 | — |
 | `LOG` | last 500 redacted log lines | 01 `RingBufferLogSink` | — |
 
-Threading and failures: `snapshot()` runs all contributors concurrently on `@Dispatcher(IO)` with a 2 s timeout each; a timeout or exception becomes one line `"<section> unavailable (<ExceptionClass>)"` with `Severity.WARNING`; the screen never fails as a whole.
+Threading and failures: `snapshot()` runs all contributors concurrently on `@Dispatcher(IO)` with a 2 s timeout each; a timeout or exception becomes one line `"<section> unavailable (<ExceptionClass>)"` with `DiagnosticsSeverity.WARNING`; the screen never fails as a whole.
 
 ### Copy, report and export
 
@@ -1315,7 +1323,7 @@ Tag and publish:
 
 ### Hotfix (YouTube fast lane)
 
-Follows [04 Hotfix runbook](04-youtube.md#hotfix-runbook): Renovate (or manual) bump → `bump-extractor.sh` → CI incl. recorded-response tests and the minified `fossRelease` smoke (dispatch `nightly.yml` on the branch, `instrumented-full` release variant only) → merge → `release.sh patch` → `release.yml`. Skipped for hotfixes: profiles, benchmarks, locales, manual matrices. Target < 30 min from upstream release to signed GitHub release.
+Follows [04 Hotfix runbook](04-youtube.md#hotfix-runbook): Renovate (or manual) bump → `bump-extractor.sh` → CI incl. recorded-response tests → merge → dispatch `nightly.yml` with `scope: youtube-smoke` on `main` (minified `fossRelease` smoke) → `release.sh patch --hotfix` → `release.yml`. Skipped for hotfixes: profiles, benchmarks, locales, manual matrices. Target < 30 min from upstream release to signed GitHub release.
 
 ### Milestone tester build
 
@@ -1390,7 +1398,7 @@ Settings › Privacy page content (09): crash-reports switch; "What Neutrodyne c
 | GMD devices `api26`, `api33`, `api34`, `api36`, `bench34`; groups `ci`, `nightly` | devices | build-logic, `:benchmark` |
 | `CrashReporter`, `CrashContext`, `CrashKey` | interfaces/enum | `:core:common` |
 | `installAcra` (01's name, defined here), `AcraCrashReporter`, `CrashReportRedactor` | ACRA integration | `:app` |
-| `DiagnosticsReport`, `DiagnosticsSection`, `DiagnosticsLine`, `DiagnosticsSectionId`, `Severity` | data | `:core:model` |
+| `DiagnosticsReport`, `DiagnosticsSection`, `DiagnosticsLine`, `DiagnosticsSectionId`, `DiagnosticsSeverity` | data | `:core:model` |
 | `DiagnosticsContributor`, `DiagnosticsRepository`, `DiagnosticsError` | interfaces | `:core:domain` |
 | `DiagnosticsRepositoryImpl`, `DatabaseCopyExporter` | implementations | `:core:data` |
 | `BenchmarkSeedReceiver` | benchmark-only receiver | `app/src/benchmarkShared` |
