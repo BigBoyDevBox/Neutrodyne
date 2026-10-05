@@ -61,7 +61,7 @@ Serves N1, N9, N11 and every milestone's acceptance criteria. Delivered from M0;
 | Device and manual | Bluetooth, AVRCP, Android Auto DHU, Wear, OEM restrictions, performance budgets on the reference device, accessibility passes, `bmgr` spot checks | — | reference device + checklists | per milestone and [release](#release-checklist) |
 | Live canaries | ~30 public feeds (03), YouTube smoke (04) | `:feeds`, `:youtube:streams` | JVM with network | nightly, non-blocking |
 
-**Placement rule:** `src/androidTest` exists only in the five modules named in the instrumented row (plus `:benchmark`, which is a test module). Feature Compose UI tests run under Robolectric; this keeps the number of emulator boots per CI run bounded (each module's managed-device task boots its own emulator).
+**Placement rule:** `src/androidTest` exists only in the five modules named in the instrumented row (plus `:benchmark`, which is a test module). Feature Compose UI tests run under Robolectric; this keeps the number of emulator boots per CI run bounded (each module's managed-device task boots its own emulator, and modules without `src/androidTest` have their device-test component disabled, [Gradle Managed Devices](#gradle-managed-devices)).
 
 ### Test obligations per change
 
@@ -86,14 +86,14 @@ A PR is not mergeable without the tests in this table for the kind of code it to
 
 ### End-to-end journeys
 
-Run on GMD (`:app/src/androidTest`) against the **real** `NeutrodyneApplication` and Hilt graph (no `HiltTestApplication`); network comes from an on-device MockWebServer bound to `127.0.0.1` (cleartext is allowed by [D28](../PLAN.md#3-key-decisions)'s network security config; `LocalNetworkGuardDns` passes loopback). Data enters through the UI, public intents or `TestSeeder`.
+E0–E9 run on GMD (`:app/src/androidTest`) against the **real** `NeutrodyneApplication` and Hilt graph (no `HiltTestApplication`); E10 runs out of process in `:benchmark` ([Out-of-process system tests](#out-of-process-system-tests)). Network comes from an on-device MockWebServer bound to `127.0.0.1` (cleartext is allowed by [D28](../PLAN.md#3-key-decisions)'s network security config; `LocalNetworkGuardDns` passes loopback). Data enters through the UI, public intents or `TestSeeder`. Journeys use `createAndroidComposeRule<MainActivity>()` with `enableAccessibilityChecks()`, so every screen a journey visits is also checked on a device ([N4](../PLAN.md#22-non-functional-requirements)). Journeys follow the [ATD rule](#gradle-managed-devices): no notification shade, lock screen, launcher or back gesture.
 
 | ID | Test class | Journey | Asserts | From | Devices |
 |---|---|---|---|---|---|
-| E0 | `SmokeTest` | launch | five labelled destinations, rotation, dark-mode switch, About shows flavor and version, Licences non-empty (PLAN M0 AC4–5) | M0 | `ci`, API 37 |
-| E1 | `SubscribeJourneyTest` | `neutrodyne://subscribe?url=http://127.0.0.1:{port}/feeds/rss2-minimal.xml` → add sheet → Subscribe → Library → Podcast → Episode | tile with cover or monogram; paged episodes; show notes rendered; refresh via pull-to-refresh hits the server with `If-None-Match` | M1 | `ci` |
+| E0 | `SmokeTest` | launch | five labelled destinations, rotation, dark-mode switch, back from Settings with `pressBack()`, About shows flavor and version, Licences non-empty (PLAN M0 AC4–5). The predictive-back animation of M0 AC4 is checked by hand on a gesture-navigation device (ATD images have no SystemUI, so no back gesture) and recorded in the M0 release issue | M0 | `ci`, API 37 |
+| E1 | `SubscribeJourneyTest` | M1: Library empty state → "Add by URL" → type `http://127.0.0.1:{port}/feeds/rss2-minimal.xml` → Subscribe → Library → Podcast → Episode. From M7 a second case enters through `neutrodyne://subscribe?url=…` (the VIEW filters ship in M7, [03 Deep links and share targets](03-feeds-and-discovery.md#deep-links-and-share-targets)) | tile with cover or monogram; paged episodes; show notes rendered; refresh via pull-to-refresh hits the server with `If-None-Match` | M1 (deep link M7) | `ci` |
 | E2 | `GroupFeedJourneyTest` | create group "tech" → add podcast → Feeds tab "tech" | episodes newest first; podcast in "tech" and "news" appears in both and once in All (M2 AC4); `ActivityScenario.recreate()` keeps the selected tab | M2 | `ci` |
-| E3 | `PlayJourneyTest` | play from a group feed → mini player → Home (UI Automator) → pause from notification → reopen | notification shows cover from `content://…artwork/…`; position persisted (`episode_position` > 0 after pause); "Play group" order (M4 AC6) | M4 | `ci` |
+| E3 | `PlayJourneyTest` | play from a group feed → mini player → background the app by starting the test APK's `BackgroundStandInActivity` (ATD has no launcher) → pause through the media notification: find it with `NotificationManager.getActiveNotifications()` and fire the pause action's `PendingIntent` → reopen | media notification on channel `playback`; `MediaController.mediaMetadata.artworkUri` is `content://…artwork/…`; position persisted (`episode_position` > 0 after pause); "Play group" order (M4 AC6) | M4 | `ci` |
 | E4 | `DownloadJourneyTest` | download a throttled 5 MB enclosure → progress → complete → stop the server → play | file under `Android/data/…/Podcasts/`; plays with the server down (M6 AC6) | M6 | `ci` |
 | E5 | `ImportJourneyTest` | VIEW a `content://` OPML (provider in the test APK) via `ExternalImportActivity` → preview → confirm | 20 pending tiles within 2 s; all fetched; report shows one `NOT_A_FEED`; zero `download` rows | M3 | `ci` |
 | E6 | `BackupRestoreJourneyTest` | seed state A → create backup → mutate (delete group, mark played) → Replace restore | state A restored: groups, memberships, played, positions, Up next (M3 AC5) | M3 | `ci` |
@@ -111,7 +111,7 @@ Flavor-specific journeys guard themselves with `assumeTrue(BuildConfig.FLAVOR ==
 Serves N9. Two complementary layers:
 
 1. **Hostile inputs with caps** — owned by the format documents: [03 Golden corpus](03-feeds-and-discovery.md#golden-corpus-feedssrctestresourcesfeeds) (entity DOCTYPE, deep nesting, oversized text) and 05's `HostileInputTest` (billion laughs, 10k nesting, 100k outlines, 10 MB attribute, zip bomb, zip-slip; PLAN M3 AC3).
-2. **`MutationRobustnessTest`** (09, `:feeds` and `:youtube:api`, JVM, TestParameterInjector): for every committed fixture of `FeedParser`, `OpmlReader`, `BackupCodec`, `NewPipeSubscriptions`, `LibreTubeBackupParser`, `TakeoutSubscriptionsParser` and for 200 seeded random strings of `YouTubeUrlClassifier`, apply seeded mutations — truncate at 10 offsets, flip 1–16 random bytes, duplicate a random 1 KB slice, insert `<!DOCTYPE x [<!ENTITY e "...">]>`, replace the declared encoding, insert NUL and lone surrogates. Assert: the call returns its declared result type (`ParseResult`/`Outcome` failure is fine), throws nothing except `CancellationException`, finishes in < 2 s, and stays within a 64 MB heap (the class runs only in a dedicated `Test` task `mutationTest` with `-Xmx64m`, wired into `check`; the regular `test` task excludes it with `filter.excludeTestsMatching("*MutationRobustnessTest")`). PR runs use 20 mutations per fixture (seed = fixture name hash); nightly runs 1,000 per fixture (`-PmutationIterations=1000`) and prints the failing seed.
+2. **`MutationRobustnessTest`** (09, `:feeds` and `:youtube:api`, JVM, TestParameterInjector): for every committed fixture of `FeedParser`, `OpmlReader`, `BackupCodec`, `NewPipeSubscriptions`, `LibreTubeBackupParser`, `TakeoutSubscriptionsParser` and for 200 seeded random strings of `YouTubeUrlClassifier`, apply seeded mutations — truncate at 10 offsets, flip 1–16 random bytes, duplicate a random 1 KB slice, insert `<!DOCTYPE x [<!ENTITY e "...">]>`, replace the declared encoding, insert NUL and lone surrogates. Assert: the call returns its declared result type (`ParseResult`/`Outcome` failure is fine), throws nothing except `CancellationException`, finishes in < 2 s, and stays within a 128 MB heap (enough for the largest committed fixture of ≤ 1 MB plus the test worker; an entity or nesting blow-up exceeds it at once). The class runs only in a dedicated `Test` task `mutationTest` (registered by `configureNeutrodyneTestTasks()` in modules that have the class: same `testClassesDirs` and `classpath` as `test`, `filter.includeTestsMatching("*MutationRobustnessTest")`, `maxHeapSize = "128m"`, wired into `check`); the regular `test` task excludes it with `filter.excludeTestsMatching("*MutationRobustnessTest")`. PR runs use 20 mutations per fixture (seed = fixture name hash); nightly runs 1,000 per fixture (`-PmutationIterations=1000`) and prints the failing seed.
 
 ### Flakiness policy
 
@@ -138,25 +138,38 @@ Serves N1, N11. Delivered in M0 (configuration, base helpers), grown per milesto
 
 ```kotlin
 // build-logic: shared by JVM and Android modules
-internal fun Project.configureNeutrodyneTestTasks() = tasks.withType<Test>().configureEach {
-    systemProperty("user.timezone", "America/St_Johns")          // UTC-3:30, DST, non-integral offset
-    jvmArgs("-Duser.language=de", "-Duser.country=DE", "-Xshare:off", "-XX:+EnableDynamicAgentLoading")
-    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
-    maxHeapSize = "2g"
-    val update = providers.gradleProperty("updateGoldens").isPresent
-    systemProperty("neutrodyne.updateGoldens", update)
-    systemProperty("neutrodyne.moduleDir", layout.projectDirectory.asFile.absolutePath)
-    systemProperty("neutrodyne.rootDir", rootProject.layout.projectDirectory.asFile.absolutePath)
-    systemProperty("neutrodyne.screenshotTier", providers.gradleProperty("screenshotTier").getOrElse("pr"))
-    systemProperty("neutrodyne.mutationIterations", providers.gradleProperty("mutationIterations").getOrElse("20"))
-    if (update) outputs.upToDateWhen { false }
-    testLogging { events("failed"); exceptionFormat = TestExceptionFormat.FULL }
+internal fun Project.configureNeutrodyneTestTasks() {
+    tasks.withType<Test>().configureEach {
+        systemProperty("user.timezone", "America/St_Johns")          // UTC-3:30, DST, non-integral offset
+        jvmArgs("-Duser.language=de", "-Duser.country=DE", "-Xshare:off", "-XX:+EnableDynamicAgentLoading")
+        maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
+        maxHeapSize = if (name == "mutationTest") "128m" else "2g"   // set here, not in register {}: no ordering doubt
+        val update = providers.gradleProperty("updateGoldens").isPresent
+        systemProperty("neutrodyne.updateGoldens", update)
+        systemProperty("neutrodyne.moduleDir", layout.projectDirectory.asFile.absolutePath)
+        systemProperty("neutrodyne.rootDir", rootProject.layout.projectDirectory.asFile.absolutePath)
+        systemProperty("neutrodyne.screenshotTier", providers.gradleProperty("screenshotTier").getOrElse("pr"))
+        systemProperty("neutrodyne.mutationIterations", providers.gradleProperty("mutationIterations").getOrElse("20"))
+        if (update) outputs.upToDateWhen { false }
+        testLogging { events("failed"); exceptionFormat = TestExceptionFormat.FULL }
+    }
+    if (path == ":feeds" || path == ":youtube:api") {                // JVM modules that own MutationRobustnessTest
+        val test = tasks.named<Test>("test")
+        test.configure { filter.excludeTestsMatching("*MutationRobustnessTest") }
+        val mutation = tasks.register<Test>("mutationTest") {
+            testClassesDirs = test.get().testClassesDirs; classpath = test.get().classpath
+            useJUnit(); filter.includeTestsMatching("*MutationRobustnessTest")
+        }
+        tasks.named("check") { dependsOn(mutation) }
+    }
 }
 ```
 
 ```kotlin
-// build-logic: neutrodyne.android.testing (Android modules only)
+// build-logic: neutrodyne.android.testing (Android modules only). Catalog access per 01 catalog rule 5 (no type-safe
+// accessors in plugin classes); okhttp-bom is already on test/androidTest configurations (01 catalog rule 4).
 internal fun Project.configureAndroidTesting(ext: CommonExtension) {
+    val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")
     ext.defaultConfig.testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     ext.defaultConfig.testInstrumentationRunnerArguments["clearPackageData"] = "true"
     if (providers.gradleProperty("neutrodyne.testScope").getOrElse("ci") == "ci")   // nightly/release scopes run everything
@@ -167,18 +180,20 @@ internal fun Project.configureAndroidTesting(ext: CommonExtension) {
     ext.testOptions.animationsDisabled = true
     ext.testOptions.execution = "ANDROIDX_TEST_ORCHESTRATOR"
     configureManagedDevices(ext.testOptions.managedDevices)      // see Gradle Managed Devices
+    disableEmptyDeviceTests()                                    // see Gradle Managed Devices
     configureNeutrodyneTestTasks()
     dependencies {
-        "testImplementation"(platform(libs.okhttp.bom))           // aligns media3-test-utils' MockWebServer 4.12 to 5.5.0
-        "testImplementation"(libs.bundles.unit.test)              // junit4, truth, turbine, coroutines-test, TPI
-        "testImplementation"(libs.robolectric)
-        "androidTestImplementation"(platform(libs.okhttp.bom))
-        "androidTestImplementation"(libs.androidx.test.runner); "androidTestImplementation"(libs.androidx.test.ext.junit)
-        "androidTestImplementation"(libs.truth); "androidTestUtil"(libs.androidx.test.orchestrator)
+        "testImplementation"(libs.findBundle("unit-test").get())  // junit4, truth, turbine, coroutines-test, TPI
+        "testImplementation"(libs.findLibrary("robolectric").get())
+        "androidTestImplementation"(libs.findLibrary("androidx-test-runner").get())
+        "androidTestImplementation"(libs.findLibrary("androidx-test-ext-junit").get())
+        "androidTestImplementation"(libs.findLibrary("truth").get())
+        "androidTestUtil"(libs.findLibrary("androidx-test-orchestrator").get())
         if (path != ":core:testing") { "testImplementation"(project(":core:testing")); "androidTestImplementation"(project(":core:testing")) }
     }
+    val robolectric = libs.findVersion("robolectric").get().requiredVersion
     configurations.configureEach { resolutionStrategy.eachDependency {   // media3-test-utils pulls Robolectric 4.16
-        if (requested.group == "org.robolectric" && !requested.name.startsWith("android-all")) useVersion(libs.versions.robolectric.get())
+        if (requested.group == "org.robolectric" && !requested.name.startsWith("android-all")) useVersion(robolectric)
     } }
 }
 ```
@@ -240,11 +255,11 @@ Package `app.neutrodyne.core.testing`; dependencies per rule 9 (`:core:{domain, 
 | `FakePodcastRepository`, `FakeEpisodeRepository`, `FakeRefreshController`, `FakeAddPodcastResolver`, `FakeSubscribeUseCase`, `FakeIngestionEvents` | 03 interfaces | 03 | M1 |
 | `FakeSearchRepository` | `SearchRepository` | 03 | M7 |
 | `FakeFeedRepository`, `FakeGroupRepository`, `FakeEffectiveSettingsResolver`, `FakeScopeSettingsRepository`, `FakePlayContextResolver` | 05 interfaces | 05 | M2 (resolver M2/M4) |
-| `FakeImportRepository`, `FakeBackupRepository` | 05 interfaces | 05 | M3 |
+| `FakeImportRepository`, `FakeBackupRepository`, `FakeExportRepository` | 05 interfaces | 05 | M3 |
 | `FakeEpisodeLiveStateSource`, `FakeArtworkRepository` | 08 interfaces | 08 | M2, M4 |
 | `FakePlaybackController`, `FakePlaybackStateSource`, `FakeQueueRepository`, `FakeChapterRepository`, `FakePlaybackMaintenance` | 06 interfaces | 06 | M4 (chapters M5) |
 | `FakeDownloadController`, `FakeLocalMediaIndex`, `FakeDownloadProgressSource` | 07 interfaces | 07 | M6 |
-| `FakeYouTubeChannelResolver`, `FakeYouTubeStreamResolver`, `FakeYouTubeEnricher`, `FakeYouTubeChannelRepository`, `FakeYouTubeHealth`, `testCapabilities(foss: Boolean)` | 04 interfaces | 04 | M8, M9 |
+| `FakeYouTubeChannelResolver`, `FakeYouTubeStreamResolver`, `FakeYouTubeEnricher`, `FakeYouTubeChannelRepository`, `FakeYouTubeHealth`, `FakeYouTubeChannelSearch`, `FakeExtractorChannelLookup`, `FakeYouTubeAvailabilityRecorder`, `testCapabilities(foss: Boolean)` | 04 interfaces | 04 | M8, M9 |
 | `FakeDiagnosticsRepository` | [`DiagnosticsRepository`](#diagnostics-api) | 09 | M11 |
 | Data builders `podcast(…)`, `episode(…)`, `episodeRow(…)`, `group(…)`, `rowLive(…)` | `:core:model` instances with readable defaults | 09 | M1 |
 | `fakeImageLoader(context)` | Coil `ImageLoader` with `FakeImageLoaderEngine` returning deterministic `ColorImage`s keyed by URL hash | 09 | M1 |
@@ -351,8 +366,8 @@ Paged properties (`items: Flow<PagingData<T>>`) are asserted with `paging-testin
 ### Compose UI and screenshot tests
 
 - Compose v2 test APIs (`androidx.compose.ui.test.junit4.v2.createComposeRule` / `createAndroidComposeRule`, `StandardTestDispatcher`); `mainClock.autoAdvance = false` for indeterminate progress.
-- Every Compose test calls `enableAccessibilityChecks()` (`ui-test-junit4-accessibility`); rules and custom-action checks are 08's ([08 Automated checks](08-ui-ux.md#automated-checks)).
-- **Roborazzi** (`io.github.takahirom.roborazzi` plugin, applied by `neutrodyne.android.compose` modules that have screenshot tests): `roborazzi { outputDir.set(file("src/test/screenshots")) }`, `roborazzi.record.resizeScale=0.5` in `gradle.properties`. Determinism: `NeutrodyneTheme(dynamicColor = false)`, `TestClock`, fixed locale qualifier, `fakeImageLoader`, animations frozen.
+- Every Compose test calls `enableAccessibilityChecks()` (`ui-test-junit4-accessibility`); rules and custom-action checks are 08's ([08 Automated checks](08-ui-ux.md#automated-checks)). Unverified: Google documents these checks for instrumented `AndroidComposeTestRule` tests; whether the Accessibility Test Framework reports every check under Robolectric (contrast needs a rendered frame, hence `GraphicsMode.NATIVE`) is checked in M1 with a deliberately broken component (a 20 dp clickable without a label must fail the Robolectric test). Fallback: Robolectric keeps the checks that do fire, and each screen gets one instrumented `<Screen>AccessibilityTest` in `:app/src/androidTest` rendered with fakes, run in the `instrumented` job (PLAN N4 requires instrumented checks either way; the E2E journeys provide them for the screens they visit).
+- **Roborazzi**: each module with screenshot tests applies `alias(libs.plugins.roborazzi)` in its own build file (01 catalog rule 2: tooling plugins are not on the build-logic classpath) and declares `testImplementation(libs.roborazzi, libs.roborazzi.compose, libs.roborazzi.junit.rule)`; `roborazzi { outputDir.set(file("src/test/screenshots")) }`, `roborazzi.record.resizeScale=0.5` in `gradle.properties`. Determinism: `NeutrodyneTheme(dynamicColor = false)`, `TestClock`, fixed locale qualifier, `fakeImageLoader`, animations frozen.
 - **Tiers** (decides 08 open question 15): `ScreenshotTier.PR` captures every subject in light and dark at font scale 1.0, LTR, plus one stress variant per subject (dark, 2.0, `ar-XB`). `ScreenshotTier.FULL` adds the remaining columns of [08's matrix](08-ui-ux.md#screenshot-matrix) (pure black, 1.5, 2.0 and RTL for every state; all widths and postures). PR CI verifies `PR`; nightly verifies `FULL`. All reference PNGs (both tiers) are committed. Budget: ≤ 800 images, ≤ 30 MB total; exceeding it requires dropping redundant variants, not Git LFS (keeps F-Droid and Weblate clones simple).
 
 ```kotlin
@@ -363,20 +378,20 @@ fun assumeTier(required: ScreenshotTier) = assumeTrue(ScreenshotTier.current >= 
 ```
 
 - **Recording policy:** reference images are recorded only on Linux by the `record-screenshots.yml` workflow (font rasterisation differs on macOS and Windows); it uploads `screenshots-<sha>.zip` and the author applies it with `scripts/ci/apply-screenshots.sh <run-id>` (uses `gh run download`) and commits. PRs verify with `-Proborazzi.test.verify=true`; on failure the `_compare.png` files are uploaded as an artifact. Renovate groups Robolectric, Roborazzi and the Compose BOM so the re-record lands in the same PR.
-- Pseudo-locales `en-XA` and `ar-XB` come from `isPseudoLocalesEnabled = true` on the `debug` build type; Unverified: Robolectric resolving `@Config(qualifiers = "en-rXA")` to aapt2's generated pseudo-locale resources (M2 check; fallback: capture only `ar` once a real Arabic translation exists, plus manual pseudo-locale review on device).
+- Pseudo-locales `en-XA` and `ar-XB` come from `isPseudoLocalesEnabled = true` on the `debug` build type, set by `neutrodyne.android.compose` in every module that has screenshot tests (each module's unit tests merge that module's own debug resources) and by the application plugin in `:app`. A locale filter removes generated pseudo-locales unless they are listed ([pseudolocales](https://developer.android.com/guide/topics/resources/pseudolocales)), so `:app`'s `localeFilters` always contains `en-rXA` and `ar-rXB` ([Shipped locales and per-app language](#shipped-locales-and-per-app-language)). Unverified: Robolectric resolving `@Config(qualifiers = "en-rXA")` to aapt2's generated pseudo-locale resources (M2 check; fallback: capture only `ar` once a real Arabic translation exists, plus manual pseudo-locale review on device).
 
 ### Gradle Managed Devices
 
-Configured in `neutrodyne.android.testing` for every Android module (only the five instrumented modules use them).
+Configured in `neutrodyne.android.testing` for every Android module; only the five instrumented modules have device tests.
 
-| Name | Device | API | `systemImageSource` | Groups | Used for |
+| Name | Device | API | Image | Groups | Used for |
 |---|---|---|---|---|---|
-| `api26` | Pixel 2 | 26 | `aosp` | `ci`, `nightly` | minSdk floor (PLAN M0 AC4); migrations; E2E |
-| `api33` | Pixel 6 | 33 | `aosp-atd` | `nightly` | `DataSyncWorkerTest` (07) |
-| `api34` | Pixel 6 | 34 | `aosp-atd` | `nightly` | first UIDT level; `PlaybackServiceTest` (06) |
-| `api36` | Pixel 6 | 36 | `aosp-atd` | `ci`, `nightly` | main device; `UidtDownloadTest` (07); `playDebug` E8 |
-| `bench34` (in `:benchmark` only) | Pixel 6 | 34 | `aosp` | — | system tests, baseline-profile generation, Macrobenchmark dry runs |
-| API 37 16 KB | — | 37 | `google_apis_ps16k` via android-emulator-runner | nightly job `api37-16k` | Android 17 hardening, 16 KB page size, release smoke (PLAN M11 AC4) |
+| `api26` | Pixel 2 | 26 | GMD `aosp` (`android-26;default`) | `ci`, `nightly` | minSdk floor (PLAN M0 AC4); migrations; E2E |
+| `api33` | Pixel 6 | 33 | GMD `aosp-atd` | `nightly` | `DataSyncWorkerTest` (07) |
+| `api34` | Pixel 6 | 34 | GMD `aosp-atd` | `nightly` | first UIDT level; `PlaybackServiceTest` (06) |
+| `api36` | Pixel 6 | 36 | GMD `aosp-atd` | `ci`, `nightly` | main device; `UidtDownloadTest` (07); `playDebug` E8 |
+| `bench34` (in `:benchmark` only) | Pixel 6 | 34 | GMD `aosp` (full image: launcher, SystemUI, root) | — | system tests, baseline-profile generation, Macrobenchmark dry runs |
+| API 37 16 KB | — | 37 | `system-images;android-37.0;google_apis_ps16k;x86_64` via android-emulator-runner | nightly job `api37-16k` | Android 17 hardening, 16 KB page size, minified `:app` suite (PLAN M11 AC4) |
 
 ```kotlin
 private fun Project.configureManagedDevices(md: ManagedDevices) = md.apply {
@@ -391,17 +406,23 @@ private fun Project.configureManagedDevices(md: ManagedDevices) = md.apply {
         create("nightly") { targetDevices += listOf("api26", "api33", "api34", "api36").map { localDevices[it] } }
     }
 }
+// Modules without src/androidTest get no device-test component, so `ciGroupDebugAndroidTest` never boots an emulator
+// for an empty suite. Unverified accessor name under AGP 9.4 (8.x: HasDeviceTestsBuilder / androidTest.enable).
+private fun Project.disableEmptyDeviceTests() = extensions.getByType<AndroidComponentsExtension<*, *, *>>()
+    .beforeVariants { v -> (v as? HasDeviceTestsBuilder)?.deviceTests?.get("AndroidTest")?.enable =
+        layout.projectDirectory.dir("src/androidTest").asFile.exists() }
 ```
 
-- ATD images exist for API 31–36 x86_64 (Google's repository XML; the GMD page's "API 30 only" is stale). API 26 uses a full `aosp` image. Unverified: GMD below API 27 may need `android.experimental.testOptions.managedDevices.allowOldApiLevelDevices=true` (M0; fallback: android-emulator-runner for API 26).
-- API 37 exists only as `google_apis_ps16k` / `google_apis_playstore_ps16k`; Unverified whether GMD accepts those image sources, hence android-emulator-runner v2.38.0 for that job.
-- CI flags: `-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect`, `-Pandroid.experimental.androidTest.numManagedDeviceShards=2` (a 4-vCPU runner hosts two emulators).
-- Release-build runs: `testBuildType = providers.gradleProperty("testBuildType").getOrElse("debug")` in `:app` (the AntennaPod pattern), with `testProguardFiles("proguard/test.pro")`; nightly passes `-PtestBuildType=release` so instrumented tests run against the R8-minified APK, where AGP 9's unit tests cannot see R8 breakage. Only when that property is present and no `NEUTRODYNE_KEYSTORE` is set, `:app` signs `release` with the debug signing config so the minified APK can be installed; the release pipeline never passes the property.
+- **ATD rule.** Automated Test Device images remove SystemUI, the launcher, the Settings app and bundled apps and disable hardware rendering ([GMD](https://developer.android.com/studio/test/gradle-managed-devices)). Tests that may run on an ATD device therefore never use the notification shade, lock screen, Home, recents or the back gesture: they read their own notifications with `NotificationManager.getActiveNotifications()`, fire notification actions through `PendingIntent.send()`, background the app by starting a test-APK activity (`BackgroundStandInActivity`), and press back with `pressBack()`. Anything that needs real system UI (predictive-back animation, lock-screen controls, the resumption card) is a manual or full-image check (`api26`, `bench34`, API 37 job, or the owning document's device checklist). ATD x86_64 images exist for API 30–36 (`aosp_atd` repository XML; the GMD page's "API 30 only" is stale); there is no ATD or `default` image for API 37.
+- **API 26 on GMD:** the GMD page says to use API 27 and higher. Unverified whether AGP 9.4 still accepts API 26 (possibly behind `android.experimental.testOptions.managedDevices.allowOldApiLevelDevices=true`); checked in M0. Fallback: an `instrumented-api26` job with android-emulator-runner (`api-level: 26`, `target: default`, `arch: x86_64`) running `connectedDebugAndroidTest connectedFossDebugAndroidTest`; PLAN M0 AC4's "API 26 Gradle Managed Device" then reads "API 26 emulator".
+- **API 37:** newer system-image directories carry a minor SDK version (`android-36.1`, `android-37.0`, `android-37.2`). x86_64 API 37 images exist only with Google APIs: `google_apis` / `google_apis_playstore` (4 KB pages, 37.0) and `google_apis_ps16k` / `google_apis_playstore_ps16k` (37.0–37.2) ([repository XML](https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml), read 2026-10-05). Unverified whether GMD accepts a minor-versioned Google APIs 16 KB image, hence android-emulator-runner v2.38.0 with `api-level: 37.0`, `target: google_apis_ps16k`, `arch: x86_64`; Unverified that the action accepts a minor-versioned `api-level` (fallback: `scripts/ci/start-emulator.sh` calling `sdkmanager`, `avdmanager` and `emulator` directly).
+- **CI flags and parallelism:** `-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect`; `--max-workers=2` on every job that runs device tests, so at most two emulators exist at once on the 4-vCPU / 16 GB runner (each module's managed-device task boots its own emulators and Gradle would otherwise run several modules in parallel). No test sharding: the per-module suites are small, and sharding multiplies boots.
+- **Release-build runs:** `testBuildType = providers.gradleProperty("testBuildType").getOrElse("debug")` in `:app` (the AntennaPod pattern), with `testProguardFiles("proguard-test.pro")` (keep rules for the androidTest APK only; the app's own rules stay in 01's `keepRules` source sets); nightly passes `-PtestBuildType=release` so instrumented tests run against the R8-minified APK, where AGP 9's unit tests cannot see R8 breakage. Only when that property is present and no `NEUTRODYNE_KEYSTORE` is set, `:app` signs `release` with the debug signing config so the minified APK can be installed ([Gradle signing configuration](#gradle-signing-configuration)); the release pipeline never passes the property.
 - Instrumented hygiene: orchestrator with `clearPackageData`; debug builds disable LeakCanary heap dumps when `ActivityManager.isRunningInUserTestHarness()` or the instrumentation is present; ACRA is off in debug ([ACRA configuration](#acra-configuration)).
 
 ### Out-of-process system tests
 
-Instrumented tests run inside the app's process, so killing the process (`am kill`, ProcessDeathResumeTest) or reinstalling the app kills the test. Such tests live in `:benchmark` (`com.android.test`, self-instrumenting, `targetProjectPath = ":app"`, `missingDimensionStrategy("distribution", "foss")`), drive the app with UI Automator 2.4.0 and `UiAutomation.executeShellCommand`, and run on `bench34`. Consequently `:benchmark` is created in **M6** (system tests), and gains Macrobenchmarks and the baseline-profile generator in M10/M11 ([Performance budgets](#performance-budgets)). Compose nodes are found by resource ID, which requires `Modifier.semantics { testTagsAsResourceId = true }` on the root scaffold (request to 08).
+Instrumented tests run inside the app's process, so killing the process (`am kill`, ProcessDeathResumeTest) or reinstalling the app kills the test. Such tests live in `:benchmark` (`com.android.test`, self-instrumenting, `targetProjectPath = ":app"`, `missingDimensionStrategy("distribution", "foss")`), drive the app with UI Automator 2.4.0 and `UiAutomation.executeShellCommand`, and run on `bench34`. Consequently `:benchmark` is created in **M6** (system tests), and gains Macrobenchmarks and the baseline-profile generator in M10/M11 ([Performance budgets](#performance-budgets)). Compose nodes are found by resource ID through `Modifier.semantics { testTagsAsResourceId = true }` on `NeutrodyneRoot` and 08's test tags ([08 Performance journeys](08-ui-ux.md#performance-journeys)). System tests target `:app`'s `fossDebug` variant (package `app.neutrodyne.debug`; the Macrobenchmark build types arrive with the baseline-profile plugin in M10), create their data through the UI (Library → "Add by URL"), and serve feeds and enclosures from a MockWebServer inside the `:benchmark` process on `127.0.0.1`, which the app reaches over loopback.
 
 ### Recorded responses
 
@@ -443,14 +464,14 @@ flowchart LR
 
 ### `ci.yml`
 
-Triggers: `pull_request`, `push` to `main`, `workflow_dispatch`. `permissions: contents: read` at the top; `concurrency: group ci-${{ github.ref }}`, `cancel-in-progress` for PRs only. Every job: `actions/checkout` (`fetch-depth: 0` in `static` for tag comparisons), `actions/setup-java` (Temurin 21), `gradle/actions/setup-gradle` with `cache-provider: basic` (MIT; the default "enhanced" cache is a proprietary component) and `cache-read-only` except on `main`.
+Triggers: `pull_request`, `push` to `main` and `release/*`, `workflow_dispatch`. `permissions: contents: read` at the top; `concurrency: group ci-${{ github.ref }}`, `cancel-in-progress` for PRs only. Every job: `actions/checkout` (`fetch-depth: 0` in `static` for tag comparisons), `actions/setup-java` (Temurin 21), `gradle/actions/setup-gradle` with `cache-provider: basic` (MIT; the default "enhanced" cache is a proprietary component) and `cache-read-only` except on `main`.
 
 | Job | Timeout | Runs | Blocking |
 |---|---|---|---|
 | `static` | 30 min | `./gradlew spotlessCheck :app:lintFossDebug :app:lintPlayDebug :app:assertModuleGraph :app:licenseeFossRelease :app:licenseePlayRelease :app:verifyDependencyPolicy :app:verifyManifestPermissions checkSpdxHeaders checkBannedApis --continue`; KGP assertion `./gradlew -q :app:buildEnvironment \| grep -E 'kotlin-gradle-plugin:.*2\.4\.20'` (PLAN M0 AC3); `scripts/ci/check-frozen-schemas.sh`; `scripts/ci/check-fastlane.sh`; SARIF upload (`security-events: write`); `./gradlew detekt` with `continue-on-error: true` | yes (detekt no) |
 | `unit` | 45 min | `./gradlew test mutationTest -Proborazzi.test.verify=true --continue`; Room schema drift: `test -z "$(git status --porcelain -- core/database/schemas)"` (KSP regenerated the schema while compiling); upload `**/build/reports/tests/` and Roborazzi `_compare.png` on failure; cache `~/.m2/repository/org/robolectric` keyed `robolectric-4.17-sdk36` | yes |
 | `assemble` | 30 min | `./gradlew assembleFossDebug assemblePlayDebug assembleFossRelease assemblePlayRelease bundlePlayRelease` (unsigned: no secrets in PR builds); `scripts/ci/check-apk.sh` ([Build-output checks](#build-output-checks)); upload `foss-debug-apk` (14 days) | yes |
-| `instrumented` | 75 min | only on `main` pushes, `workflow_dispatch` or PRs labelled `run-instrumented`: free disk, enable KVM, `./gradlew ciGroupDebugAndroidTest ciGroupFossDebugAndroidTest api36PlayDebugAndroidTest -Pneutrodyne.testScope=ci <GMD flags>`; upload `**/build/outputs/androidTest-results/` on failure | required green on `main` (DoD), not a PR merge check |
+| `instrumented` | 75 min | only on `main` pushes, `workflow_dispatch` or PRs labelled `run-instrumented`: free disk, enable KVM, `./gradlew --max-workers=2 ciGroupDebugAndroidTest ciGroupFossDebugAndroidTest api36PlayDebugAndroidTest -Pneutrodyne.testScope=ci -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect`; upload `**/build/outputs/androidTest-results/` on failure | required green on `main` (DoD), not a PR merge check |
 
 ```yaml
 # .github/workflows/ci.yml (excerpt; every uses: is pinned by full commit SHA with the tag in a comment)
@@ -481,8 +502,8 @@ The instrumented job's preamble (as AntennaPod does): `sudo rm -rf /usr/share/do
 
 | Job | From | Runs | Blocks a release? |
 |---|---|---|---|
-| `instrumented-full` | M0 | two matrix legs with `-Pneutrodyne.testScope=nightly`: **debug** `./gradlew nightlyGroupDebugAndroidTest nightlyGroupFossDebugAndroidTest api36PlayDebugAndroidTest`; **release** `./gradlew -PtestBuildType=release nightlyGroupFossReleaseAndroidTest` (minified `:app` suite; library modules have no release test variant) | yes (red nightly ⇒ no tag) |
-| `api37-16k` | M0 | android-emulator-runner (`api-level: 37`, `target: google_apis_ps16k`, `arch: x86_64`; Unverified target name): assert `getconf PAGE_SIZE` = 16384, install minified `fossRelease`, run E0 and 06's hardening `throw` test, `zipalign -c -P 16 -v 4` on the APK (PLAN M11 AC4) | yes |
+| `instrumented-full` | M0 | two matrix legs with `-Pneutrodyne.testScope=nightly --max-workers=2`: **debug** `./gradlew nightlyGroupDebugAndroidTest nightlyGroupFossDebugAndroidTest api36PlayDebugAndroidTest`; **release** `./gradlew -PtestBuildType=release nightlyGroupFossReleaseAndroidTest` (minified `:app` suite; library modules have no release test variant) | yes (red nightly ⇒ no tag) |
+| `api37-16k` | M0 | android-emulator-runner (`api-level: 37.0`, `target: google_apis_ps16k`, `arch: x86_64`, [GMD notes](#gradle-managed-devices)): assert `adb shell getconf PAGE_SIZE` = 16384; `./gradlew --max-workers=2 -PtestBuildType=release -Pneutrodyne.testScope=nightly :app:connectedFossReleaseAndroidTest connectedDebugAndroidTest` — the whole `:app` suite on the debug-signed minified APK (E0, journeys, 06's `PlaybackServiceTest`, whose hardening cases switch `cmd audio set-enable-hardening throw` on through `UiAutomation.executeShellCommand` and off in `@After`, so other tests keep the default muting behaviour) plus the library modules' suites (migrations on both drivers); `zipalign -c -P 16 -v 4` on the APK (PLAN M11 AC4) | yes |
 | `system-tests` | M6 | `:benchmark` system tests on `bench34` (E10) | yes |
 | `benchmark-dryrun` | M10 | Macrobenchmark journeys with `-Pandroid.testInstrumentationRunnerArguments.androidx.benchmark.dryRunMode.enable=true` (catches broken journeys; timings are meaningless on emulators) | no |
 | `repro` | M0 (report-only), M11 (blocking) | [two builds and diff](#nightly-reproducibility-job) | yes from M11 |
@@ -495,7 +516,7 @@ The instrumented job's preamble (as AntennaPod does): `sudo rm -rf /usr/share/do
 
 ### `release.yml`
 
-Trigger: `push: tags: ['v*']`. One job `release` in GitHub environment `release` (required reviewer = a maintainer; secrets live only there); `permissions: contents: write`; `setup-gradle` with `cache-disabled: true` (no cache-poisoning surface for signed builds). The build runs inside the same pinned Debian container and script as the [repro job](#nightly-reproducibility-job), so GitHub's APK, F-Droid's rebuild and the nightly check share one toolchain.
+Trigger: `push: tags: ['v*']`. Job `release` runs in GitHub environment `release` (required reviewer = a maintainer; secrets live only there) with `permissions: contents: write`; job `verify-repro` has `contents: read, issues: write` and no environment (it never sees a secret); `setup-gradle` with `cache-disabled: true` (no cache-poisoning surface for signed builds). The build runs inside the same pinned Debian container and script as the [repro job](#nightly-reproducibility-job), so GitHub's APK, F-Droid's rebuild and the nightly check share one toolchain.
 
 ```mermaid
 sequenceDiagram
@@ -521,13 +542,13 @@ sequenceDiagram
 
 Steps, in order (target: tag → published release in < 30 min, N11 and PLAN M11 AC3):
 
-1. `scripts/ci/verify-tag.sh`: tag equals `v` + `neutrodyne.versionName`; the tagged commit is on `main`; `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` exists; `ci.yml` concluded `success` for the commit (`gh api …/check-runs`).
-2. Decode `NEUTRODYNE_KEYSTORE_B64` to `$RUNNER_TEMP/release.p12`; build `assembleFossRelease` with `NEUTRODYNE_KEYSTORE*` set ([Gradle signing](#gradle-signing-configuration)).
-3. `apksigner verify --print-certs --min-sdk-version 26` must print `SHA-256 digest: ${{ vars.NEUTRODYNE_CERT_SHA256 }}`; `zipalign -c -P 16 -v 4`. (The `play` dex and size checks already passed in `assemble` for this commit, which `verify-tag.sh` requires.)
+1. `scripts/ci/verify-tag.sh`: tag equals `v` + `neutrodyne.versionName`; the tagged commit is on `main` or a `release/*` branch ([hotfix branches](#scriptsreleasesh)); `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` exists in it; and **either** `ci.yml` concluded `success` for the tagged commit **or** the tagged commit is a `release.sh` commit — exactly one parent, `ci.yml` `success` on that parent (`gh api repos/{repo}/commits/{sha}/check-runs`), and `git diff --numstat HEAD^ HEAD` showing only `gradle.properties` with two changed lines, both matching `^neutrodyne\.version(Name|Code)=`. The second branch exists because the release commit's own `ci.yml` run starts at the same moment as `release.yml`; waiting for it would cost the 15 minutes the N11 budget cannot spare, and a version-line change cannot alter what CI verified.
+2. Decode `NEUTRODYNE_KEYSTORE_B64` to `$RUNNER_TEMP/release.p12`; `scripts/ci/repro-build.sh --sign assembleFossRelease` mounts it read-only into the container and passes `NEUTRODYNE_KEYSTORE*` as container environment variables ([Gradle signing](#gradle-signing-configuration)); nothing else from the runner environment enters the container.
+3. `apksigner verify --print-certs --min-sdk-version 26` must print `SHA-256 digest: ${{ vars.NEUTRODYNE_CERT_SHA256 }}`; `zipalign -c -P 16 -v 4`. (The `play` dex and size checks already passed in `assemble` for the tagged commit or its parent, which `verify-tag.sh` requires.)
 4. From M9: `scripts/release/corresponding-source.sh` — `git archive` of the tag plus `third_party/` filled by `./gradlew :youtube:streams:collectGplSources` (a `Copy` task resolving the `-sources` artifacts of NewPipe Extractor, nanojson and Rhino) → `neutrodyne-{v}-foss-corresponding-source.tar.gz` ([04 Corresponding source](04-youtube.md#corresponding-source)).
 5. Stage `neutrodyne-{v}-foss.apk`, `neutrodyne-{v}-foss-mapping.txt`, the source bundle and `SHA256SUMS`; body from the changelog file plus the certificate fingerprint and, from M9, the corresponding-source line.
 6. `softprops/action-gh-release` (v3.0.3, SHA-pinned): `prerelease: ${{ contains(github.ref_name, '-') }}`, `make_latest` only for stable tags.
-7. If repository variable `PLAY_PUBLISHING == 'true'` (after PO-2): re-run the container build for `bundlePlayRelease` with `NEUTRODYNE_KEYSTORE*` pointing at the **upload** key, then `./gradlew publishPlayReleaseBundle --track internal` (Gradle Play Publisher 4.1.1, service-account secret). Promotion beyond internal is manual in the Play Console.
+7. If repository variable `PLAY_PUBLISHING == 'true'` (after PO-2): one more container invocation, `repro-build.sh --sign bundlePlayRelease publishPlayReleaseBundle --track internal`, with `NEUTRODYNE_KEYSTORE*` pointing at the **upload** key and the service-account JSON mounted (Gradle Play Publisher 4.1.1); both tasks run in the same invocation so the published AAB is the one just built in the container. Promotion beyond internal is manual in the Play Console.
 8. Separate job `verify-repro` (needs `release`, non-blocking for the hotfix clock): unsigned rebuild in a fresh container at a different path, then `apksigcopier compare neutrodyne-{v}-foss.apk --unsigned rebuilt.apk`; failure opens an issue (F-Droid would reject the binary).
 
 ### Helper workflows
@@ -547,18 +568,20 @@ Pushing commits from workflows is deliberately avoided: pushes made with `GITHUB
 | `scripts/ci/check-play-dex.sh <apk>` | `dexdump` (build-tools 36.0.0) class descriptors: fail on `Lorg/schabi/newpipe/`, `Lorg/mozilla/javascript/`, `Lapp/neutrodyne/youtube/streams/`; print the count of `Lj$/` classes (01's M9 desugaring check) |
 | `scripts/ci/check-frozen-schemas.sh` | for every `N.json` that exists at the newest `v*` tag, `git diff --exit-code <tag> -- <file>` ([02 Schema export and versioning](02-data-model.md#schema-export-and-versioning)) |
 | `scripts/ci/check-fastlane.sh` | metadata limits ([Store metadata](#store-metadata)); banned words in `play` release notes |
-| `scripts/ci/repro-build.sh <task> <path> <cpus>` | container build used by `repro` and `release.yml` |
+| `scripts/ci/repro-build.sh [--sign] [--path P] [--cpus N] [--umask U] <gradle args…>` | container build used by `repro`, `release.yml` and `verify-repro`; `--sign` mounts the keystore and passes `NEUTRODYNE_KEYSTORE*` |
 | `scripts/ci/install-android-sdk.sh` | pinned cmdline-tools (version + SHA-256), `platforms;android-37`, `build-tools;36.0.0` |
 | `scripts/ci/bmgr-check.sh <package>` | 05's `bmgr` procedure and assertions |
 | `scripts/ci/report-nightly.sh <job>` | issue per failing nightly job |
 | `scripts/ci/apply-screenshots.sh <run-id>` | download and unpack recorded screenshots locally |
-| `scripts/ci/verify-tag.sh` | release preconditions |
+| `scripts/ci/verify-tag.sh` | release preconditions ([release.yml](#releaseyml) step 1) |
+| `scripts/ci/network-capture.sh` | v1.0 gate network capture ([v1.0 gate](#v10-gate)); maintainer-run, needs internet |
+| `scripts/ci/start-emulator.sh` | fallback emulator start for API 26 / API 37 if android-emulator-runner or GMD cannot ([Gradle Managed Devices](#gradle-managed-devices)) |
 
 ### Hardening
 
 - Every `uses:` is pinned by commit SHA; Renovate's `helpers:pinGitHubActionDigests` keeps the pins current.
 - Never `pull_request_target`; fork PRs get no secrets (PR builds are unsigned by design).
-- Repository rulesets: `main` requires a PR and the checks `static`, `unit`, `assemble`; linear history; no force pushes; maintainers may bypass only to push the release commit created by `release.sh`. Tag ruleset: only maintainers create or delete `v*` tags.
+- Repository rulesets: `main` and `release/*` require a PR and the checks `static`, `unit`, `assemble`; linear history; no force pushes; maintainers may bypass only to push the release commit created by `release.sh`. Tag ruleset: only maintainers create or delete `v*` tags.
 - GitHub secret scanning with push protection on; private vulnerability reporting on ([SECURITY.md](#security-reporting)).
 
 | Secret / variable | Scope | Used by |
@@ -566,9 +589,10 @@ Pushing commits from workflows is deliberately avoided: pushes made with `GITHUB
 | `NEUTRODYNE_KEYSTORE_B64`, `NEUTRODYNE_KEYSTORE_PASSWORD`, `NEUTRODYNE_KEY_ALIAS`, `NEUTRODYNE_KEY_PASSWORD` | environment `release` | `foss` APK signing |
 | `NEUTRODYNE_UPLOAD_KEYSTORE_B64`, `NEUTRODYNE_UPLOAD_KEYSTORE_PASSWORD`, `NEUTRODYNE_UPLOAD_KEY_ALIAS`, `NEUTRODYNE_UPLOAD_KEY_PASSWORD` | environment `release` | `play` AAB (mapped onto `NEUTRODYNE_KEYSTORE*` for that Gradle invocation); only after PO-2 |
 | `PLAY_SERVICE_ACCOUNT_JSON` | environment `release` | Gradle Play Publisher; only after PO-2 |
+| `PODCASTINDEX_KEY`, `PODCASTINDEX_SECRET` | environment `release` | only if PO-3 switches to option A: passed as `-Pneutrodyne.podcastIndexKey/Secret` to the `bundlePlayRelease` invocation, never to a `foss` build |
 | `NEUTRODYNE_CERT_SHA256`, `PLAY_PUBLISHING` | repository variables | signer check; Play step switch |
 
-No other secret exists. In particular no API key is injected into any `foss` build ([Reproducible builds](#reproducible-builds)).
+No other secret exists. No API key is ever injected into a `foss` build: GitHub's APK must stay bit-identical to F-Droid's secret-less rebuild ([Reproducible builds](#reproducible-builds)).
 
 ### Time budgets
 
@@ -659,7 +683,8 @@ A new `CompositionLocal` requires adding its name here in the same PR (review po
 1. **Size:** universal `fossRelease` APK < 25 MB (N5) and `playRelease` APK < 25 MB, both blocking; sizes printed to the job summary and kept as a nightly artifact for trends.
 2. **16 KB:** `zipalign -c -P 16 -v 4` on both release APKs (only native code is `sqlite-bundled`, [01 S6](01-foundation.md#s6-sqlite-bundled-16-kb-alignment-and-size)); required for Play updates of apps with native code ([16 KB page sizes](https://developer.android.com/guide/practices/page-sizes)).
 3. **`play` dex:** `check-play-dex.sh` on `playRelease` ([04 GPL boundary](04-youtube.md#gpl-boundary), PLAN M9 AC4).
-4. **Metadata hygiene:** `unzip -l` on the release APK shows no `META-INF/version-control-info.textproto` ([vcsInfo off](#hygiene)). The dependency-info signing block (which F-Droid rejects; 01 disables it) only exists in signed APKs, so it is caught by `release.yml`'s `verify-repro` step, whose `apksigcopier compare` fails on extra signing blocks (Unverified: exact apksigcopier behaviour; F-Droid reported this failure as "Found extra signing block").
+4. **Locale config:** `aapt2 dump xmltree --file res/xml/_generated_res_locale_config.xml` (Unverified generated file name; the manifest's `android:localeConfig` points at it) on both release APKs lists exactly the locales of `app/policy/locales.txt` — no pseudo-locales, no library-only translations.
+5. **Metadata hygiene:** `unzip -l` on the release APK shows no `META-INF/version-control-info.textproto` ([vcsInfo off](#hygiene)). The dependency-info signing block (which F-Droid rejects; 01 disables it) only exists in signed APKs, so it is caught by `release.yml`'s `verify-repro` step, whose `apksigcopier compare` fails on extra signing blocks (Unverified: exact apksigcopier behaviour; F-Droid reported this failure as "Found extra signing block").
 
 ### PR template
 
@@ -768,13 +793,15 @@ stateDiagram-v2
 
 ### `scripts/release.sh`
 
-Usage: `scripts/release.sh <patch|minor|major|X.Y.Z|finalise> [--beta|--rc] [--hotfix] [--dry-run]`. Algorithm:
+Usage: `scripts/release.sh <patch|minor|major|X.Y.Z[-beta.N|-rc.N]|finalise> [--beta|--rc] [--hotfix] [--dry-run]`. Algorithm:
 
-1. Preconditions: on `main`, clean tree, `HEAD` equals `origin/main`, `ci.yml` concluded `success` for `HEAD` (`gh run list --commit`), no open issue labelled `release-blocker`, and either the latest scheduled `nightly.yml` run is green or (with `--hotfix`, PATCH only) a `nightly.yml` run dispatched with `scope: youtube-smoke` is green for `HEAD`.
-2. Compute the next `versionName` from the current one and the argument (`finalise` drops the pre-release suffix; `--beta` on a current `-beta.N` of the same X.Y.Z increments N). Compute `versionCode` per the table; refuse if it is ≤ the current code or if any existing tag has the same name.
-3. Require `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt`: non-empty, ≤ 500 characters. If `PLAY_PUBLISHING` is configured locally (`.release.env`), also require `app/src/play/play/release-notes/en-US/default.txt` updated in this release and free of the banned `play` words.
-4. Rewrite the two `gradle.properties` lines; commit `Release vX.Y.Z`; create an annotated (and, when the maintainer has signing configured, signed) tag `vX.Y.Z`.
-5. `git push --atomic origin main vX.Y.Z` (ruleset bypass for maintainers). `release.yml` takes over.
+1. Preconditions: on `main` (or, for `--hotfix`, on a `release/X.Y` branch, below), clean tree, `HEAD` equals its `origin` branch, `ci.yml` concluded `success` for `HEAD` (`gh run list --commit`), no open issue labelled `release-blocker`, and either the latest scheduled `nightly.yml` run is green or (with `--hotfix`, PATCH only) a `nightly.yml` run dispatched with `scope: youtube-smoke` is green for `HEAD`.
+2. Compute the next `versionName` from the current one and the argument (`finalise` drops the pre-release suffix; `--beta` on a current `-beta.N` of the same X.Y.Z increments N). Compute `versionCode` per the table; refuse if it is lower than the current code, if it equals the current code while tag `v<current versionName>` exists, or if any existing tag has the new name. Equal to the current code without a tag is the "tag the prepared version" case: the very first release (`scripts/release.sh 0.1.0-beta.1`, the value 01 commits in M0) tags `HEAD` without a release commit.
+3. Require `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` **in `HEAD`** (it lands through a normal PR beforehand; `--dry-run` prints the code to name it): non-empty, ≤ 500 characters. If `PLAY_PUBLISHING` is configured locally (`.release.env`), also require `app/src/play/play/release-notes/en-US/default.txt` changed since the previous tag and free of the banned `play` words.
+4. Rewrite the two `gradle.properties` lines and nothing else; commit `Release vX.Y.Z`; create an annotated (and, when the maintainer has signing configured, signed) tag `vX.Y.Z`. The single-file, two-line diff is what `verify-tag.sh` accepts without waiting for the release commit's own CI run.
+5. `git push --atomic origin <branch> vX.Y.Z` (ruleset bypass for maintainers). `release.yml` takes over.
+
+**Hotfix while `main` carries a pre-release of the next MINOR** (for example `main` at `1.1.0-beta.2`, latest stable `1.0.3`): a patch cut from `main` would reach only testers. Instead, create `release/1.0` from tag `v1.0.3` on first need (same ruleset as `main`; `ci.yml` also runs on `push` to `release/*`), cherry-pick the fix, dispatch `nightly.yml` `scope: youtube-smoke` on that branch and run `release.sh patch --hotfix` there → `v1.0.4` (1000495). The fix also lands on `main` and ships in `1.1.0-beta.3`. Version codes stay monotonic for every audience: stable users move 1000395 → 1000495, testers already hold 1010002 and get 1010003. `verify-tag.sh` accepts a tagged commit on `main` or on a `release/*` branch.
 
 ### Changelogs and release notes
 
@@ -798,7 +825,7 @@ APK signature schemes: v1 off (minSdk 26 ≥ 24), v2 and v3 on; v3 keeps key rot
 
 ### Gradle signing configuration
 
-Read only from `NEUTRODYNE_KEYSTORE*` environment variables; unsigned when absent (PR builds, F-Droid). Lives in `:app` (01's build-flavors sketch leaves this to 09):
+Read only from `NEUTRODYNE_KEYSTORE*` environment variables; unsigned when absent (PR builds, F-Droid), debug-signed only for CI test runs that pass `-PtestBuildType=release` ([Gradle Managed Devices](#gradle-managed-devices)). Lives in `:app` (01's build-flavors sketch leaves this to 09):
 
 ```kotlin
 android {
@@ -814,8 +841,13 @@ android {
         }
     }
     buildTypes.getByName("release") {
-        if (providers.environmentVariable("NEUTRODYNE_KEYSTORE").isPresent) signingConfig = signingConfigs.getByName("release")
+        signingConfig = when {
+            providers.environmentVariable("NEUTRODYNE_KEYSTORE").isPresent -> signingConfigs.getByName("release")
+            providers.gradleProperty("testBuildType").orNull == "release" -> signingConfigs.getByName("debug") // CI test runs only
+            else -> null                                                                                        // unsigned: PRs, F-Droid
+        }
     }
+    testBuildType = providers.gradleProperty("testBuildType").getOrElse("debug")
 }
 ```
 
@@ -907,7 +939,7 @@ Only when PO-2 approves (default: built and tested in CI from M0, published late
 |---|---|
 | Build | `bundlePlayRelease` signed with the upload key; target API 37 meets Play's API 36 requirement for new apps and updates from 2026-08-31 ([target API](https://developer.android.com/google/play/requirements/target-sdk)) |
 | App signing | PEPK upload of our key before the first release ([Play App Signing](#play-app-signing)) |
-| Listing | title "Neutrodyne"; short description ≤ 80; full ≤ 4,000; icon 512 px; feature graphic 1024×500; phone and tablet screenshots taken from the `play` build with synthetic demo content (no third-party podcast artwork); YouTube described only as "follow YouTube channels and open their videos in YouTube"; no download, background or audio-only wording for YouTube; no mention of other builds or stores |
+| Listing | title "Neutrodyne" (Play title ≤ 30 characters); short description ≤ 80; full ≤ 4,000; icon 512 px; feature graphic 1024×500; phone and tablet screenshots taken from the `play` build with synthetic demo content (no third-party podcast artwork); YouTube described only as "follow YouTube channels and open their videos in YouTube"; no download, background or audio-only wording for YouTube; no mention of other builds or stores |
 | FGS declarations | `mediaPlayback` (draft below) and `dataSync` ([07's draft](07-downloads.md#manifest-and-play-declaration)), each with description, user impact and demo video ([FGS declarations](https://support.google.com/googleplay/android-developer/answer/13392821)) |
 | Data safety | [answers below](#play-data-safety) |
 | Content rating | IARC questionnaire: no generated content, third-party audio content unfiltered |
@@ -934,7 +966,7 @@ GitHub pre-releases carry every milestone's tester build (`vX.Y.Z-beta.N`, PLAN 
 | `…/full_description.txt` | limited HTML | ≤ 4,000, mandatory |
 | `…/changelogs/<versionCode>.txt` | release notes (en-US only) | ≤ 500 |
 | `…/images/icon.png`, `featureGraphic.png`, `phoneScreenshots/*.png` | from the `foss` build with synthetic demo data | PNG, ≤ 8 screenshots |
-| `app/src/play/play/listings/<locale>/…`, `app/src/play/play/release-notes/<locale>/default.txt` | Play listing via Gradle Play Publisher (only with PO-2) | same limits; banned words: "download" near "YouTube", "background", "F-Droid", "IzzyOnDroid", "GitHub", "NewPipe" |
+| `app/src/play/play/listings/<locale>/…`, `app/src/play/play/release-notes/<locale>/default.txt` | Play listing via Gradle Play Publisher (only with PO-2) | Play's limits: title ≤ 30, short ≤ 80, full ≤ 4,000, release notes ≤ 500, 2–8 phone screenshots; banned words: "download" near "YouTube", "background", "F-Droid", "IzzyOnDroid", "GitHub", "NewPipe" |
 
 Screenshots are produced at M11 on the reference device with a demo library seeded through the backup-restore path from a synthetic backup (monograms and generated artwork only).
 
@@ -951,10 +983,10 @@ Serves N8 and [D61](../PLAN.md#3-key-decisions); mitigates risk P4. Delivered in
 | Timestamps, git data in `BuildConfig` | none ever ([01 Build flavors](01-foundation.md#build-flavors)) | 01 |
 | Build-time secrets | `foss` builds read **no** `-P` value that differs between our build and F-Droid's: `neutrodyne.acraMailto` and `neutrodyne.repoUrl` are committed in `gradle.properties`; Podcast Index credentials are never compiled into `foss` (PO-3: BYOK in `foss` under every option; an injected key may only ever go into `play`) | 01, 09 |
 | Signing | release built unsigned when `NEUTRODYNE_KEYSTORE` is absent; F-Droid copies our signature onto its build with `apksigcopier` | 09 |
-| PNG crunching | `isCrunchPngs = false` on `release`; PNGs committed pre-optimised | 01 (setting), 09 (rule) |
-| VCS info | `vcsInfo { include = false }` on `release` (deterministic per commit in theory, but F-Droid's checkout may differ; nothing depends on it) | 01 |
+| PNG crunching | `buildTypes.release { isCrunchPngs = false }` in `:app`; PNGs committed pre-optimised | 09 (01's build-type sketch delegates it here) |
+| VCS info | `buildTypes.release { vcsInfo { include = false } }` in `:app` (deterministic per commit in theory, but F-Droid's checkout may differ; nothing depends on it) | 09 (delegated by 01) |
 | AboutLibraries metadata | offline mode: no remote licence or funding fetches during the build (Unverified 15.x property names, e.g. `offlineMode = true`, `fetchRemoteLicense = false`) | 01 |
-| R8 non-determinism around kotlinx.coroutines | `-keep class kotlinx.coroutines.CoroutineExceptionHandler`, `-keep class kotlinx.coroutines.internal.MainDispatcherFactory` in `proguard/foss.pro` | 01 |
+| R8 non-determinism around kotlinx.coroutines | `-keep class kotlinx.coroutines.CoroutineExceptionHandler`, `-keep class kotlinx.coroutines.internal.MainDispatcherFactory` in `app/src/foss/keepRules/foss.keep` ([01 Build flavors](01-foundation.md#build-flavors)) | 01 |
 | Compiled ART profile (`assets/dexopt/baseline.prof`/`.profm`) | kept enabled; if the repro job diffs on it, disable the ArtProfile tasks for `foss` release only (`tasks.matching { it.name.contains("ArtProfile") && it.name.contains("Foss") }.configureEach { enabled = false }`) and re-measure cold start without a profile | 09 |
 | Toolchain | JDK 21 (Debian OpenJDK in the container, same major as F-Droid's builder); `build-tools;36.0.0` and `platforms;android-37` pinned by `install-android-sdk.sh`; Gradle 9.7.1 with `distributionSha256Sum` | 09 |
 | Build cache, locale, time zone | `--no-build-cache`; `LC_ALL=C.UTF-8`, `TZ=UTC` in the container | 09 |
@@ -1023,14 +1055,15 @@ IDs are stable; the in-app "What Neutrodyne connects to" list (Settings › Priv
 | ID | Destination | Purpose | When | Flavor | Default |
 |---|---|---|---|---|---|
 | `feeds` | each subscribed feed's host and its redirect targets | fetch RSS/Atom ([03](03-feeds-and-discovery.md#fetch-pipeline)) | refresh (periodic, on open, pull), subscribe preview, import | both | user's subscriptions |
+| `add-input` | the web page the user typed, pasted or shared into Add podcast, up to 5 well-known feed paths on that site (`/feed`, `/rss`, …) and the candidate the user picks | find the feed behind a web page ([03 Fetch, sniff and autodiscovery](03-feeds-and-discovery.md#fetch-sniff-and-autodiscovery)) | adding a podcast by URL or share | both | user action |
 | `media` | enclosure hosts and the publishers' measurement redirects in front of them | stream and download audio ([06](06-playback.md#media-items-and-uri-resolution), [07](07-downloads.md#transfer-core)) | play, download, auto-download | both | user action / opt-in |
-| `artwork` | artwork hosts referenced by feeds | covers and episode images ([08](08-ui-ux.md#artwork-pipeline)) | subscribe, artwork change, display | both | on |
+| `artwork` | artwork hosts referenced by feeds and by directory results (Apple's image CDN, fyyd's image host, Podcast Index `artwork` URLs) | covers, episode images and search-result covers ([08](08-ui-ux.md#artwork-pipeline)) | subscribe, artwork change, display, Discover results | both | on |
 | `chapters` | hosts of Podcasting 2.0 chapter files | chapters ([06](06-playback.md#chapters)) | playing an episode that has a chapters URL | both | on |
 | `notes-images` | image hosts inside show notes | show-notes images ([03](03-feeds-and-discovery.md#show-notes)) | per 03's `feeds.show_notes_images` setting | both | per 03 |
-| `apple` | `itunes.apple.com`, `rss.marketingtools.apple.com` | search, lookup of Apple Podcasts links, charts ([03](03-feeds-and-discovery.md#search-and-discovery)) | Discover; adding an Apple Podcasts link | both | on |
-| `fyyd` | `api.fyyd.de` | search | Discover | both | on |
-| `podcastindex` | `api.podcastindex.org` | search, trending | only with a configured key | both | off |
-| `youtube-subscriptions` | `www.youtube.com` (feeds, channel page head, oEmbed), `i.ytimg.com`, `yt3.googleusercontent.com` | YouTube channels as podcasts, layer A ([04](04-youtube.md#channel-resolution)) | only when the user adds or has a YouTube channel | both | user action |
+| `apple` | `itunes.apple.com`, `rss.marketingtools.apple.com` | search, lookup of Apple Podcasts / pod.link / Overcast links, charts ([03](03-feeds-and-discovery.md#search-and-discovery)) | Discover; adding such a link; the YouTube subscribe preview's "also has a podcast feed" check (channel title as query, `youtube.suggest_rss`, [04](04-youtube.md#prefer-the-shows-rss-feed)) | both | on |
+| `fyyd` | `api.fyyd.de` | search | Discover; the same YouTube preview check | both | on |
+| `podcastindex` | `api.podcastindex.org` | search, trending | only with a configured key; then also the YouTube preview check | both | off |
+| `youtube-subscriptions` | `www.youtube.com` (feeds, channel page head, oEmbed), `i.ytimg.com`, `yt3.googleusercontent.com`, `yt3.ggpht.com` | YouTube channels as podcasts, layer A ([04](04-youtube.md#channel-resolution)) | only when the user adds or has a YouTube channel | both | user action |
 | `youtube-streams` | `www.youtube.com/youtubei/…`, `*.googlevideo.com` (Unverified complete host list; M9 network capture records it) | audio streams, downloads, durations, channel search, layer B ([04](04-youtube.md#stream-resolution)) | playing, downloading or refreshing YouTube items; channel search | `foss` | user action |
 | `links` | any link the user taps (episode page, funding, person) | opened in the browser | tap | both | user action |
 | `issue-tracker` | `github.com` | "Report a problem" opens the browser | tap | both | user action |
@@ -1047,10 +1080,10 @@ What hosts receive: every request carries the device's IP address and `User-Agen
 | Logs (Logcat, `RingBufferLogSink`) | every message through `Redactor.text` (01) | 01's `Redactor` tests |
 | Crash reports | `STACK_TRACE` and `CUSTOM_DATA` through `Redactor.text`; field allow-list; no `LOGCAT`, `BUILD_CONFIG`, `SHARED_PREFERENCES`, device IDs | `CrashReportRedactorTest` |
 | Diagnostics text, issue pre-fill | built only from redacted values | `RedactionCoverageTest` |
-| Exported database copy | scrubbed copy ([Copy, report and export](#copy-report-and-export)) | `DatabaseCopyExporterTest` |
+| Exported database copy | 02's scrub procedure ([Copy, report and export](#copy-report-and-export)) | 02's `DiagExportScrubTest`, `DatabaseCopyExporterTest` |
 | OPML export, backup ZIP | passwords only on opt-in; private-URL warning (05) | 05's tests |
 
-`RedactionCoverageTest` (`:core:data`, Robolectric, M11) seeds a podcast with feed URL `https://alice:s3cret@feeds.example.invalid/rss/a8F3kq09ZpLm2xQ?token=SECRETTOKEN`, an enclosure with `?auth=SECRET2`, provokes a refresh failure and a crash-report collection, then asserts that none of `s3cret`, `SECRETTOKEN`, `SECRET2`, `a8F3kq09ZpLm2xQ` occurs in: the diagnostics report text, the issue pre-fill URL, the ring-buffer log, the `CrashReportData` produced by ACRA's collectors after `CrashReportRedactor`, and the scrubbed database copy.
+`RedactionCoverageTest` (`:core:data`, Robolectric, M11) seeds a podcast with feed URL `https://alice:s3cret@feeds.example.invalid/rss/a8F3kq09ZpLm2xQr7Tz4?token=SECRETTOKEN` (the 20-character path token is above the ≤ 15-character keep threshold of 01's `Redactor.url` rule 4) and an episode **without a GUID** whose enclosure is `https://cdn.example.invalid/ep1.mp3?auth=SECRET2` (so its identity key is a `u:` key carrying the URL, [02 Episode identityKey](02-data-model.md#episode-identitykey)), provokes a refresh failure and a crash-report collection, then asserts that none of `s3cret`, `SECRETTOKEN`, `SECRET2`, `a8F3kq09ZpLm2xQr7Tz4` occurs in: the diagnostics report text, the issue pre-fill URL, the ring-buffer log, the `CrashReportData` after `CrashReportRedactor`, and the exported database copy (read back byte-wise, so text left in free pages also fails the test).
 
 ### Play Data safety
 
@@ -1076,12 +1109,13 @@ Serves N3, N2 (diagnosability); mitigates risk P5. Delivered in M0 (ACRA wiring,
 
 ### ACRA configuration
 
-ACRA 5.14.2 with `acra-mail` and `acra-dialog`: zero network traffic from the reporter, F-Droid-accepted (NewPipe precedent). `installAcra` is called from `NeutrodyneApplication.attachBaseContext` when `BuildConfig.ACRA_MAILTO` is not empty; the `:acra` process returns early from `onCreate` ([01 Application start-up](01-foundation.md#application-start-up)). `ACRA_MAILTO` comes from the committed `neutrodyne.acraMailto` ([Hygiene](#hygiene)) and is forced to `""` on the `debug` build type (debug builds crash fast with StrictMode and LeakCanary instead).
+ACRA 5.14.2 with `acra-mail` and `acra-dialog`: zero network traffic from the reporter, F-Droid-accepted (NewPipe precedent). `installAcra` is called from `NeutrodyneApplication.attachBaseContext` when `BuildConfig.ACRA_MAILTO` is not empty; the `:acra` process returns early from `onCreate` ([01 Application start-up](01-foundation.md#application-start-up)). `ACRA_MAILTO` comes from the committed `neutrodyne.acraMailto` ([Hygiene](#hygiene)) and is forced to `""` on the `debug` build type with `buildConfigField("String", "ACRA_MAILTO", "\"\"")` in `buildTypes.debug` (a build-type field overrides `defaultConfig`'s; debug builds crash fast with StrictMode and LeakCanary instead).
 
 ```kotlin
 // :app
 fun installAcra(app: Application) = app.initAcra {
     buildConfigClass = BuildConfig::class.java
+    sharedPreferencesName = "acra"                          // ACRA's own enable flag lives here (see Settings)
     reportFormat = StringFormat.KEY_VALUE_LIST
     reportContent = listOf(                                   // explicit allow-list
         ReportField.REPORT_ID, ReportField.APP_VERSION_NAME, ReportField.APP_VERSION_CODE,
@@ -1105,9 +1139,9 @@ fun installAcra(app: Application) = app.initAcra {
 }
 ```
 
-Dialog text (en): "Neutrodyne stopped. You can send a crash report by email: your mail app opens with the report attached, and nothing is sent until you press Send there. The report contains the error, the app version, the Android version and the phone model — never your subscriptions, feed addresses or listening history."
+Dialog text (en): "Neutrodyne stopped. You can send a crash report by email: your mail app opens with the report attached, and nothing is sent until you press Send there. The report contains the error, the app version, the Android version and the phone model — never your subscription list or listening history; passwords and access tokens are removed from any web address in an error message." (Accurate because `Redactor.url` keeps scheme, host, port and short path segments and masks user-info, token-like path segments and every query value.)
 
-- **`CrashReportRedactor`** (`:app`): an ACRA `ReportingAdministrator` loaded through `META-INF/services/org.acra.config.ReportingAdministrator`; in `shouldSendReport` it replaces `STACK_TRACE` and each `CUSTOM_DATA` value with `Redactor.text(…)` and drops custom keys outside the allow-list, then returns `true` (whether reports are offered at all is ACRA's own enabled flag, mirrored from `privacy.crash_reports`, see [Settings](#settings)). Unverified: that ACRA 5.14 persists the report after administrators run (so the redacted data is what the dialog and sender see); fallback: a delegating `ReportSenderFactory` that redacts before `EmailIntentSender` formats the file.
+- **`CrashReportRedactor`** (`:app`): an ACRA `ReportingAdministrator` loaded through `META-INF/services/org.acra.config.ReportingAdministrator`; in `shouldSendReport` it replaces `STACK_TRACE` and each `CUSTOM_DATA` value with `Redactor.text(…)` and drops custom keys outside the allow-list, then returns `true` (whether reports are offered at all is ACRA's own enabled flag, mirrored from `privacy.crash_reports`, see [Settings](#settings)). In ACRA 5.14.2 `ReportExecutor` calls every administrator's `shouldSendReport` before `saveCrashReportFile`, so the stored file — what the dialog and the mail sender use — is the redacted one (read from the 5.14.2 bytecode, 2026-10-05; `CrashReportRedactorTest` pins it: a collected report with a token URL in `STACK_TRACE` is saved without it).
 - **Mail app visibility:** 01's merged manifest carries `<queries>` for `SENDTO mailto:` (Unverified need on API 30+); without any mail app ACRA cannot hand off, so the diagnostics screen's "Copy diagnostics" is the fallback.
 - **Play vitals:** `alsoReportToAndroidFramework` is on only in `play`, so Android vitals keep receiving crashes there. Unverified: whether the framework's crash dialog then appears in addition to ACRA's (M11 device check; fallback: off, rely on ACRA in both flavors).
 
@@ -1196,13 +1230,13 @@ enum class DiagnosticsError { NOT_ENOUGH_SPACE, DATABASE_BUSY, FAILED }
 | `PARSE_WARNINGS` | per-feed parse warnings of the last ingest (in-memory LRU of 50) | 03 | — |
 | `LOG` | last 500 redacted log lines | 01 `RingBufferLogSink` | — |
 
-Threading and failures: `snapshot()` runs all contributors concurrently on `@Dispatcher(IO)` with a 2 s timeout each; a timeout or exception becomes one line `"<section> unavailable (<ExceptionClass>)"` with `DiagnosticsSeverity.WARNING`; the screen never fails as a whole.
+Threading and failures: `snapshot()` runs all contributors concurrently on `@Dispatcher(IO)` with a 2 s timeout each; a timeout or exception becomes one line `"<section> unavailable (<ExceptionClass>)"` with `DiagnosticsSeverity.WARNING`; the screen never fails as a whole. `DiagnosticsRepositoryImpl` passes every line value through `Redactor.text` once more before returning (contributors should already have redacted; parse-warning details and stop-reason texts can quote URLs), and never emits feed URLs, credentials or device identifiers.
 
 ### Copy, report and export
 
 - **Copy diagnostics:** `toPlainText` (sections in enum order, log last, truncated from the log's oldest lines to 64 KB) to the clipboard.
-- **Report a problem:** opens `{repoUrl}/issues/new?template=bug.yml&diagnostics=<url-encoded summary>` in the browser; the summary is `toPlainText(report, maxBytes = 6 * 1024)` without the `LOG` and `PARSE_WARNINGS` sections (URL length limits). Unverified: GitHub issue-form pre-fill by field ID (`diagnostics`); fallback: `body=`.
-- **Export database copy** (bundled driver only): `DatabaseCopyExporter` (`:core:data`) runs 02's `VACUUM INTO '<cacheDir>/export/neutrodyne-diagnostics-<yyyy-MM-dd-HHmm>.db'`, then opens the copy and scrubs it in one transaction: `DELETE FROM credential`, `DELETE FROM episode_description`; every URL column (`podcast.feedUrl`, `link`, `artworkUrl`, `bannerUrl`, `hubUrl`, `pagingNextUrl`; `podcast_url_alias.url`; `episode.enclosureUrl`, `link`, `imageUrl`, `chaptersUrl`; `episode_alt_enclosure.sourcesJson`; `download.sourceRef`, `finalUri`; `import_item.originalUrl`, `normalizedUrl`; `artwork.url`) replaced by `Redactor.url(value)`, and `podcast.feedKey` replaced by `'k' || id` (keeps the unique index). The file is shared through the FileProvider; a confirmation first states that subscriptions, titles and history are included. The copy is deleted after 1 h or at the next app start. Fails with `NOT_ENOUGH_SPACE` when free space < 2 × database size + 50 MB.
+- **Report a problem:** copies the full `toPlainText(report)` to the clipboard, then opens `{repoUrl}/issues/new?template=bug.yml&diagnostics=<url-encoded summary>` in the browser; issue-form fields are pre-filled by their `id` ([creating an issue from a URL query](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-an-issue#creating-an-issue-from-a-url-query)). The summary is `toPlainText` without the `LOG` and `PARSE_WARNINGS` sections, cut from the end until the **encoded** URL is ≤ 7,000 characters (GitHub answers `414 URI Too Long` beyond its unpublished limit; percent-encoding inflates multi-line text two- to threefold, so a raw byte cap is not enough), followed by the line "(truncated — the full diagnostics are on your clipboard; paste them below)" when cut. `bug.yml`'s `diagnostics` textarea says the same.
+- **Export database copy:** `DatabaseCopyExporter` (`:core:data`) runs 02's diagnostics export procedure — `VACUUM INTO`, scrub of credentials and token-bearing URL columns on a raw driver connection, then `VACUUM` so deleted bytes leave the file ([02 db-maintenance worker](02-data-model.md#db-maintenance-worker); the SQL is 02's and is not repeated here) — with the target `cacheDir/export/neutrodyne-diagnostics-<yyyy-MM-dd-HHmm>.db`, because only `cache/export/` is shared by the FileProvider (02 names `<cacheDir>/diag.db`; [Open questions](#open-questions) 7). Flow owned here: a confirmation first states that subscriptions, titles and listening history are included and that addresses are masked; the export fails with `NOT_ENOUGH_SPACE` when free space < 2 × database size + 50 MB and with `DATABASE_BUSY` when the writer is held longer than 30 s; the file is shared through the FileProvider and deleted after 1 h or at the next app start. A database quarantined by 02's recovery is never exported: it may be unreadable, so it cannot be scrubbed; diagnostics show only its `RecoveryCause` and quarantine date.
 
 The diagnostics screen links to `Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` (fallback `ACTION_APPLICATION_DETAILS_SETTINGS`) and never requests an exemption: Play prohibits direct exemption requests for apps whose core function is not adversely affected, and podcast apps are not on the accepted list ([Doze and App Standby](https://developer.android.com/training/monitoring-device-state/doze-standby)); 01's `checkBannedApis` blocks `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
 
@@ -1212,11 +1246,11 @@ The diagnostics screen links to `Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SET
 
 ## Localisation
 
-Serves N10. Delivered in M0 (conventions, Lint gates, per-app language plumbing), M10 (Weblate project, pseudo-locale screenshots), M11 (launch languages). Honours [PO-14](../PLAN.md#48-further-product-owner-decisions) default.
+Serves N10. Delivered in M0 (conventions, Lint gates, per-app language plumbing), M10 (pseudo-locale screenshots), M11 (Weblate project per PLAN M11, launch languages). Honours [PO-14](../PLAN.md#48-further-product-owner-decisions) default.
 
 ### Workflow
 
-- **Hosted Weblate, Libre plan** (free for public libre projects), project `neutrodyne`, created in M10 once strings stabilise.
+- **Hosted Weblate, Libre plan** (free for public libre projects), project `neutrodyne`, created at the start of M11 at the latest (PLAN M11 deliverable); opening it at the end of M10, once M10's string changes have landed, is preferred so translators have the whole beta period to reach PO-14's 90 % threshold.
 - **Components** via Weblate's component-discovery add-on: one component per module with strings, file mask `{module path}/src/main/res/values-*/strings.xml`, monolingual base `…/values/strings.xml` (Android string resource format); one for `app/src/{foss,play}/res/values-*/strings_flavor.xml`; `store-metadata` (format "App store metadata files", base `fastlane/metadata/android/en-US`, `changelogs/*` excluded); `play-listing` for `app/src/play/play/listings/` only after PO-2. Strings stay in the module that owns them (features cannot share resources across modules).
 - **Flow:** Weblate commits to its own branch and opens a PR (squash add-on); CI runs the normal checks (Lint fatal format and plural checks catch broken translations); maintainers merge at least weekly. Developers never edit `values-xx` by hand except to revert a broken string. Before a PR that renames or deletes many string keys, lock the Weblate component and merge Weblate's pending PR first.
 - Weblate maps language codes to Android qualifiers (`pt_BR` → `values-pt-rBR`, `zh_Hant` → `values-b+zh+Hant`).
@@ -1231,8 +1265,8 @@ Serves N10. Delivered in M0 (conventions, Lint gates, per-app language plumbing)
 
 ### Shipped locales and per-app language
 
-- `app/policy/locales.txt` lists the shipped locales (`en-US` plus every language ≥ 90 % translated across all `app-strings` components when the release branch is cut; PO-14). `scripts/l10n/update-shipped-locales.sh` reads Weblate's per-language statistics API and rewrites the file; it runs during the [minor-release checklist](#minor-and-stable-release-additions). Unverified: the statistics endpoint and field names.
-- `:app` reads the file into `androidResources.localeFilters` and generates `BuildInfo.shippedLocales` (request to 01) for 08's in-app picker (Appearance › Language), which calls `AppCompatDelegate.setApplicationLocales(…)`. `generateLocaleConfig = true` with `res/resources.properties` (`unqualifiedResLocale=en-US`) lists the same locales for Android 13+'s system app-language settings ([per-app languages](https://developer.android.com/guide/topics/resources/app-languages)). Unverified: that `generateLocaleConfig` honours `localeFilters` and ignores library translations (M0 check; fallback: generate `res/xml/locales_config.xml` from `locales.txt` and turn `generateLocaleConfig` off).
+- `app/policy/locales.txt` lists the shipped locales (`en-US` plus every language ≥ 90 % translated across all string components — `store-metadata` excluded — when the minor release is prepared; PO-14). `scripts/l10n/update-shipped-locales.sh` reads Weblate's per-language statistics API and rewrites the file; it runs during the [minor-release checklist](#minor-and-stable-release-additions). Unverified: the statistics endpoint and field names.
+- `:app` reads the file into `androidResources.localeFilters` (plus `en-rXA` and `ar-rXB`, so debug builds keep their pseudo-locales; release builds generate none because `isPseudoLocalesEnabled` is off there, and `check-apk.sh` asserts with `aapt2 dump xmltree` that the release APK's generated locale config lists neither) and generates `BuildInfo.shippedLocales` (request to 01) for 08's in-app picker (Appearance › Language), which calls `AppCompatDelegate.setApplicationLocales(…)`. `generateLocaleConfig = true` with `res/resources.properties` (`unqualifiedResLocale=en-US`) lists the same locales for Android 13+'s system app-language settings ([per-app languages](https://developer.android.com/guide/topics/resources/app-languages)). Unverified: that `generateLocaleConfig` honours `localeFilters` and ignores library translations (M0 check; fallback: generate `res/xml/locales_config.xml` from `locales.txt` and turn `generateLocaleConfig` off).
 - Partially translated languages stay in the repository but are filtered out of the APK until they reach the threshold; missing strings in shipped languages fall back to English.
 
 ### Pseudo-locales and RTL
@@ -1259,9 +1293,9 @@ Serves N5, R2.9; mitigates risk T6. Delivered in M2 (query timing), M10 (grid ja
 |---|---|---|---|---|
 | PB1 | Cold start to Feeds, time to initial display, p50 | < 600 ms (N5) | `ColdStartToFeeds`: `StartupTimingMetric`, `StartupMode.COLD`, 15 iterations, `CompilationMode.Partial(BaselineProfileMode.Require)` | release (PLAN M11 AC1) |
 | PB2 | Same, p90 | < 900 ms | same | soft (investigate) |
-| PB3 | Cover-grid fling jank | < 1 % of frames with `frameOverrunMs > 0` | `CoverGridFling`: `FrameTimingMetric`, 5 iterations × 3 flings over 300 tiles | M10 AC7, release |
-| PB4 | All-feed fling and group-pager swipe jank | < 1 % | `AllFeedFling`, `GroupPagerSwipe` | release |
-| PB5 | Player expand/collapse jank | < 1 % | `PlayerExpandCollapse` | soft |
+| PB3 | Cover-grid fling jank | < 1 % of frames late, measured as `frameOverrunMs` P99 ≤ 0 ms (Macrobenchmark reports percentiles, not shares; P99 ≤ 0 means at most 1 % of frames overran) | `CoverGridFling`: `FrameTimingMetric`, 5 iterations × 3 flings over 300 tiles | M10 AC7, release |
+| PB4 | All-feed fling and group-pager swipe jank | `frameOverrunMs` P99 ≤ 0 ms | `AllFeedFling`, `GroupPagerSwipe` | release |
+| PB5 | Player expand/collapse jank | `frameOverrunMs` P99 ≤ 0 ms | `PlayerExpandCollapse` | soft |
 | PB6 | Group feed first page (count + 80 rows) | ≤ 60 ms | 02's `FeedQueryTimingTest`, median of 20 | M2 AC2 on the reference device; CI records on GMD |
 | PB7 | All feed first page | ≤ 100 ms | same | same |
 | PB8 | Subsequent page load | ≤ 20 ms | same | same |
@@ -1271,7 +1305,7 @@ Serves N5, R2.9; mitigates risk T6. Delivered in M2 (query timing), M10 (grid ja
 | PB12 | `foss` universal APK | < 25 MB (N5) | `check-apk.sh` | every PR |
 | PB13 | `play` universal APK | < 25 MB | `check-apk.sh` | every PR |
 | PB14 | Database at the N5 scale | ≤ 100 MB | 02's size measurement | M11 |
-| PB15 | App PSS after `CoverGridFling` + `PlayerExpandCollapse` | ≤ 250 MB (starting value, Unverified) | `dumpsys meminfo` captured by the benchmark | soft |
+| PB15 | App PSS peak during `CoverGridFling` + `PlayerExpandCollapse` | ≤ 250 MB (starting value, Unverified) | `MemoryUsageMetric(Mode.Max)` (experimental Macrobenchmark metric; fallback `dumpsys meminfo app.neutrodyne` in `teardownBlock`) | soft |
 | PB16 | 300-feed refresh with all feeds answering 304 | ≤ 3 min on Wi-Fi | 03's M11 performance check | soft |
 | PB17 | Splash hold | ≤ 400 ms | 01's start-up rule | M0 |
 
@@ -1280,9 +1314,9 @@ Budget changes are PO decisions (N5) and are recorded in this table.
 ### Macrobenchmark and profiles
 
 - `:benchmark` (from M10 for the journeys; module exists since M6) uses `benchmark-macro-junit4` 1.5.0 and the `androidx.baselineprofile` plugin with `targetProjectPath = ":app"`, `useConnectedDevices = false`, managed device `bench34` (`aosp`, API 34; profile generation needs an `aosp` image at API 33+ or root).
-- **Seeding:** the plugin-created `benchmarkRelease` and `nonMinifiedRelease` build types get an extra source directory `app/src/benchmarkShared/` (added to both via `sourceSets`) containing `BenchmarkSeedReceiver`, an explicit-only receiver protected by `android:permission="android.permission.DUMP"` (held by the shell), which fills the database with `SeedDatabase` (`benchmarkReleaseImplementation(testFixtures(project(":core:database")))`). The benchmark's `setupBlock` sends `am broadcast -n app.neutrodyne/.benchmark.BenchmarkSeedReceiver` once and waits for its marker file. The `release` variant never contains it. Unverified: variant-specific source sets and dependencies for plugin-created build types (M10 check).
+- **Seeding:** the plugin-created `benchmarkRelease` and `nonMinifiedRelease` build types get an extra source directory `app/src/benchmarkShared/` (added to both via `sourceSets`) containing `BenchmarkSeedReceiver`, a receiver without intent filters, `exported="true"` and protected by `android:permission="android.permission.DUMP"` (held by the shell, not by apps), which fills the database with `SeedDatabase` (`benchmarkReleaseImplementation(testFixtures(project(":core:database")))`). The benchmark's `setupBlock` sends `am broadcast -n app.neutrodyne/.benchmark.BenchmarkSeedReceiver` once and waits for its marker file. The `release` variant never contains it. Unverified: variant-specific source sets and dependencies for plugin-created build types (M10 check).
 - **Baseline and startup profiles:** generated from the same journeys (`ColdStartToFeeds` with `includeInStartupProfile = true`), `mergeIntoMain = true`, committed as text under `app/src/main/generated/baselineProfiles/`; `automaticGenerationDuringBuild = false` so normal and F-Droid builds never need an emulator. Regenerated with `baseline-profile.yml` before each minor release.
-- **Full display:** 08's Feeds screen calls `ReportDrawnWhen { first page loaded }` so `StartupTimingMetric` also reports time to full display (request to 08); not budgeted in v1.
+- **Full display:** 08's Feeds route calls `ReportDrawnWhen { first page loaded }` ([08 Performance journeys](08-ui-ux.md#performance-journeys)), so `StartupTimingMetric` also reports time to full display; not budgeted in v1.
 - Results (`*-benchmarkData.json`) from the reference device are attached to the release checklist issue; a regression > 10 % against the previous minor release on PB1–PB4 blocks the release until explained.
 - R8: full mode via `optimization { enable = true }` and `-dontobfuscate` (01). Size tips applied when PB12 is at risk: exclude `/DebugProbesKt.bin`, review keeps with the R8 configuration analyzer, measure `sqlite-bundled`'s four ABIs ([01 S6](01-foundation.md#s6-sqlite-bundled-16-kb-alignment-and-size)).
 
@@ -1296,11 +1330,11 @@ Serves N1–N11. Copied into `.github/ISSUE_TEMPLATE/release.md`; one issue per 
 
 Before tagging:
 
+- [ ] `scripts/release.sh … --dry-run` prints the expected `versionName`/`versionCode`.
 - [ ] `main` green: `ci.yml` and the last `nightly.yml` (no open `release-blocker` issue).
-- [ ] Changelog file for the new `versionCode` written (and `play` notes, if Play publishing is on).
+- [ ] Changelog file for the new `versionCode` (name it from `release.sh … --dry-run`) merged to `main` through a PR (and `play` notes, if Play publishing is on).
 - [ ] Weblate PR merged (or explicitly deferred).
 - [ ] Any schema change since the last tag has its migration test; the frozen-schema check passes.
-- [ ] `scripts/release.sh … --dry-run` prints the expected `versionName`/`versionCode`.
 
 Tag and publish:
 
@@ -1317,13 +1351,13 @@ Tag and publish:
 - [ ] Manual device matrix of [06](06-playback.md#testing) and checklist of [07](07-downloads.md#instrumented-and-device-tests) re-run on the reference device.
 - [ ] 08's manual checks: TalkBack, Switch Access, 200 % font, Arabic RTL, keyboard-only, foldable postures, grid → podcast transition review, airplane mode with downloads.
 - [ ] `bmgr` check on a device (05/07).
-- [ ] `PRIVACY.md` matches the network inventory (parity test green) and any new destination.
+- [ ] `PRIVACY.md` matches the network inventory (parity test green) and any new destination; when the release adds a destination or changes networking code, `network-capture.sh` re-run and its host list attached.
 - [ ] Store metadata (`fastlane`, and Play listing if enabled) reviewed against the `play` guardrails.
 - [ ] Play: internal track build tested; staged rollout started (only with PO-2).
 
 ### Hotfix (YouTube fast lane)
 
-Follows [04 Hotfix runbook](04-youtube.md#hotfix-runbook): Renovate (or manual) bump → `bump-extractor.sh` → CI incl. recorded-response tests → merge → dispatch `nightly.yml` with `scope: youtube-smoke` on `main` (minified `fossRelease` smoke) → `release.sh patch --hotfix` → `release.yml`. Skipped for hotfixes: profiles, benchmarks, locales, manual matrices. Target < 30 min from upstream release to signed GitHub release.
+Follows [04 Hotfix runbook](04-youtube.md#hotfix-runbook): Renovate (or manual) bump → `bump-extractor.sh` → CI incl. recorded-response tests → merge → dispatch `nightly.yml` with `scope: youtube-smoke` on `main` (minified `fossRelease` smoke) → `release.sh patch --hotfix` → `release.yml`. Skipped for hotfixes: profiles, benchmarks, locales, manual matrices. N11's target is < 30 min from **tag** to signed GitHub release; the whole path from an upstream extractor release is about an hour (PR CI ≈ 15 min, `youtube-smoke` ≈ 12 min, release ≤ 30 min; timeline in 04's runbook).
 
 ### Milestone tester build
 
@@ -1336,8 +1370,8 @@ Per PLAN DoD: the milestone's acceptance criteria are listed in the release issu
 | 1 Cold start p50 < 600 ms; `foss` APK < 25 MB | PB1 Macrobenchmark on the reference device; `check-apk.sh` |
 | 2 Two `fossRelease` builds bit-identical (or fallback decided) | nightly `repro` green for 7 consecutive nights and `verify-repro` on `v1.0.0-rc.N`; or the [fallback](#fallback) recorded with F-Droid's key registered |
 | 3 Tag → signed APK, `SHA256SUMS`, mapping, notes in < 30 min; Obtainium installs | `release.yml` timing on `v1.0.0-rc.N` and `v1.0.0`; Obtainium device check |
-| 4 Instrumented suite on minified `fossRelease` on API 26 and 36 GMD and an API 37 16 KB image | `instrumented-full` (`-PtestBuildType=release`) and `api37-16k` green on the release commit |
-| 5 Network capture of a fresh-install session shows only expected hosts | `scripts/ci/network-capture.sh`: emulator (`aosp`, no Google apps) started with `-tcpdump`, UI Automator session (subscribe 2 real feeds, refresh, stream 30 s, download one episode, search "news", in `foss` add and play one YouTube channel); `tshark` extracts DNS names and TLS SNI; every host is mapped to an inventory ID; OS hosts (connectivity check, NTP) listed separately. Unverified: emulator `-tcpdump` on API 36 images |
+| 4 Instrumented suite on minified `fossRelease` on API 26 and 36 GMD and an API 37 16 KB image | `instrumented-full` release leg (`-PtestBuildType=release`, `api26` and `api36` among the `nightly` group) and `api37-16k` (full minified `:app` suite, `PAGE_SIZE` 16384, `zipalign -P 16`) green on the release commit or its parent per `verify-tag.sh` |
+| 5 Network capture of a fresh-install session shows only expected hosts | `scripts/ci/network-capture.sh`, run by a maintainer on a workstation (it needs the real internet, so it is never a CI job) against the `v1.0.0-rc.N` APK: emulator (`system-images;android-36;default;x86_64`, no Google apps) started with `-tcpdump`, UI Automator session (subscribe 2 real feeds, refresh, stream 30 s, download one episode, search "news", in `foss` add and play one YouTube channel); `tshark` extracts DNS names and TLS SNI; every host is mapped to an inventory ID; OS hosts (connectivity check, NTP) listed separately. Unverified: emulator `-tcpdump` on API 36 images |
 | 6 Migration from the first tester schema; device upgraded from the last beta keeps data | 02's `MigrateAllTest`; manual upgrade on the reference device from the last `-beta` APK, comparing library, groups, history, Up next and downloads |
 | 7 PO-2, PO-5, PO-8, PO-10, PO-14 resolved | PLAN §4 updated |
 
@@ -1354,7 +1388,7 @@ Keys owned here ([01 DataStore files and typed setting keys](01-foundation.md#da
 | `privacy.crash_reports` | Bool | true | `settings` | Settings › Privacy › "Offer to send crash reports" (dialog per crash; off = ACRA reports nothing) | M0 (UI M11) |
 | `diagnostics.verbose_log_until` | Long? (epoch ms) | null | `device_settings` | Settings › About › Diagnostics › "Detailed log for 24 hours" | M11 |
 
-`privacy.crash_reports` is mirrored into ACRA by an `AppInitializer` (order 20) and on every change (`ACRA.errorReporter.setEnabled(…)`, Unverified accessor name), because ACRA reads its own flag at crash time, before DataStore could be read. `diagnostics.db_quick_check_failed_at` is 02's key.
+`privacy.crash_reports` is mirrored into ACRA's own SharedPreferences file `acra` (`sharedPreferencesName` above), key `acra.enable` (`ACRA.PREF_ENABLE_ACRA`), by an `AppInitializer` (order 20, platform band) and on every change of the setting. ACRA reads that key when it initialises in `attachBaseContext` — long before DataStore can be read — and its `ErrorReporterImpl` listens for changes to it, so the switch takes effect immediately and survives process restarts (`ACRA.errorReporter.setEnabled(…)` alone would last only until the process dies). The `acra` file is outside the Auto Backup include list ([D34](../PLAN.md#3-key-decisions)), so a restored device starts enabled until the initializer mirrors the restored setting. `diagnostics.db_quick_check_failed_at` is 02's key.
 
 Settings › Privacy page content (09): crash-reports switch; "What Neutrodyne connects to" (the [inventory](#network-inventory) with each row's current state, e.g. Podcast Index off); links to the Discover providers (03) and show-notes images (03) settings; "Privacy policy" (opens `PRIVACY.md`).
 
@@ -1364,17 +1398,17 @@ Settings › Privacy page content (09): crash-reports switch; "What Neutrodyne c
 
 | Milestone | Delivered in this area |
 |---|---|
-| [M0](../PLAN.md#m0-scaffold-and-ci) | `configureNeutrodyneTestTasks`, `neutrodyne.android.testing` content, `:core:common` test fixtures (`TestClock`, `MainDispatcherRule`, `Goldens`), `:core:testing` (`FakeNetworkMonitor`, `FakeSettingsRepository`, `FakeCrashReporter`, `FakeCrashContext`, `Nightly`), Robolectric `sdk=36`, Roborazzi wiring with one Settings screenshot, GMD `api26`/`api36` and E0; `ci.yml` (static, unit, assemble, instrumented); `nightly.yml` (`instrumented-full`, `api37-16k`, `repro` report-only); `release.yml`; key ceremony; first signed pre-release `v0.1.0-beta.1`; Renovate; `.editorconfig`, Lint, Spotless, detekt; PR and issue templates; `installAcra` + `CrashReportRedactor` (disabled until PO-10), `CrashReporter`/`CrashContext`; `PRIVACY.md` v0, `SECURITY.md`; fastlane `en-US` skeleton; `privacy.crash_reports` key |
-| [M1](../PLAN.md#m1-subscribe-and-ingest-rss) | fakes for 03's interfaces + contracts; `:core:database` test fixtures (02's `TestDb`); golden switch in `:feeds`; `MutationRobustnessTest` for `FeedParser` and `mutation-full`; platform-parser corpus in `:core:data` `androidTest`; schema drift and frozen-schema checks live; `TestServer`, E1; data builders, `fakeImageLoader` |
+| [M0](../PLAN.md#m0-scaffold-and-ci) | `configureNeutrodyneTestTasks`, `neutrodyne.android.testing` content, `:core:common` test fixtures (`TestClock`, `MainDispatcherRule`, `Goldens`), `:core:testing` (`FakeNetworkMonitor`, `FakeSettingsRepository`, `FakeCrashReporter`, `FakeCrashContext`, `Nightly`), Robolectric `sdk=36`, Roborazzi wiring with one Settings screenshot, GMD `api26`/`api36` (API 26 GMD check, emulator-runner fallback if needed), `disableEmptyDeviceTests`, and E0; `ci.yml` (static, unit, assemble, instrumented); `nightly.yml` (`instrumented-full`, `api37-16k`, `repro` report-only); `release.yml`; key ceremony; first signed pre-release `v0.1.0-beta.1`; Renovate; `.editorconfig`, Lint, Spotless, detekt; PR and issue templates; `installAcra` + `CrashReportRedactor` (disabled until PO-10), `CrashReporter`/`CrashContext`; `PRIVACY.md` v0, `SECURITY.md`; fastlane `en-US` skeleton; `privacy.crash_reports` key |
+| [M1](../PLAN.md#m1-subscribe-and-ingest-rss) | fakes for 03's interfaces + contracts; `:core:database` test fixtures (02's `TestDb`); golden switch in `:feeds`; `MutationRobustnessTest` for `FeedParser` and `mutation-full`; platform-parser corpus in `:core:data` `androidTest`; schema drift and frozen-schema checks live; `TestServer`, E1 (Add by URL); data builders, `fakeImageLoader`; accessibility checks under Robolectric verified (or the instrumented fallback adopted); inventory row `add-input` (typed URLs) |
 | [M2](../PLAN.md#m2-groups-and-group-feeds) | fakes for 05/08 interfaces; `ScreenshotTier`; E2; `FeedQueryTimingTest` recorded on GMD and run on the reference device (R2.9, PLAN M2 AC2); reference device confirmed with the PO |
 | [M3](../PLAN.md#m3-import-export-and-backup) | OPML/backup mutation providers; E5, E6, E9; nightly `bmgr` job; `RecordingAppNavigator` |
 | [M4](../PLAN.md#m4-playback-core) | Media3 test-utils forcing verified; `api34` device; 06's `PlaybackServiceTest` in nightly (incl. API 37 hardening); E3 |
 | [M5](../PLAN.md#m5-playback-features-and-system-surfaces) | manual device-matrix template in the release issue |
 | [M6](../PLAN.md#m6-downloads) | `:benchmark` module for system tests, `bench34`, `system-tests` job, E10; `api33` device; E4; `bmgr` assertion for `Podcasts/` |
-| [M7](../PLAN.md#m7-discovery) | `PRIVACY.md` and in-app inventory gain `apple`, `fyyd`, `podcastindex`; `PrivacyInventoryParityTest` |
+| [M7](../PLAN.md#m7-discovery) | `PRIVACY.md` and in-app inventory gain `apple`, `fyyd`, `podcastindex` and the autodiscovery probes of `add-input`; `PrivacyInventoryParityTest`; E1 deep-link case |
 | [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | E8 (`playDebug`) in `instrumented`; YouTube import-parser mutation providers; inventory `youtube-subscriptions` |
 | [M9](../PLAN.md#m9-youtube-playback-and-downloads-in-foss) | E7 on minified `fossRelease`; `check-play-dex.sh` against real GPL artifacts; `collectGplSources` and the corresponding-source asset; `emergency-patch-check`, `youtube-canary`; Renovate fast lane and `bump-extractor.sh`; inventory `youtube-streams` |
-| [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) | `FULL` screenshot tier and `screenshots-full`; pseudo-locale/RTL captures; Weblate project; `:benchmark` journeys, `BenchmarkSeedReceiver`, `benchmark-dryrun`; PB3 on the reference device (M10 AC7) |
+| [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) | `FULL` screenshot tier and `screenshots-full`; pseudo-locale/RTL captures; Weblate project opened at the end of M10 if strings are stable (otherwise M11); `:benchmark` journeys, `BenchmarkSeedReceiver`, `benchmark-dryrun`; PB3 on the reference device (M10 AC7) |
 | [M11](../PLAN.md#m11-release-hardening-and-v10) | baseline/startup profiles and `baseline-profile.yml`; all budgets measured; `DiagnosticsRepository` and contributors, `DatabaseCopyExporter`, `RedactionCoverageTest`, `diagnostics.verbose_log_until`; ACRA mailbox (PO-10); `PRIVACY.md` final and Data safety draft; launch languages (PO-14); `repro` blocking and `verify-repro`; `live-canary`; network capture; F-Droid dry run and MR; IzzyOnDroid request; Play submission if PO-2; developer verification (PO-5); v1.0 gate |
 | M12–M15 | Glance widget screenshot tests (M13); `play`-only Cast build checks and `play` proprietary allow-list (M13); SponsorBlock destination in the inventory (M14); revisit Compose Preview Screenshot Testing once AGP test suites are stable |
 
@@ -1384,14 +1418,14 @@ Settings › Privacy page content (09): crash-reports switch; "What Neutrodyne c
 
 | Name | Kind | Location |
 |---|---|---|
-| `configureNeutrodyneTestTasks()`, `configureAndroidTesting()`, `configureManagedDevices()` | build-logic functions | `build-logic/convention` |
+| `configureNeutrodyneTestTasks()`, `configureAndroidTesting()`, `configureManagedDevices()`, `disableEmptyDeviceTests()` | build-logic functions | `build-logic/convention` |
 | Gradle properties `updateGoldens`, `screenshotTier`, `mutationIterations`, `testBuildType`, `neutrodyne.testScope` | build switches | — |
 | System properties `neutrodyne.updateGoldens`, `neutrodyne.moduleDir`, `neutrodyne.rootDir`, `neutrodyne.screenshotTier`, `neutrodyne.mutationIterations` | test configuration | — |
 | `TestClock`, `MainDispatcherRule` (canonical names; physical location), `Goldens` | test helpers | `:core:common` test fixtures, package `app.neutrodyne.core.testing`, re-exported by `:core:testing` |
 | `Nightly`, `ScreenshotTier`, `assumeTier` | test selection | `:core:testing` |
 | `Fake*` per [inventory](#coretesting-inventory), `*Contract` bases, data builders, `fakeImageLoader` | fakes | `:core:testing` |
 | `RecordingAppNavigator` | fake | `:core:navigation` test fixtures |
-| `TestServer`, `FixtureDispatcher`, `TestSeeder` | E2E helpers | `:app/src/androidTest` |
+| `TestServer`, `FixtureDispatcher`, `TestSeeder`, `BackgroundStandInActivity` (declared in the androidTest manifest) | E2E helpers | `:app/src/androidTest` |
 | `SmokeTest`, `SubscribeJourneyTest`, `GroupFeedJourneyTest`, `PlayJourneyTest`, `DownloadJourneyTest`, `ImportJourneyTest`, `BackupRestoreJourneyTest`, `YouTubeReleaseSmokeTest`, `PlayFlavorYouTubeTest` | E2E tests | `:app/src/androidTest` |
 | `MutationRobustnessTest`, task `mutationTest` | N9 robustness | `:feeds`, `:youtube:api` |
 | `PrivacyInventoryParityTest`, `RedactionCoverageTest`, `CrashReportRedactorTest`, `DatabaseCopyExporterTest` | tests | `:feature:settings`, `:core:data`, `:app`, `:core:data` |
@@ -1407,7 +1441,7 @@ Settings › Privacy page content (09): crash-reports switch; "What Neutrodyne c
 | `privacy.crash_reports`, `diagnostics.verbose_log_until` | setting keys | `:core:model` registry |
 | Workflows `ci.yml`, `nightly.yml`, `release.yml`, `record-screenshots.yml`, `baseline-profile.yml`; jobs per [CI pipelines](#ci-pipelines); GitHub environment `release`; labels `run-instrumented`, `youtube-hotfix`, `nightly-failure`, `release-blocker` | CI | `.github/` |
 | Scripts per [CI scripts](#ci-scripts), `scripts/release.sh`, `scripts/release/corresponding-source.sh`, `scripts/l10n/update-shipped-locales.sh`, `scripts/youtube/bump-extractor.sh`, `scripts/ci/network-capture.sh` | scripts | `scripts/` |
-| `app/policy/locales.txt`, `app/lint-baseline.xml`, `config/detekt/detekt.yml`, `renovate.json`, `fdroid/app.neutrodyne.yml`, `PRIVACY.md`, `SECURITY.md`, `.editorconfig`, `proguard/test.pro` | files | repository |
+| `app/policy/locales.txt`, `app/lint-baseline.xml`, `config/detekt/detekt.yml`, `renovate.json`, `fdroid/app.neutrodyne.yml`, `PRIVACY.md`, `SECURITY.md`, `.editorconfig`, `app/proguard-test.pro` | files | repository |
 | Secrets `NEUTRODYNE_UPLOAD_KEYSTORE*`, `PLAY_SERVICE_ACCOUNT_JSON`; variables `NEUTRODYNE_CERT_SHA256`, `PLAY_PUBLISHING` | CI configuration | GitHub |
 
 ---
@@ -1415,19 +1449,19 @@ Settings › Privacy page content (09): crash-reports switch; "What Neutrodyne c
 ## Open questions
 
 1. **Architect review: `:core:testing` cannot serve JVM modules.** It is an Android library, so 01's rule 13 ("test code may use `:core:testing` anywhere") does not hold for `:core:model`, `:core:common`, `:core:domain`, `:feeds` and `:*:api`. This document places `TestClock`, `MainDispatcherRule` and `Goldens` in `:core:common` test fixtures (re-exported by `:core:testing`) and keeps fake-dependent tests in Android modules. Confirm, or make `:core:testing` a JVM module and move `fakeImageLoader` elsewhere.
-2. **Architect review: `@TestInstallIn` modules.** 01 places them in `:core:testing`, but they must name the production Hilt modules they replace, which rule 9 forbids `:core:testing` to see. They live in `:app/src/test`; 01's [Test overrides](01-foundation.md#test-overrides) should say so.
-3. **Architect review: `:benchmark` from M6.** Process-death tests (07's `ProcessDeathResumeTest`, PLAN M6 AC2) cannot run in-process; the skeleton's "content from M11" for `:benchmark` becomes M6 (system tests), with Macrobenchmarks in M10/M11.
-4. **Architect review: reproducibility vs build-time secrets.** `neutrodyne.acraMailto` must be committed in `gradle.properties` (not passed with `-P`), and PO-3 option A ("inject the Podcast Index key into GitHub and Play builds") would make the GitHub `foss` APK differ from F-Droid's rebuild. This document restricts any injected PI key to `play`; PO-3's option text needs amending.
-5. **Architect review: key ceremony in M0.** D61/PO-8 list key custody as an M11 blocker, but tester pre-releases from M0 must already carry the final key or testers reinstall at 1.0. Default here: ceremony in M0 with PO-8's default holders.
-6. **Architect review: 02's `sharedTest` fixtures** move to AGP test fixtures of `:core:database` so `:core:data`, `:playback:impl`, `:download:impl` and `:app` can use `TestDb` and `SeedDatabase`.
-7. **PO (N5):** name the reference device; default Pixel 7a.
-8. **PO (PO-10 / Data safety):** keep ACRA in `play` (declare optional crash logs; "encrypted in transit" depends on the user's mail provider) or disable ACRA in `play` and rely on Android vitals (declare "no data collected"). Default: ACRA in both flavors.
-9. **PO (Play):** target audience 18+ to stay outside the Families policy — confirm.
-10. Owner 07: the nightly `bmgr` check runs on API 29 and 36 with android-emulator-runner (uninstall/reinstall is impossible in-process); 07's "GMD API 31 and 36" should read so.
-11. Owner 08: set `testTagsAsResourceId = true` on the root scaffold; add `ReportDrawnWhen` on the first Feeds page.
-12. Owner 01: committed `neutrodyne.acraMailto` and `ACRA_MAILTO = ""` on `debug`; AboutLibraries offline mode; `isCrunchPngs = false` and `vcsInfo { include = false }` on `release`; `BuildInfo.shippedLocales`; the `Text("…")` literal pattern in `checkBannedApis`; `neutrodyne.jvm.library` calls `configureNeutrodyneTestTasks()`; a `verifyDependencyPolicy` rule failing on `io.mockk` in any `*AndroidTestRuntimeClasspath`.
+2. **Architect review: `:benchmark` from M6.** Process-death tests (07's `ProcessDeathResumeTest`, PLAN M6 AC2) cannot run in-process; the skeleton's and 01's "M11" for `:benchmark` becomes M6 (system tests), with Macrobenchmarks in M10 (PLAN M10 AC7) and profiles in M11.
+3. **Architect review: reproducibility vs build-time secrets.** `neutrodyne.acraMailto` must be committed in `gradle.properties` (01 currently reads it from `-P` only), and PO-3 option A ("inject the Podcast Index key into GitHub and Play builds") would make the GitHub `foss` APK differ from F-Droid's rebuild (D61). This document restricts any injected PI key to `play`; PO-3's option text needs amending.
+4. **Architect review: key ceremony in M0.** D61/PO-8 list key custody as an M11 blocker, but tester pre-releases from M0 must already carry the final key or testers reinstall at 1.0. Default here: ceremony in M0 with PO-8's default holders; PO-5's text should also note that M0 pre-releases are already subject to verification enforcement in BR/ID/SG/TH.
+5. **Architect review: 02's `sharedTest` fixtures** move to AGP test fixtures of `:core:database` so `:core:data`, `:playback:impl`, `:download:impl` and `:app` can use `TestDb` and `SeedDatabase` (02 still names `core/database/src/sharedTest/`).
+6. **Architect review: API 26 on Gradle Managed Devices.** The GMD documentation says to use API 27 and higher, while PLAN M0 AC4 requires an "API 26 Gradle Managed Device". If the M0 check fails, the `instrumented-api26` emulator-runner fallback of [Gradle Managed Devices](#gradle-managed-devices) applies and M0 AC4 should read "API 26 emulator".
+7. **Owner 02: diagnostics export.** The scrub list in [02 db-maintenance worker](02-data-model.md#db-maintenance-worker) misses token-bearing values: `episode.identityKey` (`u:` keys embed the normalised enclosure URL; `g:` keys can embed URL-shaped GUIDs), `episode.guid` when URL-shaped, `podcast.artworkUrl`, `episode.imageUrl`, `episode.chaptersUrl`, `episode_alt_enclosure` sources and `artwork.url` (Patreon-style signed image URLs). `RedactionCoverageTest` fails until they are scrubbed. The target path must be under `cacheDir/export/` (FileProvider), not `<cacheDir>/diag.db`.
+8. **Owner 01: `Redactor.url` example.** Rule 4 keeps path segments of ≤ 15 characters, but its example `/rss/a8F3kq09ZpLm2xQ` (15 characters) is shown as masked. Either the threshold is "< 15" or the example is wrong; this document's tests use a 20-character token so they hold either way.
+9. **PO (N5):** name the reference device; default Pixel 7a.
+10. **PO (PO-10 / Data safety):** keep ACRA in `play` (declare optional crash logs; "encrypted in transit" depends on the user's mail provider) or disable ACRA in `play` and rely on Android vitals (declare "no data collected"). Default: ACRA in both flavors.
+11. **PO (Play):** target audience 18+ to stay outside the Families policy — confirm.
+12. Owner 01: committed `neutrodyne.acraMailto` and `ACRA_MAILTO = ""` on `debug`; AboutLibraries offline mode; `BuildInfo.shippedLocales`; the `Text("…")` literal pattern in `checkBannedApis`; `neutrodyne.jvm.library` calls `configureNeutrodyneTestTasks()`; test-fixtures plugins on `:core:common`, `:core:database`, `:core:navigation` and `:youtube:streams`; a `verifyDependencyPolicy` rule failing on `io.mockk` in any `*AndroidTestRuntimeClasspath`; `include(":benchmark")` in M6.
 13. Owner 05: if the F-Droid dry run flags committed `.zip` fixtures, build `v1_*.zip` at test time from committed directories (same for 04's `.html.gz`).
-14. Unverified, checked in the named milestone: GMD below API 27 and `ps16k` image sources (M0); AGP 9.4 managed-device DSL names and Kotlin in Android test fixtures (M0); Robolectric default-locale override and pseudo-locale qualifiers (M0/M2); compose-rules `.editorconfig` keys (M0); `generateLocaleConfig` with `localeFilters` (M0); ACRA administrator mutation semantics, `setEnabled` accessor and the `play` framework-dialog interplay (M11); a second `NewPipe.init` (M9); plugin-created build-type source sets (M10); GitHub issue-form pre-fill (M11); Renovate hosted wrapper regeneration (M0); emulator `-tcpdump` (M11); developer-verification key-proof mechanics and PEPK flags (M11); IzzyOnDroid size limit and fdroidserver local-build image (M11); Weblate statistics API (M11).
+14. Unverified, checked in the named milestone: GMD API 26 and AGP 9.4 managed-device DSL names (M0); the device-test disable accessor (M0); Kotlin in Android test fixtures (M0); Robolectric default-locale override and pseudo-locale qualifiers (M0/M2); accessibility checks under Robolectric (M1); compose-rules `.editorconfig` keys (M0); `generateLocaleConfig` with `localeFilters` and the generated locale-config file name (M0); android-emulator-runner with a minor-versioned `api-level` (M0); the `play` framework-crash-dialog interplay with ACRA (M11); a second `NewPipe.init` (M9); plugin-created build-type source sets (M10); Renovate hosted wrapper regeneration (M0); emulator `-tcpdump` on API 36 (M11); developer-verification key-proof mechanics and PEPK flags (M11); IzzyOnDroid size limit and fdroidserver local-build image (M11); Weblate statistics API (M11).
 
 ---
 
@@ -1447,8 +1481,9 @@ Testing and build:
 - Media3 test-utils POM (pulls MockWebServer 4.12, Robolectric 4.16) — https://dl.google.com/android/maven2/androidx/media3/media3-test-utils/1.11.1/media3-test-utils-1.11.1.pom
 - Coil testing (`FakeImageLoaderEngine`) — https://coil-kt.github.io/coil/testing/
 - Room 3 releases and migration testing — https://developer.android.com/jetpack/androidx/releases/room3 · https://developer.android.com/training/data-storage/room/migrating-db-versions
-- Gradle Managed Devices — https://developer.android.com/studio/test/managed-devices
-- ATD and API 37 system images — https://dl.google.com/android/repository/sys-img/aosp_atd/sys-img2-3.xml · https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml
+- Gradle Managed Devices (ATD removes SystemUI, launcher and Settings; "use API levels 27 and higher"; GPU and sharding properties; re-checked 2026-10-05) — https://developer.android.com/studio/test/gradle-managed-devices
+- System images: ATD x86_64 API 30–36, `default` x86_64 API 26–36, API 37 only as `android-37.x` Google APIs images incl. `ps16k` (read 2026-10-05) — https://dl.google.com/android/repository/sys-img/aosp_atd/sys-img2-3.xml · https://dl.google.com/android/repository/sys-img/android/sys-img2-3.xml · https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml · https://dl.google.com/android/repository/sys-img/google_apis_playstore/sys-img2-3.xml
+- Pseudolocales and locale filters — https://developer.android.com/guide/topics/resources/pseudolocales
 - AGP 9.0 defaults (tested build type only, R8 strict keep rules, GMD replaces device providers) — https://developer.android.com/build/releases/agp-9-0-0-release-notes
 - R8 and shrinking — https://developer.android.com/build/shrink-code · https://developer.android.com/build/releases/past-releases/agp-8-0-0-release-notes
 - Baseline profiles — https://developer.android.com/topic/performance/baselineprofiles/create-baselineprofile
@@ -1492,6 +1527,8 @@ Distribution, signing and policy:
 
 Privacy, crash reporting, localisation and platform:
 - ACRA setup, senders, interactions — https://www.acra.ch/docs/Setup · https://www.acra.ch/docs/Senders · https://www.acra.ch/docs/Interactions
+- ACRA 5.14.2 internals (administrator `shouldSendReport` before `saveCrashReportFile`; `acra.enable`/`acra.disable` preferences, `sharedPreferencesName`, `ErrorReporter.setEnabled`), read from the published bytecode 2026-10-05 — https://repo1.maven.org/maven2/ch/acra/acra-core/5.14.2/
+- GitHub issue creation from URL query parameters (issue-form fields, `414 URI Too Long`) — https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-an-issue#creating-an-issue-from-a-url-query
 - Hosted Weblate Libre plan; app-store metadata format — https://weblate.org/en/hosting/ · https://docs.weblate.org/en/latest/formats/appstore.html
 - Per-app languages — https://developer.android.com/guide/topics/resources/app-languages
 - Android 16 behaviour changes (targeting 36; all apps) — https://developer.android.com/about/versions/16/behavior-changes-16 · https://developer.android.com/about/versions/16/behavior-changes-all
