@@ -1030,9 +1030,11 @@ data class BasicCredentials(val username: String, val password: String)
 
 ### Input normalisation
 
-`AddInputNormalizer.normalize(raw): NormalizedInput` (`:feeds`, pure; returns the fetch URL, `schemeGuessed`, extracted credentials, or "not a URL"):
+**YouTube pre-check (first).** `AddPodcastResolverImpl` (`:core:data`, which may depend on `:youtube:api`; `:feeds` may not, [D68](../PLAN.md#3-key-decisions)) trims the input (cap 4,096 chars) and calls `YouTubeUrlClassifier.classify` on the whole text and, if it contains whitespace, on each whitespace-separated token in order; the first non-null `YtRef` ends resolution with the YouTube branch of [Host recognition](#host-recognition). This is the only path for a bare `@handle` (R3.1: `@mkbhd`, `@some.name`) or a bare `UC…` ID, which the normaliser below would otherwise turn into `NotAUrl` or a scheme-less host. From M3 the classifier exists; in M1–M2 the pre-check is the host check of [Host recognition](#host-recognition), so a bare handle yields `NotAUrl` there.
 
-1. Trim; cap at 4,096 chars. If the text contains whitespace (share intents: "Listen to X https://…"), take the first token that is a URL (`https?://`, `feed:`, `pcast:`, `podcast:`, `itpc:`, `neutrodyne:`) or a bare `host.tld/…`; a lone `@handle` is kept for the YouTube classifier.
+`AddInputNormalizer.normalize(raw): NormalizedInput` (`:feeds`, pure; runs only when the pre-check returned null; returns the fetch URL, `schemeGuessed`, extracted credentials, or "not a URL"):
+
+1. Trim; cap at 4,096 chars. If the text contains whitespace (share intents: "Listen to X https://…"), take the first token that is a URL (`https?://`, `feed:`, `pcast:`, `podcast:`, `itpc:`, `neutrodyne:`) or a bare `host.tld/…`; tokens starting with `@` are never taken as hosts.
 2. `neutrodyne://subscribe?url=<enc>` → the decoded `url` (recursively, once).
 3. `feed:https://x` / `feed:http://x` → `https://x` / `http://x`; `feed://x`, `pcast://x`, `podcast://x`, `itpc://x` → `https://x` with `schemeGuessed = true`.
 4. Subscribe wrappers: `subscribeonandroid.com/<rest>` and `www.subscribeonandroid.com/<rest>` → `<rest>` (adding `https://` when scheme-less); `antennapod.org/deeplink/subscribe?url=<enc>` → the `url` parameter; `podcasts.google.com/feed/<base64url>` → decoded feed URL (**Unverified:** the encoding; the shut-down service's links still circulate).
@@ -1042,11 +1044,11 @@ data class BasicCredentials(val username: String, val password: String)
 
 ### Host recognition
 
-Order, first match wins (`HostRecognizer`):
+Order, first match wins (`AddPodcastResolverImpl` for the YouTube row, `HostRecognizer` for the rest):
 
 | Input | Action |
 |---|---|
-| YouTube input: `YouTubeUrlClassifier.classify(input) != null` (M3+; `classify` never returns `Query`, [04 Channel resolution](04-youtube.md#channel-resolution)); in M1–M2, before the classifier exists, a host check (`youtube.com` and subdomains, `youtu.be`) stands in | M8+: `AddResolution.YouTube(ref)`; the add sheet continues with 04's [Subscribe flow](04-youtube.md#subscribe-flow). Before M8: `YouTubeNotYetSupported` |
+| YouTube input: `YouTubeUrlClassifier.classify(input) != null` for the raw text or a token (the pre-check of [Input normalisation](#input-normalisation)) or for the unwrapped URL (M3+; `classify` never returns `Query`, [04 Channel resolution](04-youtube.md#channel-resolution)). Run by `AddPodcastResolverImpl` in `:core:data`, not by `HostRecognizer` (`:feeds` cannot see `:youtube:api`); in M1–M2, before the classifier exists, a host check (`youtube.com` and subdomains, `youtu.be`) stands in | M8+: `AddResolution.YouTube(ref)`; the add sheet continues with 04's [Subscribe flow](04-youtube.md#subscribe-flow). Before M8: `YouTubeNotYetSupported` |
 | `podcasts.apple.com/…/id(\d+)`, `itunes.apple.com/…/id(\d+)`, `pod.link/(\d+)`, `overcast.fm/itunes(\d+)` | Apple lookup (`lookup?id=<id>&entity=podcast`, consumes one token of the [Apple bucket](#apple-itunes-search)) → `feedUrl` → fetch; no `feedUrl` → `AppleOnlyShow`; keep `artworkUrl600` as cover fallback |
 | `podcastindex.org/podcast/(\d+)` and a Podcast Index key exists | `podcasts/byfeedid?id=<id>` → `url` → fetch; no key → generic fetch |
 | `open.spotify.com/show/…` | `SpotifyShow` ("Spotify shows have no public RSS feed; search for the show by name instead") |
@@ -1058,10 +1060,12 @@ Order, first match wins (`HostRecognizer`):
 
 ```mermaid
 flowchart TD
-  IN["input text or intent"] --> N["AddInputNormalizer"]
+  IN["input text or intent"] --> YP{"YouTube pre-check: classify text, then each token"}
+  YP -->|"YtRef, incl. bare @handle"| YT["AddResolution.YouTube (04)"]
+  YP -->|"null"| N["AddInputNormalizer"]
   N -->|"not a URL"| Q["Failure NotAUrl, offer search"]
-  N --> Y{"YouTube?"}
-  Y -->|yes| YT["AddResolution.YouTube (04)"]
+  N -->|"http(s) URL"| Y{"YouTube? (unwrapped URL)"}
+  Y -->|yes| YT
   Y -->|no| H{"known host?"}
   H -->|"Apple, pod.link, Overcast id"| L["Apple lookup"] --> FE
   H -->|"Podcast Index id"| PI["byfeedid"] --> FE
@@ -1391,7 +1395,7 @@ Also: `no-media-blog` and `empty-channel` for the accepted-items rules. The corp
 | `CredentialStoreTest` | JVM with software `CipherProvider`; instrumented with Keystore | round trip; one row per origin; AAD mismatch fails; key loss sets `needsCredentials`; `awaitLoaded` before first lookup; a row deleted by the cascade leaves the map; stored origin without port equals `Origin.of` with 443 | M1 |
 | `SubscribeUseCaseTest`, `UnsubscribeUseCaseTest` | `TestDb` + fakes | aliases, memberships, `INITIAL` episodes, paging state per setting, credential removed when the transaction fails, YouTube URL refused by `invoke`; YouTube `youTube()` inserts a pending row and refreshes; unsubscribe pauses only when the current episode belongs to the podcast, deletes downloads before the cascade, flushes the batcher | M1, M4, M6, M8 |
 | `NewEpisodeNotifierTest` | Robolectric | channel choice; one notification per channel per run (M2 acceptance 7); merge with an active notification; initial fetch silent; permission denied posts nothing; hidden YouTube items skipped; unsubscribe removes the podcast's lines | M2 |
-| `AddPodcastResolverTest` | MockWebServer + fakes | direct feed; scheme-less https then http fallback; Apple link via recorded lookup JSON (M7 acceptance 4); autodiscovery fixtures: `<link rel=alternate>` page, Apple-link-only page, WordPress `/feed/podcast`, several candidates → `Choose` (M7 acceptance 3); a page whose only feed is a YouTube channel feed → `AddResolution.YouTube`; OPML → `SubscriptionList`; Spotify; NoMedia vs empty feed; credentials flow; already subscribed exact and by GUID; preview eviction → re-fetch | M1, M7 |
+| `AddPodcastResolverTest` | MockWebServer + fakes | `@mkbhd`, `@some.name`, "Subscribe to @mkbhd" and a bare `UC…` ID → `AddResolution.YouTube` (M8; `YouTubeNotYetSupported` in M3–M7) and never `NotAUrl` or a fetch; `neutrodyne://subscribe?url=` wrapping a YouTube URL → `AddResolution.YouTube`; direct feed; scheme-less https then http fallback; Apple link via recorded lookup JSON (M7 acceptance 4); autodiscovery fixtures: `<link rel=alternate>` page, Apple-link-only page, WordPress `/feed/podcast`, several candidates → `Choose` (M7 acceptance 3); a page whose only feed is a YouTube channel feed → `AddResolution.YouTube`; OPML → `SubscriptionList`; Spotify; NoMedia vs empty feed; credentials flow; already subscribed exact and by GUID; preview eviction → re-fetch | M1, M7, M8 |
 | `SearchRepositoryTest` | MockWebServer with recorded JSON + `TestClock` | merged, de-duplicated Apple + fyyd for "news"; one failing provider → partial results; hits without `feedUrl` dropped (M7 acceptance 1); ≤ 20 Apple requests per minute (M7 acceptance 2); PI hidden without key, visible with a user key stored encrypted (M7 acceptance 5); PI auth header for a fixed clock; clock-skew retry; RRF order; cache hit; `observeProviders` drives the disclosure line (M7 acceptance 6) | M7 |
 
 **Nightly live canary** (non-blocking, workflow `live-canary` owned by 09): `./gradlew :feeds:liveCanary` (a `JavaExec` task over a separate `canary` source set of `:feeds` that uses `java.net.http.HttpClient`, so `main` stays I/O-free) fetches and parses the ~30 public feeds in `feeds/canary/feeds.txt` (including the Podcasting 2.0 reference feed) and reports new warnings or parse failures; it never gates merges and never touches YouTube.
@@ -1409,7 +1413,7 @@ Also: `no-media-blog` and `empty-channel` for the accepted-items rules. The corp
 | [M5](../PLAN.md#m5-playback-features-and-system-surfaces) | Show-notes timestamp spans wired to 06's seek and `playEpisodeAt` (M5 acceptance 5) |
 | [M6](../PLAN.md#m6-downloads) | Unsubscribe and merge delete download files through `DownloadController` |
 | [M7](../PLAN.md#m7-discovery) | `SearchRepository` with Apple, fyyd, Podcast Index (BYOK); charts and genre mapping; suggested groups; host recognition, full autodiscovery with Apple anchors and probes, chooser, wrapper unwrapping; `MainActivity` VIEW/SEND filters and the "Open Apple Podcasts links" settings row; Spotify explanation; provider disclosure |
-| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | 04's `YouTubeSourceAdapter` and `YouTubeOutageMonitor` plugged into the engine (`absenceFloor`, `Deferred`, `afterIngest` IDs), `SubscribeUseCase.youTube`, `AddResolution.YouTube` live (removes `YouTubeNotYetSupported`) |
+| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | 04's `YouTubeSourceAdapter` and `YouTubeOutageMonitor` plugged into the engine (`absenceFloor`, `Deferred`, `afterIngest` IDs), `SubscribeUseCase.youTube`, `AddResolution.YouTube` live for links, bare `@handle`s and `UC…` IDs (removes `YouTubeNotYetSupported`) |
 | [M9](../PLAN.md#m9-youtube-playback-and-downloads-in-foss) | `afterIngest` enrichment (`foss`, 04) |
 | [M11](../PLAN.md#m11-release-hardening-and-v10) | Diagnostics content (run summary, stop reasons, parse warnings), nightly live canary, performance check of the 300-feed refresh |
 

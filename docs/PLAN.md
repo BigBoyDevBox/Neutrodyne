@@ -454,6 +454,7 @@ flowchart TB
   F --> UI
   F --> API
   UI --> base
+  cui --> da
   API --> base
   data --> dom
   data --> db & dsx & net & feeds & art & ya

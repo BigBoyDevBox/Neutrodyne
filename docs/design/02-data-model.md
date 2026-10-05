@@ -76,6 +76,7 @@ Exceptions to [D15](../PLAN.md#3-key-decisions) "episode is written only by inge
 | `EpisodeKeys.candidates(item)`, `EpisodeKeys.keyFor(episode, version)`, `EpisodeKeys.versionOf(key)` | required members of the canonical `EpisodeKeys` (`:feeds`, implemented by 03) | Version-tolerant matching ([Key versions](#key-versions)) | 03, 05 |
 | `ScopeOverrides` | `@Embedded` class, `:core:database` | Guarantees identical columns in both settings tables | 05 |
 | `NeutrodyneConverters`, `EpisodeDescriptionCodec`, `DatabaseOpener`, `OpenResult`, `RecoveryCause`, `DatabaseOpenException`, `TableRebuild`, `ForeignKeysDriver` (only if spike S3 needs it) | classes, `:core:database` | Converters, show-notes storage, open/recovery, migration helper | 01, 03, 05 |
+| `DiagExportScrub` (with its `KEEP` allow-list) | object, `:core:data` | Scrubs the diagnostics `VACUUM INTO` copy column by column ([db-maintenance worker](#db-maintenance-worker)) | 09 (`DatabaseCopyExporter`) |
 | `FetchStateBatcher` | class, `:core:data` | Batches fetch-state-only `podcast` writes ([Refresh selection and fetch-state writes](#refresh-selection-and-fetch-state-writes)) | 03 |
 | `EpisodeRowProjection`, `ContextItem`, `MediaLookupRow`, `ExistingEpisodeKey`, `EpisodeFeedUpdate`, `PodcastFeedMetadata`, `PodcastFetchState`, `DueFeed` (requested by 03), `YouTubeFeedMetadata`, `YouTubeFacts`, `ArtworkSyncResult`, `QueryPlanRow` | DAO projections, `:core:database` | Query results and partial-entity updates | 03, 04, 06, 07, 08 |
 | `PodcastDao`, `EpisodeDao`, `IngestDao`, `FeedDao`, `GroupDao`, `ScopeSettingsDao`, `EpisodeStateDao`, `PositionDao`, `QueueDao`, `PlaySessionDao`, `DownloadDao`, `ArtworkDao`, `ChapterDao`, `CredentialDao`, `ImportDao`, `BackupDao`, `MaintenanceDao` | DAOs, `:core:database` | One DAO per area | impl modules |
@@ -177,7 +178,7 @@ abstract class NeutrodyneDatabase : RoomDatabase() {
                 .setQueryCoroutineContext(io)                       // @Dispatcher(IO)
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)    // explicit; WAL is mandatory
                 .addMigrations(*ALL_MIGRATIONS)
-                .addCallback(cb)                                    // suspend onCreate → OpenResult.created; suspend onOpen → PRAGMA optimize
+                .addCallback(cb)                                    // suspend onCreate → OpenResult.created + play_session row; suspend onOpen → PRAGMA optimize
                 .build()                                            // never fallbackToDestructiveMigration*()
     }
 }
@@ -206,7 +207,7 @@ abstract class NeutrodyneDatabase : RoomDatabase() {
 ### DAO rules
 
 1. **Column-scoped writes for shared tables.** `podcast`, `episode_state`, `download` and `play_session` have several writers. They are written only with targeted `UPDATE … SET <owned columns>` statements or partial-entity `@Update(entity = …)` classes, never by upserting a whole entity that another module may have changed (lost updates).
-2. **Row creation for lazily created rows** (`episode_state`, `episode_position`, settings): `INSERT OR IGNORE` with neutral values, then a targeted `UPDATE`. An ignored insert and an `UPDATE` that matches zero rows fire no Room trigger, so they cause no invalidation. An `UPDATE` that matches a row but writes identical values **does** fire the trigger, so every repeated write to a joined table carries a "value differs" predicate (`… WHERE episodeId = :id AND waitReason IS NOT :reason`).
+2. **Row creation for lazily created rows** (`episode_state`, `episode_position`, settings, and the `play_session` singleton via `PlaySessionDao.ensure`, [play_session](#play_session)): `INSERT OR IGNORE` with neutral values, then a targeted `UPDATE`. An ignored insert and an `UPDATE` that matches zero rows fire no Room trigger, so they cause no invalidation. An `UPDATE` that matches a row but writes identical values **does** fire the trigger, so every repeated write to a joined table carries a "value differs" predicate (`… WHERE episodeId = :id AND waitReason IS NOT :reason`).
 3. **Never `OnConflictStrategy.REPLACE` / `INSERT OR REPLACE` on an FK parent table** (`podcast`, `episode`, `podcast_group`, `credential`, `import_session`). REPLACE deletes the existing row; with `ON DELETE CASCADE` children (episodes, user state) can be lost. (Unverified whether SQLite applies ON DELETE actions to REPLACE-deleted rows; forbidden regardless.) `@Upsert` (insert, then update on conflict) is allowed only for single-writer tables: `artwork`, `podcast_settings`, `podcast_group_settings`, `chapter`.
 4. **Raw queries** (`@RawQuery`) are built only by `FeedQueryBuilder` from enumerated fragments; every value is bound, never concatenated. `observedEntities` must list every table the SQL references.
 5. **Paged and observed list queries** follow [Invalidation hygiene](#invalidation-hygiene).
@@ -643,6 +644,8 @@ data class QueueEntryEntity(
 
 Singleton (`id = 0`). No position column ([D41](../PLAN.md#3-key-decisions)); semantics in [06 Queue and play context](06-playback.md#queue-and-play-context).
 
+The row exists from the database's creation: `PlaySessionDao.ensure(now)` = `INSERT OR IGNORE INTO play_session(id, generation, updatedAt) VALUES (0, 0, :now)` runs in `Callback.onCreate` (as SQL on the `connection` passed in, never through the DAO, [Database builder and connections](#database-builder-and-connections)), and again as the first statement of every 06 `SessionWriter` transaction and of 05's restore transaction (an ignored insert fires no trigger). Every other write is an `UPDATE … WHERE id = 0`, so without the row they would match nothing and `observeCurrentEpisodeId()` would never emit.
+
 ```kotlin
 @Entity(tableName = "play_session", indices = [Index("currentEpisodeId")],
     foreignKeys = [ForeignKey(EpisodeEntity::class, ["id"], ["currentEpisodeId"], onDelete = ForeignKey.SET_NULL)])
@@ -898,14 +901,18 @@ e.isVideo, e.isShort, e.availability, e.episodeType, e.episodeDisplay, e.externa
 COALESCE(p.customTitle, p.title) AS podcastTitle, p.sourceType,
 COALESCE(e.artworkKey, p.artworkKey) AS artworkKey, COALESCE(e.imageUrl, p.artworkUrl) AS artworkUrl,
 COALESCE(a.version, 0) AS artworkVersion, a.avgArgb AS artworkAvgArgb,
+p.artworkKey AS podcastArtworkKey, p.artworkUrl AS podcastArtworkUrl,
+COALESCE(pa.version, 0) AS podcastArtworkVersion, pa.avgArgb AS podcastArtworkAvgArgb,
 s.playedAt, s.startedAt, COALESCE(s.isFavorite, 0) AS isFavorite, d.state AS downloadState
 -- ROW_JOINS
 LEFT JOIN episode_state s ON s.episodeId = e.id
 LEFT JOIN download d ON d.episodeId = e.id
 LEFT JOIN artwork a ON a.key = COALESCE(e.artworkKey, p.artworkKey)
+LEFT JOIN artwork pa ON pa.key = p.artworkKey
 ```
 
 - `includeInAll` applies to the All feed only; group, podcast and Ungrouped feeds ignore it.
+- The second artwork join (`pa`, primary-key lookup, same shape as [Media lookup](#media-lookup)) gives every row the podcast's own cover: YouTube rows always carry a video thumbnail in `artwork` (04 sets `imageUrl`/`artworkKey` per video), so `appearance.youtube_row_art = CHANNEL_AVATAR` renders `podcastArtwork`, and 08 detects "episode has its own art" as `artwork.key != podcastArtwork.key`. The fallback queries below inherit both through `ROW_COLUMNS`/`ROW_JOINS`.
 - Room's `LimitOffsetPagingSource` runs `SELECT COUNT(*) FROM (<sql>)` and `SELECT * FROM (<sql>) LIMIT ? OFFSET ?`; EXPLAIN tests run on these wrapped forms ([room3-paging source](https://github.com/androidx/androidx/blob/androidx-main/room3/room3-paging/src/commonMain/kotlin/androidx/room3/paging/LimitOffsetPagingSource.kt)).
 - The deterministic `(sortDate, id)` order makes pages stable across boundaries ([R2.3](../PLAN.md#21-functional-requirements)). Unverified in our setup: SQLite honours `CROSS JOIN` as a join-order hint (query-planner documentation, not re-checked); the EXPLAIN test is authoritative.
 - `EpisodeRow` (`:core:model`, fields defined here, rendered by 08) is the mapped projection:
@@ -915,9 +922,11 @@ data class EpisodeRow(
     val id: Long, val podcastId: Long, val title: String, val podcastTitle: String,
     val sortDate: Long, val pubDate: Long?, val durationMs: Long?,
     val isVideo: Boolean, val isShort: Boolean, val availability: Availability,
-    val episodeType: EpisodeType?, val sourceType: SourceType, val externalMediaId: String?,
+    val episodeType: EpisodeType?, val episodeDisplay: String?,   // "S2 E14" overline (08)
+    val sourceType: SourceType, val externalMediaId: String?,
     val isNew: Boolean, val firstSeenAt: Long,          // "new since last visit" = isNew && firstSeenAt > lastViewedAt
-    val artwork: ArtworkRef, val artworkAvgArgb: Int?,  // ArtworkRef(key, url, version)
+    val artwork: ArtworkRef, val artworkAvgArgb: Int?,  // ArtworkRef(key, url, version); episode art, else the cover
+    val podcastArtwork: ArtworkRef, val podcastArtworkAvgArgb: Int?, // always the cover / channel avatar (08: CHANNEL_AVATAR, own-art test)
     val playedAt: Long?, val startedAt: Long?, val isFavorite: Boolean,
     val downloadState: DownloadState?,
 )
@@ -1550,7 +1559,7 @@ Selecting and deleting in the same write transaction closes the race with a user
 | 7 | `VACUUM` when `freelist_count / page_count > 0.25` and freelist > 8 MB, free space > 2 × DB size + 100 MB, and no playback in the last 10 min (`play_session.updatedAt` and `MAX(episode_position.updatedAt)` older than 10 min). `VACUUM` cannot run inside a transaction: it runs on the writer connection via `useWriterConnection` outside any transaction and blocks other writers for its duration (a few seconds at the N5 scale; a writer waiting longer than Room's 30 s pool timeout fails and is retried by its owner), hence the playback guard and the idle constraint. After a vacuum the freelist is empty, so it does not repeat until the threshold is reached again | when thresholds are met |
 | 8 | Record row counts, `page_count × page_size` and step durations for the diagnostics screen (09) | daily |
 
-`VACUUM INTO '<cacheDir>/export/neutrodyne-diagnostics-<yyyy-MM-dd-HHmm>.db'` (SQLite ≥ 3.27: the bundled driver, or the framework driver on API 30+; `cache/export/` is the path the FileProvider shares) produces the diagnostics DB export of [D33](../PLAN.md#3-key-decisions); it is never importable ([SQLite VACUUM](https://www.sqlite.org/lang_vacuum.html)). Before it leaves the app the copy is scrubbed on a raw driver connection ([N3](../PLAN.md#22-non-functional-requirements)): `DELETE FROM credential`; every URL column that can carry a token (`podcast.feedUrl`, `feedKey`, `pagingNextUrl`, `pendingNewFeedUrl`, `artworkUrl`, `podcast_url_alias.url`, `episode.enclosureUrl`, `imageUrl`, `chaptersUrl`, `episode_alt_enclosure.sourcesJson`, `artwork.url`, `download.sourceRef`, `import_item.originalUrl`/`normalizedUrl`) replaced by `scheme://host/…#{rowid}`, and `episode.identityKey` and `episode.guid` (`u:` keys embed the enclosure URL; GUIDs can be URLs) replaced by their key prefix + `…#{rowid}` (the suffix keeps unique indices valid); then `VACUUM` so deleted bytes are gone. The flow and the user warning are 09's.
+`VACUUM INTO '<cacheDir>/export/neutrodyne-diagnostics-<yyyy-MM-dd-HHmm>.db'` (SQLite ≥ 3.27: the bundled driver, or the framework driver on API 30+; `cache/export/` is the path the FileProvider shares) produces the diagnostics DB export of [D33](../PLAN.md#3-key-decisions); it is never importable ([SQLite VACUUM](https://www.sqlite.org/lang_vacuum.html)). Before it leaves the app the copy is scrubbed on a raw driver connection ([N3](../PLAN.md#22-non-functional-requirements)) by `DiagExportScrub` (`:core:data`): `DELETE FROM credential`; then, for every table in `sqlite_master` and every column whose `PRAGMA table_info` type is `TEXT`, unless the column is on the explicit allow-list `DiagExportScrub.KEEP` (columns that never hold a URL, a token or feed-supplied free text: enum and state columns, error codes, MIME types, language tags, `uuid`, `nameKey`, group names, podcast and episode titles and authors), every non-null value is rewritten: a value that parses as an absolute URL → `scheme://host/…#{rowid}`; `episode.identityKey` and `episode.guid` (`u:` keys embed the enclosure URL; GUIDs can be URLs) → their key prefix + `…#{rowid}`; any other value (show notes, descriptions, JSON such as `episode_alt_enclosure.sourcesJson`) → `…#{rowid}`. The `#{rowid}` suffix keeps unique indices and primary keys valid (for example `episode_transcript(episodeId, url)`). Deriving the column list from the copy itself means a column added later is scrubbed by default; this covers, among others, `episode_transcript.url`, `chapter.imageUrl`/`linkUrl` (resolved against a possibly tokenised chapters URL), `episode.link`, `podcast.link`/`bannerUrl`/`hubUrl`, `person.href`/`imageUrl` and `funding.url`. Then `VACUUM` so deleted bytes are gone. The flow and the user warning are 09's.
 
 ### Expected size
 
@@ -1700,7 +1709,7 @@ Serves N1, N5, N9. Test infrastructure, runners and CI wiring are owned by [09 T
 
 | Test | Env | Asserts | Milestone |
 |---|---|---|---|
-| `SchemaSmokeTest` | JVM + GMD | DB opens, every DAO read works on an empty DB; `PRAGMA foreign_keys` = 1 on the writer and on a reader connection (both drivers); `1.json` declares `AUTOINCREMENT` for every `autoGenerate` key | M1 |
+| `SchemaSmokeTest` | JVM + GMD | DB opens, every DAO read works on an empty DB; the `play_session` row `id = 0` exists right after `onCreate` and `observeCurrentEpisodeId()` emits `null`; `PRAGMA foreign_keys` = 1 on the writer and on a reader connection (both drivers); `1.json` declares `AUTOINCREMENT` for every `autoGenerate` key | M1 |
 | `ConverterTest` | JVM | Every enum round-trips; unknown names map to the documented fallback; every `SqlEnumLiterals` name exists; bit constants | M1 |
 | `DescriptionCodecTest` | JVM | Round trip of ASCII, emoji, 1 MB HTML; < 512 bytes stored raw; corrupt header handled | M1 |
 | `IdentityStorageTest` | JVM | Duplicate `(podcastId, identityKey)` aborts the whole transaction; `rekey` keeps `episode_state`, `episode_position`, `download`, `queue_entry` rows | M1 |
@@ -1722,7 +1731,7 @@ Serves N1, N5, N9. Test infrastructure, runners and CI wiring are owned by [09 T
 | `DownloadDaoTest` | JVM | Reconcile with live tokens (`QUEUED`/`SYSTEM` and Task Manager `PAUSED`); `markWait` writes only changed rows (zero invalidations on repeat); `requeueChangedEnclosures`; `queuedNeeds` aggregates on an empty and a mixed lane | M6 |
 | `ArtworkReferencesTest` | JVM | Referenced keys from podcasts, completed downloads and groups; garbage list; `recountPins` writes only changed rows | M4 |
 | `RetentionTest` | JVM | Each protection rule individually; newest-per-podcast watermark; 500-row batches; person/funding/credential orphan sweeps | M11 |
-| `DiagExportScrubTest` | JVM | The `VACUUM INTO` copy has no `credential` rows and no URL path, query or userinfo in the scrubbed columns | M11 |
+| `DiagExportScrubTest` | JVM | A seeded private-feed fixture whose token appears in every URL-bearing column (feed, enclosure, alias, artwork, chapters, chapter image and link, transcript, person, funding, links, show notes): after the scrub the copy has no `credential` rows and no `TEXT` column of any table contains the token or a URL path, query or userinfo; every `KEEP` entry names an existing column of the exported schema JSON; primary keys and unique indices still hold | M11 |
 | Migration tests | JVM + GMD | [Tests](#tests) | M1 onward |
 
 Fixtures (`core/database/src/testFixtures/`, consumed with `testImplementation(testFixtures(project(":core:database")))`):

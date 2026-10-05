@@ -474,7 +474,7 @@ Every module except `:benchmark` (M6), `:playback:cast` and `:feature:widgets` (
 | `:core:data` | `.android.library`, `.hilt`, `kotlin.plugin.serialization` | `:core:{domain, model, common, database, datastore, network, artwork}`, `:feeds`, `:youtube:api` | work-runtime, androidx-hilt-work (+ compiler), okhttp-coroutines, kotlinx-serialization-json, lifecycle-process | M1 (M0: stub that binds `CredentialLookup.None`) |
 | `:core:artwork` | `.android.library`, `.hilt` | `:core:{model, common, database, network}`, `:youtube:api` | coil-core, coil-network-okhttp, work-runtime, androidx-hilt-work (+ compiler); M10: material-color-utilities | M1 (Coil components), M4 (store) |
 | `:core:designsystem` | `.android.library`, `.android.compose` | `:core:model` | compose-core bundle, material3-adaptive-navigation-suite, graphics-shapes, coil-compose, kotlinx-collections-immutable; M10: material-color-utilities | M0 |
-| `:core:ui` | `.android.library`, `.android.compose` | `:core:{designsystem, model, common}` | coil-compose, kotlinx-collections-immutable, reorderable (M4) | M1 |
+| `:core:ui` | `.android.library`, `.android.compose` | `:core:{designsystem, model, common}`, `:download:api` (08's `DownloadRequestHandler` maps its `RequestResult`, M6) | coil-compose, kotlinx-collections-immutable, reorderable (M4) | M1 |
 | `:core:testing` | `.android.library`, `.hilt` | `:core:{domain, model, common}`, `:playback:api`, `:download:api`, `:youtube:api` | `api`: junit4, truth, turbine, coroutines-test, coil-test, hilt-android-testing | M0 |
 | `:feeds` | `.jvm.library`, `kotlin.plugin.serialization` | — | jsoup, kotlinx-serialization-json; `compileOnly` + `testImplementation(kxml2)` | M1 |
 | `:playback:api` | `.jvm.library`, `.hilt` (JVM: `@Inject`/qualifiers only) | `:core:{model, common}` | coroutines-core | M0 |
@@ -485,15 +485,15 @@ Every module except `:benchmark` (M6), `:playback:cast` and `:feature:widgets` (
 | `:youtube:impl` | `.android.library`, `.hilt` | `:youtube:api`, `:core:{model, common, network}` | okhttp-coroutines, kotlinx-serialization-json, jsoup | M4 (`ExternalOnlyYouTubeStreamResolver` only), M8 |
 | `:youtube:streams` | `.android.library`, `.hilt` — **GPL-3.0-or-later** | `:youtube:api`, `:core:{model, common, network}` | M9: newpipe-extractor, rhino + rhino-engine (strict 1.8.1) | M9 (M0 stub) |
 | `:feature:feeds` | `neutrodyne.android.feature` | + `:playback:api`, `:download:api`, `:youtube:api` | — | M1 (All), M2 |
-| `:feature:library` | feature | + `:youtube:api` | — | M1 |
-| `:feature:groups` | feature | — | reorderable | M2 |
+| `:feature:library` | feature | + `:playback:api`, `:download:api`, `:youtube:api` (group-tile actions: Play, Download all) | — | M1 |
+| `:feature:groups` | feature | + `:youtube:api` (`YouTubeCapabilities` in Group settings) | reorderable | M2 |
 | `:feature:podcast` | feature | + `:playback:api`, `:download:api`, `:youtube:api` | — | M1 |
 | `:feature:episode` | feature | + `:playback:api`, `:download:api`, `:youtube:api` | — | M1 |
-| `:feature:player` | feature | + `:playback:api` | none in v1.0: no Media3 type enters a feature ([06 UI boundary](06-playback.md#ui-boundary)); M14 adds `media3-ui-compose` for `PlayerSurface` | M4 |
-| `:feature:queue` | feature | + `:playback:api` | reorderable | M4 |
-| `:feature:downloads` | feature | + `:download:api` | — | M6 |
+| `:feature:player` | feature | + `:playback:api`, `:download:api`, `:youtube:api` (Up next tab rows, download action, `RowCaps`) | none in v1.0: no Media3 type enters a feature ([06 UI boundary](06-playback.md#ui-boundary)); M14 adds `media3-ui-compose` for `PlayerSurface` | M4 |
+| `:feature:queue` | feature | + `:playback:api`, `:download:api`, `:youtube:api` (row download buttons, `RowCaps`) | reorderable | M4 |
+| `:feature:downloads` | feature | + `:download:api`, `:playback:api` (`playDownloads`), `:youtube:api` (`YouTubeHealth.retryNow`) | — | M6 |
 | `:feature:discover` | feature | + `:youtube:api` | — | M1 (add by URL), M7 |
-| `:feature:importexport` | feature | — | — | M3 |
+| `:feature:importexport` | feature | + `:playback:api` (pause before Replace), `:download:api` (re-download offer), `:youtube:api` (`YouTubeCapabilities`) | — | M3 |
 | `:feature:settings` | feature | + `:youtube:api` | aboutlibraries-core | M0 |
 | `:benchmark` | `com.android.test`, `androidx.baselineprofile` (from M10) | `targetProjectPath = ":app"` | uiautomator (M6 system tests), benchmark-macro-junit4 (M10) | M6 ([09 Out-of-process system tests](09-quality-and-release.md#out-of-process-system-tests)) |
 
@@ -515,7 +515,7 @@ Serves N11, N8. Delivered in M0 (enforced from the first commit). Rules 1–9 ex
 | 4 | `:core:data` → `:core:{domain, model, common, database, datastore, network, artwork}`, `:feeds`, `:youtube:api`. |
 | 5 | `:core:artwork` → `:core:{model, common, database, network}`, `:youtube:api`. |
 | 6 | `:playback:impl` → `:playback:api`, `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}`. `:download:impl` → `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}`. `:youtube:impl` and `:youtube:streams` → `:youtube:api`, `:core:{model, common, network}`. No impl → `:core:data`, no impl → another impl. YouTube Atom feeds are fetched and parsed by the generic refresh engine in `:core:data` ([03](03-feeds-and-discovery.md#refresh-scheduling)) using `:youtube:api` helpers; no YouTube module parses Atom. |
-| 7 | `:core:designsystem` → `:core:model` only. `:core:ui` → `:core:{designsystem, model, common}`. `:core:navigation` → nothing project-internal. |
+| 7 | `:core:designsystem` → `:core:model` only. `:core:ui` → `:core:{designsystem, model, common}`, `:download:api`. `:core:navigation` → nothing project-internal. |
 | 8 | JVM-only: `:core:model`, `:core:common`, `:core:domain`, `:feeds`, `:*:api`. `:feeds` depends on nothing project-internal. |
 | 9 | `:core:testing` → `:core:{domain, model, common}`, `:*:api`. |
 | 10 ⊕ | `:playback:api`, `:download:api`, `:youtube:api` → `:core:{model, common}`. |
@@ -550,7 +550,7 @@ flowchart TB
   app --> feat & data & pimpl & dimpl & yimpl & art & infra
   app -.->|fossImplementation| ys
   feat --> ui & ds & nav & dom & apis & base
-  ui --> ds & base
+  ui --> ds & base & apis
   ds --> base
   dom --> apis & base
   apis --> base
@@ -563,7 +563,7 @@ flowchart TB
   infra --> base
 ```
 
-(`yimpl`/`ys` → `infra` means `:core:network` only; `:core:testing` omitted.)
+(`yimpl`/`ys` → `infra` means `:core:network` only; `ui` → `apis` means `:download:api` only; `:core:testing` omitted.)
 
 ### Module-graph assertion configuration
 
@@ -583,7 +583,7 @@ moduleGraphAssert {
         ":playback:impl -> :(playback|download|youtube):api", ":playback:impl -> :core:(domain|model|common|database|datastore|network|artwork)",
         ":download:impl -> :(download|youtube):api", ":download:impl -> :core:(domain|model|common|database|datastore|network|artwork)",
         ":youtube:(impl|streams) -> :youtube:api", ":youtube:(impl|streams) -> :core:(model|common|network)",
-        ":core:designsystem -> :core:model", ":core:ui -> :core:(designsystem|model|common)",
+        ":core:designsystem -> :core:model", ":core:ui -> :core:(designsystem|model|common)", ":core:ui -> :download:api",
         ":core:testing -> :core:(domain|model|common)", ":core:testing -> :(playback|download|youtube):api",
         ":(playback|download|youtube):api -> :core:(model|common)",
         ":core:(database|datastore|network) -> :core:(model|common)",

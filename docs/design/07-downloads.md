@@ -55,6 +55,7 @@ interface DownloadController {
     suspend fun storageRoots(): List<StorageRootInfo>                   // +
     suspend fun changeRoot(rootId: String, moveExisting: Boolean)       // + settings, enqueues download-move
     suspend fun deleteOrphanFiles(): Long                               // + bytes freed
+    suspend fun shareableFile(episodeId: Long): ShareableFile?          // + "Share file"; null unless COMPLETED on a shareable root
 }
 fun interface LocalMediaIndex { fun localUriOrNull(episodeId: Long): String? }   // canonical, synchronous
 interface DownloadProgressSource { fun observe(ids: Set<Long>): Flow<Map<Long, LiveProgress>> }  // ≤ 4 Hz
@@ -85,6 +86,7 @@ data class StorageUsage(val rootId: String, val usedBytes: Long, val partialByte
 data class StorageRootInfo(val rootId: String, val kind: RootKind, val label: String?, val freeBytes: Long?,
                            val available: Boolean)
 enum class RootKind { PRIMARY_EXTERNAL, REMOVABLE, INTERNAL }
+data class ShareableFile(val contentUri: String, val mimeType: String)   // content://${applicationId}.fileprovider/…
 enum class DownloadNotice { DATA_SAVER, BACKGROUND_RESTRICTED, NOTIFICATIONS_OFF, CAP_REACHED, STORAGE_LOW,
                             ROOT_UNAVAILABLE, YOUTUBE_PAUSED, MOVE_IN_PROGRESS, ORPHAN_FILES }
 ```
@@ -112,7 +114,7 @@ Callers: features (`:feature:downloads`, `:feature:episode`, `:feature:podcast`,
 
 | Name | Kind / location | Purpose |
 |---|---|---|
-| `RequestResult`, `RejectReason`, `DownloadStatus`, `DownloadEntry`, `DownloadsOverview`, `StorageUsage`, `StorageRootInfo`, `RootKind`, `DownloadNotice`, `LiveProgress` | data types, `:download:api` | Public API shapes |
+| `RequestResult`, `RejectReason`, `DownloadStatus`, `DownloadEntry`, `DownloadsOverview`, `StorageUsage`, `StorageRootInfo`, `RootKind`, `DownloadNotice`, `LiveProgress`, `ShareableFile` | data types, `:download:api` | Public API shapes |
 | `ManualMeteredPolicy { ASK, ALWAYS, NEVER }` | enum, `:core:model` | `downloads.manual_metered` |
 | `DownloadSettingKeys` | object, `:core:model` (`…core.model.settings`) | The `downloads.*` keys of [Settings](#settings) |
 | `DownloadControllerImpl`, `LocalMediaIndexImpl`, `DownloadProgressHub`, `DownloadPaths`, `MediaSniffer`, `MediaKind`, `ContentRange`, `PartFile`, `DownloadFileSystem`, `DeferredDeletes`, `LaneRegistry`, `DownloadSlots`, `ActiveTransfers`, `StopIntent`, `TransferSource`, `TransferPlan`, `Prepared`, `TransferResult`, `TransferEnd`, `ProgressSink`, `DrainRequest`, `DrainOutcome`, `RunnerToken`, `Conditions`, `UidtReporter`, `NotificationReporter`, `YouTubeAutoPacer`, `ChargingMonitor`, `AppVisibility`, `YouTubeGateView`, `ExitReasonProbe`, `JobSchedulerFacade`, `DownloadDiagnostics`, `DownloadInitializers`, `DownloadFeatures` | classes, `:download:impl` (internal) | Engine internals |
@@ -949,7 +951,7 @@ A removed or unmounted card never deletes rows: `COMPLETED` rows on it become `M
 
 ### Sharing a file
 
-"Share file" (episode and Downloads screen overflow) hands `content://${applicationId}.fileprovider/…` to the share sheet ([01 Application element and components](01-foundation.md#application-element-and-components) declares the provider). Paths contributed to `file_paths.xml`: `<external-files-path name="podcasts" path="Podcasts/" />` and `<files-path name="downloads" path="downloads/" />`. Files on removable volumes are not shareable in v1 (no supported FileProvider path type), so the action is hidden for `ext:{uuid}` roots. The `ACTION_SEND` intent sets the URI as `EXTRA_STREAM` and as `ClipData`, its MIME type from the file extension, and **`FLAG_GRANT_READ_URI_PERMISSION` explicitly**. The intent is then wrapped in `Intent.createChooser`. Android 17 logs implicit `ACTION_SEND` grants, and Android 18 stops granting them ([Android 17 behaviour changes](https://developer.android.com/about/versions/17/behavior-changes-all), checked 2026-10-05).
+"Share file" (episode and Downloads screen overflow) hands `content://${applicationId}.fileprovider/…` to the share sheet ([01 Application element and components](01-foundation.md#application-element-and-components) declares the provider). Paths contributed to `file_paths.xml`: `<external-files-path name="podcasts" path="Podcasts/" />` and `<files-path name="downloads" path="downloads/" />`. Files on removable volumes are not shareable in v1 (no supported FileProvider path type), so the action is hidden for `ext:{uuid}` roots. UI callers (08's episode detail and Downloads row overflows, M6) get the URI and MIME type from `DownloadController.shareableFile(episodeId)` (null → the action is hidden) and build the intent below themselves. The `ACTION_SEND` intent sets the URI as `EXTRA_STREAM` and as `ClipData`, its MIME type from the file extension, and **`FLAG_GRANT_READ_URI_PERMISSION` explicitly**. The intent is then wrapped in `Intent.createChooser`. Android 17 logs implicit `ACTION_SEND` grants, and Android 18 stops granting them ([Android 17 behaviour changes](https://developer.android.com/about/versions/17/behavior-changes-all), checked 2026-10-05).
 
 ### LocalMediaIndex
 
