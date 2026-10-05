@@ -1344,13 +1344,12 @@ pkg=app.neutrodyne.debug
 adb shell bmgr enable true
 adb shell bmgr transport com.android.localtransport/.LocalTransport
 adb shell settings put secure backup_local_transport_parameters 'is_encrypted=true'   # else disableIfNoEncryptionCapabilities skips us
-adb shell am broadcast -a androidx.work.diagnostics.REQUEST_DIAGNOSTICS -p "$pkg"    # optional: WorkManager state in logcat
 adb shell bmgr backupnow "$pkg"            # expect "Package … with result: Success"
 adb shell pm path "$pkg"                   # pull the APK(s), then:
 adb shell pm uninstall --user 0 "$pkg" && adb install-multiple -t --user 0 base.apk
 ```
 
-Before `backupnow`, the test build exposes a debug-only "Write snapshot now" action (Diagnostics, M3) so the snapshot exists. Pass: after reinstall the library, groups, played state, positions and Up next are back; the backup set (`adb shell bmgr list sets` / transport logs) contains only the two included files. Device-to-device: the D2D script of the same page (Android 12+). An automated `FirstLaunchRestoreTest` (GMD) covers the logic without `bmgr`: place a snapshot file, start with an empty database, assert the restored library.
+Before `backupnow`, the test build exposes a debug-only "Write snapshot now" action (Diagnostics, M3) so the snapshot exists. Pass: after reinstall the library, groups, played state, positions and Up next are back, and the local transport's backup data for the package contains only the two included files (no `databases/`, no `Podcasts/`). Device-to-device: the D2D script of the same page (Android 12+). An automated `FirstLaunchRestoreTest` (GMD) covers the logic without `bmgr`: place a snapshot file, start with an empty database, assert the restored library.
 
 ---
 

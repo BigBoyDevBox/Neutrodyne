@@ -41,7 +41,7 @@ One `MediaLibraryService` ([D37](../PLAN.md#3-key-decisions)) owns one `ExoPlaye
 // :playback:api — commands. play* functions are UI-only (D43): they return ServiceUnavailable when the
 // process is not STARTED. Transport functions are fire-and-forget on the main thread.
 interface PlaybackController {
-    suspend fun playEpisode(episodeId: Long): PlayResult                        // current = episode, context kept
+    suspend fun playEpisode(episodeId: Long): PlayResult                        // Up next item: context kept; else EXTERNAL
     suspend fun playEpisodeAt(episodeId: Long, positionMs: Long): PlayResult    // timestamps, chapters of non-current items
     suspend fun playFeed(source: FeedSource, filters: FeedFilters, order: FeedOrder,
                          startEpisodeId: Long? = null): PlayResult
@@ -63,7 +63,7 @@ interface PlaybackController {
 }
 sealed interface PlayResult {
     data object Started : PlayResult
-    data object NothingToPlay : PlayResult
+    data class NothingToPlay(val externalOnly: Boolean = false) : PlayResult   // true: only play-flavor YouTube items left
     data class NeedsMeteredConsent(val episodeId: Long) : PlayResult
     data object MeteredBlocked : PlayResult
     data object Offline : PlayResult
@@ -556,7 +556,7 @@ Serves R4.8, R2.6, R3.7. Delivered in M4. Honours [D38](../PLAN.md#3-key-decisio
 
 - **Current** = `play_session.currentEpisodeId`. An item that becomes current is **removed from `queue_entry`** in the same transaction, so Up next never contains the playing item and played items leave Up next automatically.
 - **Up next** = `queue_entry` ordered by `(ordinal, id)`; user-owned.
-- **Play context** = `contextType`/`contextId` + order + filters + anchor; the **context tail** is the next items after the anchor that are unplayed, `AVAILABLE`, visible, playable in this build and not in Up next ([02 Play context](02-data-model.md#play-context)); which episodes a context contains and where "Play" starts are 05's rules ([05 Playing a group](05-groups-opml-backup.md#playing-a-group)).
+- **Play context** = `contextType`/`contextId` + order + filters + anchor (05's `PlayContextSpec` persisted in `play_session`); the **context tail** is the next items after the anchor that are unplayed, `AVAILABLE`, visible, playable in this build and not in Up next ([02 Play context](02-data-model.md#play-context)); which episodes a context contains and where "Play" starts are 05's rules ([05 Playing a group](05-groups-opml-backup.md#playing-a-group)).
 - **Virtual queue** = `[current] ++ upNext ++ contextTail`. `QueueRepository.observeVirtualQueue(k)` emits current, at most `UP_NEXT_PROJECTION_CAP = 100` Up next items and `k` context items (queried as `k + 1`, the current item removed). Anchor `null` means "before the first item" (`(+∞, +∞)` for `NEWEST_FIRST`, `(−∞, −∞)` for `OLDEST_FIRST`).
 - **Window** = the virtual queue minus items that cannot play: `availability != AVAILABLE`, YouTube when `!capabilities.inAppPlayback`. Up next keeps such items in the database (08 greys them); the window skips them.
 
@@ -585,11 +585,15 @@ sequenceDiagram
   MC->>X: playWhenReady true, FGS starts while the app is visible
 ```
 
-`nd.PLAY_CONTEXT` args: `contextType` (absent for `playEpisode`), `contextId`, `order`, `filterFlags`, `mediaFilter`, `minSortDate`, `startEpisodeId?`, `startPositionMs?`. Handler steps:
+`nd.PLAY_CONTEXT` args: `contextType` (absent for `playEpisode`), `contextId`, `order`, `filterFlags`, `mediaFilter`, `minSortDate`, `startEpisodeId?`, `startPositionMs?`. The handler turns them back into `FeedSource`/`FeedFilters` and asks 05's `PlayContextResolver` for the context ([05 Playing a group](05-groups-opml-backup.md#playing-a-group) owns membership and start rules; 06 applies them):
 
-1. **Plan** (read-only): `startEpisodeId` given → current = it. Otherwise ("Play group" button): Up next non-empty → current = Up next head, context anchor `null` (the tail starts at the context's first item — D44, M4 acceptance 6); else current = 05's start item for the context, anchor = it; none → `RESULT_NOTHING_TO_PLAY`. `playEpisode` keeps the existing context and anchor.
+1. **Plan** (read-only): `spec = playContextResolver.spec(source, filters, order)` (`downloadsSpec()` for `DOWNLOADS`).
+   - `startEpisodeId` given (a row's play button, Auto pick) → current = it, anchor = it (05 start rule 1).
+   - "Play" without a start, Up next non-empty → current = Up next head, anchor `null` (the tail starts at the beginning of the order after Up next — [D44](../PLAN.md#3-key-decisions), M4 acceptance 6).
+   - "Play" without a start, Up next empty → current = `playContextResolver.startItem(spec)`, anchor = it; `null` → `RESULT_NOTHING_TO_PLAY` with `externalOnly` = (`!capabilities.inAppPlayback` and 02's start-item query with `youtubePlayable = 1` finds an item) — 08 shows "Nothing unplayed in 'tech'" or "Episodes in 'tech' open in YouTube".
+   - `playEpisode`/`playEpisodeAt` (no `contextType`): if the episode is in Up next, it becomes current and the existing context and anchor are kept (Up next screen taps); otherwise context `EXTERNAL` (no tail — 05's entry-point table): it plays, then Up next, then playback stops.
 2. **Gates** on the planned current: YouTube in `play` → `NotPlayable(NotInThisBuild)`; `availability != AVAILABLE` → `NotPlayable(YouTube(availability))`; [metered and offline gate](#metered-and-offline-gate).
-3. **Commit** (`SessionWriter.commitStart`, one write transaction): `play_session` current, context columns, anchor (`contextAnchorEpisodeId`, `contextAnchorSortDate`), `contextMinSortDate`, `generation + 1`, `updatedAt`; delete the new current from `queue_entry`; `EpisodeStateDao.touchLastPlayed`.
+3. **Commit** (`SessionWriter.commitStart`, one write transaction): `play_session` current, context columns from `spec`, anchor (`contextAnchorEpisodeId`, `contextAnchorSortDate`), `contextMinSortDate`, `generation + 1`, `updatedAt`; delete the new current from `queue_entry`; `EpisodeStateDao.touchLastPlayed`.
 4. **Project now**: read the virtual queue once (not waiting for the Flow), build items, `applier.applyFor(current)` (speed and skip silence before the first `prepare()`), `setMediaItems(window, 0, StartPositionRule(...))`, `prepare()`.
 5. Result codes map 1:1 to `PlayResult`; the client calls `play()` only on success.
 
@@ -743,9 +747,9 @@ Serves R2.7, R4.8. Delivered in M4 (speed, skip silence), M12 (boost, intro/outr
 
 05's `EffectiveSettingsResolver` decides values and attribution ([05 Effective settings resolution](05-groups-opml-backup.md#effective-settings-resolution)); 06 supplies the inputs and applies the result.
 
-- **Inputs.** `podcastId` of the item and `contextGroupId` = `play_session.contextId` when `contextType == GROUP` **and** the item's podcast is a member of that group (an Up next item from another podcast does not inherit the group's speed); otherwise null. Globals are `playback.speed` and `playback.skip_silence` ([Settings](#settings)).
-- **When.** `EffectivePlaybackApplier` keeps the resolved values for every window item (re-resolved when the window, memberships or overrides change), so application is synchronous: before the first `prepare()` of a start, in `onMediaItemTransition`, and whenever the current item's effective value changes. It calls `exo.playbackParameters = PlaybackParameters(speed)` and `exo.skipSilenceEnabled = skipSilence`, and publishes the value with its source to `PlaybackStateSource.effectivePlayback` (08 renders "1.5× (from group 'news')", M4 acceptance 7). Audio already processed at the old speed (≈ 0.5 s) may play after a transition — accepted.
-- **Writes from the player.** `setSpeed(speed, scope)` → `nd.SPEED_SET_SCOPE(speed, scope)`: clamp to 0.5–3.0, round to 0.05, apply to the player immediately, then write the scope through 05's `ScopeSettingsRepository` (`PODCAST` → the item's podcast; `GROUP` → `contextGroupId`, else `NO_CONTEXT_GROUP`; `GLOBAL` → `playback.speed`). Writing a scope also clears the same setting at the more specific scopes on the current chain (GLOBAL clears the podcast's and the context group's override; GROUP clears the podcast's), so the chosen value takes effect now; 08's sheet says so. `setSkipSilence` / `nd.SKIP_SILENCE` work the same way.
+- **Inputs.** `podcastId` of the item and `contextGroupId` = `play_session.contextId` when `contextType == GROUP`, else null. 05's resolver checks membership itself, so an Up next item from a podcast outside the group does not inherit the group's speed. Globals are `playback.speed` and `playback.skip_silence` ([Settings](#settings)), read by the resolver.
+- **When.** `EffectivePlaybackApplier` keeps `EffectiveSettingsResolver.playback(podcastId, contextGroupId)` results for every window item (re-resolved when the window changes, and kept current for the playing item with `observePlayback(…)`), so application is synchronous: before the first `prepare()` of a start, in `onMediaItemTransition`, and on every emission for the current item. It calls `exo.playbackParameters = PlaybackParameters(effective.speed.value)` and `exo.skipSilenceEnabled = effective.skipSilence.value`, and publishes 05's `EffectivePlayback` (values with `SettingSource`) as `PlaybackStateSource.effectivePlayback`; 08 renders "1.5× (from group 'news')" (M4 acceptance 7). Audio already processed at the old speed (≈ 0.5 s) may play after a transition — accepted. `boostDb` is ignored until M12.
+- **Writes from the player.** `setSpeed(speed, scope)` → `nd.SPEED_SET_SCOPE(speed, scope)`: clamp to 0.5–3.0, round to 0.05, apply to the player immediately, then write through 05's `ScopeSettingsRepository` ([05 Writing overrides](05-groups-opml-backup.md#writing-overrides)): `PODCAST` → `updatePodcast(podcastId) { it.copy(playbackSpeed = s) }`; `GROUP` → `updateGroup(contextGroupId) { … }` only when the context is a group containing the podcast, else `ScopeWriteResult.NO_CONTEXT_GROUP`; `GLOBAL` → `SettingsRepository.set(playback.speed, s)`. Writing a scope also clears the same setting at the more specific scopes on the current chain (GLOBAL clears the podcast's and the context group's override; GROUP clears the podcast's), so the chosen value takes effect now; 08's sheet says so. `setSkipSilence` / `nd.SKIP_SILENCE` work the same way.
 - **Speed cycle** (`nd.SPEED_CYCLE`, notification): next value of `playback.speed_presets` above the current speed (wrapping), written at the scope the current value comes from.
 - **External `Player.setPlaybackSpeed`** from a trusted controller: applied for the current item only, not persisted; the next transition restores the effective value.
 - **v1.x hooks (M12).** `BoostLimiterProcessor` reads a `@Volatile gainDb` (0 = inactive); `IntroOutroSkipper` will seek past `introSkipMs` at item start and schedule `exo.createMessage { … seekToNextMediaItem() }.setPosition(duration − outroSkipMs)`. Columns are reserved in [02 podcast_settings](02-data-model.md#podcast_settings); `nd.BOOST` is reserved.
@@ -876,7 +880,7 @@ Serves R4.7, R5.2. Delivered in M4 (lock screen, System UI, Bluetooth metadata),
 | `podcasts` | browsable `podcast:{podcastId}` by title |
 | `podcast:{podcastId}` | unplayed and in-progress episodes in the podcast's `episodeOrder`, `episode:{id}@podcast:{podcastId}` |
 
-`onSetMediaItems(items, startIndex, startPositionMs)`: parse `episode:{id}@{parent}`; parent `group:`/`podcast:`/`downloads` → start that context at `id` (`GROUP`/`PODCAST`/`DOWNLOADS`, order and filters per 05) — M5 acceptance 4; parent `upnext` or none → `playEpisode` semantics (context kept). Several items without a parent → first becomes current, the rest are added to the front of Up next, context `EXTERNAL` (no tail). `requestMetadata.searchQuery`: empty → resume; else exact case-insensitive group name → play group; else first podcast whose title contains the query → play podcast; else error result. `onSearch` returns matching groups and podcasts (≤ 20 each) as browsable items. Browse actions (download, mark played, add to Up next) are v1.x (M13). Sideloaded and F-Droid installs appear in Auto only with Auto's developer option "Unknown sources".
+`onSetMediaItems(items, startIndex, startPositionMs)`: parse `episode:{id}@{parent}`; parent `group:`/`podcast:`/`downloads` → start that context at `id` (`GROUP`/`PODCAST`/`DOWNLOADS`; spec from `PlayContextResolver`, 05 start rule 1) — M5 acceptance 4; parent `upnext` or none → `playEpisode` semantics (an Up next item keeps the context, anything else is `EXTERNAL`). Several items without a parent → first becomes current, the rest are added to the front of Up next, context `EXTERNAL` (no tail). `requestMetadata.searchQuery`: empty → resume; else exact case-insensitive group name → play group; else first podcast whose title contains the query → play podcast; else error result. `onSearch` returns matching groups and podcasts (≤ 20 each) as browsable items. Browse actions (download, mark played, add to Up next) are v1.x (M13). Sideloaded and F-Droid installs appear in Auto only with Auto's developer option "Unknown sources".
 
 ### Resumption
 
