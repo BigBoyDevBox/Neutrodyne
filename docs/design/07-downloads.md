@@ -115,7 +115,7 @@ Callers: features (`:feature:downloads`, `:feature:episode`, `:feature:podcast`,
 | `RequestResult`, `RejectReason`, `DownloadStatus`, `DownloadEntry`, `DownloadsOverview`, `StorageUsage`, `StorageRootInfo`, `RootKind`, `DownloadNotice`, `LiveProgress` | data types, `:download:api` | Public API shapes |
 | `ManualMeteredPolicy { ASK, ALWAYS, NEVER }` | enum, `:core:model` | `downloads.manual_metered` |
 | `DownloadSettingKeys` | object, `:core:model` (`…core.model.settings`) | The `downloads.*` keys of [Settings](#settings) |
-| `DownloadControllerImpl`, `LocalMediaIndexImpl`, `DownloadProgressHub`, `DownloadPaths`, `MediaSniffer`, `ContentRange`, `DeferredDeletes`, `LaneRegistry`, `DownloadSlots`, `ActiveTransfers`, `StopIntent`, `TransferSource`, `TransferPlan`, `TransferResult`, `YouTubeAutoPacer`, `ChargingMonitor`, `AppVisibility`, `ExitReasonProbe`, `JobSchedulerFacade`, `DownloadDiagnostics`, `DownloadInitializers` | classes, `:download:impl` (internal) | Engine internals |
+| `DownloadControllerImpl`, `LocalMediaIndexImpl`, `DownloadProgressHub`, `DownloadPaths`, `MediaSniffer`, `MediaKind`, `ContentRange`, `PartFile`, `DownloadFileSystem`, `DeferredDeletes`, `LaneRegistry`, `DownloadSlots`, `ActiveTransfers`, `StopIntent`, `TransferSource`, `TransferPlan`, `Prepared`, `TransferResult`, `TransferEnd`, `ProgressSink`, `DrainRequest`, `DrainOutcome`, `RunnerToken`, `Conditions`, `UidtReporter`, `NotificationReporter`, `YouTubeAutoPacer`, `ChargingMonitor`, `AppVisibility`, `ExitReasonProbe`, `JobSchedulerFacade`, `DownloadDiagnostics`, `DownloadInitializers`, `DownloadFeatures` | classes, `:download:impl` (internal) | Engine internals |
 | `DownloadWakeWorker`; unique work `download-wake-MANUAL`, `download-wake-AUTO` (one-time, policy `REPLACE`, tag `download`) | worker and work names, `:download:impl` | Delayed or condition-bound re-arming of a lane ([Wake work](#wake-work)) |
 | `NOTIF_ID_DOWNLOAD_ERRORS = 2002`, `NOTIF_ID_STORAGE_FULL = 2003`, `NOTIF_ID_DOWNLOADS_WAITING = 2004` | notification IDs (range 2000–2999) | Error summary, storage full, "open the app to continue" |
 | Actions `app.neutrodyne.download.action.PAUSE_ALL`, `…RETRY_FAILED`, `…DISMISS_ERRORS` | explicit intents to `DownloadActionReceiver` | Notification actions |
@@ -275,7 +275,7 @@ At `RESOLVING`, before any network request: if the row has no usable `.part` but
 1. Load `EpisodeDao.downloadSources(ids)` (chunks of 500): episode, podcast and first audio alternate enclosure.
 2. Per episode, reject with a `RejectReason`: row gone → `EPISODE_GONE`; no enclosure and no YouTube video ID → `NOT_DOWNLOADABLE`; effective type `application/x-mpegurl` or a `.m3u8` path ([03 Enclosure types](03-feeds-and-discovery.md#enclosure-types-and-media-acceptance)) → `UNSUPPORTED_STREAM`; YouTube while `!YouTubeCapabilities.downloads` (`play`, and `foss` before M9) → `YOUTUBE_NOT_SUPPORTED`; `availability != AVAILABLE` → `UNAVAILABLE`.
 3. Metered rule for `MANUAL` with `allowMetered == null`: `downloads.manual_metered` `ALWAYS` → `true`; `NEVER` → `false`; `ASK` → if the network is connected and metered, return `NeedsMeteredDecision(count, knownBytes, unknownSizeCount)` **without writing anything**; otherwise `false` (the row waits for Wi-Fi if the network changes and offers "Use mobile data"). 08's dialog answers with `request(ids, MANUAL, true)` ("Download now"), `request(ids, MANUAL, false)` ("Wait for Wi-Fi"), or sets `ALWAYS` and retries ("Always use mobile data").
-4. Existing rows: `COMPLETED` → `alreadyPresent`; in flight or `QUEUED` → for `MANUAL` over an `AUTO` row: `lane = MANUAL`, `priority = max(priority, 100)`, `requireCharging = false`, `allowMetered` per step 3; `PAUSED` → resume; `FAILED` → retry semantics; `MISSING` → back to `QUEUED` (file fields cleared).
+4. Existing rows: `COMPLETED` → `alreadyPresent`; in flight or `QUEUED` → for `MANUAL` over an `AUTO` row: `lane = MANUAL`, `priority = max(priority, 100)`, `requireCharging = false`; a non-null `allowMetered` from the caller is applied to any non-`COMPLETED` row (this is how 08's "Use mobile data" works); `PAUSED` → resume; `FAILED` → retry semantics; `MISSING` → back to `QUEUED` (file fields cleared).
 5. New rows in one write transaction: `lane = trigger`, `priority` (`MANUAL` 100, `AUTO` 0), `requestedAt = now + index` (keeps the caller's order, e.g. newest first for "Download all"), `sourceKind`, `sourceRef` (enclosure URL — the first audio alternate for `isVideo` episodes, same rule as 06's streaming; YouTube video ID), `formatPref` (YouTube: `youtube.audio_quality` name; RSS: null), `rootId = downloads.root_id`, `allowMetered`, `requireCharging` (`AUTO`: from policy), `estimatedBytes` ([Estimates](#estimates)).
 6. `MANUAL` requests clear the episode's tombstone (`EpisodeStateDao.clearDismissed`): the user changed their mind ([R4.4](../PLAN.md#21-functional-requirements)).
 7. `ensureScheduled(trigger)`; return `Queued(…, askNotificationPermission)` where the flag is true when API ≥ 33, `POST_NOTIFICATIONS` is not granted and `downloads.notification_prompted` is false (08 shows the contextual prompt and sets the flag; [01 Platform compliance](01-foundation.md#platform-compliance) P22).
@@ -291,7 +291,7 @@ At `RESOLVING`, before any network request: if the row has no usable `.part` but
 | `pause(ids)` | Under `claimMutex`: `QUEUED → PAUSED` in the DB; in-flight rows get `StopIntent.Pause` (→ `PAUSED`, `lastStopReason = STOP_USER_PAUSE`). `PAUSED` rows never resume by themselves |
 | `resume(ids)` | `PAUSED` and `QUEUED(NEEDS_FOREGROUND)` → `QUEUED(NONE)`, `nextAttemptAt = NULL`; `ensureScheduled` (from visible UI, so `MANUAL` gets a UIDT job) |
 | `retry(ids)` | `FAILED` → `QUEUED(NONE)` with `attempt = 0`, `integrityFailures = 0`, `lastError = NULL`; `QUEUED(BACKOFF)` → `nextAttemptAt = NULL` ("Retry now") |
-| `promote(id)` | An `AUTO` row becomes `MANUAL` with `priority = 200`, `requireCharging = false`, metered rule of step 3 (may return `NeedsMeteredDecision`); a `PAUSED` row is also resumed. An `AUTO` row already in flight keeps transferring; if its runner stops, the UIDT job resumes it |
+| `promote(id)` | "Download now": any queued row gets `priority = 200` ("download next"); an `AUTO` row also becomes `MANUAL` with `requireCharging = false` and the metered rule of step 3 (may return `NeedsMeteredDecision`); a `PAUSED` row is also resumed. A row already in flight keeps transferring; if its `AUTO` runner stops, the UIDT job resumes it |
 | `cancel(ids)` | Non-`COMPLETED` rows: in-flight → `StopIntent.Cancel(tombstone = true)`; otherwise delete row and `.part`; tombstone (`downloadDismissedAt = now`) in the same transaction. `COMPLETED` rows are untouched (use `delete`) |
 | `delete(ids, byUser)` | [Deleting a download](#deleting-a-download) |
 | `setAllowMetered(ids, allowed)` | Updates `allowMetered` of non-`COMPLETED` rows; `ensureScheduled` |
@@ -302,13 +302,15 @@ At `RESOLVING`, before any network request: if the row has no usable `.part` but
 
 `delete(ids, byUser)` for each row, in this order:
 
-1. In flight → `StopIntent.Delete(byUser)` and wait for the transfer's `finally`.
-2. `LocalMediaIndex.remove(id)` (before the row disappears, so 06 never resolves a file that is about to vanish).
+1. In flight → set `StopIntent.Delete(byUser)`, cancel the transfer and await it; its `finish` then performs steps 2–5.
+2. `LocalMediaIndexImpl.remove(id)` (before the row disappears, so 06 never resolves a file that is about to vanish).
 3. One write transaction: delete the `download` row; if `byUser`, `EpisodeStateDao.ensure` + `setDismissed(id, now)` (tombstone, [02 User-state writes](02-data-model.md#user-state-writes)).
 4. `ArtworkStore.unpin(episodeArtworkKey, PinReason.DOWNLOAD, ownerId = id)` if it was pinned.
 5. Delete the `.part` and the final file — unless the episode is `play_session.currentEpisodeId` or its root is unavailable, in which case the file goes to `DeferredDeletes` ([Deferral while playing](#deferral-while-playing)).
 
 `byUser = true`: Downloads screen, episode and podcast actions, bulk delete, `cancel`. `byUser = false`: cleanup, unsubscribe and merge (03), policy changes. Tombstones are written only for user deletions so that automatic cleanup never blocks a later automatic download ([R4.4](../PLAN.md#21-functional-requirements)).
+
+### Manual download sequence
 
 ```mermaid
 sequenceDiagram
@@ -338,7 +340,20 @@ sequenceDiagram
   J->>JS: jobFinished(wantsReschedule = false)
 ```
 
+### Start-up hooks
+
+`DownloadInitializers` contribute `AppInitializer`s ([01 Application start-up](01-foundation.md#application-start-up)):
+
+| Order | Hook |
+|---|---|
+| 10 | `DownloadNotifications.ensureChannels()` (`downloads`, `download_errors`) |
+| 130 | `LocalMediaIndexImpl` initial load (after the database open at 100) |
+| 200 | `download-cleanup` periodic work (`UPDATE`) |
+| 210 | `download-reconcile` one-time work (`KEEP`) |
+| 220 | collectors on `@ApplicationScope`: `IngestionEvents` and `RefreshController.observeStatus()` for the planner, `observeAutoDownload()`, the played-downloads observer, `PlaySessionDao.observeCurrentEpisodeId()` for `DeferredDeletes`, `NetworkMonitor` and charger transitions → `ensureScheduled`, and a `ProcessLifecycleOwner` `ON_START` observer → `ensureScheduled(MANUAL)` and `ensureScheduled(AUTO)` |
+
 ---
+
 ## State machine
 
 Serves R4.2, R4.6, N1. Delivered in M6. The persisted states are the canonical `DownloadState`; `waitReason` refines `QUEUED`; `lastError` explains `FAILED` (and informs `QUEUED(BACKOFF)` and `MISSING`).
@@ -397,45 +412,47 @@ stateDiagram-v2
 
 ### Wait reasons
 
-UI strings are the English source strings (08 renders them, translators localise them). `{…}` are placeholders; relative times use `DateUtils`-style formatting in 08.
+Row texts are the English source strings of 08's `DownloadStatusText` ([08 Download status text](08-ui-ux.md#download-status-text)), which owns the final wording; this table owns the meanings. Entries marked ‡ refine 08's v1 text and are requested from 08. `{…}` are placeholders.
 
 | `waitReason` | Meaning | Set when | Cleared when | Row text | Row action |
 |---|---|---|---|---|---|
-| `NONE` | Eligible, waiting for its turn | insert, resume, retry | claim | "Queued" | Pause · Cancel |
-| `NETWORK` | No validated network | offline at claim; connection lost mid-transfer; job stopped for connectivity; HTML received on an unvalidated network | a runner claims it again | "Waiting for a network connection" | — |
-| `UNMETERED_NETWORK` | Row may not use the current metered network | network is metered and `allowMetered = false` | unmetered network | "Waiting for Wi-Fi" | `MANUAL`: "Use mobile data" (`setAllowMetered`); `AUTO`: "Download now" (`promote`) |
-| `CHARGING` | `AUTO` row requires a charger | not charging at claim or unplugged mid-transfer | charging | "Waiting for charger" | "Download now" |
-| `STORAGE` | Not enough free space (`lastError = STORAGE_FULL`) or root unavailable (`STORAGE_UNAVAILABLE`) | free-space check failed, ENOSPC, root unmounted | space freed (delete, cleanup), root back, 30 min re-check | "Not enough storage" / "Storage not available" | "Manage storage" |
-| `BACKOFF` | Waiting until `nextAttemptAt` | transient error, `Retry-After`, YouTube gate or pacing | `nextAttemptAt` passes, "Retry now" | "Retrying {in 4 min}" (≥ 1 h: "Retrying at {14:30}"); YouTube gate: "YouTube downloads paused until {18:00}" | "Retry now" |
-| `SYSTEM` | Runner stopped by Android (quota, job stop, process death) | runner stop without user intent | a runner claims it again | "Paused by Android — continues automatically" | `MANUAL`: "Resume now"; `AUTO`: "Download now" |
-| `NEEDS_FOREGROUND` | `MANUAL` row cannot progress in the background (UIDT not schedulable and background work restricted) | [Fallbacks](#fallbacks-and-mixed-networks) | app opened, `resume` | "Open Neutrodyne to continue" | "Resume" |
-| `SLOT` | Eligible but its host or YouTube slot is busy | skipped by `DownloadSlots` during a claim | claim | "Waiting for another download from this site" / YouTube: "Waiting for the current YouTube download" | — |
+| `NONE` | Eligible, waiting for its turn | insert, resume, retry | claim | "Queued" | Download now · Cancel |
+| `NETWORK` | No validated network | offline at claim; connection lost mid-transfer; job stopped for connectivity; HTML received on an unvalidated network | a runner claims it again | "Waiting for a connection" | — |
+| `UNMETERED_NETWORK` | Row may not use the current metered network | network is metered and `allowMetered = false` | unmetered network | "Waiting for Wi-Fi" | `MANUAL`: "Use mobile data" (`setAllowMetered` or a `request` with `allowMetered = true`); `AUTO`: "Download now" (`promote`) |
+| `CHARGING` | `AUTO` row requires a charger | not charging at claim or unplugged mid-transfer | charging | "Waiting for charging" | "Download now" |
+| `STORAGE` | Not enough free space (`lastError = STORAGE_FULL`) or root unavailable (`STORAGE_UNAVAILABLE`) | free-space check failed, ENOSPC, root unmounted | space freed (delete, cleanup), root back, 30-min re-check | "Waiting for storage space"; ‡ with `STORAGE_UNAVAILABLE`: "Waiting for the SD card" | "Manage storage" |
+| `BACKOFF` | Waiting until `nextAttemptAt` | transient error, `Retry-After`, YouTube gate or pacing | `nextAttemptAt` passes, "Retry now" | "Retrying in {relative time}" ("Retrying soon" when null or past); ‡ YouTube gate: "YouTube downloads paused until {time}" | "Retry now" |
+| `SYSTEM` | Runner stopped by Android (quota, job stop, process death) | runner stop without user intent | a runner claims it again | "Paused by Android, resumes automatically" | "Download now" |
+| `NEEDS_FOREGROUND` | `MANUAL` row cannot progress in the background (UIDT not schedulable and background work restricted) | [Fallbacks](#fallbacks-and-mixed-networks) | app opened, `resume` | "Tap to resume" (the notification says "Open Neutrodyne to continue") | tap = `resume` |
+| `SLOT` | Eligible but its host or YouTube slot is busy | skipped by `DownloadSlots` during a claim | claim | "Queued" | Download now · Cancel |
 
-Other states: `RESOLVING` "Preparing…"; `DOWNLOADING` "{12.3} MB of {48.0} MB · {1.2} MB/s" (total unknown: "{12.3} MB"); `VERIFYING` "Finishing…"; `PAUSED` "Paused"; `MISSING` "File missing" (`lastError = STORAGE_UNAVAILABLE`: "Storage not available — insert the SD card"); `COMPLETED` "{48.0} MB".
+Other states: `RESOLVING` and `VERIFYING` show an indeterminate ring; `DOWNLOADING` shows bytes and percent; `PAUSED` "Paused"; `MISSING` "File missing" (‡ with `STORAGE_UNAVAILABLE`: "Storage isn't available"). "Download now" is `promote(id)`: an `AUTO` row becomes `MANUAL`, any queued row gets priority 200.
 
 ### Errors
 
-`lastError` values (canonical `DownloadError`), their class and text. "Transient" means in-runner retries, then `QUEUED(BACKOFF)` until `attempt` reaches 8, then `FAILED` with the same error.
+`lastError` values (canonical `DownloadError`), their class, and the `FAILED` text of 08's `DownloadStatusText`. "Transient" means in-runner retries, then `QUEUED(BACKOFF)` until `attempt` reaches 8, then `FAILED` with the same error.
 
 | `DownloadError` | Cause | Class | `FAILED` text |
 |---|---|---|---|
-| `HTTP_NOT_FOUND` | 404 | permanent (re-queued if the feed changes the enclosure URL) | "The episode file was not found on the server (404)" |
-| `HTTP_GONE` | 410 | permanent (same) | "The publisher removed this file (410)" |
-| `HTTP_AUTH` | 401; 403 after the final-URL fallback | permanent | "Access denied — check this feed's password" |
-| `HTTP_CLIENT` | other 4xx, 416 that cannot be resolved, redirect loop | permanent | "The server refused the download ({status})" |
-| `HTTP_SERVER` | 5xx, 408 | transient | "The server had a problem ({status})" |
-| `HTTP_RATE_LIMITED` | 429 (RSS); YouTube 429 | transient | "The server is limiting downloads" |
-| `NETWORK_IO` | `IOException` classified by 01's `NetErrorClassifier` (timeout, reset, DNS, TLS handshake) | transient; `Tls(UNTRUSTED_CERTIFICATE / CERTIFICATE_TRANSPARENCY)` and `LocalNetworkUnsupported` are permanent | "Network problem" / "The server's certificate is not trusted" / "Local-network addresses are not supported" |
+| `HTTP_NOT_FOUND` | 404 | permanent (re-queued if the feed changes the enclosure URL) | "The file is no longer on the server" |
+| `HTTP_GONE` | 410 | permanent (same) | same |
+| `HTTP_AUTH` | 401; 403 after the final-URL fallback | permanent | "The server asked for a password" |
+| `HTTP_CLIENT` | other 4xx, 416 that cannot be resolved, redirect loop | permanent | "Server error ({lastHttpStatus})" |
+| `HTTP_SERVER` | 5xx, 408 | transient | same |
+| `HTTP_RATE_LIMITED` | 429 (RSS); YouTube 429 | transient | "The server is busy, try later" |
+| `NETWORK_IO` | `IOException` classified by 01's `NetErrorClassifier` (timeout, reset, DNS, TLS handshake) | transient; `Tls(UNTRUSTED_CERTIFICATE)`, `Tls(CERTIFICATE_TRANSPARENCY)` and `LocalNetworkUnsupported` are permanent | "Connection lost" |
 | `NOT_MEDIA` | HTML, XML, JSON or `text/*` without a media signature; empty body | permanent on a validated network | "The server sent a web page instead of audio" |
-| `SIZE_MISMATCH` | file length ≠ expected total, twice | permanent after the second | "The download was incomplete" |
-| `STORAGE_FULL` | free-space check or ENOSPC | wait (`STORAGE`) | — |
-| `STORAGE_UNAVAILABLE` | root unmounted, EROFS/EIO; `EFBIG` (FAT32 4 GB limit) is permanent | wait, or permanent for `EFBIG` | "This file is too large for the selected storage" |
-| `YT_UNAVAILABLE` | `ResolveResult.Unavailable(reason)` | permanent | 04's reason string ([04 Content flags and filtering](04-youtube.md#content-flags-and-filtering)) |
-| `YT_EXTRACTION` | `Transient(EXTRACTION)` | transient | "YouTube downloads are temporarily broken — update Neutrodyne" |
-| `YT_FORBIDDEN` | googlevideo 403/410 after 2 re-resolutions | transient | "YouTube refused the download" |
-| `UNSUPPORTED_STREAM` | HLS playlist received, unknown YouTube MIME, `Unsupported` | permanent | "This episode can only be streamed" |
-| `CANCELLED_BY_SYSTEM` | informational on rows reset after a runner stop or process death | — (row is `QUEUED(SYSTEM)`) | — |
+| `SIZE_MISMATCH` | file length ≠ expected total, twice | permanent after the second | "The file was incomplete" |
+| `STORAGE_FULL` | free-space check or ENOSPC | wait (`STORAGE`), never `FAILED` | — |
+| `STORAGE_UNAVAILABLE` | root unmounted, EROFS/EIO (wait); `EFBIG`, the FAT32 4 GB limit (permanent) | wait, or permanent for `EFBIG` | "Storage isn't available" (‡ `EFBIG`: "This file is too large for the selected storage") |
+| `YT_UNAVAILABLE` | `ResolveResult.Unavailable(reason)` | permanent | the episode's availability text ([04 Content flags and filtering](04-youtube.md#content-flags-and-filtering)) |
+| `YT_EXTRACTION` | `Transient(EXTRACTION)` | transient | "YouTube download failed" |
+| `YT_FORBIDDEN` | googlevideo 403/410 after 2 re-resolutions | transient | same |
+| `UNSUPPORTED_STREAM` | HLS playlist received, unknown YouTube MIME, `Unsupported` | permanent | "This format isn't supported" |
+| `CANCELLED_BY_SYSTEM` | informational on rows reset after a runner stop or process death (row is `QUEUED(SYSTEM)`) | — | "Download failed" (never shown on a waiting row) |
 | `UNKNOWN` | defensive default when reconcile finds an inconsistent row | permanent | "Download failed" |
+
+"Dismiss" on a `FAILED` row is `cancel(ids)` (row removed, tombstone written).
 
 ### Pause, cancel and Task Manager stops
 
@@ -471,12 +488,15 @@ suspend fun ensureScheduled(lane: DownloadLane) = laneMutex(lane).withLock {
         Phase.CLOSING -> { registry.requestReopen(lane); return@withLock }
         Phase.IDLE -> Unit
     }
-    if (lane == MANUAL && sdk >= 34 && uidt.schedule(needs) == SCHEDULED) { cancelWake(lane); return@withLock }
-    if (needs.runnableNow(conditions())) enqueueLaneWorker(lane)     // KEEP, or APPEND_OR_REPLACE (see below)
-    armWake(lane, needs)                                             // rows not runnable now
-    if (lane == MANUAL && sdk >= 34 && !visibility.isVisible() && backgroundLimited()) markNeedsForeground()
+    val viaUidt = lane == MANUAL && sdk >= 34 && needs.due > 0 &&
+        uidt.schedule(needs.dueNeeds) == SCHEDULED                   // pending job waits for its network itself
+    if (!viaUidt && needs.runnableNow(conditions())) enqueueLaneWorker(lane)   // KEEP, or APPEND_OR_REPLACE (below)
+    armWake(lane, if (viaUidt) needs.notDue() else needs.notRunnableNow(conditions()))
+    if (lane == MANUAL && sdk >= 34 && !viaUidt && !visibility.isVisible() && backgroundLimited()) markNeedsForeground()
 }
 ```
+
+The UIDT job is scheduled only when some `MANUAL` row is due (`nextAttemptAt ≤ now`); its network request covers the due rows (any network if one of them allows mobile data, else unmetered), so a pending job starts by itself when that network appears. Rows still in backoff are re-armed by the wake work, never by a job that would start only to find nothing claimable.
 
 Callers: every controller write, the planner, `resumeAll`, the wake worker, the reconcile worker, runner exits, `NetworkMonitor` transitions to connected/unmetered, charger connected, storage freed, and app foreground (`ProcessLifecycleOwner` `ON_START`, registered by an initializer). `runnableNow` = some `QUEUED` row of the lane is due (`nextAttemptAt ≤ now`) and its network and charging needs are met by the current conditions. `backgroundLimited()` = `ActivityManager.isBackgroundRestricted()` (API 28) or standby bucket `RESTRICTED` (`UsageStatsManager.getAppStandbyBucket()`, API 28).
 
@@ -711,13 +731,13 @@ Before writing the first byte at offset 0, the engine peeks up to 512 bytes (Oki
 
 | Signature | `MediaKind` → extension |
 |---|---|
-| `ID3`, or `0xFF` followed by a byte with the top 3 bits set (MPEG frame sync) | `MP3` → `mp3` |
+| `ID3`, or MPEG audio frame sync: `0xFF`, then a byte with `(b & 0xE0) == 0xE0` and layer bits `(b & 0x06) != 0` | `MP3` → `mp3` |
 | `ftyp` at offset 4; brand `M4B ` | `M4B` → `m4b`; other brands → `MP4` → `m4a` unless the episode is video or `Content-Type` is `video/*` (`mp4`) |
 | `OggS` (`OpusHead` at offset 28 → `opus`) | `OGG` → `ogg` / `opus` |
 | `fLaC` | `FLAC` → `flac` |
 | `RIFF` … `WAVE` | `WAV` → `wav` |
 | `1A 45 DF A3` (EBML) | `WEBM` → `webm` |
-| `0xFFF` ADTS sync | `AAC` → `aac` |
+| ADTS sync: `0xFF`, then `(b & 0xF6) == 0xF0` (layer bits 00; checked before MPEG frame sync) | `AAC` → `aac` |
 | `#EXTM3U` | `HLS` → `Permanent(UNSUPPORTED_STREAM)` |
 | starts (after BOM/whitespace) with `<`, or `{`/`[` with `Content-Type` JSON, or `text/*` / `application/xhtml+xml` without any signature above, or empty body | `NOT_MEDIA` |
 | anything else | `UNKNOWN_BINARY` (accepted; extension from `Content-Type`, then the URL path, then `bin`) |
@@ -768,7 +788,7 @@ Never `ResponseBody.bytes()`/`string()` for media ([Android 17 memory limits](ht
 4. Final path from [Naming](#directory-layout-and-naming); create the podcast directory if needed.
 5. `part.sync()` already ran; `Os.rename(part, final)` (same volume, atomic, replaces a stale file of the same name). Unverified: directory fsync is not available from Java; journaling file systems make the rename durable in practice.
 6. One write transaction: `COMPLETED` columns ([Persisted transitions](#persisted-transitions)).
-7. After the commit: `LocalMediaIndex.put(id, finalUri)`; `ArtworkStore.pin(episodeArtworkRef, PinReason.DOWNLOAD, ownerId = id)` when the episode has its own `imageUrl` (podcast art is already pinned for the subscription; [R5.3](../PLAN.md#21-functional-requirements)); `ChapterRepository.ensureLoaded(id, finalUri)` on `@ApplicationScope`, best effort ([06 Chapters](06-playback.md#chapters)); progress hub and notification update; if `DeferredDeletes` held an entry for the same path (re-download of the current item), the entry is dropped because the path now belongs to the new file.
+7. After the commit: `LocalMediaIndexImpl.put(id, finalUri)`; `ArtworkStore.pin(episodeArtworkRef, PinReason.DOWNLOAD, ownerId = id)` when the episode has its own `imageUrl` (podcast art is already pinned for the subscription; [R5.3](../PLAN.md#21-functional-requirements)); `ChapterRepository.ensureLoaded(id, finalUri)` on `@ApplicationScope`, best effort ([06 Chapters](06-playback.md#chapters)); progress hub and notification update; if `DeferredDeletes` held an entry for the same path (re-download of the current item), the entry is dropped because the path now belongs to the new file.
 
 `finalUri = Uri.fromFile(final).toString()` (`file://…`, percent-encoded). Files are never renamed after completion (a podcast rename does not move files).
 
@@ -902,14 +922,14 @@ Persistence ([D17](../PLAN.md#3-key-decisions)): bytes are never written per buf
 | `download_errors` (DEFAULT) | `NOTIF_ID_DOWNLOAD_ERRORS = 2002` | a `MANUAL` row became `FAILED` | "{n} downloads failed", first failed title and error text | "Retry", dismiss | summary updated, never one per row |
 | `download_errors` (DEFAULT) | `NOTIF_ID_STORAGE_FULL = 2003` | storage wait or ENOSPC | "Not enough storage for downloads", "{n} episodes are waiting" | "Manage storage" | once until the wait clears |
 
-- `AUTO` downloads post nothing (no progress, no completion, no failures); new-episode notifications (03) already tell the user about new content, and the Downloads screen shows auto rows and failures.
+- `AUTO` downloads post nothing except the storage-full notice (no progress, completion or failure notifications); new-episode notifications (03) already tell the user about new content, and the Downloads screen shows auto rows and failures.
 - No Live Update promotion: downloads are not a documented use case ([Live Updates](https://developer.android.com/develop/ui/views/notifications/live-update)).
 - Channels are created by `DownloadNotifications.ensureChannels()` from an initializer (order 10) and again before posting; `PendingIntent`s are `FLAG_IMMUTABLE` with explicit components ([01 Platform compliance](01-foundation.md#platform-compliance) P24).
 - `DownloadActionReceiver` (`exported = false`, `@AndroidEntryPoint`, stable name) handles `…PAUSE_ALL` → `pauseAll()`, `…RETRY_FAILED` → `retry(failed MANUAL ids)` (UIDT scheduling from a receiver may fail → WorkManager fallback), `…DISMISS_ERRORS` → forget the summary until the next failure. It uses `goAsync()` and finishes within 10 s.
 
 ### Notices
 
-`DownloadsOverview.notices` drives banners on the Downloads screen (texts here, layout 08):
+`DownloadsOverview.notices` drives banners on the Downloads screen (conditions and suggested texts here; final wording and layout are 08's):
 
 | Notice | Condition | Text | Action |
 |---|---|---|---|
@@ -935,7 +955,7 @@ The planner never merges scopes itself: `EffectiveSettingsResolver.autoDownload(
 
 ### No backfill watermark
 
-`podcast.autoDownloadEligibleAfter` ([02 podcast](02-data-model.md#podcast)) is the [D67](../PLAN.md#3-key-decisions) watermark, written only by the planner: set to `now` when a podcast's effective `enabled` becomes true while the column is null, cleared to null when it becomes false. 02's candidate query requires `e.isNew = 1` and `e.firstSeenAt > autoDownloadEligibleAfter`, so:
+`podcast.autoDownloadEligibleAfter` ([02 podcast](02-data-model.md#podcast)) is the [D67](../PLAN.md#3-key-decisions) watermark, written only by the planner: when a podcast's effective `enabled` is true and the column is null, it is set to `now` — or to `podcast.subscribedAt` if the podcast was subscribed less than 10 minutes ago, so that episodes found by the first refreshes after subscribing under an already-enabled policy still count; it is cleared to null when `enabled` becomes false. The rule needs no in-memory history, so it survives process death. 02's candidate query requires `e.isNew = 1` and `e.firstSeenAt > autoDownloadEligibleAfter`, so:
 
 - enabling auto-download (for a podcast, a group or globally) never downloads episodes that already existed — only those first seen by a later refresh;
 - subscribing, importing and restoring never auto-download, because `INITIAL` ingests never set `isNew` ([D66](../PLAN.md#3-key-decisions), [03 isNew and back-catalogue guard](03-feeds-and-discovery.md#isnew-and-back-catalogue-guard));
@@ -943,7 +963,7 @@ The planner never merges scopes itself: `EffectiveSettingsResolver.autoDownload(
 
 This confirms 02's reading: a **tombstoned episode does not occupy a `keepLatest` slot**. If the user deletes one of three auto-downloaded episodes without playing it, the planner may admit the next eligible episode — necessarily one that arrived after enabling — and never the deleted one again ([R4.4](../PLAN.md#21-functional-requirements)). Played episodes do not occupy slots either ("keep newest N **unplayed**").
 
-### Triggers
+### Planner triggers
 
 | Trigger | Scope | Notes |
 |---|---|---|
@@ -999,7 +1019,7 @@ sequenceDiagram
 
 Serves R4.5, N6. Delivered in M6. [PO-12](../PLAN.md#48-further-product-owner-decisions) default: delete played episodes 24 h after `playedAt`, for manual and auto downloads; no cap.
 
-### Triggers
+### Cleanup triggers
 
 `CleanupPlanner.run(reason)` (single flight) is called by `CleanupWorker` (`download-cleanup`, daily), by the played-downloads observer (`DownloadDao.observePlayedCompletedIds()`, debounced 30 s, so "delete immediately" happens shortly after an episode is marked played), when `play_session.currentEpisodeId` changes (deferred deletes, outgoing item), when `downloads.delete_after_played` or a scope override changes, and synchronously by the engine before a `STORAGE` wait for that root.
 
@@ -1088,7 +1108,7 @@ The update kills the process; WorkManager work and the persisted job survive (Un
 
 1. `engine.beginMove(target)`: claims only admit rows already on the target root while the move runs.
 2. For each row on another root that is not in flight (batches of 20, `rowsOnOtherRoots`): skip if its source root is unavailable (counted, reported); check target free space (`file length + 200 MB`); copy the final file or `.part` to `<target>/.partial/{id}.move` (256 KiB buffer), `sync()`, verify the length.
-3. `COMPLETED`: rename `.move` to its final path on the target (same naming and folder reuse); one transaction updates `rootId`, `relativePath`, `finalUri` (re-checking that the row still exists, else the copy is deleted); `LocalMediaIndex.put`; delete the source (deferred if it is the current episode). Rows with a `.part`: rename to `<target>/.partial/{id}.part`, update `rootId`, `tempPath`. Rows without files: update `rootId` only.
+3. `COMPLETED`: rename `.move` to its final path on the target (same naming and folder reuse); one transaction updates `rootId`, `relativePath`, `finalUri` (re-checking that the row still exists, else the copy is deleted); `LocalMediaIndexImpl.put`; delete the source (deferred if it is the current episode). Rows with a `.part`: rename to `<target>/.partial/{id}.part`, update `rootId`, `tempPath`. Rows without files: update `rootId` only.
 4. Rows in flight on other roots: re-enqueue `download-move` with a 1-minute initial delay until none remain.
 5. `engine.endMove()`; notice `MOVE_IN_PROGRESS` while running.
 
@@ -1118,3 +1138,182 @@ Auto Backup includes `getExternalFilesDir()` by default. 05's include-only rules
 
 ---
 
+## Settings
+
+`DownloadSettingKeys` (`:core:model`, registered in 01's `AllSettingKeys`; conventions in [01 DataStore files and typed setting keys](01-foundation.md#datastore-files-and-typed-setting-keys)). These are the `downloads.*` globals that 05's resolver reads ([05 Effective settings resolution](05-groups-opml-backup.md#effective-settings-resolution)).
+
+| Key | Type | Default | File | UI location | Milestone |
+|---|---|---|---|---|---|
+| `downloads.manual_metered` | `Choice<ManualMeteredPolicy>` `ASK`/`ALWAYS`/`NEVER` | `ASK` | `settings` | Settings › Downloads › "Mobile data for manual downloads"; the metered dialog's "Always use mobile data" | M6 |
+| `downloads.auto_download` | Bool | `false` | `settings` | Settings › Downloads › Automatic downloads (overrides: group and podcast settings, 05) | M6 |
+| `downloads.auto_download_keep_latest` | Int32, 1–10 | `3` | `settings` | same | M6 |
+| `downloads.auto_download_network` | `Choice<NetworkPolicy>` `UNMETERED`/`ANY` | `UNMETERED` | `settings` | same ("Wi-Fi only" / "Any network", with a data-use warning) | M6 |
+| `downloads.auto_download_require_charging` | Bool | `false` | `settings` | same | M6 |
+| `downloads.auto_download_include_video` | Bool | `false` | `settings` | same ("Include video episodes") | M6 |
+| `downloads.delete_after_played` | `Choice<DeleteAfter>` `IMMEDIATELY`/`AFTER_24H`/`NEVER` | `AFTER_24H` | `settings` | Settings › Downloads › "Delete played episodes" (manual and automatic downloads) | M6 |
+| `downloads.storage_cap_mb` | Int32 ∈ {0, 1024, 2048, 5120, 10240, 20480}; 0 = unlimited | `0` | `settings` | Settings › Downloads › "Storage limit for automatic downloads" | M6 |
+| `downloads.root_id` | Text (`ext:primary`, `ext:{uuid}`, `int`) | `ext:primary` | `device_settings` | Settings › Downloads › "Storage location" (move dialog) | M6 |
+| `downloads.notification_prompted` | Bool | `false` | `device_settings` | none (contextual prompt flag) | M6 |
+| `downloads.deferred_deletes` | TextSet | empty | `device_settings` | none (state) | M6 |
+| `youtube.auto_download`, `youtube.auto_download_keep_latest`, `youtube.audio_quality` | 04's keys | — | — | Settings › Downloads › YouTube channels (`foss`) | M9 |
+
+Fixed in v1 (not settings): 3 parallel downloads (2 per host, 1 YouTube), retry schedule, free-space margin, 14-day `.part` age. Settings › Downloads also hosts "Clean up unknown files" (orphans) and shows `StorageUsage`.
+
+---
+
+## Testing
+
+Serves N1, N2, N11. Infrastructure, runners and CI wiring: [09 Test strategy](09-quality-and-release.md#test-strategy). JVM/Robolectric tests use `TestClock`, an in-memory database with `AndroidSQLiteDriver`, MockWebServer 5.5.0 and a fault-injecting `DownloadFileSystem`.
+
+### Unit and Robolectric tests
+
+| Test class | Module, runner | Cases | Milestone |
+|---|---|---|---|
+| `MediaSnifferTest` | `:download:impl`, JVM | every signature fixture; MP3 served as `text/plain` accepted; HTML served as `audio/mpeg` rejected; BOM + `<`; JSON; empty body; `#EXTM3U`; `ftyp M4B `; `OpusHead` | M6 |
+| `DownloadPathsTest` (TestParameterInjector) | JVM | NFC (two forms of "Café" give one name); each forbidden and control character; leading/trailing dots; 100-byte cap with emoji, CJK and ZWJ sequences; suffix and date never truncated; empty title → `Untitled`; folder reuse after a podcast rename; extension precedence | M6 |
+| `ContentRangeTest` | JVM | `bytes 0-99/100`, `bytes 100-199/*`, `*/100`, missing, malformed | M6 |
+| `RssTransferSourceTest` | JVM + MockWebServer | **M6 acceptance 1**: cut at 50 % (`DisconnectDuringResponseBody`) → retry sends `Range: bytes=N-` and the strong ETag in `If-Range`; weak ETag → `If-Range` = `Last-Modified`; no validators → no `If-Range`, total check; `Range` ignored (200) → restart, final file equals the body; 416 at a completed offset → complete; every recorded request has `Accept-Encoding: identity`; `text/html` 200 → `FAILED(NOT_MEDIA)` with 0 bytes written. Also: 206 with a different total → restart; 401/404/410 → errors of [Errors](#errors); 403 from the final URL → one fallback to the original; `Retry-After: 2` waits, `Retry-After: 7200` → `BACKOFF` at now + 2 h; three-hop redirect → in-runner retry uses the final URL; short body with `Content-Length` → resumed; chunked body without length → completes; injected ENOSPC → `QUEUED(STORAGE)` with the `.part` kept; `EFBIG` → `FAILED`; HLS body → `UNSUPPORTED_STREAM` | M6 |
+| `DownloadEngineTest` | Robolectric + DB, fake `TransferSource`, `NetworkMonitor`, `ChargingMonitor` | two concurrent drains never claim one row; slots 3 / 2 per host / 1 YouTube, `AUTO` ≤ 2 while `MANUAL` waits; order by priority 200/100/0 then `requestedAt`; in-runner delays 2/8/30 s; backoff `min(30 s · 2^attempt, 6 h)` within ±20 %; `FAILED` at attempt 8; pause/cancel/delete mid-transfer give the right end state and tombstones only for user actions; metered switch requeues only `allowMetered = false` rows; disconnect → `NETWORK` without an attempt; 8-min deadline → `QUEUED(SYSTEM)` with `STOP_SOFT_DEADLINE` and a continuation; a completed download causes exactly 3 `download` writes after its insert — claim, `DOWNLOADING`, `COMPLETED` (InvalidationTracker count); torn-tail truncation after `STOP_PROCESS_DEATH`; completed-file adoption | M6 |
+| `DownloadSchedulerTest` | Robolectric `@Config(sdk = [33, 34, 36])`, fake `JobSchedulerFacade`, WorkManager `TestDriver` | API 34 visible → UIDT with `NOT_METERED` only when no due row allows mobile data; no UIDT job while every `MANUAL` row is in backoff (wake work instead); a running UIDT job is never rescheduled (wake instead); invisible → `RESULT_FAILURE` → `download-lane-MANUAL` expedited; API 33 → lane worker; first enqueue `KEEP`, later `APPEND_OR_REPLACE`; a row inserted during `CLOSING` reopens the drain; property test: for random waiting sets the wake request never fires without a runnable row; background-restricted → `NEEDS_FOREGROUND` | M6 |
+| `DownloadLaneWorkerTest` | Robolectric, `TestListenableWorkerBuilder` | `setForeground` only below API 34 and when visible; a denied FGS start is caught and the worker continues with a deadline; stop reason recorded | M6 |
+| `ManualDownloadJobServiceTest` | Robolectric (Unverified shadow support for UIDT APIs; otherwise instrumented) | `setNotification` happens inside `onStartJob`; stop-reason mapping; `jobFinished` always called | M6 |
+| `DownloadControllerImplTest` | Robolectric + DB | metered matrix (`ASK`/`ALWAYS`/`NEVER` × metered/unmetered/offline); every `RejectReason`; requests over each existing state; `MANUAL` request clears a tombstone; `askNotificationPermission` | M6 |
+| `AutoDownloadPlannerTest` | Robolectric + DB, fake resolver | **M6 acceptance 4**: group keep 3 queues exactly the newest 3 unplayed episodes first seen after enabling, unmetered only; a user-deleted episode is never re-queued; a podcast in two groups follows D45 (one row per episode). Also: enabling never backfills; `initialFetch` events ignored; tombstones and played episodes free slots; disable removes queued `AUTO` rows but keeps `PAUSED` and `COMPLETED`; round-robin across 3 podcasts; cap stops admission; changed enclosure re-queues a `FAILED(HTTP_NOT_FOUND)` row | M6 |
+| `CleanupPlannerTest` | Robolectric + DB, `TestClock` | **M6 acceptance 5**: deleted at `playedAt + 24 h`, not at `+ 24 h − 1 s`; never favourites, the playing episode, the next 3 Up next items or unplayed manual downloads. Also: `IMMEDIATELY`, `NEVER`; played manual downloads deleted; in-progress `AUTO` protected; rolling keep-N; no tombstones; current file deferred | M6 |
+| `DownloadReconcilerTest` | Robolectric + DB, fake `ExitReasonProbe`, fake roots | stale tokens → `QUEUED(SYSTEM)`; user stop → `PAUSED`; missing file → `MISSING`; unmounted root → `MISSING(STORAGE_UNAVAILABLE)` → remount → `COMPLETED`; orphan and 14-day `.part` handling; deferred deletes; `play` YouTube rows → `FAILED`; orphan final files counted, not deleted | M6 |
+| `LocalMediaIndexTest` | Robolectric | main thread never blocks before the load; loader thread waits; `put` after commit, `remove` before delete | M6 |
+| `DownloadMoveWorkerTest` | Robolectric | copy, verify, rename, row update, source deletion (deferred when current), continuation while rows are in flight, unavailable source skipped | M6 |
+| `YouTubeTransferSourceTest` | Robolectric, fake `YouTubeStreamResolver` + MockWebServer googlevideo stand-in | exact 10 MiB range boundaries; 0.5–2 s pauses (`TestClock`); re-resolve before a chunk near expiry; 403 → invalidate and retry the same chunk, third → `YT_FORBIDDEN` backoff; `clen` or itag change → restart; 429 → `BACKOFF` ≥ 30 min and `reportRateLimited`; `Unavailable` → `FAILED` + recorder; `BREAKER_OPEN` → `BACKOFF` not counted; 21st `AUTO` start in an hour → `BACKOFF`; `audio/webm` → `.webm`; unknown MIME → `UNSUPPORTED_STREAM` | M9 |
+| `BackupRulesTest` | JVM | no include in the three rule files can cover `Podcasts/` or `downloads/` | M6 |
+| `DownloadNotificationsTest` | Robolectric | channel IDs and importance; ≤ 1 Hz updates; explicit, immutable action intents | M6 |
+
+Fixtures: `download/impl/src/test/resources/media/` — `id3.mp3`, `framesync.mp3`, `aac-lc.m4a`, `book.m4b`, `video.mp4`, `opus.ogg`, `vorbis.ogg`, `audio.webm`, `audio.flac`, `adts.aac`, `pcm.wav`, `captive-portal.html`, `error.xml`, `error.json`, `playlist.m3u8`, `mp3-as-text-plain.bin`, `empty.bin`; each ≤ 64 KB, generated by `scripts/fixtures/make-media-fixtures.sh` (no copyrighted audio).
+
+### Instrumented and device tests
+
+| Test | Where | Covers |
+|---|---|---|
+| `UidtDownloadTest` | GMD API 36 (nightly, 09) with an in-test HTTP server serving a throttled 200 MB file | **M6 acceptance 3**: download keeps running with the app backgrounded beside an active playback FGS for 20 min; notification shown within 10 s |
+| `DataSyncWorkerTest` | GMD API 33 | **M6 acceptance 3**: a manual download started while visible runs as a `dataSync` foreground worker (`dumpsys activity services`) |
+| `ProcessDeathResumeTest` | GMD API 26 and 36 | **M6 acceptance 2**: `am kill` mid-download → reconcile → `QUEUED(SYSTEM)` → resumes from the `.part` length (server log shows `Range`) |
+| `OfflinePlaybackTest` (with 06) | GMD | **M6 acceptance 6**: a downloaded episode plays in airplane mode with artwork; deleting it while playing is deferred until the next transition |
+| `DownloadsScreenStringsTest` (with 08, Roborazzi) | Robolectric | **M6 acceptance 8**: correct text for every `waitReason`, state and error |
+| `bmgr` check | GMD API 31 and 36, manual in M6, nightly from M11 | **M6 acceptance 7**: `adb shell bmgr enable true`; `bmgr transport com.android.localtransport/.LocalTransport`; download a 30 MB episode; `bmgr backupnow app.neutrodyne`; the local transport's stored backup for the package (Unverified path) contains no `Podcasts/` or `downloads/` entry |
+
+**M6 device checklist** (recorded in the PR): reboot mid-download on API 34 and 33 (UIDT and worker resume, acceptance 2); Task Manager "Stop" on the UIDT entry (rows `PAUSED`; record the `ApplicationExitInfo` reason); SD card removal and re-insertion; Data Saver on with mobile data; notification permission denied; `adb shell am set-standby-bucket app.neutrodyne restricted` (`NEEDS_FOREGROUND` and `BACKGROUND_RESTRICTED`); `adb shell dumpsys jobscheduler` shows namespace `downloads`, job 1001, user-initiated; notification update via `notify` vs `setNotification` on API 34 and 36.
+
+### M6 acceptance criteria map
+
+| [PLAN M6](../PLAN.md#m6-downloads) acceptance | Verified by |
+|---|---|
+| 1 Range/If-Range resume, ignored Range, 416, weak ETag, identity encoding, HTML ≤ 64 KB | `RssTransferSourceTest` |
+| 2 process kill and reboot resume | `ProcessDeathResumeTest`, device checklist |
+| 3 UIDT beside playback 20 min; API 33 `dataSync` worker | `UidtDownloadTest`, `DataSyncWorkerTest` |
+| 4 group keep 3, tombstones, D45 merge | `AutoDownloadPlannerTest` |
+| 5 cleanup timing and protected set | `CleanupPlannerTest` |
+| 6 offline play with artwork, deferred delete | `OfflinePlaybackTest` |
+| 7 `bmgr` excludes `Podcasts/` | `bmgr` check, `BackupRulesTest` |
+| 8 wait-reason texts | `DownloadsScreenStringsTest` |
+
+---
+
+## Manifest and Play declaration
+
+Serves N2, N7, N8. Delivered in M6 (manifest), M11 (Play, if [PO-2](../PLAN.md#po-2-distribution-channels-and-youtube-per-flavor) approves). The merged manifest is 01's ([01 Manifest and permissions](01-foundation.md#manifest-and-permissions)); `:download:impl` declares these entries itself:
+
+| Entry | Justification |
+|---|---|
+| `RUN_USER_INITIATED_JOBS` | UIDT job for user-started downloads on API 34+ |
+| `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC` | WorkManager foreground worker for `MANUAL` downloads on API 26–33 (and expedited work on API < 31) |
+| `RECEIVE_BOOT_COMPLETED` | `setPersisted(true)` on the UIDT job; WorkManager rescheduling; never starts an FGS |
+| `service app.neutrodyne.download.impl.ManualDownloadJobService` (`exported = false`, `permission = BIND_JOB_SERVICE`) | the UIDT `JobService` |
+| `service androidx.work.impl.foreground.SystemForegroundService` (`foregroundServiceType = dataSync`, `tools:node = merge`) | type of WorkManager's foreground service |
+| `receiver app.neutrodyne.download.impl.DownloadActionReceiver` (`exported = false`) | notification actions |
+| `file_paths.xml`: `external-files-path` `Podcasts/`, `files-path` `downloads/` | "Share file" ([Sharing a file](#sharing-a-file)) |
+| `android:hasFragileUserData="true"` (application, set by 01) | "keep app data" on uninstall |
+
+`ACCESS_NETWORK_STATE` and `POST_NOTIFICATIONS` come from `:core:network` and `:app`. No storage permission is requested (app-specific storage needs none; v1.x SAF uses a URI grant).
+
+**Play policy.** UIDT jobs are allowed only for user-initiated network transfers that run only as long as needed ([Device and Network Abuse](https://support.google.com/googleplay/android-developer/answer/9888379)); the `MANUAL` lane is exactly that and `AUTO` never uses UIDT. Every FGS type needs a Play Console declaration with description, user impact and a demo video ([FGS declarations](https://support.google.com/googleplay/android-developer/answer/13392821)). Draft for `dataSync` (09 files it, [09 Distribution channels](09-quality-and-release.md#distribution-channels)):
+
+- *Description:* "On Android 8–13 only, Neutrodyne uses a dataSync foreground service to finish a podcast episode download that the user started by tapping Download while the app was open. The notification shows progress and a Pause action and disappears when the download finishes. On Android 14 and later the app uses user-initiated data transfer jobs instead. Automatic downloads never use a foreground service."
+- *User impact if not allowed:* "A user-started download of a large episode would stop shortly after the user leaves the app and continue only in short background windows, often finishing hours later."
+- *Demo video checklist:* API 33 device; open the app; tap Download on a ≥ 150 MB episode; show the notification; press Home; show the download continuing for at least 2 minutes and completing; show the Pause action.
+
+**Fallback if the declaration is refused (risk [P2](../PLAN.md#8-risks-and-mitigations)):** remove `setForeground`, stop expediting `download-lane-MANUAL` on API 26–30 (expedited work is a foreground service there), and drop `FOREGROUND_SERVICE_DATA_SYNC` and the `SystemForegroundService` override (`tools:node="remove"`); manual downloads on API 26–33 then progress in ~10-minute job windows. One constant `DownloadFeatures.DATA_SYNC_FGS` gates the code paths.
+
+---
+
+## Error handling and failure modes
+
+Serves N1, N2. Expected failures are values (`TransferResult`, `Prepared`), `IOException`s are classified at the transfer boundary with 01's `NetErrorClassifier` ([01 Network error taxonomy](01-foundation.md#network-error-taxonomy)), and programming errors crash ([01 Errors](01-foundation.md#errors)); a crash mid-download is recovered by reconcile at the next start.
+
+| Failure | Detection | Behaviour | User sees |
+|---|---|---|---|
+| Network lost mid-transfer | `NetworkMonitor` disconnected; `IOException` | stop as `QUEUED(NETWORK)`, no attempt; resume from `.part` | "Waiting for a network connection" |
+| Captive portal | `NOT_MEDIA` while `isValidated == false` | `QUEUED(NETWORK)`; UIDT and wake requests require validated networks | same |
+| Server ignores `Range` / changes the file | 200 at offset > 0; 206 total differs | restart from 0 (≤ 2 per attempt) | progress resets |
+| DAI rendition differs between requests | 206 total check; `If-Range` validator change | restart; stream position may differ from file (06 records `positionSource`) | — |
+| Signed CDN URL expired during an attempt | 401/403/404/410 on the cached final URL | one fallback to the original URL | — |
+| Private feed without credentials (e.g. after restore) | 401 | `FAILED(HTTP_AUTH)`; 03 asks for the password on the podcast | "Access denied — check this feed's password" |
+| Disk full | free-space check; ENOSPC | `QUEUED(STORAGE)`, `.part` kept, cleanup attempted, storage notification | "Not enough storage" + "Manage storage" |
+| SD card removed | root unresolvable; EIO | `MISSING(STORAGE_UNAVAILABLE)` / `QUEUED(STORAGE)`; nothing deleted | "Storage not available" |
+| Process killed (low memory, crash, update) | stale `runnerToken` | reconcile → `QUEUED(SYSTEM)`, torn-tail trim | "Paused by Android — continues automatically" |
+| Runner stopped by quota or constraints | `onStopJob`, worker cancellation | `QUEUED(SYSTEM)`/`NETWORK`; system reschedules | same |
+| Task Manager stop | exit reason at next start | `PAUSED` | "Paused" |
+| Database write fails (`SQLITE_FULL`) in `finish` | exception from the DAO | logged; the row keeps a dead token and is reset by the daily reconcile or the next process start | transient stale row |
+| Episode deleted mid-transfer (unsubscribe cascade, retention) | `finish` updates 0 rows | delete the `.part` and any final file | — |
+| Feed changes the enclosure URL | refresh | `QUEUED` rows use the new URL at the next prepare; `FAILED` rows re-queued; `COMPLETED` untouched | — |
+| YouTube extractor broken | breaker open (04) | rows wait in `BACKOFF` until the gate reopens; RSS unaffected | 04's banner |
+| Wall clock jumps | — | deadlines and waits use `elapsedRealtime`; persisted backoff clamped to ≤ 6 h | — |
+
+---
+
+## Delivery by milestone
+
+| Milestone | Delivered here |
+|---|---|
+| [M0](../PLAN.md#m0-scaffold-and-ci) | `:download:api` interfaces and data types compile; `:download:impl` stub; `:core:testing` fakes `FakeDownloadController`, `FakeLocalMediaIndex`, `FakeDownloadProgressSource` (09 owns the module) |
+| [M4](../PLAN.md#m4-playback-core) | nothing bound: 06 declares `@BindsOptionalOf LocalMediaIndex` and `DownloadController` (no local files yet) |
+| [M6](../PLAN.md#m6-downloads) | Everything for RSS: controller, engine, slots, claim, `RssTransferSource`, sniffing, integrity, `StorageRoots` (external default, internal, removable), naming, `LocalMediaIndex`, `DownloadProgressHub`, UIDT job, lane and wake workers, notifications and receiver, `AutoDownloadPlanner` with the D67 watermark, `CleanupPlanner`/`CleanupWorker`, quota, tombstones, deferred deletes, `DownloadReconciler`/`DownloadReconcileWorker`, `DownloadMoveWorker`, `downloads.*` settings, manifest entries; inputs for 08's live row state and Downloads screen; 05's "Download all unplayed" and re-download offer wired to `request`; artwork pins for downloads; `ChapterRepository.ensureLoaded` call |
+| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | YouTube episodes rejected in both flavors (`YOUTUBE_NOT_SUPPORTED`, capabilities all false) and skipped by the planner |
+| [M9](../PLAN.md#m9-youtube-playback-and-downloads-in-foss) | `YouTubeTransferSource` (chunks, re-resolve, pacing, gate and 429 handling), YouTube slot, YouTube auto-download globals consumed through 05, cross-grade reconcile rule, `YOUTUBE_PAUSED` notice |
+| [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) | no engine work; 08 polishes the Downloads screen on the data defined here |
+| [M11](../PLAN.md#m11-release-hardening-and-v10) | `DownloadDiagnostics` for 09's diagnostics screen; nightly `UidtDownloadTest` and `bmgr` checks; Play `dataSync` declaration and demo video if PO-2 approves; final permission audit |
+| [M15](../PLAN.md#74-after-v10-v1x-themes) | SAF custom folder (`saf:` roots, persisted `VERIFYING` copy, sidecar index); HLS enclosure download (Media3 `HlsDownloader` or a segment fetcher behind `TransferSource`), evaluated then |
+
+---
+
+## Open questions
+
+1. **Architect review: WorkManager policies and new work names.** The canonical work-name list gives `download-lane-*` the policy `KEEP` (continuations `APPEND_OR_REPLACE`). A `KEEP` enqueue right after a worker decides to finish is swallowed by the still-`RUNNING` unique work, and a pending request with a delay or stale constraints would block new rows. This document keeps `KEEP` for the first enqueue per process, uses `APPEND_OR_REPLACE` afterwards ([Lane registry and the exit protocol](#lane-registry-and-the-exit-protocol)), and adds `download-wake-MANUAL`/`download-wake-AUTO` (`REPLACE`) for delayed and condition-bound re-arming. The canonical work-name list (and PLAN M6 deliverables) should add the wake works and the policy nuance.
+2. **Architect review: `lifecycle-process` for `:download:impl`** (01's module table) — needed by `AppVisibility` (`setForeground` only when visible, `NEEDS_FOREGROUND`, foreground re-arming).
+3. **Architect review: credentials before the first transfer.** `CredentialStore.awaitLoaded()` lives in `:core:data`, which `:download:impl` cannot see. Requested: `suspend fun awaitLoaded()` on 01's `CredentialLookup` (default no-op for `CredentialLookup.None`). Without it, a private enclosure fetched right after boot could fail with 401 → `FAILED(HTTP_AUTH)`.
+4. **Architect review: reading `play_session.currentEpisodeId`.** Rule 6 forbids `:download:impl → :playback:api`, so deferral reads 06's table directly (read-only `PlaySessionDao.observeCurrentEpisodeId()`). Alternative: a `:core:domain` "current episode" interface implemented by 06.
+5. **Architect review: N2 wording.** N2 says every background job stops itself before 8 min; the UIDT job and the API ≤ 33 foreground `MANUAL` worker deliberately have no soft deadline (D47). Suggest "every background job that is neither user-initiated nor foreground".
+6. **Architect review: protected set.** Unplayed `AUTO` downloads that are in progress are protected from the rolling keep-N cleanup here; R4.5 and the canonical "Never auto-deleted" row should name them, and 02 adds `s.startedAt IS NULL` to the beyond-keepLatest query.
+7. **Owner 02:** add `DownloadDao.observeEntries()` (download ⨝ episode ⨝ podcast ⨝ `episode_state`: titles, artwork key and version, `sortDate`, played, favourite), `observePlayedCompletedIds()`, `queuedNeeds(lane, now)` (queued and due counts, any-metered-allowed, all-need-unmetered, all-need-charging, earliest `nextAttemptAt` per need class, remaining bytes = `SUM(COALESCE(totalBytes, estimatedBytes, 157286400) − downloadedBytes)`), `markWait(ids, reason, nextAttemptAt)` (writes only changed rows), `clearStorageWaits()`, `requeueChangedEnclosures(now)`, `rowsOnOtherRoots(target, limit)`, `pathsByRoot()`; `EpisodeDao.downloadSources(ids)` (episode and podcast fields used in [Requests](#requests) plus the first audio alternate enclosure); `PlaySessionDao.observeCurrentEpisodeId()`; the in-progress predicate of item 6. Optional: let `autoCandidates` accept video episodes that have an audio alternate when `includeVideo` is off.
+8. **Owner 06:** confirm the contract — 07 defers file deletion only for `play_session.currentEpisodeId`; other window items rely on 06's `LOCAL_FILE_MISSING` recovery; `reportFileMissing` re-checks before marking `MISSING`; 07 calls `ChapterRepository.ensureLoaded(id, finalUri)` after `COMPLETED`; downloads of `isVideo` episodes prefer the first audio alternate (06's streaming rule).
+9. **Owner 08:** render the [Wait reasons](#wait-reasons) and [Errors](#errors) strings, the [Notices](#notices), the three-button metered dialog, the contextual notification prompt (`askNotificationPermission`), row actions ("Use mobile data", "Download now", "Retry now", "Manage storage", "Resume"), the move dialog, the orphan clean-up confirmation, and Delete-only YouTube rows in `play`.
+10. **Owner 05:** the global keys are `downloads.auto_download`, `downloads.auto_download_keep_latest`, `downloads.auto_download_network`, `downloads.auto_download_require_charging`, `downloads.auto_download_include_video`, `downloads.delete_after_played` (answers 05 open question 9); `downloadAllEstimate` should use [Estimates](#estimates) (enclosure lengths under 100 KB are placeholders); keep the include-only backup rules free of download paths ([Backup exclusion](#backup-exclusion)).
+11. **Owner 09:** nightly GMD jobs `UidtDownloadTest` (20 min beside playback) and the `bmgr` check from M11; `dataSync` declaration and demo video if Play is approved; `DownloadDiagnostics` fields on the diagnostics screen; the media-fixture script.
+12. **PO (PO-12 follow-ups, defaults applied):** (a) automatic downloads skip video episodes unless enabled; (b) unplayed automatic downloads beyond keep-N are deleted when newer ones arrive (rolling window), rather than kept until played; (c) the storage cap only pauses automatic downloads and never deletes; (d) automatic downloads post no notifications; (e) parallel downloads are fixed at 3, not a setting.
+13. **Unverified (device checks in M6/M9):** whether `notify` updates a UIDT job's notification or `setNotification` must be repeated; whether JobScheduler accepts and needs `NET_CAPABILITY_VALIDATED`; UIDT jobs surviving app updates; the `ApplicationExitInfo` reason of a Task Manager stop; Data Saver's effect on UIDT jobs; whether a notification-action broadcast lets the app schedule a UIDT job; whether "keep app data" keeps `Android/data/…/Podcasts`; the WorkManager version that added `ListenableWorker.getStopReason()`; media-scanner treatment of `Android/data` on API 26–29 (`.nomedia`); `getAllocatableBytes` on public removable volumes; durability of a rename without a directory fsync; the local-transport backup path for the `bmgr` check.
+14. Per-host slots key on the original enclosure host, not the CDN reached after redirects; CDN-level throttling would need runtime host tracking. Revisit if 429s from CDNs appear in diagnostics.
+15. `observeAll()` returns full lists (no paging), adequate up to about 2,000 rows. A paged completed list would need `paging-common` in `:download:api` (01 change).
+
+---
+
+## Sources
+
+Checked 2026-10-04 by the research behind this document unless marked otherwise.
+
+- Background work and jobs: [User-initiated data transfer jobs](https://developer.android.com/develop/background-work/background-tasks/uidt) · [JobInfo.Builder.setUserInitiated](https://developer.android.com/reference/android/app/job/JobInfo.Builder#setUserInitiated(boolean)) · [JobInfo.Builder.setExpedited](https://developer.android.com/reference/android/app/job/JobInfo.Builder#setExpedited(boolean)) · [JobService](https://developer.android.com/reference/android/app/job/JobService) · [JobScheduler](https://developer.android.com/reference/android/app/job/JobScheduler) · [Define work requests](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work) · [Long-running workers](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running) · [Constraints.Builder](https://developer.android.com/reference/kotlin/androidx/work/Constraints.Builder) · [WorkManager releases](https://developer.android.com/jetpack/androidx/releases/work) · [FGS troubleshooting](https://developer.android.com/develop/background-work/services/fgs/troubleshooting) · [Data transfer options](https://developer.android.com/develop/background-work/background-tasks/data-transfer-options) · [dataSync migration (Android 15)](https://developer.android.com/about/versions/15/changes/datasync-migration) · [Optimize battery use for tasks](https://developer.android.com/develop/background-work/background-tasks/optimize-battery) · [Power management details (quota table)](https://developer.android.com/topic/performance/power/power-details) · [App Standby](https://developer.android.com/topic/performance/appstandby)
+- Foreground services and platform versions: [FGS timeout](https://developer.android.com/develop/background-work/services/fgs/timeout) · [FGS service types](https://developer.android.com/develop/background-work/services/fgs/service-types) · [Background FGS start restrictions](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start) · [Android 14 behaviour changes](https://developer.android.com/about/versions/14/behavior-changes-14) · [Android 16 behaviour changes (all apps)](https://developer.android.com/about/versions/16/behavior-changes-all) · [Android 17 behaviour changes (all apps)](https://developer.android.com/about/versions/17/behavior-changes-all) · [Android 17 behaviour changes (targeting 37)](https://developer.android.com/about/versions/17/behavior-changes-17) · [Android 17 features](https://developer.android.com/about/versions/17/features) · [Android 17 release](https://en.wikipedia.org/wiki/Android_17) · [Live Updates](https://developer.android.com/develop/ui/views/notifications/live-update)
+- Storage and backup: [App-specific storage](https://developer.android.com/training/data-storage/app-specific) · [StorageManager](https://developer.android.com/reference/android/os/storage/StorageManager) · [Documents and files (SAF)](https://developer.android.com/training/data-storage/shared/documents-files) · [MediaStore](https://developer.android.com/training/data-storage/shared/media) · [MediaStore.MediaColumns](https://developer.android.com/reference/android/provider/MediaStore.MediaColumns) · [Auto Backup](https://developer.android.com/identity/data/autobackup) · [`<application>` element (`hasFragileUserData`)](https://developer.android.com/guide/topics/manifest/application-element) · [Android/data access on Android 11+](https://ghisler.com/androidspecialfolders.htm) (third-party)
+- API references used without re-checking in the research (marked for M6 verification): [ApplicationExitInfo](https://developer.android.com/reference/android/app/ApplicationExitInfo) · [ActivityManager.isBackgroundRestricted](https://developer.android.com/reference/android/app/ActivityManager#isBackgroundRestricted()) · [UsageStatsManager.getAppStandbyBucket](https://developer.android.com/reference/android/app/usage/UsageStatsManager#getAppStandbyBucket()) · [ConnectivityManager.getRestrictBackgroundStatus](https://developer.android.com/reference/android/net/ConnectivityManager#getRestrictBackgroundStatus())
+- Rejected alternatives: [Media3 DownloadService source](https://github.com/androidx/media/blob/release/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/offline/DownloadService.java) (dataSync FGS, `onTimeout` → `stopSelf`, "Failed to restart (foreground launch restriction)") · [Media3 DownloadManager source](https://github.com/androidx/media/blob/release/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/offline/DownloadManager.java) (global requirements) · [Media3 releases](https://developer.android.com/jetpack/androidx/releases/media3) · [System DownloadManager](https://developer.android.com/reference/android/app/DownloadManager) and [DownloadManager.Request](https://developer.android.com/reference/android/app/DownloadManager.Request) (destinations limited, opaque retries; subject to Android 16 quotas)
+- Play policy: [Device and Network Abuse (UIDT, terms of service)](https://support.google.com/googleplay/android-developer/answer/9888379) · [Foreground service declarations](https://support.google.com/googleplay/android-developer/answer/13392821)
+- HTTP and formats: [OkHttp releases (Maven metadata)](https://repo1.maven.org/maven2/com/squareup/okhttp3/okhttp/maven-metadata.xml) · [okhttp-coroutines](https://repo1.maven.org/maven2/com/squareup/okhttp3/okhttp-coroutines/maven-metadata.xml) · [Podcasting 2.0 integrity tag](https://podcasting2.org/docs/podcast-namespace/tags/integrity)
+- YouTube transfers: [yt-dlp `_video.py` (`CHUNK_SIZE = 10 << 20`)](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_video.py) · [yt-dlp PO-Token guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) · [NewPipe Extractor tags](https://github.com/TeamNewPipe/NewPipeExtractor/tags) and [releases](https://github.com/TeamNewPipe/NewPipeExtractor/releases) · [`/videoplayback` expiry ≈ 6 h (weakly verified)](https://git.linux.ucla.edu/lug/invidious/commit/a9aae6b36c270643461a80b9987ed611077498af) · [audio itag table (search snippet)](https://gist.github.com/sidneys/7095afe4da4ae58694d128b1034e01e2)
+- Prior art: [AntennaPod DownloadServiceInterfaceImpl](https://github.com/AntennaPod/AntennaPod/blob/develop/net/download/service/src/main/java/de/danoeh/antennapod/net/download/service/feed/DownloadServiceInterfaceImpl.java) and [EpisodeDownloadWorker](https://github.com/AntennaPod/AntennaPod/blob/develop/net/download/service/src/main/java/de/danoeh/antennapod/net/download/service/episode/EpisodeDownloadWorker.java) (one expedited worker per episode, `RUN_AS_NON_EXPEDITED_WORK_REQUEST`, network constraint from a setting, `Accept-Encoding: identity`, `text/*` rejection) · [Pocket Casts Android](https://github.com/Automattic/pocket-casts-android) (temp-file downloads, `FixDownloadsWorker` for DB/file drift)

@@ -1,6 +1,6 @@
 # 01 — Foundation
 
-> Status: Draft v1, 2026-10-04 · Implements: N2 / N3 / N7 / N8 / N10 / N11 (foundation parts) · Milestones: M0 (primary), M1, M3, M4, M5, M6, M8, M9, M11 · Honours: D2, D3, D4, D5, D6, D7, D8, D9, D10, D12, D13, D14, D28, D35, D43, D60, D61; PO-1, PO-7, PO-8, PO-13, PO-18 defaults · Owns: toolchain and version catalog, convention plugins, modules and dependency rules, architecture and coroutine conventions, DI graph, Nav3 wiring, build flavors, networking baseline, Android 14–17 compliance checklist, merged manifest, licence policy, M0 scaffold and spikes
+> Status: Draft v1, 2026-10-04 · Implements: N1 / N2 / N3 / N7 / N8 / N10 / N11 (foundation parts) · Milestones: M0 (primary), M1, M3, M4, M5, M6, M8, M9, M11 · Honours: D2, D3, D4, D5, D6, D7, D8, D9, D10, D12, D13, D14, D28, D35, D43, D60, D61; PO-1, PO-7, PO-8, PO-13, PO-18 defaults · Owns: toolchain and version catalog, convention plugins, modules and dependency rules, architecture and coroutine conventions, DI graph, Nav3 wiring, build flavors, networking baseline, Android 14–17 compliance checklist, merged manifest, licence policy, M0 scaffold and spikes
 
 Contents: [Scope](#scope) · [Toolchain and versions](#toolchain-and-versions) · [Module layout](#module-layout) · [Dependency rules](#dependency-rules) · [Architecture patterns](#architecture-patterns) · [Dependency injection](#dependency-injection) · [Navigation](#navigation) · [Build flavors](#build-flavors) · [Networking baseline](#networking-baseline) · [Platform compliance](#platform-compliance) · [Manifest and permissions](#manifest-and-permissions) · [Licensing and dependency policy](#licensing-and-dependency-policy) · [M0 scaffold checklist](#m0-scaffold-checklist) · [Spikes](#spikes) · [Testing](#testing) · [Delivery by milestone](#delivery-by-milestone) · [New names introduced here](#new-names-introduced-here) · [Open questions](#open-questions) · [Sources](#sources)
 
@@ -73,7 +73,7 @@ All verified 2026-10-04 (sources in [Sources](#sources)). This is the only docum
 | | kotlinx.coroutines (`core`, `android`, `guava`, `test`) | 1.11.0 | `-guava` for Media3 futures |
 | | kotlinx-collections-immutable | 0.5.2 | |
 | | jsoup | 1.23.2 | MIT |
-| Media | Media3 (`exoplayer`, `session`, `datasource-okhttp`, `ui-compose`, `common-ktx`, `inspector`, `test-utils`, `test-utils-robolectric`) | 1.11.1 | `@UnstableApi` opt-in module-wide only in `:playback:impl`; `media3-cast` v1.x `play` only |
+| Media | Media3 (`exoplayer`, `session`, `datasource-okhttp`, `ui-compose`, `common-ktx`, `inspector`, `test-utils`, `test-utils-robolectric`) | 1.11.1 | `@UnstableApi` opt-in module-wide only in `:playback:impl` (lint config, [Convention plugins](#convention-plugins)); `ui-compose` unused until M14 ([06 UI boundary](06-playback.md#ui-boundary)); `media3-cast` v1.x `play` only |
 | YouTube (`foss`) | NewPipe Extractor `com.github.teamnewpipe:NewPipeExtractor` | v0.26.5 | JitPack, exclusive-content repository; GPL-3.0-or-later; M9 |
 | | Rhino (`org.mozilla:rhino`, `rhino-engine`) | 1.8.1, strict | Extractor-tested; 1.9 needs minSdk ≥ 26 and is untested by the extractor |
 | | `com.android.tools:desugar_jdk_libs_nio` | 2.1.5 | Extractor needs it below API 33; enabled in M9 ([Build flavors](#core-library-desugaring)) |
@@ -327,6 +327,8 @@ Rules for the catalog:
 1. Every external coordinate lives here; build files never hard-code a version. `resolutionStrategy { failOnDynamicVersions(); failOnChangingVersions() }` is applied by every convention plugin.
 2. Module build files apply plugins only by `alias(libs.plugins.neutrodyne-*)` or by bare `id("…")` for plugins already on the build-logic classpath; versioned `alias(...)` is used only for tooling plugins not on that classpath (`detekt`, `roborazzi`, `baselineprofile`, `play-publisher`, `android-test`).
 3. Rhino gets a strict constraint in `:youtube:streams`: `constraints { implementation(libs.rhino) { version { strictly("1.8.1") } } }` (same for `rhino-engine`).
+4. BOM-managed artifacts (Compose, OkHttp, Coil) are declared without a version, so their platform must be on the same configuration. `neutrodyne.android.library`, `neutrodyne.android.application` and `neutrodyne.jvm.library` add `platform(okhttp-bom)` and `platform(coil-bom)` to `implementation`, `testImplementation` and (Android) `androidTestImplementation` of every module (a platform adds constraints only, no artifact); `neutrodyne.android.compose` does the same for `compose-bom`. A module that exposes a BOM-managed artifact as `api` (`:core:network` → `okhttp`, `:core:navigation` → `compose-runtime`) also declares `api(platform(...))`.
+5. Plugin classes in `build-logic` have no type-safe `libs` accessor. They read the catalog with `val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")` and `libs.findLibrary("okhttp-bom").get()` / `libs.findVersion("kotlin").get().requiredVersion`. Module build scripts use the type-safe accessors.
 
 ### `settings.gradle.kts`, `gradle.properties`, root build
 
@@ -393,7 +395,7 @@ Root `build.gradle.kts` contains only `plugins { alias(libs.plugins.neutrodyne.q
 
 ### Convention plugins
 
-`build-logic/settings.gradle.kts` reuses the root catalog (`versionCatalogs { create("libs") { from(files("../gradle/libs.versions.toml")) } }`). `build-logic/convention/build.gradle.kts` applies `kotlin-dsl` and declares as **`implementation`** (not `compileOnly`, see [S1](#s1-kgp-2420-under-agp-941)): `android-gradlePlugin`, `kotlin-gradlePlugin`, `kotlin-composeGradlePlugin`, `kotlin-serializationGradlePlugin`, `ksp-gradlePlugin`, `hilt-gradlePlugin`, `room3-gradlePlugin`, `spotless-gradlePlugin`, `licensee-gradlePlugin`, `moduleGraphAssert-gradlePlugin`, `aboutlibraries-gradlePlugin`. Plugin classes live in `build-logic/convention/src/main/kotlin/` and are registered under the canonical IDs.
+`build-logic/settings.gradle.kts` declares its own repositories (`dependencyResolutionManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }`, with the same `google { content { … } }` filter as the root) and reuses the root catalog (`versionCatalogs { create("libs") { from(files("../gradle/libs.versions.toml")) } }`). `build-logic/convention/build.gradle.kts` applies `kotlin-dsl` and declares as **`implementation`** (not `compileOnly`, see [S1](#s1-kgp-2420-under-agp-941)): `android-gradlePlugin`, `kotlin-gradlePlugin`, `kotlin-composeGradlePlugin`, `kotlin-serializationGradlePlugin`, `ksp-gradlePlugin`, `hilt-gradlePlugin`, `room3-gradlePlugin`, `spotless-gradlePlugin`, `licensee-gradlePlugin`, `moduleGraphAssert-gradlePlugin`, `aboutlibraries-gradlePlugin`. Plugin classes live in `build-logic/convention/src/main/kotlin/` and are registered under the canonical IDs.
 
 | Plugin ID | Applied to | Configures |
 |---|---|---|
@@ -402,7 +404,7 @@ Root `build.gradle.kts` contains only `plugins { alias(libs.plugins.neutrodyne.q
 | `neutrodyne.android.compose` | `:app`, `:core:designsystem`, `:core:ui`, features | `org.jetbrains.kotlin.plugin.compose`; `buildFeatures.compose = true`; `platform(compose-bom)` on `implementation`, `androidTestImplementation`, `testImplementation`; `ui-tooling-preview`; `debugImplementation(ui-tooling, ui-test-manifest)`; `composeCompiler { stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf")); if (-PcomposeReports) reportsDestination/metricsDestination = build/compose }`. Adds `-opt-in=androidx.compose.material3.ExperimentalMaterial3Api` **only** when the project path is `:core:designsystem`; `Nd*` wrappers therefore must not expose experimental Material 3 types in their public signatures ([08 Theming and colour](08-ui-ux.md#theming-and-colour)) |
 | `neutrodyne.android.feature` | `:feature:*` | applies `neutrodyne.android.library`, `neutrodyne.android.compose`, `neutrodyne.hilt`; adds `:core:{domain, model, common, designsystem, ui, navigation}`, `lifecycle-runtime-compose`, `lifecycle-viewmodel-compose`, `lifecycle-viewmodel-navigation3`, `hilt-lifecycle-viewmodel-compose`, `navigation3-runtime`, `adaptive-navigation3`, `paging-compose`, `kotlinx-collections-immutable`. `:*:api` modules are added explicitly per feature |
 | `neutrodyne.android.testing` | applied by application/library plugins | Hook only; content owned by [09 Test infrastructure](09-quality-and-release.md#test-infrastructure) (Robolectric `sdk=36`, JDK 21, `de_DE` + `America/St_Johns`, golden switch, `okhttp-bom` and Robolectric forcing, orchestrator, GMD definitions). Adds `testImplementation(project(":core:testing"))` except in `:core:testing` itself |
-| `neutrodyne.android.lint` | all modules (JVM modules via `com.android.lint`) | Hook only; gates owned by [09 Static analysis](09-quality-and-release.md#static-analysis) (`warningsAsErrors`, baseline, SARIF, `checkDependencies` in `:app`) |
+| `neutrodyne.android.lint` | all modules (JVM modules via `com.android.lint`) | Gates owned by [09 Static analysis](09-quality-and-release.md#static-analysis) (`warningsAsErrors`, baseline, SARIF, `checkDependencies` in `:app`). One foundation rule: Media3's `@UnstableApi` is an AndroidX `RequiresOptIn` marker enforced by Lint (`UnsafeOptInUsageError`), not by the Kotlin compiler, so the module-wide opt-in is a lint config: when the project path is `:playback:impl`, `lint { lintConfig = file("lint.xml") }` with `<issue id="UnsafeOptInUsageError"><ignore regexp='\(markerClass = androidx\.media3\.common\.util\.UnstableApi\.class\)' /></issue>` ([UnstableApi](https://developer.android.com/reference/androidx/media3/common/util/UnstableApi)). Everywhere else an unstable Media3 call stays a lint error |
 | `neutrodyne.hilt` | modules using DI | Android: `com.google.devtools.ksp` + `com.google.dagger.hilt.android`, `implementation(hilt-android)`, `ksp(hilt-compiler)`. JVM: `com.google.devtools.ksp`, `implementation(dagger)`, `ksp(dagger-compiler)` (generates `_Factory` classes for `@Inject` constructors; no Hilt modules in JVM modules). Modules with `@HiltWorker` additionally declare `implementation(androidx-hilt-work)` + `ksp(androidx-hilt-compiler)` |
 | `neutrodyne.room` | `:core:database` | `androidx.room3` + KSP; `room3 { schemaDirectory("$projectDir/schemas") }` (→ `core/database/schemas/`); `api(room3-runtime)`, `api(room3-paging)`, `api(paging-common)`, `implementation(sqlite-bundled)`, `ksp(room3-compiler)`, `testImplementation(room3-testing, sqlite-framework)`. Room usage conventions: [02 Conventions](02-data-model.md#conventions) |
 | `neutrodyne.jvm.library` | `:core:model`, `:core:common`, `:core:domain`, `:feeds`, `:*:api` | `org.jetbrains.kotlin.jvm`; no toolchain provisioning: Kotlin `jvmTarget = 17` plus `-Xjdk-release=17`, `JavaCompile.options.release = 17`; `com.android.lint`; JUnit 4 test deps |
@@ -445,9 +447,9 @@ These run in `check`; CI (09) only invokes Gradle.
 | `verifyDependencyPolicy` | `:app` | `playReleaseRuntimeClasspath` contains `project :youtube:streams`, `com.github.teamnewpipe:*`, `com.github.TeamNewPipe:*`, `org.mozilla:rhino*`, or any artifact whose Licensee report SPDX is GPL/LGPL/AGPL/MPL (except `desugar_jdk_libs*`); **either** release classpath contains a banned artifact (list above); `fossReleaseRuntimeClasspath` contains Google Play services / Firebase / Play Core / Crashlytics / Sentry |
 | `verifyManifestPermissions` | `:app` | the merged manifest of `fossRelease` or `playRelease` (`SingleArtifact.MERGED_MANIFEST`) declares a `uses-permission` not listed in `app/policy/permissions.txt`, or lacks one listed there |
 | `checkSpdxHeaders` | root | a `*.kt`/`*.java`/`*.kts` under `youtube/streams/` lacks `// SPDX-License-Identifier: GPL-3.0-or-later` as its first line, or any `*.kt`/`*.java`/`*.kts` file elsewhere contains `SPDX-License-Identifier: (A\|L)?GPL` or `MPL` (Markdown and other docs are not scanned) |
-| `checkBannedApis` | root | scans only `*/src/main/**` Kotlin sources and manifests (tests may build their own clients): source outside `core/designsystem/` contains `ExperimentalMaterial3Api` or `ExperimentalMaterial3ExpressiveApi`; any source contains `okhttp3.Cache(`, `.cache(Cache(`, `OkHttpClient()` or `OkHttpClient.Builder()` outside `core/network/`, `GlobalScope`, `override fun onBackPressed`, `collectAsState()` in `feature/`, or `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` |
+| `checkBannedApis` | root | scans only the `src/main/**` Kotlin sources and manifests of root-build modules (not `build-logic/`; tests may build their own clients): source outside `core/designsystem/` contains `ExperimentalMaterial3Api` or `ExperimentalMaterial3ExpressiveApi`; source outside `playback/impl/` contains `UnstableApi`; any source contains `okhttp3.Cache(`, `.cache(Cache(`, `OkHttpClient()` or `OkHttpClient.Builder()` outside `core/network/`, `GlobalScope`, `override fun onBackPressed`, `collectAsState()` in `feature/`, or `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` |
 
-`checkBannedApis` is a plain text scan (fast, configuration-cache safe); false positives are fixed by rewording, never by suppression lists.
+`checkBannedApis` is a plain text scan (fast, configuration-cache safe); false positives are fixed by rewording, never by suppression lists. `verifyDependencyPolicy` and `verifyManifestPermissions` must also stay configuration-cache safe: they take their inputs as providers (`configurations.named("playReleaseRuntimeClasspath").flatMap { it.incoming.resolutionResult.rootComponent }`, the Licensee JSON report file of the same variant, and the variant's `SingleArtifact.MERGED_MANIFEST` from `androidComponents.onVariants`), never by resolving configurations at configuration time. Both check release variants only (debug merges LeakCanary and test-only entries).
 
 ---
 
@@ -459,11 +461,11 @@ Every module except `:benchmark` (M11), `:playback:cast` and `:feature:widgets` 
 
 | Module | Plugins | Project dependencies (main) | External dependencies | Content from |
 |---|---|---|---|---|
-| `:app` | `neutrodyne.android.application`, `.android.compose`, `.hilt` | every feature; `:core:{model, common, domain, navigation, database, datastore, network, data, artwork, designsystem, ui}`; `:playback:{api, impl}`; `:download:{api, impl}`; `:youtube:{api, impl}`; `fossImplementation(:youtube:streams)` | appcompat, activity-compose, core-ktx, core-splashscreen, navigation3-runtime/-ui, adaptive-navigation3, material3-adaptive-navigation-suite, lifecycle-viewmodel-navigation3, hilt-lifecycle-viewmodel-compose, androidx-hilt-work, work-runtime, coil-core, coil-compose, acra-mail, acra-dialog; `debugImplementation(leakcanary)`; M9: `coreLibraryDesugaring(desugar-jdk-libs-nio)` | M0 |
+| `:app` | `neutrodyne.android.application`, `.android.compose`, `.hilt` | every feature; `:core:{model, common, domain, navigation, database, datastore, network, data, artwork, designsystem, ui}`; `:playback:{api, impl}`; `:download:{api, impl}`; `:youtube:{api, impl}`; `fossImplementation(:youtube:streams)` | appcompat, activity-compose, core-ktx, core-splashscreen, navigation3-runtime/-ui, adaptive-navigation3, material3-adaptive-navigation-suite, lifecycle-viewmodel-navigation3, hilt-lifecycle-viewmodel-compose, androidx-hilt-work, work-runtime, coil-core, coil-compose, kotlinx-coroutines-android, acra-mail, acra-dialog; `debugImplementation(leakcanary)`; M9: `coreLibraryDesugaring(desugar-jdk-libs-nio)` | M0 |
 | `:core:model` | `neutrodyne.jvm.library` | — | — | M0 |
 | `:core:common` | `.jvm.library`, `.hilt` | — | coroutines-core, dagger (for `javax.inject`) | M0 |
 | `:core:domain` | `.jvm.library`, `.hilt` | `api`: `:core:{model, common}`, `:playback:api`, `:download:api`, `:youtube:api` | `api(paging-common)`, coroutines-core | M0 |
-| `:core:navigation` | `.android.library`, `kotlin.plugin.serialization` | — | `api(navigation3-runtime)`, `api(compose-runtime)` via the BOM (for `staticCompositionLocalOf`; no Compose compiler plugin), kotlinx-serialization-json | M0 |
+| `:core:navigation` | `.android.library`, `kotlin.plugin.serialization` | — | `api(navigation3-runtime)`, `api(platform(compose-bom))` + `api(compose-runtime)` (for `staticCompositionLocalOf`; no Compose compiler plugin), kotlinx-serialization-json | M0 |
 | `:core:database` | `.android.library`, `.hilt`, `.room` | `:core:{model, common}` | (from `neutrodyne.room`), kotlinx-serialization-json | M1 |
 | `:core:datastore` | `.android.library`, `.hilt` | `:core:{model, common}` | datastore-preferences | M0 |
 | `:core:network` | `.android.library`, `.hilt` | `:core:{model, common}` | `api(okhttp)` via BOM, okhttp-coroutines, okio | M0 |
@@ -474,18 +476,18 @@ Every module except `:benchmark` (M11), `:playback:cast` and `:feature:widgets` 
 | `:core:testing` | `.android.library`, `.hilt` | `:core:{domain, model, common}`, `:playback:api`, `:download:api`, `:youtube:api` | `api`: junit4, truth, turbine, coroutines-test, coil-test, hilt-android-testing | M0 |
 | `:feeds` | `.jvm.library`, `kotlin.plugin.serialization` | — | jsoup, kotlinx-serialization-json; `compileOnly` + `testImplementation(kxml2)` | M1 |
 | `:playback:api` | `.jvm.library`, `.hilt` (JVM: `@Inject`/qualifiers only) | `:core:{model, common}` | coroutines-core | M0 |
-| `:playback:impl` | `.android.library`, `.hilt` | `:playback:api`, `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}` | media3-exoplayer, -session, -datasource-okhttp, -common-ktx, -inspector (M5), kotlinx-coroutines-guava | M4 |
+| `:playback:impl` | `.android.library`, `.hilt` | `:playback:api`, `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}` | media3-exoplayer, -session, -datasource-okhttp, -common-ktx, -inspector (M5), kotlinx-coroutines-guava, lifecycle-process (`PlayerConnection`), kotlinx-serialization-json (06) | M4 |
 | `:download:api` | `.jvm.library`, `.hilt` (JVM) | `:core:{model, common}` | coroutines-core | M0 |
 | `:download:impl` | `.android.library`, `.hilt` | `:download:api`, `:youtube:api`, `:core:{domain, model, common, database, datastore, network, artwork}` | work-runtime, androidx-hilt-work (+ compiler), okhttp-coroutines | M6 |
-| `:youtube:api` | `.jvm.library`, `.hilt` (JVM) | `:core:{model, common}` | coroutines-core | M3 (classifier), M8 |
-| `:youtube:impl` | `.android.library`, `.hilt` | `:youtube:api`, `:core:{model, common, network}` | okhttp-coroutines, kotlinx-serialization-json, jsoup | M8 |
+| `:youtube:api` | `.jvm.library`, `.hilt` (JVM) | `:core:{model, common}` | coroutines-core | M2 (`YouTubeCapabilities`), M3 (classifier), M4 (`YouTubeStreamResolver` contract), M8 (rest); see [Flavor modules](#flavor-modules) |
+| `:youtube:impl` | `.android.library`, `.hilt` | `:youtube:api`, `:core:{model, common, network}` | okhttp-coroutines, kotlinx-serialization-json, jsoup | M4 (`ExternalOnlyYouTubeStreamResolver` only), M8 |
 | `:youtube:streams` | `.android.library`, `.hilt` — **GPL-3.0-or-later** | `:youtube:api`, `:core:{model, common, network}` | M9: newpipe-extractor, rhino + rhino-engine (strict 1.8.1) | M9 (M0 stub) |
 | `:feature:feeds` | `neutrodyne.android.feature` | + `:playback:api`, `:download:api`, `:youtube:api` | — | M1 (All), M2 |
 | `:feature:library` | feature | + `:youtube:api` | — | M1 |
 | `:feature:groups` | feature | — | reorderable | M2 |
 | `:feature:podcast` | feature | + `:playback:api`, `:download:api`, `:youtube:api` | — | M1 |
 | `:feature:episode` | feature | + `:playback:api`, `:download:api`, `:youtube:api` | — | M1 |
-| `:feature:player` | feature | + `:playback:api` | media3 UI artifacts only if [06 UI boundary](06-playback.md#ui-boundary) decides so ([Open questions](#open-questions)) | M4 |
+| `:feature:player` | feature | + `:playback:api` | none in v1.0: no Media3 type enters a feature ([06 UI boundary](06-playback.md#ui-boundary)); M14 adds `media3-ui-compose` for `PlayerSurface` | M4 |
 | `:feature:queue` | feature | + `:playback:api` | reorderable | M4 |
 | `:feature:downloads` | feature | + `:download:api` | — | M6 |
 | `:feature:discover` | feature | + `:youtube:api` | — | M1 (add by URL), M7 |
@@ -522,7 +524,7 @@ Serves N11, N8. Delivered in M0 (enforced from the first commit). Rules 1–9 ex
 Consequences implementers must design for:
 
 - **Interfaces in `:core:domain`, bindings in implementations** ([D12](../PLAN.md#3-key-decisions)). An impl module that needs another impl's behaviour calls the `:core:domain` or `:*:api` interface; Hilt supplies the implementation at the `:app` root.
-- **Types crossing from `:feeds` to the UI** (for example the show-notes block model of [D27](../PLAN.md#3-key-decisions)): `:feeds` cannot see `:core:model`, and `:core:ui` cannot see `:feeds`, so either the block model is declared in `:core:model` and `:core:data` maps `:feeds` output into it, or rule 8 is amended to `:feeds → :core:model`. See [Open questions](#open-questions); 03 and 08 must use the same choice.
+- **Types crossing from `:feeds` to the UI** (for example the show-notes block model of [D27](../PLAN.md#3-key-decisions)): `:feeds` cannot see `:core:model`, and `:core:ui` cannot see `:feeds`, so `:core:data` maps `:feeds` output into a `:core:model` mirror (03: `ShowNotesDocument` → `ShowNotes`, [03 Show notes](03-feeds-and-discovery.md#show-notes)). Amending rule 8 to `:feeds → :core:model` is an open architect question ([Open questions](#open-questions)); until it is decided, the mirror is the rule.
 - **`:core:artwork`** is the one infrastructure service implementations may share (PLAN rule 4).
 
 ```mermaid
@@ -563,7 +565,7 @@ flowchart TB
 
 ### Module-graph assertion configuration
 
-Applied to `:app` by `neutrodyne.android.application`; rules live in `build-logic/convention/src/main/kotlin/ModuleRules.kt` so they are reviewed like code.
+Applied to `:app` by `neutrodyne.android.application` and, with the same rules, to `:core:testing` (the only main-code module not reachable from `:app`'s main configurations, so rule 9 is otherwise unchecked); rules live in `build-logic/convention/src/main/kotlin/ModuleRules.kt` so they are reviewed like code.
 
 ```kotlin
 moduleGraphAssert {
@@ -616,7 +618,7 @@ Compose screen  ──events──▶  ViewModel  ──calls──▶  :core:do
 
 ### ViewModels and UI state
 
-- One `@HiltViewModel` per Nav entry, scoped to the entry ([Navigation](#viewmodels-per-entry)). Arguments arrive through assisted injection of the whole key.
+- One `@HiltViewModel` per Nav entry, scoped to the entry ([Navigation](#viewmodels-per-entry)). Arguments arrive through assisted injection of the whole key. The single exception is `PlayerViewModel` (`:feature:player`), which is activity-scoped because `PlayerSheet` lives outside `NavDisplay` ([D56](../PLAN.md#3-key-decisions), [08 Player sheet](08-ui-ux.md#player-sheet)); `NeutrodyneRoot` obtains it with `hiltViewModel()` outside any entry.
 - Exposes `val uiState: StateFlow<XUiState>` built with `stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), initial)`; events are plain functions `fun onX(...)`; no public `MutableStateFlow`.
 - No `Context`, `Resources` or Android UI types in ViewModels (`SavedStateHandle` allowed). User-visible text is a `UiText` (string resource ID + args, or plural), resolved in composition.
 - Paged lists are a **separate property** `val items: Flow<PagingData<T>>` (built with `flatMapLatest` over inputs, then `.cachedIn(viewModelScope)`), never inside `UiState`; UI collects with `collectAsLazyPagingItems()` and `itemKey { it.id }`.
@@ -636,6 +638,14 @@ sealed interface PodcastUiState {
 }
 data class UserMessage(val id: Long, val text: UiText, val action: UiText? = null)
 // ViewModel API: fun onMessageShown(id: Long); fun onNavigationHandled()
+
+// :core:ui — resource-free text for ViewModels, resolved in composition
+sealed interface UiText {
+    data class Res(@StringRes val id: Int, val args: List<Any> = emptyList()) : UiText     // args: String/Int/Long or nested UiText
+    data class Plural(@PluralsRes val id: Int, val count: Int, val args: List<Any> = emptyList()) : UiText
+    data class Raw(val value: String) : UiText                                             // user content only (titles, names), never app copy
+}
+@Composable fun UiText.asString(): String                                                   // nested UiText args resolved recursively
 ```
 
 **One-shot events are state with acknowledgement** (snackbars as `messages`, navigation after an async result as `pendingNavigation`), never `Channel`/`SharedFlow`: state survives configuration change and cannot be lost while the collector is stopped. Navigation that follows a direct user gesture is performed by the composable itself via [`LocalAppNavigator`](#appnavigator-and-per-tab-back-stacks); ViewModels never hold the navigator.
@@ -689,7 +699,7 @@ interface Clock {
 | Room DAO calls | Room's query context (`setQueryCoroutineContext(@Dispatcher(IO))`, [02](02-data-model.md#conventions)) | `suspend`/`Flow` DAOs only |
 | HTTP | `okhttp-coroutines` `executeAsync()` (cancellable), body streaming inside `withContext(IO)` | One shared client family ([Networking](#networking-baseline)) |
 | CPU-bound work (JSON decode, hashing, colour extraction, diffing in memory) | `@Dispatcher(Default)` | Parse-from-file stays on IO (blocking reads); owning docs set parallelism (`limitedParallelism`) |
-| Media3 player and session | application main looper only (Media3 1.11 enforces it) | [06 UI boundary](06-playback.md#ui-boundary) |
+| Media3 player and session | the player's application looper, which Neutrodyne makes the main looper by building player and session on the main thread; since 1.11 `MediaSession` getters throw off that looper | [06 UI boundary](06-playback.md#ui-boundary) |
 | `ResolvingDataSource.Resolver`, `ContentProvider.openFile` | Media3 loader thread / binder thread | Blocking allowed; must use synchronous in-memory lookups; `runBlocking` permitted only here, with a timeout |
 | Workers | `CoroutineWorker.doWork()` (`Dispatchers.Default`), switch to IO for blocking I/O | Resumable, idempotent, soft deadline per owning doc |
 | `BroadcastReceiver` | `goAsync()` + launch in `@ApplicationScope`, `finish()` within 10 s | Never start playback from a receiver except the media-button path ([D43](../PLAN.md#3-key-decisions)) |
@@ -730,20 +740,33 @@ Release builds install `LogcatSink(WARN)`; debug builds `LogcatSink(DEBUG)`. M11
 ```kotlin
 // :core:common
 interface AppInitializer {
-    val order: Int                  // ascending; 0–99 platform, 100–199 data, 200–299 scheduling, 300+ feature warm-ups
+    val order: Int                  // band, see below; equal orders allowed
     suspend fun run()               // idempotent; runs once per process in @ApplicationScope after Application.onCreate
 }
 ```
 
-`NeutrodyneApplication` runs every `@IntoSet AppInitializer` sequentially in `order` on `@Dispatcher(Default)`; each is wrapped in `suspendRunCatching` and a failure is logged without stopping the rest.
+`NeutrodyneApplication` runs every `@IntoSet AppInitializer` sequentially, sorted by `order` and then by fully qualified class name (deterministic ties), on `@Dispatcher(Default)`; each is wrapped in `suspendRunCatching` and a failure is logged without stopping the rest. Initializers receive database-backed dependencies lazily ([Dependency injection](#components-and-scopes) rule 7), because the whole set is constructed before the first one runs. Bands:
+
+| Band | Meaning | Hard rule |
+|---|---|---|
+| 0–99 | platform (channels, caches) | must not touch the database, DAOs or repositories: the database opens at 100 and initializers run sequentially, so a blocking `requireDatabase()` here would wait for an open that never starts |
+| 100–199 | data (open, restore, in-memory mirrors) | 100 is the database open; everything else ≥ 101 may use the database |
+| 200–299 | WorkManager scheduling | enqueue only; no network |
+| 300+ | warm-ups and housekeeping | nothing on the cold-start path waits for them |
+
+Registrations known today (each owning document defines its initializer; this table is the index):
 
 | Order | Initializer | Module | Owner | From |
 |---|---|---|---|---|
-| 10 | Notification channels and the `grp_new_episodes` group (each module registers its own; posting code also calls the idempotent `ensureChannels()`) | `:playback:impl`, `:download:impl`, `:core:data` | 06, 07, 03/05 | M2–M6 |
-| 100 | `DatabaseOpener.awaitOpen()` on IO: opens the database, runs migrations or recovery, fires Room `onCreate` on a fresh install ([02](02-data-model.md#conventions)) | `:core:database` | 02 | M1 |
-| 110 | First-launch restore check (fresh DB + `files/backup/auto-snapshot.zip`) | `:core:data` | 05 | M3 |
+| 10 | Static notification channels and the `grp_new_episodes` group: `playback`, `alerts` (06 `PlaybackChannels`), `downloads`, `download_errors` (07), `new_episodes`, `import_backup` (03, 05); posting code also calls the idempotent `ensureChannels()` | `:playback:impl`, `:download:impl`, `:core:data` | 06, 07, 03, 05 | M2–M6 |
+| 100 | `DatabaseOpener.awaitOpen()` on IO: opens the database, runs migrations or recovery, fires Room `onCreate` on a fresh install ([02 Error handling and recovery](02-data-model.md#error-handling-and-recovery)) | `:core:database` | 02 | M1 |
+| 110 | `FirstLaunchRestoreInitializer` (fresh DB + `files/backup/auto-snapshot.zip`) | `:core:data` | 05 | M3 |
+| 120 | `CredentialStore.awaitLoaded()` (decrypt credentials into memory) | `:core:data` | 03 | M1 |
+| 130 | `LocalMediaIndex` initial load | `:download:impl` | 07 | M6 |
+| 140 | Per-group `new_episodes_{groupUuid}` channel sync (reads groups, so it cannot run at 10) | `:core:data` | 05 | M2 |
 | 200 | Unique periodic work: `refresh-periodic` (03), `backup-auto-snapshot` (05), `download-cleanup` (07), `db-maintenance` (02), all `UPDATE` | owning modules | 03, 05, 07, 02 | M1, M3, M6, M11 |
 | 210 | `download-reconcile` one-time `KEEP` | `:download:impl` | 07 | M6 |
+| 300 | `PlaybackPrefs` warm-up and `PlayerConnection` registration (06), `ExportFilesCleaner` (05), one `artwork-sync` request per process (08) | owning modules | 06, 05, 08 | M3, M4 |
 
 ```mermaid
 sequenceDiagram
@@ -789,6 +812,8 @@ class NeutrodyneApplication : Application(), Configuration.Provider, SingletonIm
         appScope.get().launch { runInitializers(initializers.get()) }
     }
     // Entry points instead of injected fields: both may be called before onCreate (provider, early WorkManager use).
+    // In production Hilt creates the component lazily on first access; in Hilt tests use @EarlyEntryPoint for any entry
+    // point resolved before the test component exists (https://dagger.dev/hilt/early-entry-point).
     override val workManagerConfiguration: Configuration get() = Configuration.Builder()
         .setWorkerFactory(EntryPointAccessors.fromApplication(this, WorkEntryPoint::class.java).workerFactory())
         .setMinimumLoggingLevel(if (BuildConfig.DEBUG) android.util.Log.INFO else android.util.Log.ERROR)
@@ -800,10 +825,13 @@ class NeutrodyneApplication : Application(), Configuration.Provider, SingletonIm
 
 **Splash and start-up gate.** `StartupViewModel` (`:app`) exposes `StartupState(deviceSettingsLoaded, database: Pending | Ready | Recovered(cause) | Failed)`, fed by the first `DeviceSettingsStore` emission (the persisted tab and group selection needed for the first frame) and by `DatabaseOpener.awaitOpen()` ([02 Error handling and recovery](02-data-model.md#error-handling-and-recovery)).
 
-1. `installSplashScreen().setKeepOnScreenCondition { !state.deviceSettingsLoaded || (state.database == Pending && elapsed < 400 ms) }`: the system splash covers the normal case (opening an up-to-date database takes milliseconds) and never stays longer than 400 ms (cold-start budget N5, [09 Performance budgets](09-quality-and-release.md#performance-budgets)).
-2. The root composable renders `StartupGate` (visuals: [08](08-ui-ux.md#onboarding-and-empty-states)) instead of `NavDisplay` while `database == Pending`, so **no feature ViewModel, and therefore no repository, is constructed before the database is open** (02's `requireDatabase()` throws on the main thread before that). A long migration shows "Updating your library…" there; `Recovered`/`Failed` show 02's recovery messages.
-3. Nothing in start-up waits for the network or a snapshot restore; restore progress is shown by 05's flow after the gate opens.
-4. Before M1 (no database) `database` starts as `Ready`.
+1. `installSplashScreen().setKeepOnScreenCondition { elapsed < 1_000 ms && (!state.deviceSettingsLoaded || (state.database == Pending && elapsed < 400 ms)) }`: the system splash covers the normal case (opening an up-to-date database takes milliseconds), stays at most 400 ms for the database (cold-start budget N5, [09 Performance budgets](09-quality-and-release.md#performance-budgets)) and at most 1 s in total; if `device_settings` has not emitted by then, the first frame uses the keys' defaults (DataStore corruption is already handled by the corruption handler, so this only guards a stalled disk).
+2. The activity's content renders `StartupGate` (visuals: [08 Banners and the startup gate](08-ui-ux.md#banners-and-the-startup-gate)) **instead of the whole `NeutrodyneRoot`** (scaffold, `NavDisplay` and `PlayerSheet`) while `database == Pending`, so **no ViewModel — feature or the activity-scoped `PlayerViewModel` — and therefore no repository is constructed before the database is open** (02's `requireDatabase()` throws on the main thread before that). A long migration shows "Updating your library…" there. `Recovered(cause)` opens the gate and shows 02's recovery message once; `Failed` keeps the gate with 08's error state and its "Try again" (activity restart).
+3. A [route](#intent-routing) that arrives while the gate is shown is applied to `NavigationState` immediately (it is plain saveable state); its entries compose, and their ViewModels are created, only after the gate opens.
+4. Nothing in start-up waits for the network or a snapshot restore; restore progress is shown by 05's flow after the gate opens.
+5. Before M1 (no database) `database` starts as `Ready`.
+
+**Framework components constructed on the main thread before the gate.** The start-up gate protects UI only. Services, receivers and job services (`NeutrodynePlaybackService`, `ManualDownloadJobService`, `DownloadActionReceiver`) can be created by the system right after `Application.onCreate` — for example the resumption card after a reboot — while the database is still opening, and Hilt injects them on the main thread, where 02's `requireDatabase()` throws. Rule: such classes, and every class they inject eagerly (for example the `MediaLibrarySession` callback), receive anything that reaches `NeutrodyneDatabase` (DAOs, repositories, `EpisodeResolver`, controllers) as `dagger.Lazy<…>` or `Provider<…>` and dereference it only inside a coroutine on IO after `DatabaseOpener.awaitOpen()`; constructors of repositories and DAOs never touch the database. Session and player creation in `Service.onCreate` therefore needs no database. 06 and 07 apply this rule to their components; the [Testing](#testing) start-up test enforces it.
 
 **Process model:** single main process plus ACRA's `:acra`. No component is `directBootAware`; media-button events before first unlock are ignored by the platform, which is acceptable.
 
@@ -829,8 +857,9 @@ sealed class SettingKey<T : Any>(val name: String, val default: T, val file: Set
     class Choice<E : Enum<E>>(name: String, default: E, val values: List<E>, file: SettingsFile = SettingsFile.PORTABLE) :
         SettingKey<E>(name, default, file)                // stored as E.name; unknown stored name -> default
 }
-// Each area declares `object PlaybackSettingKeys { val SKIP_BACK_MS = SettingKey.Int64("playback.skip_back_ms", 10_000) ... }`
-// and adds itself to AllSettingKeys.list (one registry; used by the backup whitelist and the uniqueness test).
+// Each area declares its keys as an object in this same package (:core:model, so features, :core:data and impl modules
+// all see them), e.g. `object PlaybackSettingKeys { val SKIP_BACK_MS = SettingKey.Int64("playback.skip_back_ms", 10_000); val ALL = listOf(...) }`,
+// and AllSettingKeys.list concatenates every area's ALL (one registry; used by 05's backup whitelist and the uniqueness test).
 
 // :core:domain
 interface SettingsRepository {
@@ -839,6 +868,10 @@ interface SettingsRepository {
     suspend fun <T : Any> set(key: SettingKey<T>, value: T): Outcome<Unit, SettingsError>
     suspend fun reset(key: SettingKey<*>)
     fun observePortableSnapshot(): Flow<Map<String, Any>>   // backup export (05)
+}
+sealed interface SettingsError {
+    data object WriteFailed : SettingsError                          // IOException from DataStore (disk full, I/O error); logged at WARN
+    data class OutOfRange(val key: String) : SettingsError           // value rejected by the key's own validator (e.g. Choice not in values)
 }
 ```
 
@@ -860,18 +893,19 @@ Serves N11. Delivered in M0 (graph skeleton), extended per milestone. Honours [D
 
 | Binding | Declared in | Component | Scope |
 |---|---|---|---|
-| `@Dispatcher(IO)`, `@Dispatcher(Default)`, `@ApplicationScope CoroutineScope` (`SupervisorJob() + Default + handler`), `Clock` → `DeviceClock`, `BuildInfo`, `Distribution` | `:app` `CoreModule` (JVM modules declare no Hilt modules) | Singleton | `@Singleton` |
+| `@Dispatcher(IO)`, `@Dispatcher(Default)`, `@ApplicationScope CoroutineScope` (`SupervisorJob() + Default + handler`), `Clock` → `DeviceClock`, `BuildInfo` (from `BuildConfig`, `R.string.licence_statement` and the injected `Distribution`) | `:app` `CoreModule` (JVM modules declare no Hilt modules) | Singleton | `@Singleton` |
 | Base `OkHttpClient`, `@HttpClient(kind)` derived clients, `UserAgentInterceptor`, `AuthInterceptor`, `NetErrorClassifier`, `NetworkMonitor` → `ConnectivityNetworkMonitor` | `:core:network` `NetworkModule` | Singleton | `@Singleton` |
 | `CredentialLookup` | M0: `:core:data` stub binds `CredentialLookup.None`; M1: `CredentialStore` (03) | Singleton | `@Singleton` |
+| `DnsFamilyHints` | `:core:network` (`@Inject` class) | Singleton | `@Singleton` |
 | `SQLiteDriver` | `:core:database` `SqliteDriverModule` (`BundledSQLiteDriver()`) | Singleton | `@Singleton` |
 | `DatabaseOpener`, `NeutrodyneDatabase` (provided as `opener.requireDatabase()`), DAOs | `:core:database` `DatabaseModule` ([02](02-data-model.md#error-handling-and-recovery)) | Singleton | `@Singleton`; DAO providers unscoped (Room caches them) |
 | `@SettingsDataStore(...) DataStore<Preferences>`, `SettingsStore`, `DeviceSettingsStore` | `:core:datastore` | Singleton | `@Singleton` |
-| `:core:domain` repository and use-case interfaces | `:core:data` `@Binds` modules | Singleton | `@Singleton` |
+| `:core:domain` repository and use-case interfaces | `@Binds` modules in the implementing module (`:core:data` for most; `:playback:impl` for `QueueRepository`, `ChapterRepository`, 06) | Singleton | `@Singleton` |
 | `PlaybackController`, `PlaybackStateSource`, `PlayerConnection` | `:playback:impl` | Singleton | `@Singleton` (connection lifecycle: [06 UI boundary](06-playback.md#ui-boundary)) |
 | `DownloadController`, `LocalMediaIndex`, `DownloadProgressSource` | `:download:impl` | Singleton | `@Singleton` |
 | `ArtworkStore`, `NeutrodyneImageLoaderFactory` | `:core:artwork` | Singleton | `@Singleton` |
 | `YouTubeUrlClassifier` (pure `@Inject` class), `YouTubeChannelResolver` | `:youtube:api` / `:youtube:impl` | Singleton | `@Singleton` |
-| `YouTubeStreamResolver`, `YouTubeEnricher`, `YouTubeCapabilities` | `:app/src/{foss,play}/…/FlavorModule.kt` only | Singleton | `@Singleton` |
+| `Distribution`, `YouTubeCapabilities`, `YouTubeStreamResolver`, `YouTubeEnricher`, `YouTubeChannelSearch`, `ExtractorChannelLookup` | `:app/src/{foss,play}/…/FlavorModule.kt` only ([Flavor modules](#flavor-modules)) | Singleton | `@Singleton` |
 | `Set<AppInitializer>` | each owning module, `@IntoSet` | Singleton | unscoped elements |
 | `Set<EntryProviderInstaller>` | each feature, `@IntoSet` | `ActivityRetainedComponent` | unscoped |
 | ViewModels | features, `@HiltViewModel` | `ViewModelComponent` | per Nav entry ([decorator](#viewmodels-per-entry)) |
@@ -886,21 +920,26 @@ Rules:
 1. **Injection sites:** constructor injection everywhere except framework-instantiated classes (`@AndroidEntryPoint`) and `ContentProvider`s / `Application` getters that may run before `Application.onCreate` (use `EntryPointAccessors.fromApplication`; never touch Hilt in `ContentProvider.onCreate`).
 2. **`NeutrodyneApplication` injects only `dagger.Lazy`/`Provider` fields** so the `:acra` process constructs nothing.
 3. **JVM modules** use `javax.inject` annotations (`@Inject`, `@Qualifier`, `@Singleton`) and the plain Dagger processor for factories; their interfaces are bound by Hilt modules in Android modules.
-4. **Cross-module objects of external types** (for example a Media3 `Player` that a feature's `media3-ui-compose` state holder needs) are bound by the impl module under a qualifier annotation declared in its JVM `:*:api` module; whether `:feature:player` uses this is decided by [06 UI boundary](06-playback.md#ui-boundary).
+4. **Cross-module objects of external types** are bound by the impl module under a qualifier annotation declared in its JVM `:*:api` module. v1.0 has none: 06 keeps every Media3 type out of features ([06 UI boundary](06-playback.md#ui-boundary)); M14 uses this pattern to hand the session `Player` to `:feature:player` for `PlayerSurface` ([06 Video](06-playback.md#video)).
 5. **Empty multibindings are declared:** `CoreModule` declares `@Multibinds abstract fun initializers(): Set<AppInitializer>`, so the graph compiles before any module contributes (Hilt fails on an undeclared empty set).
 6. **No Hilt module binds the same interface in both `main` and a flavor source set.** Interfaces whose implementation differs per flavor are bound only in the two `FlavorModule`s, and `:youtube:streams` may ship Hilt modules for its internal wiring (`OkHttpNpeDownloader`) but never binds `:youtube:api` interfaces itself.
+7. **Database-backed dependencies of framework components are lazy** (`dagger.Lazy`/`Provider`, dereferenced on IO after `DatabaseOpener.awaitOpen()`), per [Application start-up](#application-start-up). The same applies to **every** `AppInitializer`: `initializers.get()` constructs the whole set before initializer 100 opens the database, so an eager DAO or repository in any initializer's constructor would block on `requireDatabase()` before the open has started.
+8. **Multibound function types need `@JvmSuppressWildcards`** at the injection site: `Set<@JvmSuppressWildcards EntryProviderInstaller>`; otherwise Kotlin's `Function1<? super …>` wildcard makes Dagger report a missing binding.
 
 ### Flavor modules
 
 ```kotlin
-// :app/src/foss/kotlin/app/neutrodyne/flavor/FlavorModule.kt   (M9 state; M8 binds the play-equivalents temporarily)
+// :app/src/foss/kotlin/app/neutrodyne/flavor/FlavorModule.kt   (M9 state; before M9 it is identical to the play module below
+// except for Distribution.FOSS)
 @Module @InstallIn(SingletonComponent::class)
 internal abstract class FlavorModule {
-    @Binds abstract fun streamResolver(impl: NpeYouTubeStreamResolver): YouTubeStreamResolver
+    @Binds abstract fun streamResolver(impl: NpeYouTubeStreamResolver): YouTubeStreamResolver      // :youtube:streams
     @Binds abstract fun enricher(impl: NpeEnricher): YouTubeEnricher
+    @Binds abstract fun channelSearch(impl: NpeChannelSearch): YouTubeChannelSearch
+    @Binds abstract fun extractorLookup(impl: InnertubeChannelResolver): ExtractorChannelLookup
     companion object {
         @Provides fun distribution(): Distribution = Distribution.FOSS
-        @Provides fun youTubeCapabilities(): YouTubeCapabilities = YouTubeCapabilities(
+        @Provides @Singleton fun youTubeCapabilities(): YouTubeCapabilities = YouTubeCapabilities(
             inAppPlayback = true, downloads = true, channelSearch = true, enrichment = true, backCatalogue = true)
     }
 }
@@ -908,21 +947,33 @@ internal abstract class FlavorModule {
 // :app/src/play/kotlin/app/neutrodyne/flavor/FlavorModule.kt
 @Module @InstallIn(SingletonComponent::class)
 internal abstract class FlavorModule {
-    @Binds abstract fun streamResolver(impl: ExternalOnlyYouTubeStreamResolver): YouTubeStreamResolver
-    // YouTubeEnricher: play-side no-op binding named and specified by 04
+    @Binds abstract fun streamResolver(impl: ExternalOnlyYouTubeStreamResolver): YouTubeStreamResolver   // :youtube:impl
+    @Binds abstract fun enricher(impl: NoOpYouTubeEnricher): YouTubeEnricher
+    @Binds abstract fun channelSearch(impl: UnsupportedYouTubeChannelSearch): YouTubeChannelSearch
+    @Binds abstract fun extractorLookup(impl: NoExtractorChannelLookup): ExtractorChannelLookup
     companion object {
         @Provides fun distribution(): Distribution = Distribution.PLAY
-        @Provides fun youTubeCapabilities(): YouTubeCapabilities = YouTubeCapabilities(
+        @Provides @Singleton fun youTubeCapabilities(): YouTubeCapabilities = YouTubeCapabilities(
             inAppPlayback = false, downloads = false, channelSearch = false, enrichment = false, backCatalogue = false)
     }
 }
 ```
 
-`YouTubeCapabilities`' shape and every consumer are owned by [04 Flavor matrix](04-youtube.md#flavor-matrix). Timeline: M0 `FlavorModule`s provide only `Distribution`; M8 adds the YouTube bindings with the `play` values in **both** flavors (foss shows external episodes until M9, per PLAN M8); M9 switches foss to the NewPipe Extractor bindings above.
+`YouTubeCapabilities`' shape, the implementation classes and every consumer are owned by [04 Flavor matrix](04-youtube.md#flavor-matrix). A binding must exist from the milestone of its **first consumer**, or Hilt fails to compile; until M9 both flavors bind the `play` column:
+
+| From | Added to both `FlavorModule`s | First consumer |
+|---|---|---|
+| M0 | `Distribution` | `BuildInfo`, About |
+| M2 | `YouTubeCapabilities` (all `false`) | 05 `EffectiveSettingsResolver` (auto-download capability) |
+| M4 | `YouTubeStreamResolver` → `ExternalOnlyYouTubeStreamResolver` (this one class lands in `:youtube:impl` ahead of the rest of the module) | 06 `EpisodeResolver` YouTube branch |
+| M8 | `YouTubeEnricher` → `NoOpYouTubeEnricher`, `YouTubeChannelSearch` → `UnsupportedYouTubeChannelSearch`, `ExtractorChannelLookup` → `NoExtractorChannelLookup` | 03 YouTube source adapter, 04 channel resolver |
+| M9 | `foss` only: the four `Npe*`/`Innertube*` bindings and all-`true` capabilities above | — |
+
+The `:youtube:api` interfaces and `YouTubeCapabilities` therefore also land early (M2/M4), as compiling contracts. [04's emergency patch](04-youtube.md#licensing-and-legal) reverts the `foss` module to the `play` column while keeping `Distribution.FOSS`.
 
 ### Test overrides
 
-- `:core:testing` provides hand-written fakes for every `:core:domain` and `:*:api` interface plus `@TestInstallIn` modules that replace production bindings with them ([09 Test infrastructure](09-quality-and-release.md#test-infrastructure)).
+- `:core:testing` provides hand-written fakes for every `:core:domain` and `:*:api` interface ([09 Test infrastructure](09-quality-and-release.md#test-infrastructure)). It cannot reference production Hilt modules (rule 9 forbids its edges to impl modules), so the `@TestInstallIn(replaces = [...])` modules that swap production bindings for those fakes live in `:app/src/test` and `:app/src/androidTest`.
 - Robolectric Hilt tests in `:app/src/test` install `TestSqliteDriverModule` (`@TestInstallIn(replaces = [SqliteDriverModule::class])`, provides `AndroidSQLiteDriver()`), because the bundled driver's `.so` files target device ABIs, not the host JVM ([S4](#s4-robolectric-with-androidsqlitedriver)). Instrumented tests keep `BundledSQLiteDriver`.
 - DAO and migration tests in `:core:database` build the database directly with the driver under test; they do not use Hilt.
 
@@ -953,14 +1004,18 @@ interface AppNavigator {
     fun pop(): Boolean                             // false when nothing was popped
     fun resetTab(key: TopLevelKey)                 // stack back to its root
     fun open(tab: TopLevelKey, stack: List<NavKey>) // deep links: select tab, replace its stack above the root
+    fun pushDetail(key: NavKey)                    // 08: replaces a same-class top entry on ≥ 2 panes, else push
 }
 val LocalAppNavigator = staticCompositionLocalOf<AppNavigator> { error("AppNavigator not provided") }
+// 08 adds SettingsHomeKey, PaneLayout, LocalPaneLayout and LocalNavTab here (08 Navigation); :app provides them.
 
 object NdSceneMetadata {                           // overlay metadata understood by :app's scene strategies
     fun bottomSheet(): Map<String, Any> = mapOf(KEY_OVERLAY to "sheet")
     fun dialog(): Map<String, Any> = mapOf(KEY_OVERLAY to "dialog")
     const val KEY_OVERLAY = "nd.overlay"
 }
+// Nav3 1.1 added a typed metadata DSL (NavMetadataKey, e.g. DialogKey for its DialogSceneStrategy). If S5 shows that
+// 1.2's strategies read only typed keys, NdSceneMetadata returns that type instead; call sites stay unchanged.
 ```
 
 `:core:navigation` applies no Compose compiler plugin; it declares `api` dependencies on `navigation3-runtime` (`NavKey`, `EntryProviderScope`) and on `androidx.compose.runtime:runtime` (for `staticCompositionLocalOf`), versioned by the Compose BOM.
@@ -995,15 +1050,29 @@ Metadata conventions: list/detail/extra panes use `ListDetailSceneStrategy.listP
 
 ### AppNavigator and per-tab back stacks
 
-`NavigationState` in `:app` implements `AppNavigator`: one `NavBackStack<NavKey>` per `TopLevelKey`, each created with `rememberNavBackStack(root)` (saveable across process death), plus the selected tab in `rememberSaveable`. It is provided to the tree with `CompositionLocalProvider(LocalAppNavigator provides state)`.
+`NavigationState` in `:app` implements `AppNavigator` (including 08's `pushDetail`, which reads `LocalPaneLayout`'s partition count through a state the root updates): one `NavBackStack<NavKey>` per `TopLevelKey`, each created with `rememberNavBackStack(root)` inside `rememberNavigationState()` (saveable across process death), plus the selected tab in `rememberSaveable`. It is provided to the tree with `CompositionLocalProvider(LocalAppNavigator provides state)`.
 
 ```kotlin
 // :app — sketch; exact Nav3 1.2 names are Spike S5 outputs
-@Composable fun NeutrodyneNavHost(state: NavigationState, installers: Set<EntryProviderInstaller>) {
+@Composable fun NeutrodyneNavHost(state: NavigationState, installers: Set<@JvmSuppressWildcards EntryProviderInstaller>) {
     val provider = entryProvider { installers.forEach { install -> install() } }
-    val decorators = listOf(rememberSaveableStateHolderNavEntryDecorator(), rememberViewModelStoreNavEntryDecorator())
-    // Decorate each tab's stack separately so entry state and ViewModels survive tab switches (Unverified, S5):
-    val entries = state.visibleStacks().flatMap { stack -> rememberDecoratedNavEntries(stack, decorators, provider) }
+    // Decorate EVERY tab's stack on every composition, in the fixed TopLevelKey order, each with its own decorator
+    // instances: a stack that is not decorated in a composition loses its saveable state and ViewModelStores, and a
+    // remember call inside a list of varying length breaks positional memoization (nav3-recipes "multiple back stacks").
+    val decoratedByTab: Map<TopLevelKey, List<NavEntry<NavKey>>> = state.tabs.associateWith { tab ->
+        key(tab) {
+            rememberDecoratedNavEntries(
+                backStack = state.stack(tab),
+                entryDecorators = listOf(
+                    rememberSaveableStateHolderNavEntryDecorator(),
+                    rememberViewModelStoreNavEntryDecorator(),
+                    rememberTabLocalNavEntryDecorator(tab),        // provides 08's LocalNavTab = tab to every entry
+                ),
+                entryProvider = provider,
+            )
+        }
+    }
+    val entries = state.visibleTabs().flatMap { decoratedByTab.getValue(it) }
     SharedTransitionLayout {
         NavDisplay(
             entries = entries,
@@ -1015,9 +1084,10 @@ Metadata conventions: list/detail/extra panes use `ListDetailSceneStrategy.listP
 }
 ```
 
-- `visibleStacks()` = the start tab's (`FeedsKey`) stack, then the selected tab's stack if different. Popping a non-start tab's root therefore returns to Feeds, and back from Feeds' root leaves the app (default; [08](08-ui-ux.md#navigation) may change it without touching this mechanism).
-- Scene strategy order: overlay strategies first (they produce overlay scenes over the underlying scene), then `ListDetailSceneStrategy`, then Nav3's single-pane default.
-- `NdBottomSheetSceneStrategy` and `NdDialogSceneStrategy` live in `:app/navigation/`. If Nav3 1.2 ships a usable dialog/bottom-sheet strategy (S5), wrap it; otherwise implement ours (a nav3-recipes copy keeps its Apache-2.0 header, [Licensing](#copied-code-and-contributions)).
+- `visibleTabs()` = the start tab (`FeedsKey`), then the selected tab if different. Popping a non-start tab's root therefore returns to Feeds, and back from Feeds' root leaves the app (default confirmed by [08 Navigation](08-ui-ux.md#navigation)).
+- Scene strategy order: overlay strategies first (they produce overlay scenes over the underlying scene), then `ListDetailSceneStrategy` (with 08's pane directive `ndPaneLayout`), then Nav3's single-pane default.
+- `NdBottomSheetSceneStrategy` and `NdDialogSceneStrategy` live in `:app/navigation/`. Nav3 ships a `DialogSceneStrategy` since 1.1 ([Navigation 3 releases](https://developer.android.com/jetpack/androidx/releases/navigation3)); no bottom-sheet strategy ships, so ours follows the nav3-recipes bottom-sheet recipe (a copied file keeps its Apache-2.0 header, [Licensing](#copied-code-and-contributions)). Both **must render through the window-based `NdModalBottomSheet`/`NdDialog`** of `:core:designsystem`, never an in-layout sheet, so a sheet opened from the expanded `PlayerSheet` (speed, sleep timer) draws above it ([08 Sheets and dialogs](08-ui-ux.md#sheets-and-dialogs)); `NdDialogSceneStrategy` therefore wraps Nav3's strategy only if it lets us supply that composable, otherwise it is ours.
+- Nav3 1.2's deep-link API (`DeepLinkRequest`, `UriDeepLinkMatcher`) is not used for routing: Neutrodyne's routes choose a tab and a whole stack and carry security rules ([Intent routing](#intent-routing)); the router may use `UriDeepLinkMatcher` internally to parse paths.
 - `PlayerSheet` is not a key ([D56](../PLAN.md#3-key-decisions)); it sits beside `NavDisplay` in the root scaffold and owns its back handling ([08 Player sheet](08-ui-ux.md#player-sheet)).
 - Predictive back: `NavDisplay` handles entries; custom surfaces use `NavigationBackHandler` (Nav3 1.2) or `PredictiveBackHandler`; `onBackPressed` overrides are banned ([`checkBannedApis`](#gradle-side-policy-tasks)).
 
@@ -1091,14 +1161,15 @@ android {
     buildFeatures { buildConfig = true }
     flavorDimensions += "distribution"
     productFlavors {
-        create("foss") { dimension = "distribution"; proguardFile("proguard/foss.pro") }
+        create("foss") { dimension = "distribution" }
         create("play") { dimension = "distribution" }
     }
     buildTypes {
         debug { applicationIdSuffix = ".debug"; versionNameSuffix = "-debug" }
         release {
-            optimization { enable = true }                      // AGP 9.3+ DSL: R8 full mode + optimized resource shrinking
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard/app.pro")   // app.pro: -dontobfuscate
+            optimization { enable = true }   // AGP 9.3+ DSL: R8 code + resource optimization; includes the platform default
+                                             // keep rules equivalent to proguard-android-optimize.txt. No proguardFiles(...) calls:
+                                             // keep rules come from the keepRules source sets (below)
             // signingConfig only when NEUTRODYNE_KEYSTORE* env vars exist; reproducibility hygiene (crunchPngs, vcsInfo, ART profile): 09
         }
     }
@@ -1108,13 +1179,13 @@ dependencies { "fossImplementation"(project(":youtube:streams")) }
 
 - **`BuildConfig` never contains timestamps or git data** (reproducible builds, [09 Reproducible builds](09-quality-and-release.md#reproducible-builds)). Secrets are empty strings unless supplied by `-P`; PO-3 default B means `PODCASTINDEX_*` stay empty in every build until written permission arrives.
 - **`BuildInfo`** (`:core:model`) is how non-`:app` modules read build facts without seeing `BuildConfig`: `versionName`, `versionCode`, `distribution`, `isDebug`, `repoUrl`, `licenceStatementResId` (an `@StringRes Int` from `:app`'s flavor resources, resolved by `:feature:settings` at runtime), `podcastIndexKey`, `podcastIndexSecret`. Its `toString()` omits the two secrets.
-- **Flavor source sets** contain only: `FlavorModule.kt`, `res/values/strings_flavor.xml` (licence statement), `proguard/foss.pro` rules, and (09) fastlane overrides. Feature code never branches on flavor; it reads `YouTubeCapabilities` or `BuildInfo.distribution`.
-- **Keep rules:** `proguard/app.pro` holds `-dontobfuscate` (allowed only in the app; AGP 9 forbids global options in library consumer rules) and app-wide keeps; `proguard/foss.pro` holds the F-Droid reproducibility keeps for kotlinx.coroutines ([09](09-quality-and-release.md#reproducible-builds)); Rhino keeps ship as `:youtube:streams/consumer-rules.pro` (`-keep class org.mozilla.javascript.** { *; }`, `-keep class org.mozilla.classfile.ClassFileWriter`, `-dontwarn org.mozilla.javascript.tools.**`). With `android.r8.strictFullModeForKeepRules=true`, `-keep class A` no longer keeps constructors: write `-keep class A { <init>(...); }` explicitly.
+- **Flavor source sets** contain only: `FlavorModule.kt`, `res/values/strings_flavor.xml` (string `licence_statement`, same name in both flavors so `CoreModule` in `main` can reference `R.string.licence_statement`), `keepRules/foss.keep` (`foss` only), and (09) fastlane overrides. Feature code never branches on flavor; it reads `YouTubeCapabilities` or `BuildInfo.distribution`.
+- **Keep rules** (AGP 9.3+ `keepRules` source set, files ending in `.keep`, [shrink-code](https://developer.android.com/build/shrink-code)): `app/src/main/keepRules/app.keep` holds `-dontobfuscate` (allowed only in the app; AGP 9 forbids global options in library consumer rules) and app-wide keeps; `app/src/foss/keepRules/foss.keep` holds the F-Droid reproducibility keeps for kotlinx.coroutines ([09 Reproducible builds](09-quality-and-release.md#reproducible-builds)). Unverified: that a flavor-named `keepRules` source set is honoured like `src/main/keepRules` — checked once in M0 ([verification log](#verification-log)): `app.keep` temporarily adds `-printconfiguration build/outputs/r8-config.txt`, and the `fossRelease` output must contain the `foss.keep` rules while `playRelease`'s must not; fallback: `productFlavors.foss { proguardFile("keepRules/foss.keep") }` (legacy DSL, still supported). Library modules ship consumer rules as `consumer-rules.pro` via `consumerProguardFiles` (applied by `neutrodyne.android.library` when the file exists); Rhino's ship in `youtube/streams/consumer-rules.pro` (`-keep class org.mozilla.javascript.** { *; }`, `-keep class org.mozilla.classfile.ClassFileWriter`, `-dontwarn org.mozilla.javascript.tools.**`), so they reach only `foss`. With `android.r8.strictFullModeForKeepRules=true`, `-keep class A` no longer keeps constructors: write `-keep class A { <init>(...); }` explicitly.
 - **Tests per flavor:** AGP 9 creates unit tests only for the tested build type; flavor-specific code stays in `:app` and `:youtube:streams`, so library tests run once.
 
 ### Core library desugaring
 
-NewPipe Extractor needs `desugar_jdk_libs_nio` below API 33. `isCoreLibraryDesugaringEnabled` is a module-level `compileOptions` switch, not a flavor property, so **from M9 it is enabled in `:app` for both flavors** (`coreLibraryDesugaring(libs.desugar.jdk.libs.nio)`); M0–M8 builds do not enable it. Consequence: `playRelease` may contain desugared-library classes (`j$.*`, GPL-2.0-only WITH Classpath-exception-2.0). At M9 the release check records whether R8 leaves any `j$.` class in the `play` dex (our own code does not use the affected `java.nio.file` APIs, so none are expected — Unverified). Licensee allows exactly that artifact ([allow-list](#licensee-allow-list)); [D3](../PLAN.md#3-key-decisions)'s "no GPL-3.0 code in `play`" holds either way.
+NewPipe Extractor needs `desugar_jdk_libs_nio` below API 33. `isCoreLibraryDesugaringEnabled` is a module-level `compileOptions` switch, not a flavor property, so **from M9 it is enabled in `:app` for both flavors** (`coreLibraryDesugaring(libs.desugar.jdk.libs.nio)`); M0–M8 builds do not enable it. Consequence: `playRelease` may contain desugared-library classes (`j$.*`, GPL-2.0-only WITH Classpath-exception-2.0). At M9 the release check records whether R8 leaves any `j$.` class in the `play` dex (our own code does not use the affected `java.nio.file` APIs, so none are expected — Unverified). Licence handling: `coreLibraryDesugaring` is a separate configuration, not part of `<variant>RuntimeClasspath`, so Licensee and AboutLibraries probably never see it (Unverified; the scoped Licensee entry in the [allow-list](#licensee-allow-list) covers the case where they do). Because the L8-compiled `j$` classes ship in the `foss` dex (and possibly `play`'s), `:app` adds a manual AboutLibraries definition for `desugar_jdk_libs_nio` with the GPL-2.0-with-Classpath-Exception text ([AboutLibraries](#aboutlibraries-and-the-licences-screen)), in both flavors unless the M9 check proves `play` free of `j$` classes. [D3](../PLAN.md#3-key-decisions)'s "no GPL-3.0 code in `play`" holds either way; its "permissively licensed dependencies" wording is an open item ([Open questions](#open-questions)).
 
 ---
 
@@ -1133,11 +1204,13 @@ enum class HttpClientKind { FEED, API, IMAGE, MEDIA, DOWNLOAD, YOUTUBE }
 
 @Module @InstallIn(SingletonComponent::class)
 internal object NetworkModule {
-    @Provides @Singleton fun base(ua: UserAgentInterceptor, auth: AuthInterceptor, dns: LocalNetworkGuardDns): OkHttpClient =
+    @Provides @Singleton fun base(ua: UserAgentInterceptor, auth: AuthInterceptor, lanGuard: LocalNetworkGuardInterceptor,
+                                  hints: DnsFamilyHints): OkHttpClient =
         OkHttpClient.Builder()
             .dispatcher(Dispatcher().apply { maxRequests = 64; maxRequestsPerHost = 8 })
             .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
-            .dns(dns)
+            .dns(LocalNetworkGuardDns(FamilyHintDns(Dns.SYSTEM, hints)))   // outermost: LAN guard; inner: 04's IP-family hints
+            .addInterceptor(lanGuard)               // first application interceptor: IP-literal and .local hosts (Dns is skipped for IP literals)
             .addInterceptor(ua)                     // application interceptor: once per call, kept on redirects
             .addNetworkInterceptor(auth)            // network interceptor: re-evaluated on every redirect hop
             .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).writeTimeout(30, TimeUnit.SECONDS)
@@ -1176,6 +1249,7 @@ data class Origin(val scheme: String, val host: String, val port: Int) {   // lo
 }
 fun interface CredentialLookup {                       // in-memory, non-blocking; returns "Basic …" or null
     fun basicAuthorization(origin: Origin): String?
+    suspend fun awaitLoaded() {}                       // CredentialStore: suspends until rows are decrypted into memory
     companion object { val None = CredentialLookup { null } }   // M0 binding until CredentialStore (M1)
 }
 
@@ -1189,9 +1263,16 @@ internal class AuthInterceptor @Inject constructor(private val lookup: Credentia
 }
 ```
 
-Contract: credentials are attached **only when the hop's origin (scheme, host, port) equals the stored credential's origin**; because it is a network interceptor and OkHttp builds redirect follow-ups from the pre-network request, every hop is re-evaluated and an `https → http` or cross-host redirect never carries credentials. `CredentialStore` (03) keeps the decrypted lookup map in memory and implements `CredentialLookup`; `credential.origin` uses the same `scheme://host:port` normalisation ([02](02-data-model.md#tables)).
+Contract: credentials are attached **only when the hop's origin (scheme, host, port) equals the stored credential's origin**; because it is a network interceptor and OkHttp builds redirect follow-ups from the pre-network request, every hop is re-evaluated and an `https → http` or cross-host redirect never carries credentials. `CredentialStore` (03) keeps the decrypted lookup map in memory and implements `CredentialLookup` (initializer 120 loads it); callers that must not send an unauthenticated first request — `FeedFetcher` (03) and the download runners in `:download:impl` (07), which cannot see `CredentialStore` — call `awaitLoaded()` first. `credential.origin` uses the same `scheme://host:port` normalisation ([02 credential](02-data-model.md#credential)).
 
-**`LocalNetworkGuardDns`** wraps `Dns.SYSTEM`. On devices with `Build.VERSION.SDK_INT >= 37` it throws `LocalNetworkUnsupportedException` (a subclass of `UnknownHostException`) when **every** resolved address is local — IPv4 10/8, 172.16/12, 192.168/16, 169.254/16; IPv6 `fc00::/7`, `fe80::/10` — and the host is not loopback. Mixed public/private answers pass. Below API 37 it is a pass-through (LAN feeds keep working there). Rationale: with targetSdk 37 and no `ACCESS_LOCAL_NETWORK`, such connections otherwise hang until a timeout; v1 does not request the permission ([D28](../PLAN.md#3-key-decisions)). Unverified: the exact address set Android 17 treats as "local network"; adjust the range list when device tests show otherwise.
+**LAN guard (`LocalNetworkGuardDns` + `LocalNetworkGuardInterceptor`).** On devices with `Build.VERSION.SDK_INT >= 37` the app (targetSdk 37, no `ACCESS_LOCAL_NETWORK`, [D28](../PLAN.md#3-key-decisions)) cannot reach LAN hosts, and TCP connections to them "typically result in a timeout error" rather than a clear failure ([Local network permission](https://developer.android.com/privacy-and-security/local-network-permission)). The guard fails fast instead, with `LocalNetworkUnsupportedException` (a subclass of `UnknownHostException`):
+
+- `LocalNetworkGuardDns` wraps the resolver chain and throws when **every** resolved address is local — IPv4 10/8, 172.16/12, 192.168/16, 169.254/16; IPv6 `fc00::/7`, `fe80::/10` — and the host is not loopback. Mixed public/private answers pass.
+- `LocalNetworkGuardInterceptor` (first application interceptor) throws for a request whose host is an IP literal in those ranges or ends in `.local` (mDNS). It exists because OkHttp does not call `Dns` for IP-literal hosts. Known gap: a redirect hop to an IP-literal LAN host is not seen by application interceptors and ends as an ordinary connect timeout (`NetError.Timeout`).
+- Below API 37 both are pass-throughs (LAN feeds keep working there). Loopback (`127.0.0.0/8`, `::1`) always passes.
+- Unverified: the exact address set Android 17 treats as "local network" (the page names local addresses and `.local` without listing ranges; a LAN DNS server on port 53 is exempt); adjust the range list when device tests show otherwise.
+
+**`DnsFamilyHints` / `FamilyHintDns`** (requested by [04 IP-family matching](04-youtube.md#ip-family-matching)): `DnsFamilyHints` (`@Singleton`, `:core:network`) holds `hostSuffix → IpFamily?` pairs in memory (`set(hostSuffix: String, family: IpFamily?)`, `null` clears). `FamilyHintDns` returns only the A (`V4`) or only the AAAA (`V6`) records for a host equal to or ending in `.` + a hinted suffix, and all records when that family has none or no hint exists. `IpFamily` is 04's enum; it is declared in `:core:model` (not `:youtube:api`) so that `:core:network` can read it under rule 11. All derived clients inherit the chain, so MEDIA and DOWNLOAD requests to `googlevideo.com` follow the hint.
 
 ### Network error taxonomy
 
@@ -1236,7 +1317,7 @@ data class NetworkStatus(val isConnected: Boolean, val isValidated: Boolean, val
 interface NetworkMonitor { val status: StateFlow<NetworkStatus> }
 ```
 
-`ConnectivityNetworkMonitor` (`:core:network`) registers one `registerDefaultNetworkCallback` for the process, maps `NetworkCapabilities` (`isMetered = !(NOT_METERED || TEMPORARILY_NOT_METERED on API 30+)`, `isValidated = NET_CAPABILITY_VALIDATED`, `isVpn = TRANSPORT_VPN`), seeds the initial value synchronously from `activeNetwork`, and shares with `stateIn(appScope, SharingStarted.WhileSubscribed(5_000), initial)`. Data Saver handling is 07's.
+`ConnectivityNetworkMonitor` (`:core:network`) registers one `registerDefaultNetworkCallback` for the process, maps `NetworkCapabilities` (`isMetered = !(NOT_METERED || TEMPORARILY_NOT_METERED on API 30+)`, `isValidated = NET_CAPABILITY_VALIDATED`, `isVpn = TRANSPORT_VPN`), seeds the initial value synchronously from `activeNetwork`, and shares with `stateIn(appScope, SharingStarted.Eagerly, initial)`. Eagerly, not `WhileSubscribed`: `NetErrorClassifier`, 03's validator rule and 07's claim conditions read `status.value` without collecting, and a `WhileSubscribed` flow would hand them a stale value. One process-lifetime callback costs nothing measurable. Data Saver handling is 07's.
 
 ### Network security config
 
@@ -1256,9 +1337,9 @@ interface NetworkMonitor { val status: StateFlow<NetworkStatus> }
 ```
 
 - `android:usesCleartextTraffic` is never set (Android 17 announces its deprecation).
-- **Certificate Transparency** is enforced by default for targetSdk 37; no opt-out in v1. A CT or untrusted-CA failure is a per-feed error, never a silent drop ([03](03-feeds-and-discovery.md#fetch-pipeline)). Unverified: whether a per-domain CT opt-out exists in the config schema; add one only if real reports arrive.
+- **Certificate Transparency** is enforced by default for targetSdk 37. The schema does allow `<certificateTransparency enabled="false"/>` in `base-config` or a `domain-config` ([Network security config](https://developer.android.com/privacy-and-security/security-config)), but v1 uses neither: feed hosts are user-chosen, so a static per-domain list cannot help, and a global opt-out would weaken every connection. A CT or untrusted-CA failure is a per-feed error, never a silent drop ([03 Fetch pipeline](03-feeds-and-discovery.md#fetch-pipeline)). Certificates from the user store (debug builds only) are not CT-checked by the platform.
 - **Scheme-less user input tries `https://` first** — implemented by 03's input normalisation, not here.
-- **ECH:** OkHttp 5.5.0 offers opt-in ECH on Android 17; not enabled in v1 (revisit in v1.x).
+- **ECH:** for targetSdk 37 the platform uses Encrypted Client Hello when the networking library integrates it ([Android 17 behaviour changes](https://developer.android.com/about/versions/17/behavior-changes-17)); OkHttp 5.5.0's ECH support is opt-in ([OkHttp changelog](https://raw.githubusercontent.com/square/okhttp/master/CHANGELOG.md)) and is not enabled in v1 (revisit in v1.x).
 
 ---
 
@@ -1281,8 +1362,8 @@ Serves N2, N7. Delivered in M0 (checklist and manifest), verified in M11. Honour
 | P11 | A17 (all apps) background audio hardening: playback/focus/volume need a visible activity or a non-`shortService` FGS; target 37 requires while-in-use capability; failures are silent | [D43](../PLAN.md#3-key-decisions) start paths; "Tap to resume" after demotion; `set-enable-hardening throw` test ([06 Background restrictions](06-playback.md#background-restrictions)) | 06 |
 | P12 | A15 (target 35) audio focus only for the top app or an app running an FGS | focus requested only by the playback service | 06 |
 | P13 | A12+ background FGS-start restrictions (exemptions include notification/widget interaction and media buttons; running a job is not an exemption) | playback starts from UI, notification, media key; `onForegroundServiceStartNotAllowedException` handled ([06](06-playback.md#background-restrictions)); downloads never start an FGS from a job on API 34+ | 06, 07 |
-| P14 | A17 (target 37) Certificate Transparency on by default | no opt-out; `NetError.Tls(CERTIFICATE_TRANSPARENCY)` surfaced per feed | 01, 03 |
-| P15 | A17 (target 37) `ACCESS_LOCAL_NETWORK` runtime permission; connections to LAN hosts otherwise time out | permission not requested in v1; `LocalNetworkGuardDns` fails fast with `LocalNetworkUnsupported` on API 37+ ([D28](../PLAN.md#3-key-decisions)) | 01, 03 |
+| P14 | A17 (target 37) Certificate Transparency on by default (opt-out possible globally or per domain in the network security config) | opt-out not used; `NetError.Tls(CERTIFICATE_TRANSPARENCY)` surfaced per feed | 01, 03 |
+| P15 | A17 (target 37) `ACCESS_LOCAL_NETWORK` runtime permission (`NEARBY_DEVICES` group); without it TCP to LAN hosts typically times out, UDP fails with `EPERM` | permission not requested in v1; the [LAN guard](#interceptors) fails fast with `LocalNetworkUnsupported` on API 37+ ([D28](../PLAN.md#3-key-decisions)) | 01, 03 |
 | P16 | Cleartext blocked by default since target 28; A17 (all apps) plans to deprecate `usesCleartextTraffic` | network security config `base-config cleartextTrafficPermitted="true"` | 01 |
 | P17 | User-installed CAs not trusted since target 24 | release trusts system CAs only; debug-overrides add user CAs | 01 |
 | P18 | A17 (all apps) RAM-based per-app memory limits | bounded Coil memory cache and sized decodes ([08](08-ui-ux.md#artwork-pipeline)); streaming parse, no whole-feed strings ([03](03-feeds-and-discovery.md#parser)) | 08, 03 |
@@ -1297,6 +1378,8 @@ Serves N2, N7. Delivered in M0 (checklist and manifest), verified in M11. Honour
 | P27 | A16 Safer Intents opt-in (`android:intentMatchingFlags="enforceIntentFilter"`), planned to become default | not adopted in v1 (internal explicit intents carry `neutrodyne://open/…` data that matches no filter); see [Open questions](#open-questions) | 01 |
 | P28 | Auto Backup: 25 MB cap; `<include>` disables defaults; A16 QPR2 `cross-platform-transfer` element | include-only rules, no cross-platform section ([05 Auto Backup](05-groups-opml-backup.md#auto-backup), D34) | 05 |
 | P29 | Play policy: no direct battery-optimisation exemption request for podcast apps; exact alarms not needed | no `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM`; diagnostics links to `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` only (N2) | 01, 09 |
+| P30 | A14/A15 background-activity-launch hardening for `PendingIntent` senders and creators; A17 adds further BAL hardening (`MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE`; Unverified details) | activities start only from a user tap on a notification (sent by the system) or from a visible activity (`ExternalImportActivity` → `MainActivity`); our code never calls `PendingIntent.send()` for an activity and uses no full-screen intents | 01 |
+| P31 | A17 (target 37) Encrypted Client Hello used when the networking library supports it | OkHttp's ECH stays off in v1 ([Network security config](#network-security-config)) | 01 |
 
 ---
 
@@ -1317,6 +1400,7 @@ Serves N2, N7, N3. Delivered in M0 (app shell), extended in M1, M3, M4, M5, M6, 
 | `WAKE_LOCK` | `:playback:impl` (+ merged by media3, WorkManager) | M4 | ExoPlayer wake/Wi-Fi locks; WorkManager |
 | `RUN_USER_INITIATED_JOBS` | `:download:impl` | M6 | UIDT manual downloads (API 34+) |
 | `RECEIVE_BOOT_COMPLETED` | `:download:impl` (+ merged by WorkManager) | M6 | persisted UIDT job (`setPersisted(true)`); WorkManager reschedules — never starts an FGS |
+| `${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` | merged by `androidx.core` (declared `signature`-level and used by the app itself) | M0 | `ContextCompat.registerReceiver(…, RECEIVER_NOT_EXPORTED)` on API < 33 (P25). Unverified exact merged name; the first `verifyManifestPermissions` run in M0 shows it, and `permissions.txt` lists it with the release `applicationId` (`app.neutrodyne.…`) |
 
 **Explicitly not requested** (adding any requires a PLAN amendment): `ACCESS_LOCAL_NETWORK` (v1.x, D28), `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM`, `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_AUDIO`, `MANAGE_EXTERNAL_STORAGE` (downloads use app-specific storage, D48), `FOREGROUND_SERVICE_SPECIAL_USE`, `BLUETOOTH_CONNECT`, `QUERY_ALL_PACKAGES`, `SYSTEM_ALERT_WINDOW`, any location permission, `com.google.android.gms.permission.AD_ID`. A library that merges one of these is fixed with `tools:node="remove"` in `:app` and a comment.
 
@@ -1331,7 +1415,7 @@ Serves N2, N7, N3. Delivered in M0 (app shell), extended in M1, M3, M4, M5, M6, 
   <application
       android:name=".NeutrodyneApplication"
       android:label="@string/app_name" android:icon="@mipmap/ic_launcher"
-      android:theme="@style/Theme.Neutrodyne.Starting"
+      android:theme="@style/Theme.Neutrodyne"
       android:supportsRtl="true"
       android:appCategory="audio"
       android:enableOnBackInvokedCallback="true"
@@ -1343,6 +1427,7 @@ Serves N2, N7, N3. Delivered in M0 (app shell), extended in M1, M3, M4, M5, M6, 
     <!-- localeConfig is generated by generateLocaleConfig -->
 
     <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop"
+              android:theme="@style/Theme.Neutrodyne.Starting"
               android:windowSoftInputMode="adjustResize">          <!-- :app; subscribe/share filters: 03 -->
       <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
     </activity>
@@ -1385,7 +1470,7 @@ Attribute decisions:
 | `hasFragileUserData` | true | uninstall dialog offers to keep data ([07 Storage layout](07-downloads.md#storage-layout)) |
 | `appCategory` | `audio` | system categorisation |
 | `configChanges` on `MainActivity` | not declared | recreation is the tested path (state saved through Nav3 and ViewModels); PiP in v1.x revisits this ([06 Video](06-playback.md#video)) |
-| `theme` | `Theme.Neutrodyne.Starting` (parent `Theme.SplashScreen`, `postSplashScreenTheme = @style/Theme.Neutrodyne`, parent `Theme.AppCompat.DayNight.NoActionBar`) | `AppCompatActivity` throws without an AppCompat theme; no MDC dependency |
+| `theme` | application: `Theme.Neutrodyne` (parent `Theme.AppCompat.DayNight.NoActionBar`); `MainActivity` only: `Theme.Neutrodyne.Starting` (parent `Theme.SplashScreen`, `postSplashScreenTheme = @style/Theme.Neutrodyne`) | `AppCompatActivity` throws without an AppCompat theme; the splash theme stays on the launcher activity so `ExternalImportActivity` (theme: 05) never shows a splash; no MDC dependency |
 | `launchMode` | `singleTop` | notification and deep-link intents arrive in `onNewIntent` |
 | `directBootAware` | not set | not supported |
 | `intentMatchingFlags` | not set | P27 |
@@ -1413,7 +1498,7 @@ Applied in `:app`, run as `licenseeFossRelease` and `licenseePlayRelease` (part 
 licensee {
     allow("Apache-2.0"); allow("MIT"); allow("BSD-2-Clause"); allow("BSD-3-Clause"); allow("Unlicense"); allow("CC0-1.0")
     // Scoped exceptions — never a global allow() for these licences:
-    allowDependency("com.android.tools", "desugar_jdk_libs_nio", "2.1.5") { because("GPL-2.0-only WITH Classpath-exception-2.0; linking permitted (M9)") }
+    allowDependency("com.android.tools", "desugar_jdk_libs_nio", "2.1.5") { because("GPL-2.0-only WITH Classpath-exception-2.0; linking permitted (M9); only evaluated if Licensee sees coreLibraryDesugaring") }
     allowDependency("com.github.teamnewpipe", "NewPipeExtractor", "v0.26.5") { because("GPL-3.0-or-later; foss only via :youtube:streams (PO-1)") }
     allowDependency("org.mozilla", "rhino", "1.8.1") { because("MPL-2.0; NewPipe Extractor dependency, foss only") }
     allowDependency("org.mozilla", "rhino-engine", "1.8.1") { because("MPL-2.0; NewPipe Extractor dependency, foss only") }
@@ -1429,6 +1514,7 @@ Licensee is per-project, not per-variant, so the GPL/MPL entries are dependency-
 - The AboutLibraries Gradle plugin in `:app` generates per-variant library metadata (so `foss` lists NewPipe Extractor, Rhino and nanojson; `play` does not). Unverified: whether 15.x uses the plugin ID `com.mikepenz.aboutlibraries.plugin` or `com.mikepenz.aboutlibraries.plugin.android` for Android variants — M0 step 18 confirms.
 - `:feature:settings` renders `LicencesKey` itself with `Nd*` components from `aboutlibraries-core` data (loaded at runtime from the app's generated resource) — **not** with AboutLibraries' Compose UI artifact, which could pull a different Compose/Material3 line (the same trap as `material-kolor`). M0 step 18 checks `aboutlibraries-core` has no Compose dependency.
 - Each entry shows name, version, licence name and the full licence text; Apache-2.0 `NOTICE` contents are added through AboutLibraries' `config/aboutlibraries/` overrides where a dependency ships one (Unverified which do).
+- Manual library definitions in the same config directory cover code that ships in the APK but is not on a runtime classpath: from M9 `desugar_jdk_libs_nio` (GPL-2.0-only WITH Classpath-exception-2.0, [Core library desugaring](#core-library-desugaring)); and any permissive snippet copied under the [contribution rule](#copied-code-and-contributions) (mirrors `THIRD_PARTY_NOTICES.md`).
 - **Packaging:** never exclude `META-INF/LICENSE*` or `META-INF/NOTICE*` wholesale; only the duplicate `/META-INF/{AL2.0,LGPL2.1}` entries are excluded ([common config](#common-android-configuration)).
 
 ### About statements
@@ -1465,14 +1551,14 @@ Delivers [M0](../PLAN.md#m0-scaffold-and-ci). Ordered; each step ends with a gre
 6. **Spike S1** (KGP pin). Record the result before continuing; on failure apply its fallback.
 7. Create every module of [Module layout](#module-layout) (except `:benchmark`) with its plugins, namespace, an `internal` placeholder and one placeholder test; `:youtube:streams` placeholder files carry the GPL SPDX header.
 8. `:core:common`: `Clock`, `Dispatcher`/`NeutrodyneDispatchers`, `ApplicationScope`, `Outcome`, `suspendRunCatching`, `Log`/`LogSink`/`Redactor`, `AppInitializer`, `NetworkMonitor`/`NetworkStatus` interfaces — with the unit tests listed in [Testing](#testing).
-9. `:core:model`: `Distribution`, `BuildInfo`, `NetError`/`TlsKind`, `SettingsFile`/`SettingKey`, `AllSettingKeys` (empty list + test).
-10. `:core:navigation`: all canonical keys, `TopLevelKey`, `EntryProviderInstaller`, `AppNavigator`, `LocalAppNavigator`, `NdSceneMetadata`.
+9. `:core:model`: `Distribution`, `BuildInfo`, `NetError`/`TlsKind`, `IpFamily` (04's enum, placed here), `SettingsFile`/`SettingKey`, `AllSettingKeys` (empty list + test).
+10. `:core:navigation`: all canonical keys plus 08's `SettingsHomeKey`, `TopLevelKey`, `EntryProviderInstaller`, `AppNavigator` (with 08's `pushDetail`), `LocalAppNavigator`, `NdSceneMetadata`, and 08's `PaneLayout`/`LocalPaneLayout`/`LocalNavTab`.
 11. `:core:datastore`: both `DataStore`s, `SettingsStore`, `DeviceSettingsStore`; `:core:domain`: `SettingsRepository` interface; `:core:data` stub: `CredentialLookup.None` binding.
-12. `:core:network`: `NetworkModule` (base + all six derived clients), `UserAgentInterceptor`, `AuthInterceptor`, `IdentityEncodingInterceptor`, `LocalNetworkGuardDns`, `NetErrorClassifier`, `ConnectivityNetworkMonitor`, `network_security_config.xml`, manifest permissions — with tests.
+12. `:core:network`: `NetworkModule` (base + all six derived clients), `UserAgentInterceptor`, `AuthInterceptor`, `IdentityEncodingInterceptor`, `LocalNetworkGuardDns`, `LocalNetworkGuardInterceptor`, `DnsFamilyHints`, `FamilyHintDns`, `NetErrorClassifier`, `ConnectivityNetworkMonitor`, `network_security_config.xml`, manifest permissions — with tests.
 13. `:core:testing`: `MainDispatcherRule`, `TestClock`, `FakeNetworkMonitor` (09 owns the full inventory).
 14. `:core:designsystem`: `NeutrodyneTheme` (dynamic colour on API 31+, placeholder brand scheme, light/dark) and Material Symbols for the five destinations and the gear (08).
-15. Feature stubs: each top-level feature installs its `TopLevelKey` entry showing a placeholder empty state; `:feature:settings` installs `SettingsKey(ABOUT)` (version, flavor, licence statement) and `LicencesKey`.
-16. `:app`: `NeutrodyneApplication` (ACRA guard, initializer runner, entry points), `CoreModule`, `DeviceClock`, `FlavorModule` × 2 (`Distribution`, `BuildInfo`), `MainActivity` (AppCompat, splash with `StartupViewModel`, edge-to-edge), `NavigationState`, `NeutrodyneNavHost`, overlay scene strategies, `IntentRouter` (internal routes only in M0), root scaffold with `NavigationSuiteScaffold` (08), themes XML, manifest per [Manifest and permissions](#manifest-and-permissions) (M0 subset), M0 backup rule files, `res/resources.properties`.
+15. Feature stubs: each top-level feature installs its `TopLevelKey` entry showing a placeholder empty state; `:feature:settings` installs `SettingsHomeKey` (the gear's target, 08), `SettingsKey` (M0 renders `ABOUT`: version, flavor, licence statement, source link; 08 adds Appearance) and `LicencesKey`.
+16. `:app`: `NeutrodyneApplication` (ACRA guard, initializer runner, entry points), `CoreModule` (dispatchers, scope, `DeviceClock`, `BuildInfo`, `@Multibinds` initializer set), `FlavorModule` × 2 (`Distribution` only in M0, [Flavor modules](#flavor-modules)), `strings_flavor.xml` × 2, `MainActivity` (AppCompat, splash with `StartupViewModel`, edge-to-edge), `NavigationState`, `NeutrodyneNavHost`, overlay scene strategies, `IntentRouter` (internal routes only in M0), `NeutrodyneRoot` with `NavigationSuiteScaffold` (08), `keepRules/app.keep` and `keepRules/foss.keep`, themes XML, manifest per [Manifest and permissions](#manifest-and-permissions) (M0 subset), M0 backup rule files, `res/resources.properties`.
 17. ACRA mail + dialog wired to `ACRA_MAILTO` (disabled when empty) (09).
 18. Policy tooling: Licensee, module-graph assertion, AboutLibraries (confirm plugin ID; confirm `aboutlibraries-core` has no Compose dependency with `./gradlew :feature:settings:dependencies`), `verifyDependencyPolicy`, `verifyManifestPermissions` with `app/policy/permissions.txt`, `checkSpdxHeaders`, `checkBannedApis`.
 19. Spotless/ktlint/compose-rules (blocking) and detekt (non-blocking) (09).
@@ -1500,7 +1586,7 @@ Delivered in M0 (PLAN M0). Each spike runs on a throwaway branch or inside the r
 
 ### S1 KGP 2.4.20 under AGP 9.4.1
 
-- **Method:** build-logic declares `implementation(libs.kotlin.gradlePlugin)` (and the other plugin artifacts). Run `./gradlew :app:buildEnvironment` and `./gradlew :core:common:compileKotlin --info`. Add an in-build assertion to every convention plugin: `check(getKotlinPluginVersion() == libs.versions.kotlin) { … }` (Unverified API location: `org.jetbrains.kotlin.gradle.plugin.getKotlinPluginVersion`). Build `assembleFossDebug`.
+- **Method:** build-logic declares `implementation(libs.kotlin.gradlePlugin)` (and the other plugin artifacts). Run `./gradlew :app:buildEnvironment` and `./gradlew :core:common:compileKotlin --info`. Add an in-build assertion to every convention plugin: `check(project.getKotlinPluginVersion() == libs.findVersion("kotlin").get().requiredVersion) { "KGP drift: …" }` with `libs` from `VersionCatalogsExtension` ([catalog rule 5](#gradlelibsversionstoml)) (Unverified API location: `org.jetbrains.kotlin.gradle.plugin.getKotlinPluginVersion`). Build `assembleFossDebug`.
 - **Pass:** `kotlin-gradle-plugin:2.2.10 -> 2.4.20` (or `:2.4.20`) in the output; KSP 2.3.12, Hilt 2.60.1 and the Compose compiler plugin run; only deprecation warnings.
 - **Fallback 1:** root `build.gradle.kts` `buildscript { dependencies { classpath(libs.kotlin.gradlePlugin) } }`. **Fallback 2:** set `agp = "9.3.3"` (needs Gradle ≥ 9.5.0, satisfied by 9.7.1; Compose 1.12 needs AGP ≥ 9.2, satisfied), rerun. Record which applied.
 - **CI hook:** the `static` job greps `:app:buildEnvironment` for `kotlin-gradle-plugin.*2.4.20` (PLAN M0 AC3) in addition to the in-build assertion.
@@ -1515,12 +1601,13 @@ flowchart LR
   d -->|no| e["agp = 9.3.3"]
   e --> f{"green?"}
   f -->|yes| fb["fallback: AGP 9.3.3, amend D4"]
-  f -->|no| esc["escalate: Kotlin 2.4.10 or wait for 2.4.21 tested matrix"]
+  f -->|no| esc["escalate: AGP 9.3.1 (exact tested pair) or architect decision"]
 ```
 
 ### S2 Room 3 RawQuery returning PagingSource
 
 - **Method:** in `:core:database`, three entities (`podcast`, `episode`, `podcast_group_member` subsets), `@DaoReturnTypeConverters(PagingSourceDaoReturnTypeConverter::class)`, and `@RawQuery(observedEntities = [EpisodeEntity::class, PodcastEntity::class, PodcastGroupMemberEntity::class]) fun feed(query: RoomRawQuery): PagingSource<Int, EpisodeRowTuple>` with a query built like [D30](../PLAN.md#3-key-decisions)'s `FeedQueryBuilder`. Test with `paging-testing` (`TestPager` / `asSnapshot`) under Robolectric (`AndroidSQLiteDriver`) and on a GMD (bundled driver).
+- **Also records** (02 depends on them, [02 Room 2 to Room 3 mapping](02-data-model.md#room-2-to-room-3-mapping)): the exact Room 3 names for the read transaction used by backup export (`useReaderConnection` + deferred transaction), `setJournalMode`, `@ColumnTypeConverters`, the `Migration.migrate` and `RoomDatabase.Callback` signatures, `@AutoMigration`, and how `androidx.sqlite.SQLiteException` exposes result codes with each driver.
 - **Pass:** compiles; three consecutive pages return `(sortDate, id)` order without gaps or duplicates; an insert into `episode` invalidates; a write to an unobserved table does not.
 - **Fallback:** generated `@Query` per (source × order) ([D30](../PLAN.md#3-key-decisions)); 02 records which.
 
@@ -1538,9 +1625,9 @@ flowchart LR
 
 ### S5 Nav3 1.2 API names and scenes
 
-- **Method:** in `:app`, two tabs with one list-detail pair, one sheet key, one dialog key; verify: `NavDisplay` parameter names (`entries` vs `backStack`, `sceneStrategies` list), `rememberDecoratedNavEntries` (or the 1.2 equivalent) for per-tab decoration, `rememberViewModelStoreNavEntryDecorator`, `rememberSaveableStateHolderNavEntryDecorator`, `ListDetailSceneStrategy` metadata helpers, whether `DialogSceneStrategy`/a bottom-sheet strategy ship in 1.2, `NavigationBackHandler`, `rememberNavBackStack` restoring keys declared in `:core:navigation` after "Don't keep activities" + `adb shell am kill`, and `hiltViewModel(creationCallback)` per entry.
+- **Method:** in `:app`, two tabs with one list-detail pair, one sheet key, one dialog key; verify: `NavDisplay` parameter names (`entries` vs `backStack`, `sceneStrategies` list), `rememberDecoratedNavEntries` (or the 1.2 equivalent) for per-tab decoration, `rememberViewModelStoreNavEntryDecorator`, `rememberSaveableStateHolderNavEntryDecorator`, `ListDetailSceneStrategy` metadata helpers, whether `DialogSceneStrategy`/a bottom-sheet strategy ship in 1.2, `NavigationBackHandler`, `rememberNavBackStack` restoring keys declared in `:core:navigation` after "Don't keep activities" + `adb shell am kill`, `hiltViewModel(creationCallback)` per entry, and — for 08 — a custom `PaneScaffoldDirective` passed to `ListDetailSceneStrategy`, an `extraPane()` entry placed directly after a `listPane()` entry, a sheet opened from the expanded `PlayerSheet` drawing above it (window-based sheet), and the order of `PredictiveBackHandler` (player sheet) versus `NavDisplay`'s back handling. `DialogSceneStrategy` ships since 1.1; check whether its metadata is the typed `DialogKey` and whether it accepts our `NdDialog`.
 - **Pass:** process-death restore of both tabs' stacks; distinct ViewModels for two `PodcastKey`s; a tab's entry keeps its ViewModel while another tab is shown; sheet and dialog render as overlays and dismiss on back.
-- **Fallback:** copy nav3-recipes' bottom-sheet strategy (Apache-2.0 header kept); if per-tab retention fails, accept ViewModel recreation on tab switch with state in `SavedStateHandle` and record it for 08.
+- **Fallback:** the bottom-sheet strategy is ours in any case (nav3-recipes pattern); if per-tab retention fails, accept ViewModel recreation on tab switch with state in `SavedStateHandle` and record it for 08; if an extra pane cannot follow a list pane, 08's documented fallback (`EpisodeKey` as `detailPane()`) applies.
 
 ### S6 sqlite-bundled 16 KB alignment and size
 
@@ -1556,6 +1643,8 @@ flowchart LR
 | (M0) | non-flavored `:youtube:streams` in `:app` fails `verifyDependencyPolicy` | pending |
 | (M0) | GPL artifact in `:core:data` fails Licensee for both variants | pending |
 | (M0) | predictive back from Settings animates on API 36 (manual) | pending |
+| (M0) | `foss.keep` rules present in the merged R8 configuration of `fossRelease`, absent from `playRelease` | pending |
+| (M0) | merged release permissions equal `app/policy/permissions.txt` (records the `androidx.core` receiver permission name) | pending |
 | (M9) | JitPack-only verification metadata works with the trust regex | pending |
 | (M9) | `j$.` classes present in `playRelease` dex? | pending |
 
@@ -1574,10 +1663,13 @@ Test infrastructure, runners and CI wiring: [09 Test strategy](09-quality-and-re
 | `UserAgentInterceptor` | MockWebServer | UA format; explicit UA preserved; UA kept on a redirect hop; non-ASCII version name sanitised |
 | `AuthInterceptor` | MockWebServer (two servers = two origins) | header added for same origin; not added after redirect to another host; not added after `https → http` redirect on the same host; not added when `Authorization` already set; lookup returning null |
 | `IdentityEncodingInterceptor` | MockWebServer | MEDIA and DOWNLOAD requests carry `Accept-Encoding: identity`; FEED requests carry OkHttp's default gzip |
-| `LocalNetworkGuardDns` | JVM with a fake `Dns` and SDK-level parameter | all-private on 37 → throws; mixed → passes; loopback → passes; all-private on 36 → passes; IPv6 ULA and link-local |
+| `LocalNetworkGuardDns`, `LocalNetworkGuardInterceptor` | JVM with a fake `Dns` and SDK-level parameter; MockWebServer for the interceptor | all-private on 37 → throws; mixed → passes; loopback → passes; all-private on 36 → passes; IPv6 ULA and link-local; IP-literal `http://192.168.1.5/feed` and `nas.local` on 37 → `LocalNetworkUnsupportedException` without a connect attempt; same URLs on 36 → request proceeds; `http://127.0.0.1:{port}` (MockWebServer) passes on 37 |
+| `DnsFamilyHints`, `FamilyHintDns` | JVM with a fake `Dns` returning A + AAAA | no hint → all addresses; `V4` hint for `googlevideo.com` → only A records for `rr1---sn-x.googlevideo.com`, not for `notgooglevideo.com`; `V6` hint with no AAAA → all addresses; `null` clears |
 | `NetErrorClassifier` | JVM | every row of the [taxonomy table](#network-error-taxonomy), with `FakeNetworkMonitor` connected and disconnected |
+| `ConnectivityNetworkMonitor` | Robolectric (`ShadowConnectivityManager`) | initial value seeded without a collector; `status.value` follows a default-network change with no subscriber (eager sharing); metered/unmetered/VPN mapping |
 | `IntentRouter` | Robolectric | every row of the [routing table](#intent-routing); upper-case scheme; 1 MB `EXTRA_TEXT` truncated to 4 KB; non-numeric IDs → `None`; unknown settings page → `None`; no route performs a write (verified with fakes recording calls) |
-| Hilt graph | Robolectric `@HiltAndroidTest` in `:app` (both flavors) | graph builds; every canonical `NavKey` has exactly one installer entry; `Set<AppInitializer>` orders are unique; `Distribution` matches the flavor; `TestSqliteDriverModule` replaces the driver |
+| Hilt graph | Robolectric `@HiltAndroidTest` in `:app` (both flavors) | graph builds; every canonical `NavKey` (and 08's `SettingsHomeKey`) has exactly one installer entry; every `AppInitializer.order` lies in a defined band; `Distribution` and `YouTubeCapabilities` match the flavor; `TestSqliteDriverModule` replaces the driver |
+| Start-up ordering | Robolectric in `:app` with a `DatabaseOpener` whose open completes only when the test releases it | constructing the full `Set<AppInitializer>` and every framework component (`NeutrodynePlaybackService`, `ManualDownloadJobService`, `DownloadActionReceiver`) on the main thread while the open is pending neither throws nor blocks (lazy rule, [Application start-up](#application-start-up)); the runner completes within 5 s after release (no initializer below 100 waits for the database) |
 | Navigation | Robolectric + Compose v2 rule + `StateRestorationTester` | push/pop per tab; back from a non-start root returns to Feeds; two `PodcastKey`s get different ViewModels; stacks restored after state restoration; sheet key renders as overlay |
 | Initializer runner | JVM (`runInitializers` is a plain suspend function) | runs in ascending `order`; a throwing initializer is logged and later ones still run; cancellation propagates. The `:acra` early return is checked manually once (ACRA crash dialog appears, no WorkManager or session start in its process) |
 | Startup gate | Robolectric | splash condition clears when `device_settings` emitted and the database is `Ready`; clears after 400 ms with a database still `Pending`; `StartupGate` is shown and no feature ViewModel is created while `Pending`; `NavDisplay` appears on `Ready` |
