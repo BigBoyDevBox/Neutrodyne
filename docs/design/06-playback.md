@@ -50,8 +50,8 @@ interface PlaybackController {
     fun seekTo(positionMs: Long)                                                // current item
     fun skipBack()
     fun skipForward()
-    fun skipToNext()                                                            // always next episode
-    fun skipToPrevious()                                                        // > 3 s: restart, else previous episode
+    fun skipToNext()                                                            // always next episode (ignores playback.hardware_buttons)
+    fun skipToPrevious()                                                        // > 3 s: restart, else previous episode (same)
     suspend fun setSpeed(speed: Float, scope: SettingScope): ScopeWriteResult
     suspend fun setSkipSilence(enabled: Boolean, scope: SettingScope): ScopeWriteResult
     fun setSleepTimer(mode: SleepTimerMode)
@@ -90,7 +90,8 @@ interface PlaybackStateSource {
 }
 data class NowPlaying(
     val episodeId: Long, val podcastId: Long, val title: String, val podcastTitle: String,
-    val artwork: ArtworkRef, val sourceType: SourceType, val isVideo: Boolean,
+    val artwork: ArtworkRef,          // in-app art: episode art, else podcast art; YouTube: the episode's 16:9 thumbnail ref
+    val sourceType: SourceType, val isVideo: Boolean,
     val phase: PlayerPhase, val isPlaying: Boolean, val playWhenReady: Boolean,
     val position: PositionSnapshot, val hasNext: Boolean, val stream: StreamKind?,  // null until first open
     val issue: PlaybackIssue?, val context: PlayContextInfo?,
@@ -190,6 +191,8 @@ playback/impl/src/main/kotlin/app/neutrodyne/playback/impl/
 
 Hilt (`PlaybackModule`, `SingletonComponent`): binds `PlaybackController` → `PlaybackControllerImpl`, `PlaybackStateSource` → `PlaybackStateHub`, `PlaybackMaintenance` → `StreamingCache`, `QueueRepository` → `QueueRepositoryImpl`, `ChapterRepository` → `ChapterRepositoryImpl`; provides `SimpleCache` (`@Singleton`); declares `@BindsOptionalOf LocalMediaIndex` and `@BindsOptionalOf DownloadController` (absent until M6: no local files, no missing-file reports); contributes `@IntoSet AppInitializer`s `PlaybackChannels` (order 10) and, at order 300, `PlaybackPrefs` warm-up and `PlayerConnection` registration. Service-side components (`QueueProjector`, `PositionTracker`, `SleepTimer`, `Chapters`, `EffectivePlaybackApplier`, `ErrorRecovery`, `PreResolver`, `MediaButtons`, `SessionCallback`) are unscoped and injected into the service, so each service instance gets fresh ones; `EpisodeResolver`, `EpisodeSourceIndex`, `StreamingCache`, `MeteredStreamingGate`, `PlaybackHistory`, `PlaybackPrefs`, `PlaybackStateHub` and `PlayerConnection` are `@Singleton`.
 
+**Database laziness ([01 Application start-up](01-foundation.md#application-start-up), DI rule 7).** The system can create `NeutrodynePlaybackService` (resumption card at boot, media key) while the database is still opening, and Hilt injects it on the main thread. Every class above that reaches `NeutrodyneDatabase` (DAOs, `QueueRepositoryImpl`, `SessionWriter`, `PositionWriter`, `ChapterRepositoryImpl`, `PlayContextResolver`, `EffectiveSettingsResolver`) is injected as `dagger.Lazy<…>` and dereferenced only inside a coroutine on IO after `DatabaseOpener.awaitOpen()`; constructors never touch the database. 01's start-up ordering test constructs the service while the open is pending.
+
 ### New names introduced here
 
 | Name | Kind / location | Purpose |
@@ -199,6 +202,7 @@ Hilt (`PlaybackModule`, `SingletonComponent`): binds `PlaybackController` → `P
 | `QueueRepository` members above; `ChapterRepository` | `:core:domain` | Up next edits; chapter reads and download-time loading |
 | `UpNextItem`, `QueueOrigin`, `QueueItem`, `VirtualQueue`, `PlayContextInfo`, `PlaySessionInfo`, `AddResult`, `RejectReason`, `EpisodeChapter` | `:core:model` | Queue and chapter models |
 | `nd.PLAY_CONTEXT` args `mediaFilter`, `minSortDate`, `startPositionMs`; command `nd.DISMISS` | session commands | Full `FeedFilters`; timestamp start; stop |
+| `nd.result`, `nd.episodeId`, `nd.reason` | `SessionResult.extras` keys of `nd.PLAY_CONTEXT` | Carry the [start outcome](#starting-playback) back to `PlaybackControllerImpl` |
 | `episode:{id}@{parentId}` | browse-tree playable media ID | Carries the Auto context (`@group:7`, `@upnext`, `@downloads`, `@podcast:3`) |
 | `nd.local` | `MediaItem.RequestMetadata.extras` key (Boolean) | Extractor flags for local files |
 | `NOTIF_ID_PLAYBACK = 1001`, `NOTIF_ID_TAP_TO_RESUME = 4001` | notification IDs | Media notification; "Tap to resume" on `alerts` |
@@ -250,25 +254,29 @@ flowchart LR
 3. `sessionPlayer = SessionPlayer(exo, …)` ([Notification and media buttons](#hardware-buttons-and-sessionplayer)).
 4. `setMediaNotificationProvider(…)` and `setListener(tapToResumeListener)` ([Notification and media buttons](#notification-and-media-buttons)).
 5. `session = MediaLibrarySession.Builder(this, sessionPlayer, sessionCallback).setId("neutrodyne").setSessionActivity(openPlayerPendingIntent).setMediaButtonPreferences(mediaButtons.current()).build()`. The session activity is an explicit `MainActivity` intent with data `neutrodyne://open/player`, `FLAG_IMMUTABLE` (route `ExpandPlayer`, [01 Intent routing](01-foundation.md#intent-routing)).
-6. Attach listeners in this order (Media3 notifies in registration order, and the outgoing position must be saved first): `positionTracker`, `queueProjector` (starts observing the database; loads the window **without** `prepare()`), `applier`, `sleepTimer`, `chapters`, `meteredGate`, `errorRecovery`, `preResolver`, `mediaButtons`.
+6. Attach listeners in this order (`ExoPlayer`'s listener set notifies in registration order, and the outgoing position must be saved first): `positionTracker`, `queueProjector`, `applier`, `sleepTimer`, `chapters`, `meteredGate`, `errorRecovery`, `preResolver`, `mediaButtons`. The projector's collection is launched in `lifecycleScope` and first suspends on `DatabaseOpener.awaitOpen()` (IO); its first emission loads the window **without** `prepare()`.
 7. `stateHub.attach(ServiceBridge(exo, …))`.
 
-`onGetSession(controllerInfo)` returns `session` for every controller. `onDestroy`: `positionTracker.flush()` (captures the snapshot on main, writes it on `@ApplicationScope` with `NonCancellable`), `stateHub.detach()`, `session.release()`, `exo.release()`, `resolver.clearPins()`, `super.onDestroy()`. `onTaskRemoved` keeps Media3's default (keep running while playing, otherwise `pauseAllPlayersAndStopSelf()`).
+`onGetSession(controllerInfo)` returns `session` for every controller. `onDestroy`: `positionTracker.flush()` (captures the snapshot on main, writes it on `@ApplicationScope` with `NonCancellable`), `stateHub.detach()`, `session.release()`, `sessionPlayer.release()` (its `handleRelease()` releases `exo`), `resolver.clearPins()`, `super.onDestroy()`. `onTaskRemoved` keeps Media3's default (keep running while playing, otherwise `pauseAllPlayersAndStopSelf()`); the service can only stop once every bound controller has unbound, which is why [PlayerConnection](#playerconnection) releases at process `onStop`.
 
 ### Connection policy
 
-`SessionCallback.onConnectAsync` (Media3 1.11 adds it; `onConnect` is a deprecation candidate):
+`SessionCallback.onConnectAsync` (Media3 1.11 adds it; `onConnect` is a deprecation candidate) returns `immediateFuture(…)` built with `ConnectionResult.AcceptedResultBuilder(session, controller)`, whose defaults are full commands for trusted controllers and read-only commands for untrusted ones (1.11). "Full" below means `DEFAULT_PLAYER_COMMANDS` + `DEFAULT_SESSION_AND_LIBRARY_COMMANDS` + every `nd.*` command, set explicitly:
 
 | Controller | Detection | Player commands | Session commands |
 |---|---|---|---|
-| Media notification | `session.isMediaNotificationController(c)` | defaults minus `COMMAND_SEEK_TO_PREVIOUS`, `COMMAND_SEEK_TO_NEXT` (compact slots show seek back/forward) | all `nd.*` |
-| Own app, System UI, Bluetooth, Wear (via notification listener) | `c.isTrusted` | defaults | all `nd.*` |
-| Android Auto / AAOS | `session.isAutoCompanionController(c)` (and `isAutomotiveController(c)`; Unverified name in 1.11.1) | defaults | all `nd.*` |
-| Anything else | — | Media3 1.11 default for untrusted controllers: read-only ([PO-16](../PLAN.md#48-further-product-owner-decisions)) | none |
+| Media notification | `session.isMediaNotificationController(c)` | `DEFAULT_PLAYER_COMMANDS`, **including** `COMMAND_SEEK_TO_PREVIOUS`/`NEXT`; `setMediaButtonPreferences(mediaButtons.current())` | full |
+| Own app, System UI, Bluetooth, Wear (via notification listener) | `c.isTrusted` (own UID, system UID, `MEDIA_CONTENT_CONTROL`, `STATUS_BAR_SERVICE` or an enabled notification listener) | full | full |
+| Android Auto / AAOS | `session.isAutoCompanionController(c)` or `session.isAutomotiveController(c)` (both exist in 1.11.1; package-name based, "not a security validation") | full, set explicitly: Auto is not necessarily `isTrusted`, and the builder's untrusted default would make the car read-only | full |
+| Anything else | — | builder default for untrusted controllers: read-only ([PO-16](../PLAN.md#48-further-product-owner-decisions)) | builder default (no `nd.*`) |
+
+**Why the notification controller keeps previous/next.** In Media3 1.11.1 the media notification controller is more than the notification: (1) its available player commands, intersected with the player's, become the platform session's `PlaybackState` actions (what Bluetooth/AVRCP, Wear and the lock screen see); (2) every media key event (`MediaButtonReceiver`, headset, AVRCP passthrough delivered as a key) is executed *as* the notification controller (`MediaSessionImpl.applyMediaButtonKeyEvent` → `seekToNextForControllerInfo(notificationController)`), and a command it lacks is answered `ERROR_PERMISSION_DENIED`. Removing `COMMAND_SEEK_TO_NEXT`/`PREVIOUS` there (as some samples do to free notification slots) would silently disable headset next/previous and therefore [PO-20](../PLAN.md#48-further-product-owner-decisions)'s setting. Slot placement needs no command removal: when the media button preferences contain `SLOT_BACK`/`SLOT_FORWARD` buttons, `DefaultMediaNotificationProvider` puts them in the previous/next positions and `MediaSessionLegacyStub` drops `ACTION_SKIP_TO_PREVIOUS`/`NEXT` from the platform `PlaybackState` itself, so System UI shows seek back/forward there.
 
 ### Lifecycle and foreground state
 
-Media3 runs the service in the foreground while `playWhenReady && (READY || BUFFERING)`, keeps it there for `DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS = 600_000` after a pause, stop, error or end, then demotes it and keeps the notification. We keep the default timeout.
+Media3 runs the service in the foreground while `playWhenReady && (READY || BUFFERING)`, keeps it there for `DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS = 600_000` after a pause, stop, error or end, then demotes it and keeps the notification. We keep the default timeout. A transient focus loss (phone call) does not start the timer: ExoPlayer keeps `playWhenReady = true` with `playbackSuppressionReason = TRANSIENT_AUDIO_FOCUS_LOSS` and the state stays `READY`, which `MediaNotificationManager` counts as user-engaged, so the FGS survives a call of any length and resumes in it.
+
+**Notification dismissed** (swipe while paused): Media3 sends `KEYCODE_MEDIA_STOP` as the notification controller and hides the notification. `SessionPlayer.handleStop()` saves the position first, then `exo.stop()`; `play_session` is untouched (the mini player still offers the episode, `phase = NOT_LOADED` once the service is gone), and the service calls `pauseAllPlayersAndStopSelf()`. This differs from the mini player's swipe-to-dismiss, which is `nd.DISMISS` ([PlaybackControllerImpl](#playbackcontrollerimpl)) and clears the current episode.
 
 ```mermaid
 stateDiagram-v2
@@ -285,7 +293,7 @@ stateDiagram-v2
   Stopped --> [*]
 ```
 
-**Tap to resume.** `MediaSessionService.Listener.onForegroundServiceStartNotAllowedException()` (a background controller asked to play after demotion, e.g. focus regained after a 15-minute call) → `TapToResumeNotifier` posts `NOTIF_ID_TAP_TO_RESUME = 4001` on channel `alerts` (only if `POST_NOTIFICATIONS` is granted; otherwise only `NowPlaying.issue = PLAYER_ERROR` in-app): title "Playback paused", text "Android didn't let Neutrodyne resume in the background. Tap to continue." Content intent: explicit `MainActivity`, `neutrodyne://open/player` (routes only navigate, so the user presses Play in the visible player). One action "Resume": `PendingIntent.getForegroundService` to `NeutrodynePlaybackService` with `ACTION_MEDIA_BUTTON` + `KEYCODE_MEDIA_PLAY` (notification actions are FGS-start and while-in-use exempt). Unverified: that Media3 1.11 handles an `ACTION_MEDIA_BUTTON` start intent addressed to the service exactly like its own notification actions; if the M4 test fails, ship without the action. The notification auto-cancels and is cancelled when playback starts.
+**Tap to resume.** `MediaSessionService.Listener.onForegroundServiceStartNotAllowedException()` (API 31+; a controller asked to play after demotion while the app is in the background and the request carried no FGS-start exemption, e.g. a Wear or car "play" via a controller binding rather than a media key) → on main: `positionTracker.flush()`, `exo.pause()` (on API 33+ Media3 has already let the player start; without the FGS it would play unprotected and, on Android 17, silently muted), then `TapToResumeNotifier` posts `NOTIF_ID_TAP_TO_RESUME = 4001` on channel `alerts` (only if `POST_NOTIFICATIONS` is granted; otherwise only `NowPlaying.issue = PLAYER_ERROR` in-app): title "Playback paused", text "Android didn't let Neutrodyne resume in the background. Tap to continue." Content intent: explicit `MainActivity`, `neutrodyne://open/player` (routes only navigate, so the user presses Play in the visible player). One action "Resume": `PlaybackPendingIntentBuilder(ctx, Player.COMMAND_PLAY_PAUSE, NeutrodynePlaybackService::class.java).setStartAsForegroundService(true).setSessionId("neutrodyne").build()` (public `@UnstableApi` since Media3 1.10; it builds the same `ACTION_MEDIA_BUTTON` + `KEYCODE_MEDIA_PLAY_PAUSE` intent, via `PendingIntent.getForegroundService` on API 26+, that Media3's own notification uses; the player is paused, so play-pause plays). A notification action tap is an FGS-start exemption and a while-in-use source. The notification auto-cancels and is cancelled when playback starts.
 
 ### Manifest entries (declared by `:playback:impl`)
 
@@ -360,7 +368,7 @@ internal class PlayerFactory @Inject constructor(
 | Audio focus | `handleAudioFocus = true`; `USAGE_MEDIA`; content type SPEECH when `playback.pause_for_navigation` (default on), else MUSIC | With SPEECH, ExoPlayer pauses instead of ducking for navigation prompts; transient loss (call) auto-resumes, permanent loss (other media app) does not |
 | Becoming noisy | `setHandleAudioBecomingNoisy(true)` | Pause on headphone unplug (R4.7) |
 | Wake mode | `WAKE_MODE_LOCAL` for `StreamKind.LOCAL`, `WAKE_MODE_NETWORK` otherwise, set in `onMediaItemTransition` and before the first `prepare()` | NETWORK adds a Wi-Fi lock for screen-off streaming |
-| Load control | min 60 s, max 600 s, start 1.5 s, after rebuffer 3 s, back buffer 60 s | Instant "back 10 s"; the default audio byte cap (200 × 64 KiB ≈ 12.8 MB) still bounds memory (≈ 13 min at 128 kbps) — do **not** prioritise time over size (Android 17 memory limits) |
+| Load control | min 60 s, max 600 s, start 1.5 s, after rebuffer 3 s, back buffer 60 s (`setBufferDurationsMs` sets the streaming and local profiles alike; `DefaultLoadControl` treats every item as streaming anyway, because `neutrodyne` is not in `LOCAL_PLAYBACK_SCHEMES`) | Instant "back 10 s"; the default audio byte cap (200 × 64 KiB ≈ 12.8 MB) still bounds memory (≈ 13 min at 128 kbps) — do **not** prioritise time over size (Android 17 memory limits) |
 | Audio chain | `[BoostLimiterProcessor] → SilenceSkippingAudioProcessor → SonicAudioProcessor` | Custom processors run before silence skipping and speed; boost slot exists from day one ([D65](../PLAN.md#3-key-decisions)); `GainProcessor` only attenuates |
 | Audio offload | Off in v1 | Processors are bypassed in offload mode |
 | Seek increments | From `playback.skip_back_ms` / `playback.skip_forward_ms`; updated at runtime with `setSeekBackIncrementMs`/`setSeekForwardIncrementMs` (1.9+) **and** `session.setMediaButtonPreferences` | Notification icons follow the interval |
@@ -398,7 +406,7 @@ Serves R4.1, R4.3, R3.5, R5.2. Delivered in M4 (remote), M6 (local), M9 (YouTube
 | `releaseYear/Month/Day` | from `pubDate` (UTC) |
 | `mediaType` | `MEDIA_TYPE_PODCAST_EPISODE` for every item in v1.0 (video plays as audio) |
 | `isPlayable` / `isBrowsable` | true / false |
-| `extras` | `EXTRAS_KEY_COMPLETION_STATUS` (not played / partially / fully), `EXTRAS_KEY_COMPLETION_PERCENTAGE`, `EXTRAS_KEY_DOWNLOAD_STATUS` (Unverified: exact `MediaConstants` names in 1.11.1; confirm at M5) |
+| `mediaMetadata.extras` | `MediaConstants.EXTRAS_KEY_COMPLETION_STATUS` (Int: `EXTRAS_VALUE_COMPLETION_STATUS_NOT_PLAYED` / `_PARTIALLY_PLAYED` / `_FULLY_PLAYED` from `playedAt` and the position), `EXTRAS_KEY_COMPLETION_PERCENTAGE` (Double 0.0–1.0, only when partially played), `EXTRAS_KEY_DOWNLOAD_STATUS` (Long: `EXTRAS_VALUE_STATUS_NOT_DOWNLOADED` / `_DOWNLOADING` / `_DOWNLOADED` from `downloadState`; M6). Names verified in the 1.11.1 `MediaConstants.java`. The position comes from a one-shot `PositionDao.observeFor(ids).first()` at build time (never observed: a stale percentage in Auto is acceptable, a 5-s re-projection is not) |
 
 **Immutable `LocalConfiguration`.** `uri`, `customCacheKey`, `mimeType` and the tag never change for a given item instance, so metadata refreshes use `replaceMediaItem` without re-preparing (`ProgressiveMediaSource.canUpdateMediaItem` compares URI, `customCacheKey` and image duration). If an RSS enclosure URL or length changes in the feed, the fingerprint changes: the projector replaces non-current items (re-prepare is harmless) and leaves the current item untouched until it is no longer current.
 
@@ -445,7 +453,7 @@ internal data class EpisodeSource(
 
 `MediaItemFactory` computes `customCacheKey` from the same `streamUrl` choice, so item and resolver agree on the fingerprint.
 
-Miss (an item inserted by Media3's resumption path before the projector ran): `runBlocking { withTimeout(5_000) { episodeDao.mediaInfo(listOf(id)) } }` — the only `runBlocking` DB call, allowed on the loader thread ([01 Coroutines and threading](01-foundation.md#coroutines-and-threading)).
+Miss (an item set by an external controller or by Media3 before the projector indexed it): `runBlocking { withTimeout(5_000) { opener.awaitOpen(); episodeDao.get().mediaInfo(listOf(id)) } }` — the only `runBlocking` DB call, allowed on the loader thread ([01 Coroutines and threading](01-foundation.md#coroutines-and-threading)); the result is put into the index. [Resumption](#resumption) and `onSetMediaItems` call `EpisodeSourceIndex.putAll` before returning items, so the miss is a safety net, not a path.
 
 ### EpisodeResolver
 
@@ -456,8 +464,9 @@ internal sealed interface Pin {
     data class Local(val uri: String) : Pin
     data class Remote(val originalUrl: String, val cacheKey: String,
                       @Volatile var finalUrl: String? = null, @Volatile var totalLength: Long? = null) : Pin
-    data class YouTube(val videoId: String, @Volatile var itag: Int? = null) : Pin
+    data class YouTube(val videoId: String, @Volatile var format: PinnedFormat? = null) : Pin
 }
+internal data class PinnedFormat(val itag: Int, val formatId: String, val contentLength: Long?, val lastModifiedMicros: Long?)
 ```
 
 `resolveDataSpec(spec)`:
@@ -471,7 +480,7 @@ internal sealed interface Pin {
 4. By pin:
    - `Local` → `spec.withUri(uri)` (DefaultDataSource routes it past the cache).
    - `Remote` → `spec.buildUpon().setUri(finalUrl ?: originalUrl).setKey(cacheKey).build()`.
-   - `YouTube` → `runBlocking { withTimeout(25_000) { yt.resolveAudio(videoId, audioPref(pin.itag)) } }`; `Ok` with a different itag than `pin.itag` → throw `YouTubeFormatChangedException`; else `pin.itag = itag`, return `uri = audio.url`, `key = "yt:$videoId:$itag"`. Any other result → throw `YouTubeResolveException(result)` ([04 Playback integration](04-youtube.md#playback-integration), which also defines `AudioPref` from `youtube.audio_quality`, `youtube.volume_levelling` and the app language).
+   - `YouTube` → `runBlocking { withTimeout(25_000) { yt.resolveAudio(videoId, audioPref(pinnedItag = pin.format?.itag)) } }`. `Ok(audio)`: if `pin.format != null` and any of `formatId`, `contentLength`, `lastModifiedMicros` differs → throw `YouTubeFormatChangedException(videoId, old.formatId, audio.formatId)`. On the first `Ok` of the pin, the **cross-session cache check**: if `ContentMetadata.getContentLength(cache.getContentMetadata(key))` is known and differs from `audio.contentLength`, `removeResource(key)` before opening; then `pin.format = PinnedFormat(…)`. Return `uri = audio.url`, `key = "yt:$videoId:${audio.formatId}"` (the canonical `yt:{videoId}:{itag}` for every single-track non-DRC format; `-drc` / `~{trackId}` suffixes otherwise, per 04). Any other result → throw `YouTubeResolveException(result)`. Contract, `AudioPref` (from `youtube.audio_quality`, `youtube.volume_levelling` and the app language) and `formatId`: [04 Playback integration](04-youtube.md#playback-integration).
 5. Thread interruption (Media3 cancelling a load) surfaces from `runBlocking` as `InterruptedException` → rethrown as `InterruptedIOException`.
 
 **Pin lifetime.** Created at the first open of the item (often while pre-buffering it as the next item); released by `unpin(id)` when the item leaves the window, when it stops being current after having been current, on [error recovery](#error-recovery), and by `clearPins()` at service start and destroy.
@@ -479,17 +488,18 @@ internal sealed interface Pin {
 **Dynamic ad insertion (risk [T7](../PLAN.md#8-risks-and-mitigations)).** DAI hosts (Megaphone, Acast, Art19, …) serve different bytes and lengths per request, so bytes from two responses must never be stitched:
 
 - The source (local vs remote) never switches during a pin.
-- `GuardedHttpDataSource` records the post-redirect URL of the first successful response (`OkHttpDataSource.getUri()`; Unverified that it reports the final hop — otherwise read it from an OkHttp network interceptor tag) into `pin.finalUrl`; later range requests of the same pin go straight to it, which keeps them on the same stitched rendition. It also records the total length (`Content-Range` total or `Content-Length` of a 200 at offset 0); a later response with a different total throws `ContentChangedException` (an `IOException` the policy treats as fatal) → [Error recovery](#error-recovery).
+- `GuardedHttpDataSource` records the post-redirect URL of the first successful response (`OkHttpDataSource.getUri()`, which returns `response.request().url()`, i.e. the last hop OkHttp followed) into `pin.finalUrl`; later range requests of the same pin go straight to it, which keeps them on the same stitched rendition. It also records the total length (`Content-Range` total or `Content-Length` of a 200 at offset 0); a later response with a different total throws `ContentChangedException` (an `IOException` the policy treats as fatal) → [Error recovery](#error-recovery).
 - A 401/403/404/410 on a request that used `finalUrl` clears `finalUrl` (signed CDN URLs expire) and rethrows; the single policy retry goes through the original URL. Final URLs live only in memory ([D50](../PLAN.md#3-key-decisions)).
-- Each new `Remote` pin starts with an empty cache resource for its key (`resetResource`), so cached bytes are reused only within one pin. Positions are time-based; `episode_position.positionSource` records STREAM vs DOWNLOAD so 08 can show "position may differ" when a resumed download was listened to as a stream.
+- Each new `Remote` pin starts with an empty cache resource for its key (`resetResource`), so cached bytes are reused only within one pin. Positions are time-based; `episode_position.positionSource` records STREAM vs DOWNLOAD (risk T7). v1.0 shows no "position may differ" hint (08 has no data path for it); the column keeps the option open for v1.x.
 
 **Downloads during playback** (M6):
 
 | Event | Behaviour |
 |---|---|
 | Download completes for the **current** item | Pin stays `Remote` until the item is no longer current (DAI) |
-| Download completes for a **non-current** window item | Projector sees the download state change; if the item is pinned `Remote` it calls `resolver.unpin(id)` and removes and re-adds that item (drops its pre-buffer, so the next open resolves locally) |
-| File of the current item deleted or missing | 07 defers user deletes of `play_session.currentEpisodeId` until the next transition; if the file still disappears, the next re-open fails with `ERROR_CODE_IO_FILE_NOT_FOUND` → [Error recovery](#error-recovery) re-pins to remote at the same position and calls `DownloadController.reportFileMissing(id)` |
+| Download completes for a **non-current** window item | Projector sees the download state change (`observeMediaInfo`); if the item is pinned `Remote` it calls `resolver.unpin(id)` and removes and re-adds that item (drops its pre-buffer, so the next open resolves locally) |
+| Download deleted for a **non-current** window item | 07 removes the `LocalMediaIndex` entry before the row and deletes the file at once (only the current episode is deferred). The projector sees the state change; if the item is pinned `Local` it unpins and re-adds it (the next open resolves to the stream). A pre-buffered read that loses the file first takes the missing-file path below |
+| File of the current item deleted or missing | 07 defers every deletion of `play_session.currentEpisodeId`'s file (user, cleanup, unsubscribe, move) until `currentEpisodeId` changes ([07 Deferral while playing](07-downloads.md#deferral-while-playing)); if the file still disappears, the next re-open fails with `ERROR_CODE_IO_FILE_NOT_FOUND` → [Error recovery](#error-recovery) re-pins to remote at the same position and calls `DownloadController.reportFileMissing(id)` (07 re-checks the file before marking `MISSING`) |
 | Removable volume unmounted mid-play | Same as missing file |
 
 ### YouTube branch
@@ -497,8 +507,8 @@ internal sealed interface Pin {
 Owned by [04 Playback integration](04-youtube.md#playback-integration): branch condition, `DataSpec` key, format pinning, expiry through the cache TTL, 403/410 self-heal, pre-resolve and error mapping. 06 implements:
 
 - `GuardedHttpDataSource` for keys starting `yt:`: on `InvalidResponseCodeException` 403 or 410, `yt.invalidate(videoId)` (videoId parsed from the key) at most twice per item per 60 s, then rethrow; Media3's retry re-enters `resolveDataSpec` at the same byte offset.
-- `PreResolver`: on the position tick, when the current item has ≤ 60 s left and the next window item is YouTube without a local file, `appScope.launch { yt.resolveAudio(videoId, pref) }` once per item; the result is ignored (it warms `ResolvedUrlCache`).
-- If a `YouTubeFormatChangedException` follows a `clen` change, `streamingCache.removeResource("yt:$videoId:$oldItag")` before re-preparing ([04 Error mapping](04-youtube.md#error-mapping)).
+- `PreResolver`: on `PositionTracker`'s 5-s tick, when the current item has ≤ 60 s of media left and the next window item is YouTube without a local file, `appScope.launch { yt.resolveAudio(videoId, pref) }` once per item; the result is ignored (it warms `ResolvedUrlCache`).
+- `YouTubeFormatChangedException` (once per item): when only `clen`/`lmt` changed, `streamingCache.removeResource("yt:$videoId:${e.oldFormatId}")`; then `unpin(id)` and `prepare()` at the current position (after a player error, `prepare()` re-creates the media period, so the next open re-enters `resolveDataSpec` and pins the new format; an identical `replaceMediaItem` would be a no-op because `canUpdateMediaItem` keeps the source); a second one for the same item is handled as `Transient(EXTRACTION)` ([04 Error mapping](04-youtube.md#error-mapping)).
 - In `play`, YouTube items are never projected (context tail `youtubePlayable = false`, `QueueRepository` rejects adds), so the branch is unreachable; `ExternalOnlyYouTubeStreamResolver` returns `Unsupported` defensively.
 
 ### Metered and offline gate
@@ -538,7 +548,7 @@ Other failure modes:
 
 | Failure | Behaviour |
 |---|---|
-| `SessionWriter.commitStart` fails (SQLite error, e.g. disk full) | Nothing changes; command result `RESULT_ERROR_UNKNOWN` → `PlayResult.ServiceUnavailable` (08: "Couldn't start playback"); logged redacted |
+| `SessionWriter.commitStart` fails (SQLite error, e.g. disk full) | Nothing changes; command result `SessionError.ERROR_UNKNOWN` → `PlayResult.ServiceUnavailable` (08: "Couldn't start playback"); logged redacted |
 | `SessionWriter.onTransition` fails | Retried once on the next main-loop turn, then logged; the player keeps playing and the next transition rewrites `play_session` (positions are saved separately) |
 | Controller cannot connect (service crashed, 5 s timeout) | `PlayResult.ServiceUnavailable`; the next call reconnects |
 | Process killed while playing | ≤ 5 s of position lost (N1); media key or the resumption card restarts from the database ([Resumption](#resumption)) |
@@ -608,13 +618,13 @@ sequenceDiagram
    - `startEpisodeId` given (a row's play button, Auto pick) → current = it, anchor = it (05 start rule 1).
    - "Play" without a start, Up next non-empty → current = Up next head, anchor `null` (the tail starts at the beginning of the order after Up next — [D44](../PLAN.md#3-key-decisions), M4 acceptance 6).
    - "Play" without a start, Up next empty → current = `playContextResolver.startItem(spec)`, anchor = it; `null` → `RESULT_NOTHING_TO_PLAY` with `externalOnly` = (`!capabilities.inAppPlayback` and 02's start-item query with `youtubePlayable = 1` finds an item) — 08 shows "Nothing unplayed in 'tech'" or "Episodes in 'tech' open in YouTube".
-   - `playEpisode`/`playEpisodeAt` (no `contextType`): if the episode is in Up next, it becomes current and the existing context and anchor are kept (Up next screen taps); otherwise context `EXTERNAL` (no tail — 05's entry-point table): it plays, then Up next, then playback stops.
-2. **Gates** on the planned current: YouTube in `play` → `NotPlayable(NotInThisBuild)`; `availability != AVAILABLE` → `NotPlayable(YouTube(availability))`; [metered and offline gate](#metered-and-offline-gate).
+   - `playEpisode`/`playEpisodeAt` (no `contextType`): if the episode is already current → no commit, `seekTo(startPositionMs)` when given, result `STARTED`; if it is in Up next, it becomes current and the existing context and anchor are kept (Up next screen taps); otherwise context `EXTERNAL` (no tail — 05's entry-point table): it plays, then Up next, then playback stops.
+2. **Gates** on the planned current, in this order: no enclosure and no playable video ID → `NotPlayable(NoMedia)`; YouTube in `play` → `NotPlayable(NotInThisBuild)`; `availability != AVAILABLE` → `NotPlayable(YouTube(availability))`; [metered and offline gate](#metered-and-offline-gate).
 3. **Commit** (`SessionWriter.commitStart`, one write transaction): `play_session` current, context columns from `spec`, anchor (`contextAnchorEpisodeId`, `contextAnchorSortDate`), `contextMinSortDate`, `generation + 1`, `updatedAt`; delete the new current from `queue_entry`; `EpisodeStateDao.touchLastPlayed`.
-4. **Project now**: read the virtual queue once (not waiting for the Flow), build items, `applier.applyFor(current)` (speed and skip silence before the first `prepare()`), `setMediaItems(window, 0, StartPositionRule(...))`, `prepare()`.
-5. Result codes map 1:1 to `PlayResult`; the client calls `play()` only on success.
+4. **Project now**: read the virtual queue once (not waiting for the Flow), build items, `applier.applyFor(current)` (speed and skip silence before the first `prepare()`), `setMediaItems(window, 0, startPositionMs ?: StartPositionRule(...))`, `prepare()`; `appliedGeneration = g`, so the Flow's own emission of `g` diffs to nothing.
+5. **Result**: `SessionResult(RESULT_SUCCESS, extras)` with `nd.result` ∈ `STARTED`, `NOTHING_TO_PLAY`, `NOTHING_TO_PLAY_EXTERNAL`, `NEEDS_METERED_CONSENT`, `METERED_BLOCKED`, `OFFLINE`, `NOT_PLAYABLE` (+ `nd.episodeId`, and `nd.reason` = the `UnplayableReason` name, with the `Availability` name for `YouTube`); a failed commit returns `SessionResult(SessionError.ERROR_UNKNOWN)`, a timeout or disconnect is caught by the client. `PlaybackControllerImpl` maps these 1:1 to `PlayResult` (`ERROR_UNKNOWN`/timeout → `ServiceUnavailable`) and calls `controller.play()` only for `STARTED`.
 
-`play()` (resume): `awaitController()`; if `controller.playbackState == Player.STATE_IDLE` → `controller.prepare()`; `controller.play()`. `SessionPlayer` handles prepare/play on an empty playlist by loading the window from the database first (and, when `current == null` but Up next is non-empty, by committing Up next's head as current). The previously current item that a new start interrupts is not re-queued; it stays "in progress" in its feeds.
+`play()` (resume): [metered and offline gate](#metered-and-offline-gate) on `play_session.currentEpisodeId` (or the Up next head when there is none), then `controller.play()`. Media3 does the rest in the session: an `IDLE` player is prepared and an `ENDED` one seeks to its default position (`Util.handlePlayButtonAction`), and a play request on an **empty** player calls `onPlaybackResumption(controller, isForPlayback = true)` and applies the returned items before playing — so [Resumption](#resumption) is the one empty-player path for every controller (own UI, notification, media key, Auto), delivered in M4. The previously current item that a new start interrupts is not re-queued; it stays "in progress" in its feeds.
 
 ### Up next operations
 
@@ -635,7 +645,7 @@ sequenceDiagram
 | Player reason | Departing item | Arriving item |
 |---|---|---|
 | `MEDIA_ITEM_TRANSITION_REASON_AUTO` | Position saved; marked played ([played rule](#played-state)) | Becomes current; removed from `queue_entry`; if its origin is `CONTEXT`, anchor = it |
-| `…_SEEK` (next/previous, Auto queue pick, skip after error) | Position saved; marked played only if within the threshold and it was playing in this pin | Same as AUTO |
+| `…_SEEK` (next/previous, Auto queue pick, skip after error) | Position saved; marked played only if within the threshold and it was playing at least once since it became current | Same as AUTO |
 | `…_PLAYLIST_CHANGED` | Ignored — our own `setMediaItems`; the database already describes it | — |
 | `…_REPEAT` | Never (repeat off) | — |
 
@@ -679,13 +689,13 @@ sequenceDiagram
 5. Changed `LocalConfiguration` (fingerprint) on a non-current item, or a newly local item pinned `Remote` → `unpin` + remove + add at the same index.
 6. Before handing items over: `EpisodeSourceIndex.putAll(window)`; after removals: `index.remove` and `resolver.unpin` for items that left.
 
-**External controllers.** `onSetMediaItems` (Auto, Assistant, Bluetooth browse) and `onAddMediaItems` write the database **first**, then return items, so the next database emission never reverts the user's choice in the car ([System surfaces](#android-auto-and-assistant)). Media3 then calls `setMediaItems` on the player; the projector's next diff is a no-op.
+**External controllers.** `onSetMediaItems` (Auto, Assistant, Bluetooth browse) and `onAddMediaItems` write the database **first**, then return items, so the next database emission never reverts the user's choice in the car ([System surfaces](#android-auto-and-assistant)). Because Media3 applies the returned items asynchronously (after the future completes), the callback brackets the write with `projector.beginOwnWrite()` and registers `expectExternalApply(generation, mediaIds)`; the own write ends when the player's media IDs equal `mediaIds` (checked in `onTimelineChanged`, reason `PLAYLIST_CHANGED`) or after 2 s, so the projector never issues a second `setMediaItems` for the same start. `onSetMediaItems` also fills `EpisodeSourceIndex` and applies effective settings before returning. Player-level playlist edits that bypass these callbacks (a trusted controller calling `moveMediaItem`/`removeMediaItems`) are not persisted; the next projector diff restores the database order.
 
 **Edge cases.**
 
 - Current episode deleted (unsubscribe cascade sets `currentEpisodeId` NULL): window becomes empty → player cleared; 03 pauses first ([03 Unsubscribe](03-feeds-and-discovery.md#unsubscribe-and-other-podcast-operations)).
 - Context group deleted (05 clears the context, `generation + 1`): the current item continues, then Up next, then stop.
-- Current item marked played elsewhere: if playing → `seekToNextMediaItem()` (a `SEEK` transition that does not mark again); if paused → the next item becomes current, paused.
+- Current item marked played after it became current (`mediaInfo(current).playedAt ≥ currentSince`, where `currentSince` is the `Clock.now()` at which `SessionWriter` made it current; an older `playedAt` belongs to a replay and is ignored): if playing → `seekToNextMediaItem()` (a `SEEK` transition that does not mark again); if paused → the same, leaving the next item current and paused. This covers 03's `setPlayed`/`markFeedPlayed`, the user's "Mark played" on the playing row and 06's own `END_OF_MEDIA_ITEM` marking. Callers must therefore not add their own skip: 08's "Mark played and skip" is `setPlayed(listOf(id), true)` alone ([Open questions](#open-questions) 12). With nothing after it, the player is cleared as at `STATE_ENDED` ([Transitions](#transitions)).
 - Up next with > 100 items: the window holds the first 100 and no tail; it tops up as items are consumed.
 - A 2,000-episode group never materialises more than K = 20 context items in the player (timeline serialisation to System UI, Auto and Wear stays small).
 
@@ -711,7 +721,7 @@ Guards (N1: at most 5 s lost on a process kill; never 0 over non-zero):
 
 1. `updateGuarded` never replaces a non-zero position with 0; only `reset` (explicit reset, mark played) does.
 2. The start position is applied before playback of an item proceeds (`setMediaItems(…, startPositionMs)` or `seekTo` inside `onMediaItemTransition`, both on main before the next tick), so a tick never records a few hundred milliseconds over a saved 45 minutes.
-3. Played-after-start guard: inside the save transaction, if `episode_state.playedAt ≥ pinStartedAt` (the episode was marked played by another path after this playback began) the position is not written.
+3. Played-after-start guard: inside the save transaction, if `episode_state.playedAt ≥ pinStartedAt` (the episode was marked played by another path after this playback began) the position is not written. 02's `updateGuarded` parameter `pinStartedAt` is bound to the item's `currentSince` ([edge cases](#queueprojector)), not to the resolver pin's creation time (a pin can be created while pre-buffering).
 4. A failed write (`SQLITE_FULL`) is retried on the next tick.
 
 ### Start position
@@ -737,7 +747,7 @@ Marked played (one transaction: `EpisodeStateDao.markPlayed`, `PositionDao.reset
 
 - an AUTO transition leaves an item, or `STATE_ENDED`;
 - `onPlayWhenReadyChanged(false, PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM)` (sleep "end of episode" or the metered pause);
-- a SEEK transition or a new start leaves an item within the threshold **and** the item was playing at least once in this pin (skipping a never-started item does not mark it).
+- a SEEK transition or a new start leaves an item within the threshold **and** the item was playing at least once since it became current (skipping a never-started item does not mark it).
 
 Pausing near the end never marks played (pressing Play would otherwise restart from 0). `EpisodeRepository.setPlayed(ids, false)` (03) = `markUnplayed` + `PositionDao.reset` + `startedAt = NULL` (fully unplayed).
 
@@ -754,7 +764,7 @@ stateDiagram-v2
 
 ### Measured duration
 
-When the timeline reports a duration for the current item (`onPlaybackStateChanged(READY)`, not `C.TIME_UNSET`) and it differs from the stored `measuredDurationMs` by > 1 s (or none is stored): `EpisodeStateDao.ensure` + `setMeasuredDuration` once per pin (`itunes:duration` is often wrong; YouTube `play` has none). Lists read `COALESCE(s.measuredDurationMs, e.durationMs)` ([02 Feed pages](02-data-model.md#feed-pages)). Delivered in M5.
+When the timeline reports a duration for the current item (`onPlaybackStateChanged(READY)`, not `C.TIME_UNSET`) and it differs from the stored `measuredDurationMs` by > 1 s (or none is stored): `EpisodeStateDao.ensure` + `setMeasuredDuration` once per time the item becomes current (`itunes:duration` is often wrong; YouTube Atom feeds carry none). Lists read `COALESCE(s.measuredDurationMs, e.durationMs)` ([02 Feed pages](02-data-model.md#feed-pages)). Delivered in M5.
 
 ---
 
@@ -819,7 +829,7 @@ The first source with at least one visible (non-hidden) chapter wins; sources ar
 | 4 | `MP4` (Nero/QuickTime in M4A/M4B/MP4; Media3 1.11) | 06 | same |
 | 5 | `YOUTUBE_DESC` | 06 via 04's `YouTubeChapters.parse(description, durationMs)` | When a YouTube item becomes current and no rows of priorities 1–4 exist ([04 Chapters from the description](04-youtube.md#chapters-from-the-description)) |
 
-Writers replace all rows of one `(episodeId, source)` pair per transaction ([02 chapter](02-data-model.md#chapter)). Each source is written at most once per item per pin (ID3/MP4 rows only when the extracted list differs from the stored one).
+Writers replace all rows of one `(episodeId, source)` pair per transaction ([02 chapter](02-data-model.md#chapter)). Each source is written at most once each time the item becomes current (ID3/MP4 rows only when the extracted list differs from the stored one).
 
 ### Podcasting 2.0 JSON
 
@@ -854,18 +864,21 @@ System UI (API 33+) shows play/pause, then `SLOT_BACK`, `SLOT_FORWARD`, then ove
 
 ### Hardware buttons and SessionPlayer
 
-`SessionPlayer : ForwardingSimpleBasePlayer(exo)` is the player given to the session (own UI, notification, Bluetooth, Auto all go through it); 06's components keep using `exo` directly. Unverified: `ForwardingSimpleBasePlayer` behaviour in 1.11.1 is checked on day one of M4; fallback is `ForwardingPlayer` with the same overrides.
+`SessionPlayer : ForwardingSimpleBasePlayer(exo)` (Media3 ≥ 1.5.0) is the player given to the session (own UI, notification, media keys, Bluetooth, Auto all go through it); 06's components keep using `exo` directly, and `ForwardingSimpleBasePlayer` re-reads `exo`'s state on every change. Its default `handleSeek` forwards each seek command to the matching `exo` method; the overrides below replace that for four commands. `BasePlayer.seekToNext()` with no next item still calls `handleSeek(C.INDEX_UNSET, C.TIME_UNSET, COMMAND_SEEK_TO_NEXT)`, so the hardware mapping also works on a one-item window.
 
 | Override | Behaviour |
 |---|---|
-| `handleSeek(…, COMMAND_SEEK_TO_NEXT)` (headset/steering-wheel next, AVRCP skip) | `playback.hardware_buttons` (read live from `PlaybackPrefs`) `= EPISODE` (default): next episode; `SKIP`: `seekForward()` |
-| `handleSeek(…, COMMAND_SEEK_TO_PREVIOUS)` | `EPISODE`: [previous-episode rule](#transitions); `SKIP`: `seekBack()` |
-| `COMMAND_SEEK_TO_NEXT_MEDIA_ITEM` (our UI, notification "Next episode") | Always next episode |
-| `getState()` | Advertises `COMMAND_SEEK_TO_NEXT`/`PREVIOUS` whenever an item is loaded (so hardware keys work with a one-item window); removes repeat and shuffle commands |
-| `handleSetPlayWhenReady(true)`, `handlePrepare()` on an empty playlist | Returns a future that loads the window from the database (or starts Up next), then prepares and plays |
-| `handleSetPlayWhenReady(true)` | Applies smart resume and the metered gate (consent under `ASK`, refusal under `NEVER`) |
+| `handleSeek(…, COMMAND_SEEK_TO_NEXT)` — media keys (`KEYCODE_MEDIA_NEXT`, headset double-click), AVRCP and steering-wheel "next", platform `skipToNext` | `playback.hardware_buttons` (read live from `PlaybackPrefs`) `= EPISODE` (default): next episode (`exo.seekToNextMediaItem()`, no-op without one); `SKIP`: `exo.seekForward()` |
+| `handleSeek(…, COMMAND_SEEK_TO_PREVIOUS)` — the same sources for "previous" | `EPISODE`: [previous-episode rule](#transitions); `SKIP`: `exo.seekBack()` |
+| `handleSeek(…, COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)` — own UI `skipToNext()`, notification "Next episode" | Always next episode, independent of the setting |
+| `handleSeek(…, COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)` — own UI `skipToPrevious()` | Always the [previous-episode rule](#transitions), independent of the setting |
+| `getState()` | Advertises `COMMAND_SEEK_TO_NEXT`/`PREVIOUS` and `…_MEDIA_ITEM` whenever an item is loaded (Media3 intersects controller and player commands, so a missing command would deny media keys); removes `COMMAND_SET_REPEAT_MODE` and `COMMAND_SET_SHUFFLE_MODE` |
+| `handleSetPlayWhenReady(true)` | Smart resume (rewind 5 s after > 5 min paused, [Start position](#start-position)) and, when `session.controllerForCurrentRequest` is not this app's own controller, the [metered gate](#metered-and-offline-gate) for an item that needs network: `ASK` → grant and play; `NEVER` → stay paused with `issue = METERED_BLOCKED`. The own UI has already passed the gate in `PlaybackControllerImpl` |
+| `handleStop()` | Position flush, then `exo.stop()` (notification dismissal, [Lifecycle](#lifecycle-and-foreground-state)) |
 
-Headset single/double/triple clicks are mapped by Media3 to play-pause/next/previous (Unverified for every head unit: some AVRCP passthroughs arrive as transport controls rather than key events — both paths end in `SessionPlayer`, so the setting applies either way).
+Empty-player play requests never reach `SessionPlayer`: Media3 routes them to `onPlaybackResumption(isForPlayback = true)` first ([Resumption](#resumption)).
+
+Headset clicks: Media3 turns a double-click of `KEYCODE_HEADSETHOOK`/`PLAY_PAUSE` from an external source into `KEYCODE_MEDIA_NEXT`; other multi-clicks are not interpreted. Unverified for every head unit: some AVRCP passthroughs arrive as platform transport controls rather than key events — both paths end in `SessionPlayer.handleSeek(COMMAND_SEEK_TO_NEXT)`, so the setting applies either way (M5 device matrix).
 
 ---
 
@@ -897,15 +910,15 @@ Serves R4.7, R5.2. Delivered in M4 (lock screen, System UI, Bluetooth metadata),
 | `podcasts` | browsable `podcast:{podcastId}` by title |
 | `podcast:{podcastId}` | unplayed and in-progress episodes in the podcast's `episodeOrder`, `episode:{id}@podcast:{podcastId}` |
 
-`onSetMediaItems(items, startIndex, startPositionMs)`: parse `episode:{id}@{parent}`; parent `group:`/`podcast:`/`downloads` → start that context at `id` (`GROUP`/`PODCAST`/`DOWNLOADS`; spec from `PlayContextResolver`, 05 start rule 1) — M5 acceptance 4; parent `upnext` or none → `playEpisode` semantics (an Up next item keeps the context, anything else is `EXTERNAL`). Several items without a parent → first becomes current, the rest are added to the front of Up next, context `EXTERNAL` (no tail). `requestMetadata.searchQuery`: empty → resume; else exact case-insensitive group name → play group; else first podcast whose title contains the query → play podcast; else error result. `onSearch` returns matching groups and podcasts (≤ 20 each) as browsable items. Browse actions (download, mark played, add to Up next) are v1.x (M13). Sideloaded and F-Droid installs appear in Auto only with Auto's developer option "Unknown sources".
+`onSetMediaItems(items, startIndex, startPositionMs)` (Auto `playFromMediaId`, Assistant `playFromSearch`, Bluetooth browse; Media3 passes `C.INDEX_UNSET`/`C.TIME_UNSET` for platform requests): parse `episode:{id}@{parent}`; parent `group:`/`podcast:`/`downloads` → start that context at `id` (`GROUP`/`PODCAST`/`DOWNLOADS`; spec from `PlayContextResolver`, 05 start rule 1) — M5 acceptance 4; parent `upnext` or none → `playEpisode` semantics (an Up next item keeps the context, anything else is `EXTERNAL`). Several items without a parent → first becomes current, the rest are added to the front of Up next, context `EXTERNAL` (no tail). The same [gates](#starting-playback) apply (a refused start returns a failed future; the car shows Media3's error state). The returned `MediaItemsWithStartPosition` is the projected window with start index 0 and, when `startPositionMs == C.TIME_UNSET`, the `StartPositionRule` position. `requestMetadata.searchQuery` (Assistant "play X on Neutrodyne"): empty → resume (same as [Resumption](#resumption) with `isForPlayback = true`); else, case-insensitively, an exact group name → play the group; else the first podcast whose title contains the query → play the podcast; else the newest episode from 02's `EpisodeDao.searchTitles(pattern, 1)` → `playEpisode` semantics; else a failed future. `onSearch`/`onGetSearchResult` return matching groups and podcasts (≤ 20 each, browsable) and episodes (≤ 20, `searchTitles`, playable as `episode:{id}`). Browse actions (download, mark played, add to Up next) are v1.x (M13). Sideloaded and F-Droid installs appear in Auto only with Auto's developer option "Unknown sources".
 
 ### Resumption
 
-`ResumptionProvider.onPlaybackResumption(session, controller, isForPlayback)` (M5), from the database only — never the network:
+`ResumptionProvider.onPlaybackResumption(session, controller, isForPlayback)`, from the database only — never the network. Every call first awaits `DatabaseOpener.awaitOpen()` (which runs migrations) — never a raw query on an unmigrated file.
 
-- `isForPlayback = false` (System UI card at boot): one item for `currentEpisodeId` with metadata, `content://` artwork and completion extras, start position from `episode_position`. The call awaits the database open (`DatabaseOpener.awaitOpen()`, which runs migrations first) — never a raw query on an unmigrated file.
-- `isForPlayback = true` (media key or Bluetooth play while the service is dead, or a tap on the card): the full window for the stored session, start index 0, `StartPositionRule` position; effective settings applied before Media3 prepares.
-- No session → failed future (`UnsupportedOperationException`); Media3 ignores the request.
+- `isForPlayback = true` (M4): Media3 calls it for **any** play request on an empty player — the own UI's `play()` after `dismiss()` or session end, a fresh service whose projector has not loaded yet, a media key or Bluetooth play while the service is dead, a tap on the resumption card. If `currentEpisodeId == null` and Up next is non-empty, `SessionWriter.commitStart` makes the Up next head current (context unchanged). Returns the projected window (`QueueProjector.buildWindow()`, which also fills `EpisodeSourceIndex` and sets `appliedGeneration`), start index 0, `StartPositionRule` position; effective settings are applied before Media3 prepares.
+- `isForPlayback = false` (M5, System UI card at boot through the `MediaLibraryService` recent root): one item for `currentEpisodeId` with metadata, `content://` artwork and completion extras, start position from `episode_position`.
+- Nothing to resume → failed future (`UnsupportedOperationException`); Media3 logs and ignores the request (the own UI shows `NothingToPlay` from its gate check first).
 
 `MediaButtonReceiver` (declared in M5) starts the service for media keys; nothing is ever started from `BOOT_COMPLETED`.
 
