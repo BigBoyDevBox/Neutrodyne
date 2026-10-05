@@ -1,6 +1,6 @@
 # Handoff — state of the Neutrodyne planning work
 
-This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-05, at the start of the replan for Kotlin Multiplatform, desktop and sync (step 1, the lead pass, is running).**
+This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-05 18:57 UTC, during the replan for Kotlin Multiplatform, desktop and sync. Steps 1–2 are done (the reviews of the new docs are still pending); step 3 is partly done.**
 
 ## 1. What this repository is
 
@@ -33,7 +33,7 @@ Neutrodyne is a planned open-source podcast player. So far the repository holds 
 ## 3. Current state
 
 - **`main`** holds the Android-only plan with every decision up to PO-35 (commit `ad7ead2`). One item there is stale: it still describes debuggable debug builds, which the replan corrects.
-- **Branch `ccr-ac54917e-u0kl2v`, PR [#4](https://github.com/L-K-M/Neutrodyne/pull/4):** the **replan for Kotlin Multiplatform + desktop + sync server** is in progress. A background job commits and pushes the docs to this branch every 10 minutes ("Replan checkpoint" commits).
+- **Branch `ccr-ac54917e-u0kl2v`, PR [#4](https://github.com/L-K-M/Neutrodyne/pull/4):** the **replan for Kotlin Multiplatform + desktop + sync server** is in progress. Checkpoint commits ("Replan checkpoint") are pushed to this branch regularly.
 - Replan steps (the binding instructions for all of them are in §5):
   1. **Lead pass:** rewrite `docs/PLAN.md` for the new scope and write the change brief (it will be committed as `docs/research/briefs/change-brief-3-kmp.md`).
   2. **New docs:** write `docs/design/10-sync.md` and `docs/design/11-desktop.md`, each followed by an adversarial review.
@@ -45,6 +45,10 @@ Neutrodyne is a planned open-source podcast player. So far the repository holds 
 ### Progress log
 
 - 16:2x UTC: replan launched; lead pass running.
+- ~17:0x UTC: lead pass done. `docs/PLAN.md` is rewritten and the brief is saved as [`docs/research/briefs/change-brief-3-kmp.md`](docs/research/briefs/change-brief-3-kmp.md).
+- ~17:xx UTC: first drafts of `docs/design/10-sync.md` and `docs/design/11-desktop.md` are written. Their adversarial reviews are still pending.
+- By 18:57 UTC: `01`–`05` are revised and `06` is in progress. Still to do: revise `07`, `08`, `09`; review `10` and `11`; the two critics; the fixer, which also rewrites `README.md`.
+- 18:47 UTC: the automatic 10-minute checkpoint job reached its 2-hour limit and stopped. Checkpoints are now made by hand.
 
 ## 4. How to resume if this session stops
 
