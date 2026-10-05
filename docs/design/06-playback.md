@@ -180,15 +180,15 @@ playback/impl/src/main/kotlin/app/neutrodyne/playback/impl/
   media/    MediaItemFactory  EpisodeResolver  EpisodeSourceIndex  GuardedHttpDataSource
             StreamingCache  AdjustableLruCacheEvictor  EnclosureFingerprint  ErrorRecovery
   queue/    QueueRepositoryImpl  SessionWriter  QueueProjector  WindowDiff  PlaybackHistory
-  state/    PositionTracker  PlayedRule  StartPositionRule  PlaybackStateHub  ServiceBridge
-            EffectivePlaybackApplier  MeteredStreamingGate
+  state/    PositionTracker  PositionWriter  PlayedRule  StartPositionRule  PlaybackStateHub  ServiceBridge
+            EffectivePlaybackApplier  MeteredStreamingGate  PlaybackPrefs
   features/ SleepTimer  Chapters  ChapterRepositoryImpl  Podcasting20ChaptersParser  PreResolver
   session/  SessionCallback  CustomCommands  MediaButtons  MediaLibraryTree  ResumptionProvider
             PlaybackChannels  TapToResumeNotifier
   ui/       PlayerConnection  PlaybackControllerImpl
 ```
 
-Hilt (`PlaybackModule`, `SingletonComponent`): binds `PlaybackController` → `PlaybackControllerImpl`, `PlaybackStateSource` → `PlaybackStateHub`, `PlaybackMaintenance` → `StreamingCache`, `QueueRepository` → `QueueRepositoryImpl`, `ChapterRepository` → `ChapterRepositoryImpl`; provides `SimpleCache` (`@Singleton`); declares `@BindsOptionalOf LocalMediaIndex` and `@BindsOptionalOf DownloadController` (absent until M6: no local files, no missing-file reports); contributes `@IntoSet AppInitializer`s `PlaybackChannels` (order 10) and `PlayerConnection` registration (order 300). Service-side components (`QueueProjector`, `PositionTracker`, `SleepTimer`, `Chapters`, `EffectivePlaybackApplier`, `ErrorRecovery`, `PreResolver`, `MediaButtons`, `SessionCallback`) are unscoped and injected into the service, so each service instance gets fresh ones; `EpisodeResolver`, `EpisodeSourceIndex`, `StreamingCache`, `MeteredStreamingGate`, `PlaybackHistory`, `PlaybackStateHub` and `PlayerConnection` are `@Singleton`.
+Hilt (`PlaybackModule`, `SingletonComponent`): binds `PlaybackController` → `PlaybackControllerImpl`, `PlaybackStateSource` → `PlaybackStateHub`, `PlaybackMaintenance` → `StreamingCache`, `QueueRepository` → `QueueRepositoryImpl`, `ChapterRepository` → `ChapterRepositoryImpl`; provides `SimpleCache` (`@Singleton`); declares `@BindsOptionalOf LocalMediaIndex` and `@BindsOptionalOf DownloadController` (absent until M6: no local files, no missing-file reports); contributes `@IntoSet AppInitializer`s `PlaybackChannels` (order 10) and, at order 300, `PlaybackPrefs` warm-up and `PlayerConnection` registration. Service-side components (`QueueProjector`, `PositionTracker`, `SleepTimer`, `Chapters`, `EffectivePlaybackApplier`, `ErrorRecovery`, `PreResolver`, `MediaButtons`, `SessionCallback`) are unscoped and injected into the service, so each service instance gets fresh ones; `EpisodeResolver`, `EpisodeSourceIndex`, `StreamingCache`, `MeteredStreamingGate`, `PlaybackHistory`, `PlaybackPrefs`, `PlaybackStateHub` and `PlayerConnection` are `@Singleton`.
 
 ### New names introduced here
 
@@ -246,7 +246,7 @@ flowchart LR
 `NeutrodynePlaybackService : MediaLibraryService` is `@AndroidEntryPoint`; Media3 services are `LifecycleService`s since 1.10, so `lifecycleScope` (main) is the service scope. `onCreate`, all on the main looper:
 
 1. `super.onCreate()` (Hilt field injection).
-2. `resolver.clearPins()`; `exo = playerFactory.create()` ([Player configuration](#player-configuration)).
+2. `resolver.clearPins()`; `exo = playerFactory.create()`; `playerFactory.bindPrefs(exo, lifecycleScope)` ([Player configuration](#player-configuration)).
 3. `sessionPlayer = SessionPlayer(exo, …)` ([Notification and media buttons](#hardware-buttons-and-sessionplayer)).
 4. `setMediaNotificationProvider(…)` and `setListener(tapToResumeListener)` ([Notification and media buttons](#notification-and-media-buttons)).
 5. `session = MediaLibrarySession.Builder(this, sessionPlayer, sessionCallback).setId("neutrodyne").setSessionActivity(openPlayerPendingIntent).setMediaButtonPreferences(mediaButtons.current()).build()`. The session activity is an explicit `MainActivity` intent with data `neutrodyne://open/player`, `FLAG_IMMUTABLE` (route `ExpandPlayer`, [01 Intent routing](01-foundation.md#intent-routing)).
@@ -263,7 +263,7 @@ flowchart LR
 |---|---|---|---|
 | Media notification | `session.isMediaNotificationController(c)` | defaults minus `COMMAND_SEEK_TO_PREVIOUS`, `COMMAND_SEEK_TO_NEXT` (compact slots show seek back/forward) | all `nd.*` |
 | Own app, System UI, Bluetooth, Wear (via notification listener) | `c.isTrusted` | defaults | all `nd.*` |
-| Android Auto / AAOS | `session.isAutoCompanionController(c)` or `session.isAutomotiveController(c)` | defaults | all `nd.*` |
+| Android Auto / AAOS | `session.isAutoCompanionController(c)` (and `isAutomotiveController(c)`; Unverified name in 1.11.1) | defaults | all `nd.*` |
 | Anything else | — | Media3 1.11 default for untrusted controllers: read-only ([PO-16](../PLAN.md#48-further-product-owner-decisions)) | none |
 
 ### Lifecycle and foreground state
@@ -316,17 +316,17 @@ stateDiagram-v2
 
 ## Player configuration
 
-Serves R4.1, R4.7, R4.8. Delivered in M4. Values are the [canonical defaults](../PLAN.md#48-further-product-owner-decisions) (PO-20) unless noted.
+Serves R4.1, R4.7, R4.8. Delivered in M4. Defaults follow [PO-20](../PLAN.md#48-further-product-owner-decisions) and [Settings](#settings).
 
 ```kotlin
 internal class PlayerFactory @Inject constructor(
     @ApplicationContext private val ctx: Context,
     private val mediaSourceFactory: NdMediaSourceFactory,     // DataSource stack: Media items and URI resolution
     private val boost: BoostLimiterProcessor,                  // pass-through (inactive) until M12
-    private val settings: SettingsStore,
+    private val prefs: PlaybackPrefs,                          // hot StateFlow of playback.* values
 ) {
     fun create(): ExoPlayer {
-        val s = runBlocking { settings.snapshot(PlaybackSettingKeys.ALL) }   // DataStore is in memory after first read
+        val s = prefs.current.value                            // defaults until the first DataStore read lands
         val silence = SilenceSkippingAudioProcessor(250_000, 0.2f, 400_000, 10, 1024)  // Unverified tuning; verify by ear
         val renderers = object : DefaultRenderersFactory(ctx) {
             override fun buildAudioSink(c: Context, float: Boolean, params: Boolean): AudioSink =
@@ -368,6 +368,8 @@ internal class PlayerFactory @Inject constructor(
 | Repeat / shuffle | `REPEAT_MODE_OFF`, shuffle off; `COMMAND_SET_REPEAT_MODE` and `COMMAND_SET_SHUFFLE_MODE` removed in `SessionPlayer` | The database defines order |
 | Video | Video and text track types disabled ([Video](#video)) | No decoding without a surface |
 
+`PlaybackPrefs` (`@Singleton`) collects the `playback.*` keys into `current: StateFlow<PlaybackPrefsSnapshot>`, started eagerly on `@ApplicationScope` by the order-300 initializer, so `create()` never blocks. `PlayerFactory.bindPrefs(exo, lifecycleScope)` (called right after `create()`) applies later changes at runtime: `setAudioAttributes(…, true)` for `pause_for_navigation`, `setSeekBack/ForwardIncrementMs` for the skip intervals.
+
 Extractors: `NdMediaSourceFactory` delegates to two `DefaultMediaSourceFactory` instances sharing the DataSource stack. Remote: `DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true).setDisableArtworkMetadata(true)` (seekable header-less CBR MP3; embedded APIC/`covr` art dropped — OOM risk; chapters kept). Local (`requestMetadata.extras["nd.local"] == true`): same plus `setMp3ExtractorFlags(Mp3Extractor.FLAG_ENABLE_INDEX_SEEKING)` (accurate VBR seeks on files without a precise TOC; Media3 1.9+ still prefers Xing/VBRI when present). The hint is set by the projector from `LocalMediaIndex` at item build; a stale hint only affects seek accuracy.
 
 `NdLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy`: for `InvalidResponseCodeException` 401/403/404/410 on a DataSpec whose key starts with `ep:`, retry once after 1 s (the retry falls back from a stale pinned final URL, [EpisodeResolver](#episoderesolver)), then `C.TIME_UNSET` (fatal). Everything else (including `yt:` 403/410, [04 Playback integration](04-youtube.md#playback-integration)) keeps the default backoff `min((n − 1) · 1 s, 5 s)`.
@@ -380,7 +382,7 @@ Serves R4.1, R4.3, R3.5, R5.2. Delivered in M4 (remote), M6 (local), M9 (YouTube
 
 ### MediaItem shape
 
-`MediaItemFactory.build(row: MediaLookupRow, live: ItemLive): MediaItem` from 02's `EpisodeDao.mediaInfo(ids)` ([02 Play context](02-data-model.md#play-context)).
+`MediaItemFactory.build(row: MediaLookupRow, positionMs: Long?, isLocal: Boolean): MediaItem` from 02's `EpisodeDao.mediaInfo(ids)` ([02 Play context](02-data-model.md#play-context)); `positionMs` feeds the completion extras, `isLocal` the `nd.local` hint.
 
 | Field | Value |
 |---|---|
@@ -435,9 +437,13 @@ internal data class EpisodeSource(
     val episodeId: Long, val podcastId: Long, val sourceType: SourceType,
     val enclosureUrl: String?, val enclosureLength: Long?, val videoId: String?,   // externalMediaId
     val isVideo: Boolean, val audioAlternateUrl: String?,                          // first audio/* alternate (M5)
-    val availability: Availability,
-)
+    val audioAlternateLength: Long?, val availability: Availability,
+) {
+    val streamUrl: String? get() = if (isVideo && audioAlternateUrl != null) audioAlternateUrl else enclosureUrl
+}
 ```
+
+`MediaItemFactory` computes `customCacheKey` from the same `streamUrl` choice, so item and resolver agree on the fingerprint.
 
 Miss (an item inserted by Media3's resumption path before the projector ran): `runBlocking { withTimeout(5_000) { episodeDao.mediaInfo(listOf(id)) } }` — the only `runBlocking` DB call, allowed on the loader thread ([01 Coroutines and threading](01-foundation.md#coroutines-and-threading)).
 
@@ -461,7 +467,7 @@ internal sealed interface Pin {
 3. `pin = pins.getOrPut(id)`:
    1. `localMediaIndex.localUriOrNull(id)` non-null → `Local` (a completed download always wins, also for YouTube).
    2. `sourceType == YOUTUBE_CHANNEL && videoId != null` → if `!capabilities.inAppPlayback` throw `YouTubeResolveException(Unsupported)`; else `YouTube(videoId)`.
-   3. Else `url = if (isVideo && audioAlternateUrl != null) audioAlternateUrl else enclosureUrl ?: throw NoMediaException`; `Remote(url, "ep:$id:${EnclosureFingerprint.of(url, length)}")`, and `streamingCache.resetResource(cacheKey)` (DAI rule below).
+   3. Else `url = streamUrl ?: throw NoMediaException`; `Remote(url, "ep:$id:${EnclosureFingerprint.of(url, length)}")` (length of the chosen URL), and `streamingCache.resetResource(cacheKey)` (DAI rule below).
 4. By pin:
    - `Local` → `spec.withUri(uri)` (DefaultDataSource routes it past the cache).
    - `Remote` → `spec.buildUpon().setUri(finalUrl ?: originalUrl).setKey(cacheKey).build()`.
@@ -473,7 +479,7 @@ internal sealed interface Pin {
 **Dynamic ad insertion (risk [T7](../PLAN.md#8-risks-and-mitigations)).** DAI hosts (Megaphone, Acast, Art19, …) serve different bytes and lengths per request, so bytes from two responses must never be stitched:
 
 - The source (local vs remote) never switches during a pin.
-- `GuardedHttpDataSource` records the post-redirect URL of the first successful response (`OkHttpDataSource.getUri()`) into `pin.finalUrl`; later range requests of the same pin go straight to it, which keeps them on the same stitched rendition. It also records the total length (`Content-Range` total or `Content-Length` of a 200 at offset 0); a later response with a different total throws `ContentChangedException` (an `IOException` the policy treats as fatal) → [Error recovery](#error-recovery).
+- `GuardedHttpDataSource` records the post-redirect URL of the first successful response (`OkHttpDataSource.getUri()`; Unverified that it reports the final hop — otherwise read it from an OkHttp network interceptor tag) into `pin.finalUrl`; later range requests of the same pin go straight to it, which keeps them on the same stitched rendition. It also records the total length (`Content-Range` total or `Content-Length` of a 200 at offset 0); a later response with a different total throws `ContentChangedException` (an `IOException` the policy treats as fatal) → [Error recovery](#error-recovery).
 - A 401/403/404/410 on a request that used `finalUrl` clears `finalUrl` (signed CDN URLs expire) and rethrows; the single policy retry goes through the original URL. Final URLs live only in memory ([D50](../PLAN.md#3-key-decisions)).
 - Each new `Remote` pin starts with an empty cache resource for its key (`resetResource`), so cached bytes are reused only within one pin. Positions are time-based; `episode_position.positionSource` records STREAM vs DOWNLOAD so 08 can show "position may differ" when a resumed download was listened to as a stream.
 
@@ -527,6 +533,17 @@ R4.1 setting `playback.stream_on_metered` = `ALLOW` (default) / `ASK` / `NEVER`.
 | Anything else | Pause, keep position | `PLAYER_ERROR` |
 
 Limits: at most 3 automatic re-prepares per item per 2 min; at most 5 consecutive skips, then pause with `PLAYER_ERROR` (prevents spinning through a queue while offline). "Skip" = `exo.seekToNextMediaItem(); exo.prepare()` with `playWhenReady` unchanged; the resulting `SEEK` transition is handled like any other ([Transitions](#transitions)) and never marks the failed item played. With no next item: `exo.stop()`, phase `ERROR`. Every skip emits `PlaybackEvent.Skipped` (08 shows "Skipped “{title}”: {reason}").
+
+Other failure modes:
+
+| Failure | Behaviour |
+|---|---|
+| `SessionWriter.commitStart` fails (SQLite error, e.g. disk full) | Nothing changes; command result `RESULT_ERROR_UNKNOWN` → `PlayResult.ServiceUnavailable` (08: "Couldn't start playback"); logged redacted |
+| `SessionWriter.onTransition` fails | Retried once on the next main-loop turn, then logged; the player keeps playing and the next transition rewrites `play_session` (positions are saved separately) |
+| Controller cannot connect (service crashed, 5 s timeout) | `PlayResult.ServiceUnavailable`; the next call reconnects |
+| Process killed while playing | ≤ 5 s of position lost (N1); media key or the resumption card restarts from the database ([Resumption](#resumption)) |
+| `SimpleCache` write error | Ignored (`FLAG_IGNORE_CACHE_ON_ERROR`) |
+| Chapter JSON fetch fails | No chapters from that source; retried at most once per 24 h ([Chapters](#chapters)) |
 
 ---
 
@@ -597,7 +614,7 @@ sequenceDiagram
 4. **Project now**: read the virtual queue once (not waiting for the Flow), build items, `applier.applyFor(current)` (speed and skip silence before the first `prepare()`), `setMediaItems(window, 0, StartPositionRule(...))`, `prepare()`.
 5. Result codes map 1:1 to `PlayResult`; the client calls `play()` only on success.
 
-`play()` (resume): `awaitController()`; if `phase == IDLE` → `controller.prepare()`; `controller.play()`. `SessionPlayer` handles prepare/play on an empty playlist by loading the window from the database first (and, when `current == null` but Up next is non-empty, by committing Up next's head as current). The previously current item that a new start interrupts is not re-queued; it stays "in progress" in its feeds.
+`play()` (resume): `awaitController()`; if `controller.playbackState == Player.STATE_IDLE` → `controller.prepare()`; `controller.play()`. `SessionPlayer` handles prepare/play on an empty playlist by loading the window from the database first (and, when `current == null` but Up next is non-empty, by committing Up next's head as current). The previously current item that a new start interrupts is not re-queued; it stays "in progress" in its feeds.
 
 ### Up next operations
 
@@ -750,7 +767,7 @@ Serves R2.7, R4.8. Delivered in M4 (speed, skip silence), M12 (boost, intro/outr
 - **Inputs.** `podcastId` of the item and `contextGroupId` = `play_session.contextId` when `contextType == GROUP`, else null. 05's resolver checks membership itself, so an Up next item from a podcast outside the group does not inherit the group's speed. Globals are `playback.speed` and `playback.skip_silence` ([Settings](#settings)), read by the resolver.
 - **When.** `EffectivePlaybackApplier` keeps `EffectiveSettingsResolver.playback(podcastId, contextGroupId)` results for every window item (re-resolved when the window changes, and kept current for the playing item with `observePlayback(…)`), so application is synchronous: before the first `prepare()` of a start, in `onMediaItemTransition`, and on every emission for the current item. It calls `exo.playbackParameters = PlaybackParameters(effective.speed.value)` and `exo.skipSilenceEnabled = effective.skipSilence.value`, and publishes 05's `EffectivePlayback` (values with `SettingSource`) as `PlaybackStateSource.effectivePlayback`; 08 renders "1.5× (from group 'news')" (M4 acceptance 7). Audio already processed at the old speed (≈ 0.5 s) may play after a transition — accepted. `boostDb` is ignored until M12.
 - **Writes from the player.** `setSpeed(speed, scope)` → `nd.SPEED_SET_SCOPE(speed, scope)`: clamp to 0.5–3.0, round to 0.05, apply to the player immediately, then write through 05's `ScopeSettingsRepository` ([05 Writing overrides](05-groups-opml-backup.md#writing-overrides)): `PODCAST` → `updatePodcast(podcastId) { it.copy(playbackSpeed = s) }`; `GROUP` → `updateGroup(contextGroupId) { … }` only when the context is a group containing the podcast, else `ScopeWriteResult.NO_CONTEXT_GROUP`; `GLOBAL` → `SettingsRepository.set(playback.speed, s)`. Writing a scope also clears the same setting at the more specific scopes on the current chain (GLOBAL clears the podcast's and the context group's override; GROUP clears the podcast's), so the chosen value takes effect now; 08's sheet says so. `setSkipSilence` / `nd.SKIP_SILENCE` work the same way.
-- **Speed cycle** (`nd.SPEED_CYCLE`, notification): next value of `playback.speed_presets` above the current speed (wrapping), written at the scope the current value comes from.
+- **Speed cycle** (`nd.SPEED_CYCLE`, notification): next value of `playback.speed_presets` above the current speed (wrapping), written at the scope the current value comes from (`SettingSource.Podcast` → `PODCAST`, `Group` → `GROUP`, `AppDefault` → `GLOBAL`).
 - **External `Player.setPlaybackSpeed`** from a trusted controller: applied for the current item only, not persisted; the next transition restores the effective value.
 - **v1.x hooks (M12).** `BoostLimiterProcessor` reads a `@Volatile gainDb` (0 = inactive); `IntroOutroSkipper` will seek past `introSkipMs` at item start and schedule `exo.createMessage { … seekToNextMediaItem() }.setPosition(duration − outroSkipMs)`. Columns are reserved in [02 podcast_settings](02-data-model.md#podcast_settings); `nd.BOOST` is reserved.
 
@@ -841,7 +858,7 @@ System UI (API 33+) shows play/pause, then `SLOT_BACK`, `SLOT_FORWARD`, then ove
 
 | Override | Behaviour |
 |---|---|
-| `handleSeek(…, COMMAND_SEEK_TO_NEXT)` (headset/steering-wheel next, AVRCP skip) | `playback.hardware_buttons = EPISODE` (default): next episode; `SKIP`: `seekForward()` |
+| `handleSeek(…, COMMAND_SEEK_TO_NEXT)` (headset/steering-wheel next, AVRCP skip) | `playback.hardware_buttons` (read live from `PlaybackPrefs`) `= EPISODE` (default): next episode; `SKIP`: `seekForward()` |
 | `handleSeek(…, COMMAND_SEEK_TO_PREVIOUS)` | `EPISODE`: [previous-episode rule](#transitions); `SKIP`: `seekBack()` |
 | `COMMAND_SEEK_TO_NEXT_MEDIA_ITEM` (our UI, notification "Next episode") | Always next episode |
 | `getState()` | Advertises `COMMAND_SEEK_TO_NEXT`/`PREVIOUS` whenever an item is loaded (so hardware keys work with a one-item window); removes repeat and shuffle commands |
@@ -936,20 +953,19 @@ Serves R4.7, R4.8, N4. Delivered in M4. Answers [01 Open questions](01-foundatio
 @Singleton
 class PlayerConnection @Inject constructor(@ApplicationContext private val ctx: Context) : DefaultLifecycleObserver {
     val controller: StateFlow<MediaController?>                     // main thread only
-    @MainThread suspend fun awaitController(timeoutMs: Long = 5_000): MediaController?
-    override fun onStart(owner: LifecycleOwner)                     // MediaController.Builder(ctx, token).buildAsync()
+    @MainThread suspend fun awaitController(timeoutMs: Long = 5_000): MediaController?  // connects lazily
     override fun onStop(owner: LifecycleOwner)                      // MediaController.releaseFuture(f), value = null
 }
 ```
 
-Registered on `ProcessLifecycleOwner` by an `AppInitializer` (order 300, switches to main). `awaitController` returns null when the process is below STARTED (enforcing [D43](../PLAN.md#3-key-decisions)) or after 5 s. Releasing at process `onStop` matters: a leaked controller keeps the service bound, so it could never stop after the user pauses and leaves. Needs `lifecycle-process` in `:playback:impl` (requested from 01).
+Registered on `ProcessLifecycleOwner` by an `AppInitializer` (order 300, switches to main). The controller is built (`MediaController.Builder(ctx, SessionToken(ctx, ComponentName(ctx, NeutrodynePlaybackService::class.java))).buildAsync().await()`) on the first `awaitController()` while the process is STARTED — not at app start, so opening the app does not create the service (cold start, N5); UI state never needs it because `PlaybackStateHub` is in-process. `awaitController` returns null when the process is below STARTED (enforcing [D43](../PLAN.md#3-key-decisions)) or after 5 s. Releasing at process `onStop` matters: a leaked controller keeps the service bound, so it could never stop after the user pauses and leaves. Needs `lifecycle-process` in `:playback:impl` (requested from 01).
 
 ### PlaybackControllerImpl
 
 | Call | Path |
 |---|---|
 | `playEpisode`, `playEpisodeAt`, `playFeed` | `sendCustomCommand(nd.PLAY_CONTEXT)` (10 s timeout), then `controller.play()` ([Starting playback](#starting-playback)) |
-| `play()` | `prepare()` if idle, then `play()` |
+| `play()` | [Metered and offline gate](#metered-and-offline-gate) for the current item, then `prepare()` if idle and `play()` |
 | `pause`, `seekTo`, `skipBack`, `skipForward`, `skipToNext`, `skipToPrevious` | `MediaController` methods (`pause`, `seekTo`, `seekBack`, `seekForward`, `seekToNextMediaItem`, `seekToPrevious`); if no controller is connected (background caller such as 03's unsubscribe), `pause` goes to `ServiceBridge` (in-process handle; pausing never starts an FGS); other transport calls are dropped |
 | `setSpeed`, `setSkipSilence`, `setSleepTimer`, `extendSleepTimer`, `nextChapter`, `previousChapter`, `dismiss` | `nd.SPEED_SET_SCOPE`, `nd.SKIP_SILENCE`, `nd.SLEEP_SET`, `nd.SLEEP_EXTEND`, `nd.CHAPTER_NEXT`/`PREV`, `nd.DISMISS` |
 | `grantMeteredStreaming` | `MeteredStreamingGate.grant()` (same process) |
@@ -1063,9 +1079,9 @@ Fixtures in `playback/impl/src/test/resources/media/`, generated by `scripts/fix
 
 ## Open questions
 
-1. **Architect review:** D45 says playback settings come from "the group of the current play context". This document applies the group level only when the current item's podcast is a member of that group (an Up next item from another podcast does not inherit, e.g., the news group's 1.5×). 05 should state the same rule; otherwise PLAN D45 needs the wording.
+1. **Architect review:** D45 says playback settings come from "the group of the current play context"; 05 and this document refine it to "only when the item's podcast is a member of that group" (an Up next item from another podcast does not inherit the news group's 1.5×). PLAN D45's wording should say so.
 2. **Architect review:** to honour DAI safety (risk T7), every new RSS pin starts with an empty `SimpleCache` resource for its key, so streamed bytes are reused only within one playback (rewind, skip back, retries, short gaps), not across sessions. D40's rationale still holds; cross-session reuse remains for YouTube keys only.
-3. **Architect review:** "Play group" with a non-empty Up next makes the Up next head current (D44, M4 acceptance 6) — the item that was playing is interrupted. `playEpisode` keeps the existing context; `playFeed` with `startEpisodeId` plays that episode, then Up next, then the context. 08 must choose `playFeed(source, filters, group playOrder, startEpisodeId)` for a row's Play button in a feed.
+3. **Architect review:** starting playback writes `play_session` inside the service (`nd.PLAY_CONTEXT`), not in the client as 05's illustrative sequence shows, so the write, projection and `prepare()` are atomic with respect to the projector (no blip of the old item). "Play group" with a non-empty Up next interrupts the playing item for the Up next head (D44, M4 acceptance 6). 08 must use `playFeed(source, filters, playOrder, startEpisodeId)` for a row's play button in a feed and `playEpisode` elsewhere (episode detail, Up next rows).
 4. **Architect review:** writing a speed or skip-silence scope from the player clears the same setting at more specific scopes on the current chain (so the chosen value takes effect). 05 owns attribution; confirm it is acceptable that "Apply to all podcasts" removes the current podcast's override.
 5. **Owner 02:** add `EpisodeDao.observeMediaInfo(ids)` (Flow), and to `mediaInfo` the columns `enclosureLength`, `availability`, `playedAt`, `artworkVersion`, `podcastArtworkVersion`, download state, and the first audio alternate enclosure; add one-shot list queries for the Auto tree (`FeedDao.contextList(query, limit, offset)`, completed downloads page, podcasts by title, title/name search); `EpisodeStateDao.markUnplayed` must also clear `startedAt`; every mark-played statement also deletes from `queue_entry`.
 6. **Owner 03:** `EpisodeRepository.setPlayed`/`markFeedPlayed` delete the episodes from `queue_entry` in the same transaction and reset positions (06 rules above); ingestion deletes `PODCASTING20_JSON` chapter rows when `chaptersUrl` changes.

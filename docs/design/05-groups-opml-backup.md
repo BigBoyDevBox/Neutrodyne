@@ -230,7 +230,7 @@ sequenceDiagram
   participant CH as GroupNotificationChannels
   UI->>GR: delete(groupId)
   GR->>DB: read snapshot (group row, settings row, member ids, session context)
-  GR->>DB: write transaction: delete group, compact sortOrder, clear GROUP context
+  GR->>DB: one write transaction to delete the group, compact sortOrder, clear a GROUP context
   GR-->>UI: DeletedGroupToken, snackbar with Undo for 10 s
   alt Undo within 10 s
     UI->>GR: undoDelete(token)
@@ -330,7 +330,7 @@ Every source applies 02's `VISIBLE` fragment (Shorts unless opted in, upcoming, 
 | Hide older than N days | `hideOlderThanDays` ∈ {null, 1, 3, 7, 14, 30, 90, 365} | `minSortDate = floorToHour(now) − N·86 400 000` |
 | Newest / oldest first | `feedOrder` | `order` |
 
-`observePrefs` recomputes `minSortDate` on every emission and hourly while collected; rounding to the hour keeps the `RoomRawQuery` stable so `flatMapLatest` does not rebuild the pager on every tick. Filter chips write through `setFilters` immediately (one low-churn row update; `podcast_group` is not observed by the feed `PagingSource`, so the write does not invalidate the open list — the new `Pager` replaces it). `setFilters` and `setFeedOrder` on `FeedSource.Podcast` throw `IllegalArgumentException` for filters (transient) and write `podcast.episodeOrder` for order.
+`observePrefs` recomputes `minSortDate` on every emission and hourly while collected; rounding to the hour keeps the `RoomRawQuery` stable so `flatMapLatest` does not rebuild the pager on every tick. Filter chips write through `setFilters` immediately (one low-churn row update; `podcast_group` is not observed by the feed `PagingSource`, so the write does not invalidate the open list — the new `Pager` replaces it). On `FeedSource.Podcast`, `setFilters` and `setHideOlderThanDays` throw `IllegalArgumentException` (the podcast screen's filters are transient ViewModel state) and `setFeedOrder` writes `podcast.episodeOrder`.
 
 ### Paging hand-off to 08
 
@@ -387,8 +387,8 @@ First match wins. "Groups" means the podcast's member groups whose column is non
 
 | Setting | Column | Resolution | Global fallback (key owner) | From |
 |---|---|---|---|---|
-| Playback speed | `playbackSpeed` | podcast → **context group**: the group of `play_session` when `contextType = GROUP` and the episode's podcast is a member of it (also for Up next items) → global | `playback.*` speed key (06) | M4 |
-| Skip silence | `skipSilence` | same as speed | `playback.*` (06) | M4 |
+| Playback speed | `playbackSpeed` | podcast → **context group**: the group of `play_session` when `contextType = GROUP` and the episode's podcast is a member of it (also for Up next items) → global | `playback.speed` (06) | M4 |
+| Skip silence | `skipSilence` | same as speed | `playback.skip_silence` (06) | M4 |
 | Volume boost (reserved) | `boostDb` | same as speed | 06 (M12) | M12 |
 | Intro / outro skip (reserved) | `introSkipMs`, `outroSkipMs` | podcast → 0; group columns ignored (intros are per show) | — | M12 |
 | Auto-download | `autoDownload` | podcast → `true` if any group says `true`; `false` if groups set it and none says `true` → global | `downloads.*` (07); `YOUTUBE_CHANNEL`: `youtube.auto_download` (04) | M6, M9 |
@@ -484,7 +484,7 @@ interface ScopeSettingsRepository {
 
 - Writes are a read-modify-write inside one write transaction (`@Upsert` is allowed on these single-writer tables, [02 DAO rules](02-data-model.md#dao-rules)); a row whose fields are all `null` is deleted. Rule 1 (dependent fields) and validation run before the write.
 - After a write: refresh interval changed → `RefreshController.reschedulePeriodic()`; `notifyNewEpisodes` changed → `GroupNotificationChannels.sync()` (the screen requests `POST_NOTIFICATIONS` per 03's permission rule); always → `SnapshotScheduler.requestSoon()`. 07 and 06 observe the resolver flows; nothing else is pushed.
-- 06's scoped commands (`PlaybackController.setSpeed(speed, scope)`, `nd.SPEED_SET_SCOPE`, `nd.SKIP_SILENCE`) write through this repository: `PODCAST` → `updatePodcast`, `GROUP` → `updateGroup(contextGroupId)` (rejected when the context is not a group), `GLOBAL` → `SettingsRepository`.
+- 06's scoped commands (`PlaybackController.setSpeed(speed, scope)`, `nd.SPEED_SET_SCOPE`, `nd.SKIP_SILENCE`) write through this repository: `PODCAST` → `updatePodcast`, `GROUP` → `updateGroup(contextGroupId)` (rejected when the context is not a group containing the podcast), `GLOBAL` → `SettingsRepository`. A scoped write from the player also clears the same field at the more specific scopes on the current chain, so the chosen value takes effect at once ([06 Per-scope playback settings](06-playback.md#per-scope-playback-settings)); attribution then reports the new source. Settings screens never clear other scopes.
 - On the podcast settings screen, playback rows show the podcast override or the global value, plus a hint listing member groups with their own value ("While playing from 'news': 1.5×").
 
 ---
@@ -545,18 +545,21 @@ sequenceDiagram
   participant PC as PlaybackController (06)
   participant CR as PlayContextResolver (05)
   participant Q as QueueRepository (06)
-  participant S as NeutrodynePlaybackService
+  participant S as NeutrodynePlaybackService (06)
   UI->>PC: playFeed(Group(id), prefs.filters, prefs.playOrder, startEpisodeId = null)
-  PC->>CR: spec(source, filters, order)
-  CR-->>PC: PlayContextSpec(GROUP, id, order, flags, minSortDate)
+  PC->>S: custom command nd.PLAY_CONTEXT
+  S->>CR: spec(source, filters, order)
+  CR-->>S: PlayContextSpec(GROUP, id, order, flags, minSortDate)
   alt Up next empty
-    PC->>CR: startItem(spec)
-    CR-->>PC: episodeId or null
+    S->>CR: startItem(spec)
+    CR-->>S: episodeId or null
   end
-  PC->>Q: write play_session (current, context, anchor), generation + 1
-  PC->>S: MediaController.play()
+  S->>Q: commit play_session (current, context, anchor), generation + 1
   S->>Q: observeVirtualQueue(K = 20) using the tail rules
+  PC->>S: MediaController.play() from the visible UI
 ```
+
+06 runs these steps inside the session command so the write and the first projection are atomic ([06 Queue and play context](06-playback.md#queue-and-play-context)).
 
 Edge cases:
 
@@ -724,6 +727,7 @@ interface ImportRepository {
     suspend fun remove(sessionId: Long, ordinals: Set<Int>)  // unsubscribes the created podcasts
     fun observeOpenSessions(): Flow<List<ImportSessionView>>  // PREVIEW and FETCHING, for a resume banner (08)
 }
+// :core:model
 data class ImportSource(val uri: String, val displayName: String?)          // canonical: content:// or https://
 data class CreateImportOptions(val targetGroupId: Long? = null)              // "Import OPML into this group"
 ```
@@ -789,12 +793,15 @@ data class OpmlEntry(
 )
 data class OpmlDocument(val entries: List<OpmlEntry>, val folders: List<FolderRef>, val headTitle: String?,
                         val neutrodyne: Boolean, val mode: ParseMode, val ignoredOutlines: Int)
-sealed interface OpmlFailure { data object EntityDeclared : OpmlFailure; data object TooDeep : OpmlFailure
-    data object TooManyFeeds : OpmlFailure; data object TooManyOutlines : OpmlFailure; data object NoOutlines : OpmlFailure }
-object OpmlReader { fun read(open: () -> InputStream, limits: OpmlLimits = OpmlLimits()): Result<OpmlDocument> }
+enum class OpmlFailure { ENTITY_DECLARED, TOO_DEEP, TOO_MANY_FEEDS, TOO_MANY_OUTLINES, NO_OUTLINES }
+sealed interface OpmlReadResult {                   // :feeds cannot see :core:common's Outcome
+    data class Ok(val document: OpmlDocument) : OpmlReadResult
+    data class Failed(val failure: OpmlFailure) : OpmlReadResult
+}
+object OpmlReader { fun read(open: () -> InputStream, limits: OpmlLimits = OpmlLimits()): OpmlReadResult }
 ```
 
-Parser setup (03's `PullParserFactory` and `PrologGuard`, [03 Parser](03-feeds-and-discovery.md#parser)): namespace processing **off** (prefixed attributes keep raw names such as `nd:source`), `FEATURE_PROCESS_DOCDECL` off, `setInput(stream, null)` so KXml detects BOMs and the declared encoding (never a `Reader`, which would ignore `encoding="ISO-8859-1"`), leading ASCII whitespace skipped while preserving a BOM ([KXmlParser](https://android.googlesource.com/platform/libcore/+/refs/heads/main/xml/src/main/java/com/android/org/kxml2/io/KXmlParser.java)). `PrologGuard` rejects any `<!ENTITY` in the prolog (`EntityDeclared`): no XXE, no billion laughs.
+Parser setup (03's `PullParserFactory` and `PrologGuard`, [03 Parser](03-feeds-and-discovery.md#parser)): namespace processing **off** (prefixed attributes keep raw names such as `nd:source`), `FEATURE_PROCESS_DOCDECL` off, `setInput(stream, null)` so KXml detects BOMs and the declared encoding (never a `Reader`, which would ignore `encoding="ISO-8859-1"`), leading ASCII whitespace skipped while preserving a BOM ([KXmlParser](https://android.googlesource.com/platform/libcore/+/refs/heads/main/xml/src/main/java/com/android/org/kxml2/io/KXmlParser.java)). `PrologGuard` rejects any `<!ENTITY` in the prolog (`ENTITY_DECLARED`): no XXE, no billion laughs.
 
 1. **Strict** pass. On `XmlPullParserException` → 2.
 2. **Relaxed** pass (`http://xmlpull.org/v1/doc/features.html#relaxed` = true; tolerates `&nbsp;`, some unquoted attributes). On failure → 3.
@@ -807,7 +814,7 @@ Walk rules (strict and relaxed):
 - Outlines with `type` ∈ {`podcast-episode`, `podcast-playlist`, `include`} or `type="link"` with a `.opml` URL are **ignored** with their subtree (counted in `ignoredOutlines`, warning "12 entries were ignored: episode lists"). `include`/`link` lists are never fetched.
 - Any other outline is a **folder**; its name is `text ?: title`, trimmed.
 - `isComment="true"` marks the subtree `preselect = false` (not dropped); Overcast `subscribed="0"` and `type="link"` entries are `preselect = false`.
-- Caps: depth > 32 → `TooDeep`; > 10,000 feeds → `TooManyFeeds`; > 200,000 outlines → `TooManyOutlines`; an attribute longer than 8,192 chars drops that outline with a warning. Each failure rejects the file with a clear message (M3 acceptance 3). `neutrodyne = true` when the root has `xmlns:nd="urn:neutrodyne:opml:1"`.
+- Caps: depth > 32 → `TOO_DEEP`; > 10,000 feeds → `TOO_MANY_FEEDS`; > 200,000 outlines → `TOO_MANY_OUTLINES`; an attribute longer than 8,192 chars drops that outline with a warning. Each failure rejects the file with a clear message (M3 acceptance 3). `neutrodyne = true` when the root has `xmlns:nd="urn:neutrodyne:opml:1"`.
 - `category` tokens: split on `,`; trim; for a token containing `/` keep the last non-empty segment (`/Harvard/Berkman` → `Berkman`, spec "slash-delimited category strings"); decode only `%25`, `%2C`, `%2F` (case-insensitive hex).
 
 ### 3. Classify
@@ -816,7 +823,7 @@ Walk rules (strict and relaxed):
 
 1. `YouTubeUrlClassifier.classify(url)`, then `classify(htmlUrl)` ([04 OPML](04-youtube.md#opml)): `Channel` → `kind = YOUTUBE`, `normalizedUrl` = canonical `https://www.youtube.com/feeds/videos.xml?channel_id={UC…}`, variants from `nd:ytVariants` > URL prefix hint > 1; `Handle`/`LegacyPath`/`Video` → `kind = YOUTUBE`, `normalizedUrl = null` (resolved by the worker, M8); `Playlist` → `YOUTUBE_UNSUPPORTED_YET`. Before M8 every YouTube item is `YOUTUBE_UNSUPPORTED_YET` ("YouTube channel — supported in a later build").
 2. Otherwise 03's `AddInputNormalizer.normalize(url)` ([03 Input normalisation](03-feeds-and-discovery.md#input-normalisation)): `feed:`/`itpc:`/`pcast:`/`podcast:` schemes, scheme-less → `https://`, subscribe-page wrappers unwrapped; anything not http(s) → `INVALID_URL`. Userinfo stays in `originalUrl` until commit (the payload file holds it anyway); `normalizedUrl` never contains it.
-3. Identity = `UrlNormalizer.forIdentity(normalizedUrl)` ([03 URL normalisation](03-feeds-and-discovery.md#url-normalisation)). Within the file, a repeated identity → `DUPLICATE_IN_FILE`, its group names unioned into the first entry (exports that repeat feeds per folder).
+3. Identity = `UrlNormalizer.forIdentity(normalizedUrl)` ([03 URL normalisation](03-feeds-and-discovery.md#url-normalisation)); an unresolved YouTube ref uses its lowercased handle or path as identity. Within the file, a repeated identity → `DUPLICATE_IN_FILE`, its group names unioned into the first entry (exports that repeat feeds per folder).
 4. Already subscribed: identity against `podcast.feedKey` and `podcast_url_alias.url` → `ALREADY_SUBSCRIBED` with `podcastId`, unselected.
 5. Title for display and for the pending row: Neutrodyne files: `title`, and `text` becomes `customTitle` when it differs; other files: `title ?: text ?: host` (gPodder writes the description into `text`).
 6. Pre-selection: `PREVIEW` items are selected unless `preselect = false`. The preview never loads covers (10,000 rows would hit the network); rows show monograms.
@@ -831,8 +838,9 @@ Proposals excluded by default (the preview's group card shows each with a switch
 - **gPodder default sections**: when `<head><title>` starts with "gPodder", folders named `audio`, `video` or `other` (gPodder derives them from content type, [opml.py](https://github.com/gpodder/gpodder)).
 
 ```kotlin
-// :core:model — stored as import_session.optionsJson (02 JSON column, shape owned here)
-@Serializable data class ImportOptions(
+// :core:model (plain class; :core:data encodes it into import_session.optionsJson through a
+// @Serializable mirror ImportOptionsJson, since :core:model has no serialization plugin)
+data class ImportOptions(
     val importGroups: Boolean = true,                           // master switch "Import folders as groups"
     val excludedGroupKeys: Set<String> = emptySet(),            // wrapper and gPodder sections pre-filled
     val renamedGroups: Map<String, String> = emptyMap(),        // nameKey → new name (validated)
@@ -865,7 +873,7 @@ data class ImportItemView(
 )
 data class GroupProposal(val nameKey: String, val name: String, val memberCount: Int,
                          val existingGroupId: Long?, val included: Boolean, val excludedReason: String?)
-@Serializable data class ImportWarning(val code: String, val count: Int = 0, val detail: String? = null)
+data class ImportWarning(val code: String, val count: Int = 0, val detail: String? = null)  // JSON mirror in :core:data
 enum class ImportItemFilter { ALL, NEW_ONLY, NOT_IMPORTED, NEEDS_ATTENTION }
 ```
 
@@ -920,7 +928,7 @@ Status derivation (from the `FeedOutcome`, or from the persisted podcast row whe
 | `OFFLINE`, `CANCELLED` | stays `QUEUED` |
 | anything else (incl. YouTube 404, which is transient) | `FETCH_FAILED` with `errorDetail = kind` |
 
-**Treat existing as played** ([D66](../PLAN.md#3-key-decisions)): in the same transaction that sets `SUBSCRIBED`, when the option is on, run 02's "played except newest" pair for that podcast restricted to `e.isNew = 0` ([02 User-state writes](02-data-model.md#user-state-writes); the `isNew` restriction is requested from 02 so a genuinely new episode ingested meanwhile stays unplayed). The status transition happens once, so this runs at most once per podcast.
+**Treat existing as played** ([D66](../PLAN.md#3-key-decisions)): in the same transaction that sets `SUBSCRIBED`, when the option is on, run 02's "played except newest" pair for that podcast restricted to `e.isNew = 0` ([02 User-state writes](02-data-model.md#user-state-writes); the `isNew` restriction is requested from 02 so a genuinely new episode ingested meanwhile stays unplayed), and delete those episodes from `queue_entry` (06's invariant: every path that marks episodes played removes them from Up next, [06 Queue and play context](06-playback.md#queue-and-play-context)). The status transition happens once, so this runs at most once per podcast.
 
 ### 8. Report and fix-ups
 
@@ -953,7 +961,7 @@ Serves R1.6, R1.7. Delivered in [M3](../PLAN.md#m3-import-export-and-backup) (sn
 | `PK\x03\x04` | ZIP: an entry named exactly `manifest.json` whose `format` is `neutrodyne-backup` → `NEUTRODYNE_BACKUP`; else any entry ending `.csv` (case-insensitive) → `TAKEOUT_CSV`; else `Unsupported("zip")` |
 | `1F 8B` (gzip) | `Unsupported("tgz")` with 04's message ("choose the .zip file type") |
 | `{` | JSON (≤ 10 MB): top-level `subscriptions` array whose objects have `service_id` → `NEWPIPE_JSON`; `localSubscriptions`, `groups`/`channelGroups` or `"format":"Piped"` → `LIBRETUBE_JSON`; else `Unsupported("json")` |
-| `<` | XML: first element `opml` → `OPML`; `rss`, `feed`, `RDF` → `Unsupported("single_feed")` ("This is a podcast feed, not a list" with a "Subscribe" action handing the URL to `AddPodcastKey`); otherwise, when `<outline` occurs → `OPML` (salvage) |
+| `<` | XML: first element `opml` → `OPML`; `rss`, `feed`, `RDF` → `Unsupported("single_feed")` ("This is a podcast feed, not a list"; for an `https://` source a "Subscribe" action hands the URL to `AddPodcastKey`); otherwise, when `<outline` occurs → `OPML` (salvage) |
 | text, first line 3 comma-separated columns, second line starts `UC` | `TAKEOUT_CSV` |
 | text, ≥ 80 % of non-empty non-`#` lines are URLs, `UC…` IDs or `@handles` | `URL_LIST` (M8; `ImportFormat.URL_LIST` requested by 04 and accepted here) |
 | anything else | `Unsupported("unknown")` → "This doesn't look like a podcast list" |
@@ -978,7 +986,7 @@ data class ImportDocument(val format: String, val entries: List<ImportEntry>, va
 | `LIBRETUBE_JSON` | `LibreTubeBackupParser` (04) | LibreTube groups, order = `index`; channels only listed in a group are imported too | names through `GroupNames` |
 | `TAKEOUT_CSV` | `TakeoutSubscriptionsParser` (04), CSV or ZIP | none → "YouTube" pre-filled | RFC 4180; localised header skipped |
 | `URL_LIST` (M8) | `UrlListParser` (04) | none → "YouTube" pre-filled only if every item is YouTube | ≤ 1 MB, ≤ 5,000 lines |
-| `NEUTRODYNE_BACKUP` | `BackupCodec` | from the archive | creates a session **without** `import_item` rows and routes to the restore preview ([Full backup and restore](#full-backup-and-restore)) |
+| `NEUTRODYNE_BACKUP` | `BackupCodec` | from the archive | creates a session without `import_item` rows (the restore adds them when it finishes) and routes to the restore preview ([Full backup and restore](#full-backup-and-restore)) |
 
 ### Archive guard
 
@@ -988,7 +996,7 @@ data class ImportDocument(val format: String, val entries: List<ImportEntry>, va
 |---|---|---|
 | Entries | ≤ 16, and only whitelisted names are read | ≤ 50 `.csv` entries scanned |
 | Uncompressed per entry | ≤ 128 MiB | ≤ 5 MB |
-| Uncompressed total | ≤ 256 MiB | ≤ 250 MB |
+| Uncompressed total of the entries read | ≤ 256 MiB | ≤ 250 MB (non-CSV entries are never read) |
 | Ratio | an entry whose inflated bytes exceed 100 × its compressed size and 16 MiB aborts | same |
 
 Declared sizes in the central directory are not trusted: every entry is read through a counting stream that throws `ZipGuardException` at the cap (M3 acceptance 3: zip bomb and zip-slip names rejected without crash or OOM).
@@ -1123,7 +1131,7 @@ enum class RestoreMode { MERGE, REPLACE }
 enum class RestoreCategory { HISTORY, UP_NEXT, SETTINGS }        // subscriptions and groups are always restored
 data class RestoreRequest(val mode: RestoreMode, val categories: Set<RestoreCategory>)
 data class BackupPreview(
-    val createdAt: Long, val appVersionName: String, val kind: BackupKind, val podcasts: Int, val groups: Int,
+    val createdAt: Long, val appVersionName: String, val automatic: Boolean, val podcasts: Int, val groups: Int,
     val played: Int, val inProgress: Int, val upNext: Int, val settings: Int, val includesCredentials: Boolean,
     val localPodcastsNotInBackup: Int, val localGroupsNotInBackup: Int, val warnings: List<ImportWarning>,
 )
@@ -1189,7 +1197,7 @@ sequenceDiagram
 | `startedAt` | earliest non-null, cleared when played | backup |
 | Favourite, download tombstone | OR (tombstone time = max) | backup |
 | `measuredDurationMs` | local if non-null, else backup | backup if non-null, else local |
-| Up next | append backup entries not already queued, in backup order, after the local queue | the backup's list |
+| Up next | append backup entries not already queued, in backup order, after the local queue; entries whose merged state is played are skipped, and locally queued episodes that become played are removed (06's invariant) | the backup's list minus played entries |
 | Play session | restored only when the local `currentEpisodeId` is null | the backup's |
 | Settings | only when SETTINGS is checked (default off) | when checked (default on) |
 | Credentials (opted-in backups) | only for origins without a local credential | replace per origin |
@@ -1265,7 +1273,7 @@ Serves R1.8, N1, N3. Delivered in [M3](../PLAN.md#m3-import-export-and-backup); 
 ```
 
 - Manifest attributes (01 merges them): `android:allowBackup="true"`, `android:dataExtractionRules="@xml/data_extraction_rules"`, `android:fullBackupContent="@xml/backup_rules"`; no `backupAgent`, no `fullBackupOnly` (a custom agent would run in restricted mode without Hilt).
-- **Unverified, checked in M3 with `bmgr` on API 26, 28, 31 and 36 images:** (a) two `<include>` elements for one path with different `requireFlags` are accepted (AOSP requires all listed flags when several are combined in one attribute, hence two elements); (b) an include of a path that never exists yields an empty backup; (c) platforms before Android 16 QPR2 ignore the `cross-platform-transfer` element. Fallbacks: drop the D2D includes on API 28–30; drop the cross-platform section if any older parser rejects the file.
+- **Unverified, checked in M3 with `bmgr` on API 26, 28, 31 and 36 images:** (a) two `<include>` elements for one path with different `requireFlags` are accepted (two elements rather than one attribute listing both flags, because a combined attribute may require both flags at once); (b) an include of a path that never exists yields an empty backup; (c) platforms before Android 16 QPR2 ignore the `cross-platform-transfer` element. Fallbacks: drop the D2D includes on API 28–30; drop the cross-platform section if any older parser rejects the file.
 - Consequence of PO-15: devices on Android 8.0–8.1, and devices without a screen lock, have no cloud backup of the library ([Open questions](#open-questions)).
 
 ### Snapshot production
@@ -1311,7 +1319,7 @@ sequenceDiagram
   alt created and files/backup/auto-snapshot.zip exists
     F->>I: create session from the snapshot copy (NEUTRODYNE_BACKUP)
     F->>W: enqueue backup-restore (REPLACE, HISTORY and UP_NEXT, auto)
-    W-->>F: Finished, snapshot renamed to restored-ts.zip
+    W->>W: on success rename the snapshot to restored-ts.zip
   else not created or no snapshot
     F-->>A: nothing to do
   end
@@ -1349,7 +1357,7 @@ adb shell pm path "$pkg"                   # pull the APK(s), then:
 adb shell pm uninstall --user 0 "$pkg" && adb install-multiple -t --user 0 base.apk
 ```
 
-Before `backupnow`, the test build exposes a debug-only "Write snapshot now" action (Diagnostics, M3) so the snapshot exists. Pass: after reinstall the library, groups, played state, positions and Up next are back, and the local transport's backup data for the package contains only the two included files (no `databases/`, no `Podcasts/`). Device-to-device: the D2D script of the same page (Android 12+). An automated `FirstLaunchRestoreTest` (GMD) covers the logic without `bmgr`: place a snapshot file, start with an empty database, assert the restored library.
+Before `backupnow`, a debug-build-only "Write snapshot now" action in Settings › Backup (M3) makes sure the snapshot exists. Pass: after reinstall the library, groups, played state, positions and Up next are back, and the local transport's backup data for the package contains only the two included files (no `databases/`, no `Podcasts/`). Device-to-device: the D2D script of the same page (Android 12+). An automated `FirstLaunchRestoreTest` (GMD) covers the logic without `bmgr`: place a snapshot file, start with an empty database, assert the restored library.
 
 ---
 
@@ -1439,3 +1447,180 @@ Keys follow 01's registry ([01 DataStore files and typed setting keys](01-founda
 **Scheduled backup (v1.x, M15) outline.** The user picks a folder with `ACTION_OPEN_DOCUMENT_TREE` (Android 11+ refuses the storage root and `Download/` itself; a subfolder works) and the app calls `takePersistableUriPermission`. `ScheduledBackupWorker` (`backup-scheduled`, periodic `backup.scheduled_interval_days`, charging + battery not low, `UPDATE`) writes a `MANUAL`-format archive with kind `SCHEDULED` (no passwords) through `documentfile` 1.1.0, names it `neutrodyne-backup-{yyyy-MM-dd-HHmm}.zip` (time included because providers rename duplicates to `name (1).zip`), and deletes the oldest files beyond `backup.scheduled_keep` matched by the lenient regex `^neutrodyne-backup-\d{4}-\d{2}-\d{2}-\d{4}( \(\d+\))?\.zip$`. A lost grant (`DocumentFile.canWrite()` false) posts a notification on `import_backup` (ID 3010) instead of failing silently (AntennaPod precedent: every 3 days, keep 5).
 
 ---
+
+## Testing
+
+Serves N1, N9, N11. Infrastructure, runners, golden-update switch and CI wiring are 09's ([09 Test strategy](09-quality-and-release.md#test-strategy), [09 Test infrastructure](09-quality-and-release.md#test-infrastructure)); SQL-level tests (feed queries, counts, commit, restore matching) are 02's ([02 Testing](02-data-model.md#testing)). JVM tests of `:core:data` use Robolectric with `AndroidSQLiteDriver`, `TestClock` and fakes from `:core:testing`.
+
+| Test | Module, runner | Cases | Milestone |
+|---|---|---|---|
+| `GroupNamesTest` (TestParameterInjector) | `:core:model`, JVM | trim and whitespace collapse; bidi controls removed; ZWJ emoji kept; 40 vs 41 code points; "Café" NFC vs NFD collide; "Tech" vs "tech"; `İ` key; `suggestsOldestFirst` | M2 |
+| `GroupRepositoryTest` | `:core:data`, Robolectric, virtual time | first free palette colour; rename updates the channel name; `reorder` rejects non-permutations; delete compacts order and clears a GROUP context; undo restores `id`, `uuid`, settings, surviving members, order and (generation unchanged) context; undo after 10 s → `UndoExpired` and channel deleted; start-up sweep deletes an orphan channel; `applyMembership` tri-state | M2 |
+| `GroupNotificationChannelsTest` | Robolectric (`ShadowNotificationManager`) | every row of [Notification channels](#notification-channels) | M2 |
+| `FeedRepositoryTest` | Robolectric | tab order and the Ungrouped rule; prefs → `FeedFilters` incl. hour-rounded `minSortDate`; Podcast filters rejected; `markVisited` target (row vs `device_settings`); counts zero-fill; `downloadAllEstimate` cap 200, unknown sizes, tombstones and `play`-flavor YouTube excluded | M2, M6 |
+| `EffectiveSettingsResolverTest` (table-driven) | `:core:data`, JVM fakes | every row of [Rules](#rules); context group only for members; dependent fields; YouTube globals and `NotSupported`; attribution lists only deciding groups; `observeAutoDownload` emits once per change | M2, M4, M6, M9 |
+| `ScopeSettingsRepositoryTest` | Robolectric | validation; all-null row deleted; reschedule and channel sync invoked | M2 |
+| `PlayContextResolverTest` | Robolectric | spec per entry point; start items for both orders; `subscribedAt` bound and its fallback; podcast `OLDEST_FIRST` unbounded; `play` flavor all-YouTube group → null; DOWNLOADS context | M4 |
+| `OpmlWriterGoldenTest` | `:feeds`, JVM | grouped, flat and single-group output equal golden files; empty-group folders; escaping table; U+0008 and lone surrogates stripped; `category` percent-encoding; `nd:` attributes; YouTube excluded; passwords included | M3, M8 |
+| `OpmlReaderGoldenTest` | `:feeds`, JVM | each fixture below → golden `*.expected.json` of `OpmlDocument` plus classified preview (M3 acceptance 1) | M3 |
+| `ImportSourceSnifferTest` | `:feeds`, JVM | every row of [Sniffing](#sniffing) | M3, M8 |
+| `HostileInputTest` | `:feeds`, JVM | generated at test time: entity DOCTYPE (billion laughs, external entity), 10,000-deep nesting, 100,000 outlines, a 10 MB attribute, a 60 MiB file; ZIP bomb (1 GiB of zeros in ~1 MiB), zip-slip names `../../x`, 10,000 entries — each fails with its error in < 2 s within a 64 MB heap (M3 acceptance 3) | M3 |
+| `RoundTripPropertyTest` | `:feeds` + `:core:data`, Robolectric | 200 seeded iterations: 0–12 groups named from an alphabet with `, / % & < > " '`, emoji and NFC/NFD variants; 0–40 podcasts incl. YouTube with variant bits; 0–3 memberships each; custom titles → grouped export → import into an empty DB with default options → identical names, order, colours, icons, memberships, custom titles, variants; flat → identical memberships (M3 acceptance 2) | M3, M8 |
+| `ImportPipelineTest` | `:core:data`, Robolectric + MockWebServer, real refresh engine | preview statuses; wrapper and gPodder exclusions; duplicate union; memberships for already-subscribed podcasts (M3 acceptance 7); `originalUrl` redacted after commit and credentials stored; target group; YouTube items unsupported before M8 | M3 |
+| `ImportFetchWorkerTest` | WorkManager `TestDriver` + MockWebServer | status derivation per outcome; OFFLINE → retry; deadline → retry; a periodic run first → no second fetch (marker); 20-attempt cap; treat-as-played once, only `isNew = 0`; zero new-episode notifications and zero `download` rows for a 300-feed import (M3 acceptance 4); one report notification | M3 |
+| `BackupCodecTest` | `:feeds`, JVM | DTO round trip; unknown keys ignored; `subscriptions.opml` optional; `minReaderVersion` refusal; SHA-256 mismatch; oversize line skipped; entry whitelist | M3 |
+| `BackupRoundTripTest` | Robolectric | small `SeedDatabase` → backup → clear data → Replace → equal groups, memberships, played state, positions, Up next, session, portable settings (M3 acceptance 5); each Merge rule row (played OR, newer position, favourites OR); Replace unsubscribes local-only podcasts; a stub matched by the next ingest keeps its state; a line with a newer `kv` | M3 |
+| `SnapshotWorkerTest` | Robolectric + `TestDriver` | restore-pending and foreign-installation guards; size-guard levels with 400,000 synthetic lines; interrupted write leaves the old file; disabling deletes the file | M3 |
+| `SettingsWhitelistTest` | `:core:data`, JVM | every `PORTABLE` key round-trips through `settings.json`; no `DEVICE` key written; unknown and mistyped keys ignored | M3 |
+| `BackupRulesXmlTest` | `:app` unit test | parses the three XML resources: include-only sections, `disableIfNoEncryptionCapabilities="true"`, `requireFlags` in `xml-v28`, empty base set | M3 |
+| `FirstLaunchRestoreTest` | GMD, both drivers | fresh DB + snapshot → library, groups, history and Up next restored; existing DB → nothing; `NewerFormat` → snapshot kept | M3 |
+| `ExternalImportActivityTest` | GMD (API 26, 36) | VIEW `content://…/x.opml` as `application/octet-stream` (alias on 36, not on 26); SEND `text/xml`; VIEW backup ZIP → restore preview; activity finished after the copy; 50 MiB message | M3 |
+| `SafTruncationTest` | GMD | writing a shorter OPML over a longer document yields a valid file (`"wt"`) | M3 |
+| `bmgr` procedure | manual, 09 checklist | [Testing with bmgr](#testing-with-bmgr) (M3 acceptance 6; M6 acceptance 7 for `Podcasts/`) | M3, M6 |
+
+Fixtures (`feeds/src/test/resources/opml/`): `antennapod_flat_atom.opml` (`type="atom"`), `pocketcasts_feeds_wrapper.opml` (OPML 1.0, `feeds` wrapper, no `title`), `overcast_basic.opml`, `overcast_extended.opml` (playlists, nested episodes, `subscribed="0"`), `gpodder_sections.opml` (Audio/Video sections, `text` = description, `url` fallback), `freshrss_nested.opml` (nested folders and `category`), `google_broken.opml` (raw `&`, missing `/>`, `&nbsp;` → salvage), `neutrodyne_hybrid.opml`, `neutrodyne_flat.opml`, `neutrodyne_group_share.opml`, `iscomment_subtree.opml`, `include_and_link.opml`; encodings `utf8_bom.opml`, `utf16le_bom.opml`, `iso8859_1_declared.opml`, `leading_newline.opml`, `cp1252_declared_utf8.opml` (replacement characters, no crash). `feeds/src/test/resources/backup/`: `v1_minimal.zip`, `v1_full.zip`, `future_minreader2.zip`, `sha_mismatch.zip`. YouTube format fixtures are 04's (`feeds/src/test/resources/import/`). Hostile inputs are generated, never committed.
+
+---
+
+## Error handling and failure modes
+
+Serves N1, N9. Expected failures are values ([01 Errors](01-foundation.md#errors)); messages are `UiText` resources (final wording 08).
+
+```kotlin
+// :core:domain
+sealed interface ImportError {
+    data object TooLarge : ImportError                          // > 50 MiB
+    data object Unreadable : ImportError                        // grant lost, provider failure
+    data class Network(val error: NetError) : ImportError       // import from URL
+    data class Unsupported(val reason: String) : ImportError    // "zip", "tgz", "json", "single_feed", "unknown"
+    data class Hostile(val reason: String) : ImportError        // "entity", "too_deep", "too_many_feeds", "too_many_outlines", "zip_bomb"
+    data object Empty : ImportError                             // no feed entries found
+    data object Storage : ImportError
+    data object SessionGone : ImportError
+}
+sealed interface BackupError {
+    data object NotABackup : BackupError
+    data class NewerFormat(val minReaderVersion: Int) : BackupError
+    data class Corrupt(val entry: String) : BackupError
+    data object TooLarge : BackupError
+    data object Io : BackupError
+    data object Storage : BackupError
+    data object RestoreRunning : BackupError
+    data object DestinationUnavailable : BackupError
+}
+sealed interface ExportError { data object Io : ExportError; data object Storage : ExportError
+                               data object DestinationUnavailable : ExportError }
+```
+
+| Failure | Behaviour | User sees |
+|---|---|---|
+| Payload > 50 MiB | rejected before parsing | "This file is too large to be a subscription list (limit 50 MB)." |
+| Grant lost or provider error | `Unreadable` | "Couldn't open this file. Try choosing it from inside Neutrodyne." |
+| Entity declaration, depth, counts, ZIP caps | `Hostile`, nothing written | "This file can't be imported safely." |
+| Malformed XML | relaxed, then salvage | banner "This file is damaged; folders could not be read" |
+| No feed outlines | `Empty` | "No podcasts found in this file." |
+| A single feed instead of a list | `Unsupported("single_feed")` | "This is a podcast feed, not a list of subscriptions." |
+| Process death during preview | session and items persisted | resume banner from `observeOpenSessions()` (08) |
+| Process death during commit | per-chunk transactions; `confirm` is re-runnable (already `QUEUED` items skipped); `COMMITTED` only after the last chunk | progress resumes |
+| Worker stopped by quota or constraints | `Result.retry()`; the attempt marker prevents double work | progress continues later |
+| `nameKey` or `feedKey` conflict at commit (concurrent edit or subscribe) | reuse the group / treat as already subscribed ([02 Import commit](02-data-model.md#import-commit)) | — |
+| Disk full (payload, backup, snapshot) | `Storage`; atomic rename keeps the previous snapshot | "Not enough storage space." |
+| SAF destination gone or read-only | `DestinationUnavailable` | "Couldn't write to the chosen location." |
+| Backup from a newer app | `NewerFormat` | "This backup was made by a newer version of Neutrodyne. Update the app to restore it." |
+| Damaged backup | `Corrupt(entry)` | "This backup file is damaged (episodes.jsonl)." |
+| Restore interrupted | `RestoreWorker` re-runs idempotently | banner continues |
+| Snapshot over 20 MB at level 3 | previous snapshot kept, error recorded | Settings › Backup: "Android backup couldn't be updated: library too large" |
+| No screen lock (cloud backup skipped by Android, PO-15) | nothing to do in-app | Settings › Backup note "Android backup needs a screen lock" when `KeyguardManager.isDeviceSecure` is false |
+| Process death inside the undo window | delete stays final; orphan channel swept at start-up | — |
+| `POST_NOTIFICATIONS` not granted | report notifications skipped; never requested for imports | the report screen is reachable from the import banner |
+
+---
+
+## Delivery by milestone
+
+| Milestone | Delivered in this area |
+|---|---|
+| [M0](../PLAN.md#m0-scaffold-and-ci) | `:feature:importexport` and `:feature:groups` stubs; 01 ships the M0 backup rule files with a single `settings.preferences_pb` include |
+| [M1](../PLAN.md#m1-subscribe-and-ingest-rss) | `FeedRepository.pagedFeed` for All and Podcast (ordering, paging configuration, `includeInAll`) |
+| [M2](../PLAN.md#m2-groups-and-group-feeds) | `GroupNames`, `GroupPalette`, `GroupIcons`; `GroupRepository` (CRUD, reorder, membership from podcast screen, editor and library multi-select, delete with undo); `GroupNotificationChannels`; complete `FeedRepository` (tabs, prefs, counts, visits, `countUnplayed`); `EffectiveSettingsResolver` for refresh interval and notifications; `ScopeSettingsRepository` and group/podcast settings screens for those fields; group actions Refresh and Mark all played; `groups.*` keys |
+| [M3](../PLAN.md#m3-import-export-and-backup) | `:feeds`: `OpmlReader`, `OpmlWriter`, `ImportSourceSniffer`, `BackupCodec`, `ZipGuard`; `:core:data`: `ImportRepository`, `PayloadStore`, `ImportClassifier`, `ImportFetchWorker`, `OpmlExporter`, `BackupRepository`, `BackupWriter`, `RestoreWorker`, `AutoSnapshotWorker`, `SnapshotScheduler`, `FirstLaunchRestoreInitializer`, `ExportFilesCleaner`; `:feature:importexport` preview/progress/report, export dialog, backup and restore; Share group as OPML; `ExternalImportActivity` with alias; final rules XML; `cache/export/` FileProvider path; `import_backup` notifications 3001–3004; YouTube items reported as unsupported; interim import-session cleanup; `backup.*` keys |
+| [M4](../PLAN.md#m4-playback-core) | `PlayContextResolver`; resolver playback fields (speed, skip silence); scoped writes for 06's commands; group action Play |
+| [M6](../PLAN.md#m6-downloads) | Auto-download and delete-after-played resolution, `observeAutoDownload`; `downloadAllEstimate` and "Download all unplayed"; re-download offer after restore; `bmgr` check that downloads are excluded |
+| [M8](../PLAN.md#m8-youtube-subscriptions-in-all-builds) | YouTube in OPML import/export (`nd:source`, `nd:ytVariants`); NewPipe, LibreTube, Takeout and URL-list files through the pipeline; handle resolution in `ImportFetchWorker`; NewPipe JSON export; pre-filled "YouTube" target group |
+| [M9](../PLAN.md#m9-youtube-playback-and-downloads-in-foss) | YouTube auto-download globals live in `foss` (capability `downloads`); YouTube in "Download all" and the re-download offer in `foss`; YouTube items in `foss` play contexts |
+| [M10](../PLAN.md#m10-covers-theming-adaptive-layouts-and-accessibility) | No logic change; 08 renders palette colours through HCT and mosaics to files |
+| [M11](../PLAN.md#m11-release-hardening-and-v10) | `db-maintenance` takes over import-session cleanup; counts and feed budgets verified at the N5 scale; rules XML re-verified on API 26/28/31/36/37 |
+| [M15](../PLAN.md#74-after-v10-v1x-themes) | Scheduled backup to a user folder; Overcast listening-history import if approved |
+
+---
+
+## New names introduced here
+
+| Name | Kind | Module |
+|---|---|---|
+| `GroupDraft`, `GroupEdit`, `GroupNames`, `GroupPalette`, `GroupIcons`, `GroupCounts.WINDOW_DAYS` | group model and rules | `:core:model` |
+| `DeletedGroupToken`, `GroupError` | domain types | `:core:domain` |
+| `FeedTab`, `FeedCounts`, `VirtualCounts`, `FeedPrefs`, `DownloadAllEstimate` | feed model | `:core:model` |
+| `FeedRepository` members `observeVirtualCounts`, `observeTabs`, `observePrefs`, `setFilters`, `setHideOlderThanDays`, `setFeedOrder`, `markVisited`, `countUnplayed`, `downloadAllEstimate` | additions to a canonical interface | `:core:domain` |
+| `ScopeSettingsRepository`, `ScopedSettingsView`, `SettingOverrides` | per-scope settings | `:core:domain` / `:core:model` |
+| `SettingSource`, `Effective`, `EffectivePlayback`, `EffectiveAutoDownload`; `EffectiveSettingsResolver` members | resolver API | `:core:model` / `:core:domain` |
+| `PlayContextResolver`, `PlayContextSpec` | play contexts | `:core:domain` / `:core:model` |
+| `ImportOptions`, `CreateImportOptions`, `ImportSessionView`, `ImportItemView`, `ImportItemFilter`, `GroupProposal`, `ImportWarning`, `ImportError` | import API | `:core:model` / `:core:domain` |
+| `ImportFormat.URL_LIST` | enum constant requested by 04, accepted here (TEXT storage, no migration) | `:core:model` |
+| `RestoreMode` (`MERGE`, `REPLACE`), `RestoreCategory`, `RestoreRequest`, `RestoreProgress`, `BackupPreview`, `BackupSummary`, `SnapshotStatus`, `BackupError`, `ExportError` | backup API | `:core:model` / `:core:domain` |
+| `OpmlDocument`, `OpmlEntry`, `FolderRef`, `OpmlLimits`, `ParseMode`, `OpmlFailure`, `ExportDocument`, `ExportGroup`, `ExportFeed`, `OpmlLayout` | OPML formats | `:feeds` |
+| `ImportEntry`, `ImportDocument`, `SniffResult`, `ZipGuard`, `ZipGuardException` | import formats | `:feeds` |
+| `BackupManifest`, `BackupKind`, `AppInfoV1`, `CountsV1`, `EntryInfo`, `LibraryV1`, `PodcastV1`, `GroupV1`, `MemberV1`, `OverridesV1`, `CredentialV1`, `EpisodeLineV1`, `EpisodeRefV1`, `QueueV1`, `SessionV1`, `SettingsV1`, `SettingValueV1` | backup DTOs v1 | `:feeds` |
+| `ImportClassifier`, `PayloadStore`, `OpmlExporter`, `BackupWriter`, `SnapshotScheduler`, `GroupNotificationChannels`, `FirstLaunchRestoreInitializer` (order 110), `ExportFilesCleaner` (order 300), `ExternalImportViewModel` | implementation | `:core:data` (`ExternalImportViewModel`: `:app`) |
+| `.OpmlByExtensionAlias`, `@bool/neutrodyne_api31_or_newer`, `@style/Theme.Neutrodyne.Translucent`, `@string/import_into_neutrodyne` | manifest and resources | `:app` |
+| `res/xml-v28/backup_rules.xml`; `file_paths.xml` entry `export` | resources | `:app` |
+| Notification IDs on `import_backup`: 3001 import report, 3002 import ready to review, 3003 restore result, 3004 backup needs newer app, 3010 scheduled-backup folder lost (M15) | constants | `:core:data` |
+| `groups.*` and `backup.*` keys of [Settings](#settings) | setting keys | `:core:model` registry |
+
+---
+
+## Open questions
+
+1. **Architect review:** `import-{sessionId}` is expedited only on API 31+ (the canonical WorkManager table lists it as "one-time, expedited, connected"); below 31 expedited work needs a foreground notification. Same choice as 03 for `refresh-now` (03 open question 2).
+2. **Architect review:** 01's P28 says "no cross-platform section", but the Auto Backup documentation states that a missing section enables that transfer mode "for all content". This document adds a `cross-platform-transfer` section that includes nothing; whether pre-Android-16-QPR2 parsers tolerate the element is Unverified (M3 `bmgr` check, fallback: drop it). 01's P28 row needs updating.
+3. **Architect review / PO-15 follow-up:** `requireFlags="clientSideEncryption"` does not exist before Android 9, so with PO-15's "no backup without encryption" devices on Android 8.0–8.1 (API 26–27) and devices without a screen lock get **no** automatic library backup; R1.8 is not met there. Accept (default here), or allow unencrypted backup on API 26–27.
+4. **Architect review:** D45 names only some fields. This document extends it: require charging = any group `true`; include video = any group `false`; a group's dependent auto-download fields are cleared unless its auto-download is on; intro/outro skip (M12) is podcast-only; the context group's playback values also apply to Up next items whose podcast is a member. PLAN D45 should be amended to say so.
+5. **Architect review:** R1.9 allows passwords in backups on opt-in; they are stored in plain text in `library.json` (`credentials`). A passphrase-encrypted archive is the alternative (v1.x).
+6. **Architect review:** `nameKey` here is `NFC(normalized.lowercase(Locale.ROOT))` (final NFC pass); 02 writes `NFC(trim(name)).lowercase(Locale.ROOT)`. Identical except for characters whose lowercase decomposes; 02 should reference `GroupNames.key`.
+7. **Owner 02:** please add `ImportDao.pagedItems(sessionId, filter): PagingSource<Int, …>`; `FeedDao.countUnplayed(source, before)`; a download-all candidate query (context predicates without anchor, no `download` row, no tombstone, downloadable, `LIMIT 200`, plus a total count); the `AND e.isNew = 0` restriction in "played except newest"; the null-anchor form of the context tail; and make the import-session cleanup query callable by `AutoSnapshotWorker` before `db-maintenance` exists (M3–M10).
+8. **Owner 06:** 06 already applies the start rules and the member-only context group; still needed: handle a `play_session` replaced by a Replace restore while paused (load the new current item paused, never auto-play). 06's open question 4 is answered here: a scoped write from the player may clear the more specific override ("Apply to all podcasts" removes this podcast's override); attribution follows the new source.
+9. **Owner 07:** consume `observeAutoDownload()`; confirm the `downloads.*` global key names the resolver reads (auto-download enabled, keep latest, network, require charging, include video, delete after played).
+10. **Owner 03:** "Retry" in the import report needs the state reset of `PodcastRepository.retry` without its own `refreshNow` (or accept a duplicate refresh request, deduplicated by the attempt marker); the add sheet's `SubscriptionList(url)` action calls `ImportRepository.create(ImportSource(url, null))`.
+11. **Owner 08:** visit rule for `markVisited`, banners for open import sessions and running restores, preview models, palette and icon rendering, a debug-only "Write snapshot now" action for the `bmgr` procedure.
+12. **PO:** Replace restore is exposed in the UI behind a confirmation (D33 lists both modes; the research asked whether to hide it). Settings are not restored by default in Merge mode. Flat OPML export does not keep empty groups, group order, colours or icons. Confirm these three defaults.
+13. **Unverified** (checked in their milestone): duplicate `<include>` paths with different `requireFlags` and an include of a non-existent path (M3, `bmgr`); providers that reject `"wt"` (M3); Google Drive's file naming for `text/x-opml` (M3); Overcast basic export shape (partially verified), Podcast Addict's OPML shape and OPML support in Apple Podcasts on iOS 26 (fixtures added when samples exist).
+14. Overcast "extended" OPML carries per-episode played state and progress; importing it as listening history (match by enclosure URL) is proposed for M15, not v1.
+
+---
+
+## Sources
+
+All checked 2026-10-04 by the research behind this plan unless marked otherwise.
+
+- OPML 2.0 specification (`text` required, `type="rss"` + `xmlUrl`, nested lists, `category` as comma-separated slash-delimited strings, `isComment`, `include`/`link`, namespaced extensions, RFC 822 dates, `text/x-opml`): http://opml.org/spec2.opml
+- AntennaPod OPML writer/reader, backup agent, database exporter, automatic export worker, tags model (develop, commit 9c7ffa1): https://github.com/AntennaPod/AntennaPod · "Always add feeds from opml, even if download fails" (3.1): https://forum.antennapod.org/t/import-issues-with-opml/2676 · Google Podcasts malformed exports: https://forum.antennapod.org/t/cant-import-google-podcasts-opml-file/5363 · per-tag episode view request: https://github.com/AntennaPod/AntennaPod/issues/5222
+- Pocket Casts OPML exporter, line-based importer, octet-stream filter removal, single `folder_uuid`: https://github.com/Automattic/pocket-casts-android · OPML import help (Podcast Addict, iTunes paths): https://support.pocketcasts.com/article/opml-import/ · folders: https://support.pocketcasts.com/knowledge-base/folders/
+- gPodder OPML sections and `url` fallback: https://github.com/gpodder/gpodder (`src/gpodder/opml.py`, `src/gpodder/model.py`)
+- Overcast extended export structure: https://github.com/hbmartin/overcast-to-sqlite · basic export sample (partially verified): https://metacast.app/blog/podcasting/opml-import-export
+- FreshRSS import (innermost folder wins, `category` joined into one name): https://github.com/FreshRSS/FreshRSS/blob/edge/app/Services/ImportService.php
+- Apple Podcasts without OPML (2019; iOS 26 Unverified): https://kaspars.net/blog/apple-podcasts-subscriptions
+- NewPipe subscription JSON: https://github.com/TeamNewPipe/NewPipe · Takeout CSV: https://github.com/TeamNewPipe/NewPipeExtractor (`YoutubeSubscriptionExtractor.java`)
+- Android MIME tables (no `.opml`): https://android.googlesource.com/platform/external/mime-support/+/refs/heads/main/mime.types · https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/mime/java-res/android.mime.types · `FileUtils.splitFileName`: https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/os/FileUtils.java
+- `ContentResolver.openOutputStream` mode `"w"` may not truncate: https://developer.android.com/reference/android/content/ContentResolver · URI grant lifetime: https://developer.android.com/reference/androidx/core/content/FileProvider · `<data>` element (`pathSuffix` API 31, scheme + host): https://developer.android.com/guide/topics/manifest/data-element · Android 16 Safer Intents: https://developer.android.com/about/versions/16/behavior-changes-16
+- Activity 1.13.0 and `CreateDocument(mimeType)`: https://developer.android.com/jetpack/androidx/releases/activity
+- KXmlParser (BOM and declaration detection, relaxed feature, docdecl): https://android.googlesource.com/platform/libcore/+/refs/heads/main/xml/src/main/java/com/android/org/kxml2/io/KXmlParser.java · KXmlSerializer illegal characters: https://android.googlesource.com/platform/libcore/+/refs/heads/main/xml/src/main/java/com/android/org/kxml2/io/KXmlSerializer.java
+- Auto Backup (25 MB quota, include semantics, restore at install, restricted mode, `disableIfNoEncryptionCapabilities`, `requireFlags`, missing sections, cross-platform transfer from Android 16 QPR2): https://developer.android.com/identity/data/autobackup (re-checked 2026-10-05)
+- Testing backup and restore (`bmgr`, local transport `is_encrypted=true`, D2D test mode): https://developer.android.com/identity/data/testingbackup (re-checked 2026-10-05)
+- Preferences DataStore file location: https://github.com/androidx/androidx/blob/androidx-main/datastore/datastore/src/androidMain/kotlin/androidx/datastore/DataStoreFile.android.kt
+- `NotificationManager.deleteNotificationChannel` (re-creation "un-deletes" with old settings) and `createNotificationChannel` (rename): https://developer.android.com/reference/android/app/NotificationManager (re-checked 2026-10-05) · channel limits: https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/notification/PreferencesHelper.java
+- FGS types (`dataSync` for import/export and backup): https://developer.android.com/develop/background-work/services/fgs/service-types · expedited work: https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work · Android 16 job quotas: https://developer.android.com/about/versions/16/behavior-changes-all · WorkManager 2.12.0: https://dl.google.com/android/maven2/androidx/work/work-runtime/maven-metadata.xml
+- Room 3 (`withoutRowId`, `@RawQuery`, paging converter, no `Uuid` converter before 3.1.0-alpha01): https://developer.android.com/jetpack/androidx/releases/room3 · `LimitOffsetPagingSource` invalidation: https://github.com/androidx/androidx/blob/androidx-main/room3/room3-paging/src/commonMain/kotlin/androidx/room3/paging/LimitOffsetPagingSource.kt · Paging 3.5.1: https://dl.google.com/android/maven2/androidx/paging/paging-runtime/maven-metadata.xml
+- kotlinx.serialization 1.11.0 (stream APIs experimental, so JSONL is written line by line): https://repo1.maven.org/maven2/org/jetbrains/kotlinx/kotlinx-serialization-json/maven-metadata.xml · https://github.com/Kotlin/kotlinx.serialization/blob/master/formats/json/jvmMain/src/kotlinx/serialization/json/JvmStreams.kt
+- SQLite row values (3.15) and `VACUUM INTO`: https://www.sqlite.org/rowvalue.html · https://www.sqlite.org/lang_vacuum.html
+- `reorderable` 3.1.0 (Apache-2.0): https://repo1.maven.org/maven2/sh/calvin/reorderable/reorderable/maven-metadata.xml · https://github.com/Calvin-LL/Reorderable/blob/main/LICENSE
+- Notification permission (contextual request): https://developer.android.com/develop/ui/views/notifications/notification-permission
