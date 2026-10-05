@@ -49,6 +49,7 @@ Neutrodyne is a planned open-source podcast player. So far the repository holds 
 - ~17:xx UTC: first drafts of `docs/design/10-sync.md` and `docs/design/11-desktop.md` are written. Their adversarial reviews are still pending.
 - By 18:57 UTC: `01`–`05` are revised and `06` is in progress. Still to do: revise `07`, `08`, `09`; review `10` and `11`; the two critics; the fixer, which also rewrites `README.md`.
 - 18:47 UTC: the automatic 10-minute checkpoint job reached its 2-hour limit and stopped. Checkpoints are now made by hand.
+- ~19:1x UTC: `06` revised; revising `07` and `08`.
 
 ## 4. How to resume if this session stops
 
