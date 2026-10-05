@@ -406,7 +406,7 @@ data class ScopeOverrides(                                   // @Embedded in bot
     val autoDownload: Boolean? = null, val autoDownloadKeepLatest: Int? = null,
     val autoDownloadNetwork: NetworkPolicy? = null, val autoDownloadRequireCharging: Boolean? = null,
     val deleteAfterPlayed: DeleteAfter? = null, val includeVideoInAutoDownload: Boolean? = null,
-    val notifyNewEpisodes: Boolean? = null, val refreshIntervalMinutes: Int? = null,
+    val notifyNewEpisodes: Boolean? = null, val refreshIntervalMinutes: Int? = null,  // 0 = "Manual only" (PO-21)
 )
 @Entity(tableName = "podcast_settings", foreignKeys = [/* podcastId CASCADE */])
 data class PodcastSettingsEntity(@PrimaryKey val podcastId: Long, @Embedded val o: ScopeOverrides)
