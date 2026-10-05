@@ -167,7 +167,7 @@ interface YouTubeAvailabilityRecorder { suspend fun record(episodeId: Long, avai
 | Every `suspend` API above | Main-safe. Network on `@Dispatcher(IO)`. Blocking NewPipe calls run in `runInterruptible(io) { … }` so cancellation interrupts the OkHttp call. Errors through `suspendRunCatching` (never swallows `CancellationException`) |
 | Timeouts | `resolveAudio` 20 s; channel resolution 20 s overall; `enrich` 20 s per channel; `search` 10 s; `uploadsPage` 20 s (`withTimeout` → `Transient(TIMEOUT)`) |
 | Single flight | Concurrent `resolveAudio` calls with the same cache key share one `Deferred` (pre-resolve and playback race) |
-| Concurrency caps | Enrichment: `Semaphore(2)` across channels. Downloads: 07's YouTube slot 1. Channel resolution during import: 2 per host (C44 of 03's per-host rule). Playback resolves: no cap beyond single flight. Search: latest wins (previous job cancelled) |
+| Concurrency caps | Enrichment: `Semaphore(2)` across channels. Downloads: 07's YouTube slot 1. Channel resolution during import: 2 concurrently (the same 2-per-host limit 03 applies to `www.youtube.com`, [D25](../PLAN.md#3-key-decisions)). Playback resolves: no cap beyond single flight. Search: latest wins (previous job cancelled) |
 | `ResolvedUrlCache` | `ConcurrentHashMap`, read from Media3's loader thread |
 | `YouTubeHealth` | `MutableStateFlow`; persistence to `device_settings` launched on `@ApplicationScope`, conflated |
 | `NewPipe.init` | Once, lazily, under a lock in `NpeInitializer.ensure()` (never in `Application.onCreate`) |
@@ -445,7 +445,7 @@ The prefixes are undocumented; if YouTube drops them, the `channel_id` fallback 
 | Client and headers | `@HttpClient(FEED)`; `Accept: application/atom+xml, application/xml;q=0.9, */*;q=0.1`; no validators (YouTube sends no `ETag`/`Last-Modified`) |
 | Minimum interval | Scheduled: `nextRefreshAt ≥ lastAttemptAt + 15 min` (server sends `max-age=900`). Manual: skip a channel whose last success is < 2 min old |
 | Interval | The podcast's effective refresh interval ([D45](../PLAN.md#3-key-decisions)), never below 15 min |
-| Per host | 03's 2-per-host semaphore on `www.youtube.com`, each variant request takes a permit (C44) |
+| Per host | 03's 2-per-host semaphore on `www.youtube.com` ([D25](../PLAN.md#3-key-decisions)); each variant request takes a permit |
 | Body cap | 2 MB (a 15-entry feed is ~20 KB) |
 | 404 on `UUSH`/`UULV` | Treated as empty (channel has none), unless the run is an outage |
 | 404 on the primary | Try `channel_id`; 200 → use it, mark Shorts by link and **drop** them unless `SHORTS` is set (live items cannot be told apart in this mode; known limitation); 404 → channel failure |
@@ -905,7 +905,7 @@ stateDiagram-v2
 | Rule | Value |
 |---|---|
 | Counted | `ExtractionOutcome.ParseFailure` from resolve, enrichment, search, back catalogue and `InnertubeChannelResolver`; at most one per `videoId` per 10 min (Media3 retries must not trip it alone); a cluster of 3 different videos with "content not available" within 10 min counts once; fresh-URL 403 twice on 3 different videos within 1 h counts once each (a new PoToken requirement looks like this). Never counted: `Unavailable`, network, timeout, rate limit |
-| Open duration | 6 h; 12 h when the previous opening was less than 24 h earlier ([canonical default](../PLAN.md#3-key-decisions)) |
+| Open duration | 6 h; 12 h when the previous opening was less than 24 h earlier (PLAN glossary "Circuit breaker": 6–12 h) |
 | While open | `extractionGate` denies resolve, enrichment, search and back catalogue; `InnertubeChannelResolver` returns `null` (HTML fallback keeps subscribing working); `ResolvedUrlCache.invalidateAll()` |
 | Half-open | Exactly one trial: the next user-initiated resolve, or an enrichment call if no resolve happens within 10 min; other calls are denied meanwhile |
 | Persisted (`device_settings`) | `youtube.breaker_open_until`, `youtube.breaker_last_opened_at`, `youtube.breaker_version_code`; failure timestamps are memory-only |

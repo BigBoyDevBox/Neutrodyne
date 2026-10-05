@@ -1,6 +1,6 @@
 # 03 — Feeds and discovery
 
-> Status: Draft v1, 2026-10-04 · Implements: R1.3 (fetch side), R1.9 (feed-URL secrecy), R2.6 (refresh a group), R2.7 (refresh interval, new-episode notifications), R3.1 (add-flow hand-off), R3.3 (refresh-engine side), R5.2 (artwork selection) / N1, N2, N3, N6, N9 · Milestones: M1, M2, M3, M4, M7, M8, M9, M11 · Honours: D1, D10, D11, D15, D18, D19, D24, D25, D26, D27, D28, D36, D45, D66 · Owns: `:feeds` feed formats, feed fetching and HTTP policy, ingestion diff, feed moves, aliases, Basic auth and `CredentialStore`, RFC 5005 paging, refresh engine and scheduling, show-notes sanitising, add-podcast pipeline and autodiscovery, directory search and charts, subscribe intents, `IngestionEvents` and new-episode notifications
+> Status: Draft v1, 2026-10-04 · Implements: R1.3 (fetch side), R1.9 (feed-URL secrecy), R2.6 (refresh a group), R2.7 (refresh interval, new-episode notifications), R3.1 (add-flow hand-off), R3.3 (refresh-engine side), R5.2 (artwork selection) / N1, N2, N3, N6, N9 · Milestones: M1, M2, M3, M4, M5, M6, M7, M8, M9, M11 · Honours: D1, D10, D11, D15, D18, D19, D24, D25, D26, D27, D28, D36, D45, D66 · Owns: `:feeds` feed formats, feed fetching and HTTP policy, ingestion diff, feed moves, aliases, Basic auth and `CredentialStore`, RFC 5005 paging, refresh engine and scheduling, show-notes sanitising, add-podcast pipeline and autodiscovery, directory search and charts, subscribe intents, `IngestionEvents` and new-episode notifications
 
 Contents: [Scope](#scope) · [Parser](#parser) · [Fetch pipeline](#fetch-pipeline) · [Ingestion and diff](#ingestion-and-diff) · [Feed moves, auth and paging](#feed-moves-auth-and-paging) · [Refresh scheduling](#refresh-scheduling) · [Show notes](#show-notes) · [Add podcast flow](#add-podcast-flow) · [Search and discovery](#search-and-discovery) · [Deep links and share targets](#deep-links-and-share-targets) · [New-episode notifications](#new-episode-notifications) · [Settings](#settings) · [Testing](#testing) · [Delivery by milestone](#delivery-by-milestone) · [New names introduced here](#new-names-introduced-here) · [Open questions](#open-questions) · [Sources](#sources)
 
@@ -720,7 +720,7 @@ sequenceDiagram
 2. `FeedTempFiles.sweep()`.
 3. **Force.** If `force`, one `UPDATE podcast SET nextRefreshAt = 0 WHERE <scope> AND gone = 0 AND needsCredentials = 0`. Forced work is thereby persisted: a continuation needs no ids, and `KEEP` cannot lose them.
 4. **Selection.** `dueForRefresh(now + slack, scope)` (02) with `slack = tick / 4` (a feed due shortly after this tick is refreshed now, not one tick later). Order: pending first fetches, then by `COALESCE(lastSuccessAt, 0)` ascending. `pagesOnly` runs select `pagingComplete = 0 AND pagingNextUrl IS NOT NULL` within the scope instead.
-5. **Fan-out.** For each feed: stop launching when `elapsed ≥ deadline − 30 s`; acquire the global `Semaphore(6)`, then the per-host `Semaphore(2)` (host = lowercase request host; applies to `www.youtube.com` too, C44 of the plan's conflict list); launch `refreshOne`. OkHttp's dispatcher (64 / 8 per host, 01) is never the bottleneck.
+5. **Fan-out.** For each feed: stop launching when `elapsed ≥ deadline − 30 s`; acquire the global `Semaphore(6)`, then the per-host `Semaphore(2)` (host = lowercase request host; the limit of 2 applies to `www.youtube.com` too); launch `refreshOne`. OkHttp's dispatcher (64 / 8 per host, 01) is never the bottleneck.
 6. **`refreshOne`** = adapter `fetchAndParse` → `FeedIngestor.ingest` or a fetch-state outcome → `events.emit` → `status` update (`done`/`total`).
 7. **Background paging.** If ≥ 2 min remain and the run is not `pagesOnly`, run pending paging sessions round-robin, one page per podcast per round.
 8. **Fetch-state flush.** Outcomes without a body (304, unchanged, failures) are written by 02's batched `updateFetchStates` (≤ 20 rows or every 5 s), so a 300-feed refresh invalidates open lists a few times, not 300 ([02 Refresh selection](02-data-model.md#refresh-selection-and-fetch-state-writes)).
@@ -770,7 +770,7 @@ stateDiagram-v2
 
 ### Refresh of pending podcasts
 
-For `status = PENDING_FIRST_FETCH` (imports, restores, YouTube subscribes) the engine differs from a normal refresh in exactly three ways: ingestion uses `INITIAL`; an HTML body runs [autodiscovery](#fetch-sniff-and-autodiscovery) once and, if it yields a top-ranked feed candidate, fetches it and adopts it as a move (alias reason `IMPORT` for the page URL) — otherwise `NOT_A_FEED`; and paging columns go to "older pages exist, not wanted" ([RFC 5005 paging](#rfc-5005-paging)).
+For `status = PENDING_FIRST_FETCH` (imports, restores, YouTube subscribes) the engine differs from a normal refresh in exactly three ways: ingestion uses `INITIAL`; an HTML body runs [autodiscovery](#fetch-sniff-and-autodiscovery) once and, if it yields a top-ranked feed candidate, fetches it and adopts it as a move (the page URL becomes an alias with reason `IMPORT`, or `RESTORE` for restored podcasts) — otherwise `NOT_A_FEED`; and paging columns go to "older pages exist, not wanted" ([RFC 5005 paging](#rfc-5005-paging)).
 
 ### Source adapters
 
@@ -1066,7 +1066,8 @@ interface PodcastRepository {
     fun observeLibraryTiles(groupId: Long?): Flow<List<LibraryTile>>   // 02 PodcastDao.observeLibraryTiles
     fun observePodcast(podcastId: Long): Flow<PodcastDetail?>
     fun observeFeedInfo(podcastId: Long): Flow<FeedInfo?>              // redacted URL, aliases, last refresh, error
-    suspend fun unsubscribe(podcastIds: List<Long>)
+    suspend fun unsubscribe(podcastIds: List<Long>)                    // DB part only; callers use UnsubscribeUseCase
+    suspend fun downloadedEpisodeIds(podcastIds: List<Long>): List<Long>
     suspend fun setIncludeInAll(podcastId: Long, include: Boolean)
     suspend fun setCustomTitle(podcastId: Long, title: String?)
     suspend fun setCredentials(podcastId: Long, credentials: BasicCredentials): Outcome<Unit, AddPodcastError>
@@ -1083,7 +1084,7 @@ interface EpisodeRepository {
 }
 ```
 
-- **Unsubscribe** ([D24](../PLAN.md#3-key-decisions)), after the UI's confirmation: (1) if `PlaybackStateSource.nowPlaying` belongs to the podcast, `PlaybackController.pause()` (06 removes the item when its row disappears); (2) delete download files via `DownloadController.delete(ids, byUser = false)` (injected as `Optional<DownloadController>`, `@BindsOptionalOf`, present from M6); (3) 02's `deleteCascade` per podcast; (4) unpin artwork (M4+); (5) `reschedulePeriodic()`. Credentials no longer referenced by any podcast are deleted.
+- **Unsubscribe** ([D24](../PLAN.md#3-key-decisions)) spans three controllers, so it is a use case (01's use-case rule): `UnsubscribeUseCase` (concrete `@Inject` class in `:core:domain`), invoked after the UI's confirmation, (1) calls `PlaybackController.pause()` if `PlaybackStateSource.nowPlaying` belongs to the podcast (06 drops the item when its row disappears); (2) deletes download files via `DownloadController.delete(ids, byUser = false)` for `PodcastRepository.downloadedEpisodeIds(podcastIds)`; (3) calls `PodcastRepository.unsubscribe(ids)`, which runs 02's `deleteCascade` per podcast, deletes credentials no longer referenced, unpins artwork (M4+) and calls `reschedulePeriodic()`. `PlaybackController` and `DownloadController` are injected as `Optional<…>` (`@BindsOptionalOf` declared in `:core:data`'s Hilt module), present from M4 and M6; the merge path of `FeedRefresher` uses the same optional `DownloadController`.
 - **Edit URL** (podcast settings, 05's import report): normalise the input, fetch and parse it in memory, then apply it as a move (alias reason `SUBSCRIBE_INPUT`) and ingest in REFRESH mode (INITIAL if still pending); a key collision merges.
 - `setPlayed`, `markFeedPlayed` and `setFavorite` use 02's column-scoped writes and 06's rules (marking played resets the position).
 
@@ -1108,7 +1109,10 @@ data class DirectoryHit(val feedUrl: String, val title: String, val author: Stri
     val providers: Set<ProviderId>, val genres: List<String>, val explicit: Boolean?, val subscribedPodcastId: Long?)
 data class SearchResults(val query: String, val hits: List<DirectoryHit>, val statuses: Map<ProviderId, ProviderStatus>,
                          val complete: Boolean)
-sealed interface ProviderStatus { data object Ok; data object Pending; data object RateLimited; data class Failed(val error: NetError?) }
+sealed interface ProviderStatus {
+    data object Ok : ProviderStatus; data object Pending : ProviderStatus; data object RateLimited : ProviderStatus
+    data class Failed(val error: NetError?) : ProviderStatus
+}
 // :core:data (internal)
 internal interface PodcastSearchProvider {
     val id: ProviderId
@@ -1222,7 +1226,7 @@ Serves R2.7. Delivered in M2. Honours [D36](../PLAN.md#3-key-decisions), [D45](.
 3. Per podcast, resolve the effective notification setting (podcast override → on if any of its groups has it on → global `feeds.notify_new_episodes`, default off) with `EffectiveSettingsResolver`; skip podcasts resolving to off.
 4. **Channel:** the first group by `sortOrder` among the podcast's groups whose own notification setting is on → `new_episodes_{uuid}`; none (the podcast or global setting enabled it) → `new_episodes`. An episode is therefore notified once even if its podcast is in two notifying groups.
 5. Per channel: merge with the currently shown notification of that channel (read `nd.episode_ids` from `NotificationManager.getActiveNotifications()` extras), keep the newest 50.
-6. Build: one episode → title = podcast title, text = episode title, large icon = cover from `ArtworkStore` (M4+, ≤ 256 px), tap → `neutrodyne://open/episode/{id}`; several → title "N new episodes", subtext = group name, `InboxStyle` with up to 6 lines "Podcast — Episode", tap → `neutrodyne://open/group/{groupUuid}` (default channel: the launcher intent, which opens Feeds). `setOnlyAlertOnce(true)`, `setAutoCancel(true)`, explicit `PendingIntent`s to `MainActivity` with `FLAG_IMMUTABLE`, no action buttons in v1.
+6. Build: one episode → title = podcast title, text = episode title, large icon = cover from `ArtworkStore` (M4+, ≤ 256 px), tap → `neutrodyne://open/episode/{id}`; several → title "N new episodes", subtext = group name, `InboxStyle` with up to 6 lines "Podcast — Episode", tap → `neutrodyne://open/group/{groupUuid}` (default channel: the launcher intent, which routes nowhere and shows the app as last left). `setOnlyAlertOnce(true)`, `setAutoCancel(true)`, explicit `PendingIntent`s to `MainActivity` with `FLAG_IMMUTABLE`, no action buttons in v1.
 7. Post with `notify(tag = channelId, id = 5000, …)` (ID range 5000+); the system bundles ≥ 4 notifications, so no summary notification is posted.
 8. Before posting: `ensureChannels()` creates `new_episodes` and `grp_new_episodes` idempotently and, as a safety net, a missing group channel with the group's current name. Posting is skipped (and counted in diagnostics) when `POST_NOTIFICATIONS` is not granted (API 33+), `areNotificationsEnabled()` is false, or the channel's importance is `NONE`.
 
@@ -1327,7 +1331,7 @@ Also: `no-media-blog` and `empty-channel` for acceptance rules. The corpus runs 
 | `AddInputNormalizer`, `NormalizedInput`, `HostRecognizer`, `Autodiscovery`, `DiscoveredFeed` | add flow | `:feeds` |
 | `AppleSearchParser`, `AppleChartParser`, `FyydSearchParser`, `PodcastIndexParser`, `AppleGenres` | directory parsers | `:feeds` |
 | `FeedErrorKind` values, `RefreshScope`, `RefreshStatus`, `FeedPreview`, `PreviewEpisode`, `FeedCandidate`, `AlreadySubscribed`, `BasicCredentials`, `DirectoryHit`, `ProviderId`, `ProviderStatus`, `ProviderInfo`, `SearchResults`, `ChartGenre`, `ShowNotes`, `ShowNoteBlock`, `ShowNoteSpan`, `ShowNotesImages`, `LibraryTile`, `PodcastDetail`, `EpisodeDetail`, `FeedInfo`, `CategoryCount` | model types | `:core:model` |
-| `AddResolution`, `AddPodcastError`, `SubscribeError`; `RefreshController.refreshFeed/loadOlderEpisodes`; `PodcastRepository`/`EpisodeRepository` members above | domain contracts | `:core:domain` |
+| `AddResolution`, `AddPodcastError`, `SubscribeError`, `UnsubscribeUseCase`; `RefreshController.refreshFeed/loadOlderEpisodes`; `PodcastRepository`/`EpisodeRepository` members above | domain contracts | `:core:domain` |
 | `FeedFetcher` types `FeedRequest`, `FetchOutcome`, `Sniff`; `FeedTempFiles`; `FeedIngestor`, `IngestContext`, `IngestMode`, `FetchMeta`, `RowHint`, `IngestResult`; `FeedRefresher` types `RefreshRequest`, `RefreshOrigin`, `RefreshReport`, `FeedOutcome`, `FeedRunEvent`; `SourceAdapter`, `FetchMode`, `AdapterResult`, `RssSourceAdapter`, `YouTubeSourceAdapter`, `YouTubeOutageMonitor`; `RefreshForegroundObserver`; `PreviewCache`; `CipherProvider`; `IngestionEventBus`; `PodcastSearchProvider`, `AppleSearchProvider`, `FyydSearchProvider`, `PodcastIndexSearchProvider`, `TokenBucket` | implementation | `:core:data` |
 | `DueFeed` | name for 02's `dueForRefresh` projection | `:core:database` (02) |
 | `feeds.*`, `discover.*` keys in [Settings](#settings) | setting keys | `:core:model` registry |
@@ -1338,7 +1342,7 @@ Also: `no-media-blog` and `empty-channel` for acceptance rules. The corpus runs 
 ## Open questions
 
 1. **Architect review: show-notes block model placement.** Following 01's default (option b), `:feeds` produces `ShowNotesDocument` and `:core:data` maps it 1:1 into the `:core:model` mirror `ShowNotes` that 08 renders. Allowing `:feeds → :core:model` (option a) would remove the duplicate types and the mapper; this document recommends (a) and changes only the type location if adopted.
-2. **Architect review: `refresh-now` not expedited on API 26–30.** The skeleton lists `refresh-now` as expedited; below API 31 that requires a foreground notification (`getForegroundInfo`). This document drops expedition there instead of adding a refresh notification channel. 05's `import-{sessionId}` has the same constraint.
+2. **Architect review: `refresh-now` not expedited on API 26–30.** [D25](../PLAN.md#3-key-decisions) describes `refresh-now` as expedited; below API 31 that requires a foreground notification (`getForegroundInfo`). This document drops expedition there instead of adding a refresh notification channel. 05's `import-{sessionId}` has the same constraint.
 3. **Architect review: one credential per origin.** `CredentialLookup` (01) is keyed by origin only, so two private feeds on one host with different accounts cannot coexist. Supporting them would need a per-request credential hint (request tag) in `AuthInterceptor` and 06/07's enclosure requests.
 4. **Owner 02:** add `DueFeed` as the named `dueForRefresh` projection; give `updateFeedFields` the null-preserving rule for `durationMs`, `imageUrl`/`artworkKey`, `chaptersUrl`; add an enrichment write (`durationMs`, `availability`) for 04's `afterIngest`.
 5. **Owner 04:** confirm the `SourceAdapter` contract (`RowHint`, `partial = true`, transient 404, ≥ 15 min schedule) and the name and location of `YouTubeOutageMonitor`.
