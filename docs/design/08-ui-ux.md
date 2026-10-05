@@ -1398,7 +1398,7 @@ Algorithm of `ArtworkSchemeCache.build(seed, dark, contrast)` (LRU 16 entries, c
 Monograms and group colours need guaranteed contrast from M1/M2, before the colour library arrives in M10, in both `:core:designsystem` and `:core:artwork` (which cannot see each other). `ArtColors` in `:core:model` is a pure-Kotlin CIELAB/LCh(ab) implementation: CIE L\* is the same quantity as HCT tone and alone determines relative luminance, so fixing L\* fixes WCAG contrast whatever the hue.
 
 ```kotlin
-// :core:model — package app.neutrodyne.core.model.art (pure Kotlin, no dependencies)
+// :core:model — package ch.lkmc.neutrodyne.core.model.art (pure Kotlin, no dependencies)
 object ArtColors {
     fun lch(l: Double, c: Double, hDeg: Double): Int    // ARGB; reduces chroma by 12-step bisection until in sRGB gamut
     fun hueOf(argb: Int): Double; fun chromaOf(argb: Int): Double; fun toneOf(argb: Int): Double
@@ -1583,7 +1583,7 @@ data class ArtworkColors(val key: String, val version: Int, val seedArgb: Int?, 
 
 ### ArtworkProvider
 
-`app.neutrodyne.core.artwork.ArtworkProvider`, authority `${applicationId}.artwork`, exported, read-only (manifest: [01 Application element and components](01-foundation.md#application-element-and-components)). Contract for 06 and v1.x widgets:
+`ch.lkmc.neutrodyne.core.artwork.ArtworkProvider`, authority `${applicationId}.artwork`, exported, read-only (manifest: [01 Application element and components](01-foundation.md#application-element-and-components)). Contract for 06 and v1.x widgets:
 
 | Call | Behaviour |
 |---|---|
@@ -1861,7 +1861,7 @@ Wording rules for `play` (risk P1, 04 [Play guardrails](04-youtube.md#play-guard
 
 ## Settings
 
-Serves R2.7 (settings screens), R5.5, N10. Delivered in M0 (home, Appearance basics, About, Licences) and by each owning milestone. Keys follow 01's registry ([01 DataStore files and typed setting keys](01-foundation.md#datastore-files-and-typed-setting-keys)); enums used as key types (`ThemeMode`, `LibraryDensity`, `LibrarySort`, `SwipeAction`, `PlayerTimeDisplay`, `YouTubeRowArt`, `LibrarySegment`) live in `:core:model` (`app.neutrodyne.core.model.settings`).
+Serves R2.7 (settings screens), R5.5, N10. Delivered in M0 (home, Appearance basics, About, Licences) and by each owning milestone. Keys follow 01's registry ([01 DataStore files and typed setting keys](01-foundation.md#datastore-files-and-typed-setting-keys)); enums used as key types (`ThemeMode`, `LibraryDensity`, `LibrarySort`, `SwipeAction`, `PlayerTimeDisplay`, `YouTubeRowArt`, `LibrarySegment`) live in `:core:model` (`ch.lkmc.neutrodyne.core.model.settings`).
 
 ### Settings screen structure
 

@@ -31,9 +31,9 @@ Neutrodyne downloads episodes with its **own small engine on OkHttp** that write
 
 | Module | Package | Contents |
 |---|---|---|
-| `:download:api` (JVM, Unlicense) | `app.neutrodyne.download.api` | `DownloadController`, `LocalMediaIndex`, `DownloadProgressSource` and the data types below; depends on `:core:{model, common}` only ([01 Dependency rules](01-foundation.md#dependency-rules)) |
-| `:download:impl` (Android) | `app.neutrodyne.download.impl` | `DownloadControllerImpl`, `DownloadEngine`, `DownloadScheduler`, `ManualDownloadJobService`, `DownloadLaneWorker`, `DownloadWakeWorker`, `RssTransferSource`, `YouTubeTransferSource`, `StorageRoots`, `DownloadPaths`, `MediaSniffer`, `LocalMediaIndexImpl`, `DownloadProgressHub`, `AutoDownloadPlanner`, `CleanupPlanner`, `CleanupWorker`, `DownloadReconciler`, `DownloadReconcileWorker`, `DownloadMoveWorker`, `DeferredDeletes`, `DownloadNotifications`, `DownloadActionReceiver`, `DownloadDiagnostics` |
-| `:core:model` | `app.neutrodyne.core.model` | Canonical enums `DownloadState`, `DownloadLane`, `WaitReason`, `DownloadError`, `SourceKind`, `NetworkPolicy`, `DeleteAfter`; new `ManualMeteredPolicy`; `DownloadSettingKeys` (package `…core.model.settings`) |
+| `:download:api` (JVM, Unlicense) | `ch.lkmc.neutrodyne.download.api` | `DownloadController`, `LocalMediaIndex`, `DownloadProgressSource` and the data types below; depends on `:core:{model, common}` only ([01 Dependency rules](01-foundation.md#dependency-rules)) |
+| `:download:impl` (Android) | `ch.lkmc.neutrodyne.download.impl` | `DownloadControllerImpl`, `DownloadEngine`, `DownloadScheduler`, `ManualDownloadJobService`, `DownloadLaneWorker`, `DownloadWakeWorker`, `RssTransferSource`, `YouTubeTransferSource`, `StorageRoots`, `DownloadPaths`, `MediaSniffer`, `LocalMediaIndexImpl`, `DownloadProgressHub`, `AutoDownloadPlanner`, `CleanupPlanner`, `CleanupWorker`, `DownloadReconciler`, `DownloadReconcileWorker`, `DownloadMoveWorker`, `DeferredDeletes`, `DownloadNotifications`, `DownloadActionReceiver`, `DownloadDiagnostics` |
+| `:core:model` | `ch.lkmc.neutrodyne.core.model` | Canonical enums `DownloadState`, `DownloadLane`, `WaitReason`, `DownloadError`, `SourceKind`, `NetworkPolicy`, `DeleteAfter`; new `ManualMeteredPolicy`; `DownloadSettingKeys` (package `…core.model.settings`) |
 
 ```kotlin
 // :download:api — canonical members kept; additions marked "+"
@@ -120,7 +120,7 @@ Callers: features (`:feature:downloads`, `:feature:episode`, `:feature:podcast`,
 | `DownloadControllerImpl`, `LocalMediaIndexImpl`, `DownloadProgressHub`, `DownloadPaths`, `MediaSniffer`, `MediaKind`, `ContentRange`, `PartFile`, `DownloadFileSystem`, `DeferredDeletes`, `LaneRegistry`, `DownloadSlots`, `ActiveTransfers`, `StopIntent`, `TransferSource`, `TransferPlan`, `Prepared`, `TransferResult`, `TransferEnd`, `ProgressSink`, `DrainRequest`, `DrainOutcome`, `RunnerToken`, `Conditions`, `UidtReporter`, `NotificationReporter`, `YouTubeAutoPacer`, `ChargingMonitor`, `AppVisibility`, `YouTubeGateView`, `ExitReasonProbe`, `JobSchedulerFacade`, `DownloadDiagnostics`, `DownloadInitializers`, `DownloadFeatures` | classes, `:download:impl` (internal) | Engine internals |
 | `DownloadWakeWorker`; unique work `download-wake-MANUAL`, `download-wake-AUTO` (one-time, policy `REPLACE`, tag `download`) | worker and work names, `:download:impl` | Delayed or condition-bound re-arming of a lane ([Wake work](#wake-work)) |
 | `NOTIF_ID_DOWNLOAD_ERRORS = 2002`, `NOTIF_ID_STORAGE_FULL = 2003`, `NOTIF_ID_DOWNLOADS_WAITING = 2004` | notification IDs (range 2000–2999) | Error summary, storage full, "open the app to continue" |
-| Actions `app.neutrodyne.download.action.PAUSE_ALL`, `…RETRY_FAILED`, `…DISMISS_ERRORS` | explicit intents to `DownloadActionReceiver` | Notification actions |
+| Actions `ch.lkmc.neutrodyne.download.action.PAUSE_ALL`, `…RETRY_FAILED`, `…DISMISS_ERRORS` | explicit intents to `DownloadActionReceiver` | Notification actions |
 | `STOP_PROCESS_DEATH = -1`, `STOP_SOFT_DEADLINE = -2`, `STOP_USER_PAUSE = -3`, `STOP_USER_TASK_MANAGER = -4`, `STOP_HANDOVER = -5` | `download.lastStopReason` values below 0 (≥ 0 are platform `STOP_REASON_*`) | Diagnostics, the torn-tail rule, `AUTO` → UIDT handover |
 | Runner tokens `uidt:{startedAtMs}`, `work:{workSpecId}:{startedAtMs}` | format of `download.runnerToken` | Live-runner check and the Task Manager rule ([Pause, cancel and Task Manager stops](#pause-cancel-and-task-manager-stops)) |
 | `downloads.planner_baseline_at` | `device_settings` key | [No backfill watermark](#no-backfill-watermark) |
@@ -591,7 +591,7 @@ No storage-not-low constraint on the `MANUAL` job: the engine's own free-space c
 
 ```kotlin
 @AndroidEntryPoint
-class ManualDownloadJobService : JobService() {          // app.neutrodyne.download.impl — name stable forever
+class ManualDownloadJobService : JobService() {          // ch.lkmc.neutrodyne.download.impl — name stable forever
     @Inject lateinit var engine: DownloadEngine
     @Inject lateinit var notifications: DownloadNotifications
     @Inject lateinit var scheduler: DownloadScheduler
@@ -1282,9 +1282,9 @@ Fixtures: `download/impl/src/test/resources/media/` — `id3.mp3`, `framesync.mp
 | `DownloadJourneyTest` (09's E4) | GMD `ci` | download a throttled 5 MB enclosure → complete → server stopped → plays; file under `Android/data/…/Podcasts/` |
 | `OfflinePlaybackTest` (with 06) | GMD | **M6 acceptance 6**: a downloaded episode plays in airplane mode with artwork; deleting it while playing is deferred until the next transition |
 | `DownloadsScreenStringsTest` (with 08, Roborazzi) | Robolectric | **M6 acceptance 8**: correct text for every `waitReason`, state and error |
-| `bmgr` check | 09's nightly `bmgr` job (android-emulator-runner, API 29 for `backup_rules.xml` and API 36 for `data_extraction_rules.xml`; `scripts/ci/bmgr-check.sh`); 07 adds its assertion in M6 | **M6 acceptance 7**: `adb shell bmgr enable true`; `bmgr transport com.android.localtransport/.LocalTransport`; download a 30 MB episode; `bmgr backupnow app.neutrodyne`; the local transport's stored backup for the package (Unverified path) contains no `Podcasts/` or `downloads/` entry |
+| `bmgr` check | 09's nightly `bmgr` job (android-emulator-runner, API 29 for `backup_rules.xml` and API 36 for `data_extraction_rules.xml`; `scripts/ci/bmgr-check.sh`); 07 adds its assertion in M6 | **M6 acceptance 7**: `adb shell bmgr enable true`; `bmgr transport com.android.localtransport/.LocalTransport`; download a 30 MB episode; `bmgr backupnow ch.lkmc.neutrodyne`; the local transport's stored backup for the package (Unverified path) contains no `Podcasts/` or `downloads/` entry |
 
-**M6 device checklist** (recorded in the PR): reboot mid-download on API 34 and 33 (UIDT and worker resume, acceptance 2); Task Manager "Stop" on the UIDT entry (rows `PAUSED`; record the `ApplicationExitInfo` reason and whether `getPendingJob(1001)` is null afterwards); swipe the app from Recents during a UIDT download (must not pause); app update during a UIDT download (the job survives, or reconcile re-arms it); SD card removal and re-insertion; Data Saver on with mobile data; notification permission denied; `adb shell am set-standby-bucket app.neutrodyne restricted` (`NEEDS_FOREGROUND` and `BACKGROUND_RESTRICTED`); `adb shell dumpsys jobscheduler` shows namespace `downloads`, job 1001, user-initiated; notification update via `notify` vs `setNotification` on API 34 and 36.
+**M6 device checklist** (recorded in the PR): reboot mid-download on API 34 and 33 (UIDT and worker resume, acceptance 2); Task Manager "Stop" on the UIDT entry (rows `PAUSED`; record the `ApplicationExitInfo` reason and whether `getPendingJob(1001)` is null afterwards); swipe the app from Recents during a UIDT download (must not pause); app update during a UIDT download (the job survives, or reconcile re-arms it); SD card removal and re-insertion; Data Saver on with mobile data; notification permission denied; `adb shell am set-standby-bucket ch.lkmc.neutrodyne restricted` (`NEEDS_FOREGROUND` and `BACKGROUND_RESTRICTED`); `adb shell dumpsys jobscheduler` shows namespace `downloads`, job 1001, user-initiated; notification update via `notify` vs `setNotification` on API 34 and 36.
 
 ### M6 acceptance criteria map
 
@@ -1314,9 +1314,9 @@ Serves N2, N7, N8. Delivered in M6 (manifest), M11 (Play, if [PO-2](../PLAN.md#p
 | `RUN_USER_INITIATED_JOBS` | UIDT job for user-started downloads on API 34+ |
 | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC` | WorkManager foreground worker for `MANUAL` downloads on API 26–33 (and expedited work on API < 31) |
 | `RECEIVE_BOOT_COMPLETED` | `setPersisted(true)` on the UIDT job; WorkManager rescheduling; never starts an FGS |
-| `service app.neutrodyne.download.impl.ManualDownloadJobService` (`exported = false`, `permission = BIND_JOB_SERVICE`) | the UIDT `JobService` |
+| `service ch.lkmc.neutrodyne.download.impl.ManualDownloadJobService` (`exported = false`, `permission = BIND_JOB_SERVICE`) | the UIDT `JobService` |
 | `service androidx.work.impl.foreground.SystemForegroundService` (`foregroundServiceType = dataSync`, `tools:node = merge`) | type of WorkManager's foreground service |
-| `receiver app.neutrodyne.download.impl.DownloadActionReceiver` (`exported = false`) | notification actions |
+| `receiver ch.lkmc.neutrodyne.download.impl.DownloadActionReceiver` (`exported = false`) | notification actions |
 | `file_paths.xml`: `external-files-path` `Podcasts/`, `files-path` `downloads/` | "Share file" ([Sharing a file](#sharing-a-file)) |
 | `android:hasFragileUserData="true"` (application, set by 01) | "keep app data" on uninstall |
 

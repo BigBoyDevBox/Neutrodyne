@@ -376,7 +376,7 @@ Context: Media3 Cast pulls `play-services-cast-framework`, which is proprietary 
 
 | ID | Question | Options | Recommendation = default | Blocks |
 |---|---|---|---|---|
-| PO-8 | Application ID, one ID for both flavors, signing-key custody | `app.neutrodyne` (working ID) or another; same ID for `foss`/`play` (cross-grade keeps data) vs `.play` suffix; key held by whom, backup by whom | Same ID `app.neutrodyne` for both flavors; one RSA-4096 key, created in an offline key ceremony in M0 ([09 Key ceremony and custody](design/09-quality-and-release.md#key-ceremony-and-custody)), held by the maintainer with an offline encrypted backup held by a second person. Unverified: Play "update ownership" prompts when sideloading over a Play install — test before 1.0 | M0 (key holders, before the first signed pre-release); M11 (ID permanent once published) |
+| PO-8 | Application ID, one ID for both flavors, signing-key custody | `ch.lkmc.neutrodyne` (working ID) or another; same ID for `foss`/`play` (cross-grade keeps data) vs `.play` suffix; key held by whom, backup by whom | Same ID `ch.lkmc.neutrodyne` for both flavors; one RSA-4096 key, created in an offline key ceremony in M0 ([09 Key ceremony and custody](design/09-quality-and-release.md#key-ceremony-and-custody)), held by the maintainer with an offline encrypted backup held by a second person. Unverified: Play "update ownership" prompts when sideloading over a Play install — test before 1.0 | M0 (key holders, before the first signed pre-release); M11 (ID permanent once published) |
 | PO-9 | YouTube defaults | Shorts/live/members on or off; premieres; audio-only vs video; auto-download for YouTube; "prefer the show's real RSS feed" suggestion on subscribe | Hide Shorts, live and members-only; hold premieres; audio-only (video v1.x); auto-download off unless enabled (keep 2 when on); suggest the RSS feed when Podcast Index/Apple find the same show (when a search provider is available) | M8, M9 |
 | PO-10 | Crash reporting | None; ACRA by email with per-crash consent; hosted crash service; in `play`, ACRA or Android vitals only | ACRA by email to a project mailbox named by the PO, in both flavors (`play` declares optional crash logs in Data safety); disabled in builds without a configured address | M11 (mailbox) |
 | PO-11 | Group and queue semantics | Play group: keep Up next first (Spotify) / replace / ask; default group order; Ungrouped tab; group can hide its podcasts from All | Keep Up next first; newest-first everywhere (oldest-first offered when a group name looks like "fiction"/"audiobooks"); Ungrouped tab off; per-podcast `includeInAll` switch only | M2, M4 |
@@ -408,7 +408,7 @@ Detailed design lives in the design documents; this section shows the shape and 
 
 ### 5.1 Module graph
 
-Kotlin base package `app.neutrodyne`; module `:a:b` uses package `app.neutrodyne.a.b`. JVM = pure Kotlin/JVM module (no Android). `foss`-only and v1.x modules are marked.
+Kotlin base package `ch.lkmc.neutrodyne`; module `:a:b` uses package `ch.lkmc.neutrodyne.a.b`. JVM = pure Kotlin/JVM module (no Android). `foss`-only and v1.x modules are marked.
 
 ```mermaid
 flowchart TB

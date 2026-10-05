@@ -1585,7 +1585,7 @@ Serves N1, N11 ([D22](../PLAN.md#3-key-decisions)). Harness delivered in M1; eve
 
 ### Schema export and versioning
 
-- `exportSchema = true`; the `neutrodyne.room` plugin sets `room3 { schemaDirectory("$projectDir/schemas") }`, producing `core/database/schemas/app.neutrodyne.core.database.NeutrodyneDatabase/<version>.json`. The files are committed and reviewed like code.
+- `exportSchema = true`; the `neutrodyne.room` plugin sets `room3 { schemaDirectory("$projectDir/schemas") }`, producing `core/database/schemas/ch.lkmc.neutrodyne.core.database.NeutrodyneDatabase/<version>.json`. The files are committed and reviewed like code.
 - Version 1 is the complete M1 schema. **A version is frozen once any tagged build (`vX.Y.Z-beta.N` or release) contains it**; afterwards its JSON never changes. Between tags, the next version number may be regenerated freely.
 - Any change to an entity, index, `@Database` entity list or FTS/view definition bumps `VERSION` by one and adds a migration and its test in the same change.
 - CI (09) runs KSP and fails on an uncommitted change under `schemas/` (drift check) and on any modification of a frozen version's JSON compared with the last tag.
@@ -1596,7 +1596,7 @@ Serves N1, N11 ([D22](../PLAN.md#3-key-decisions)). Harness delivered in M1; eve
 | Change | How |
 |---|---|
 | Add a table, an index, or a nullable/defaulted column | `@AutoMigration(from = N, to = N + 1)` allowed (still tested): these are plain `CREATE`/`ALTER TABLE … ADD COLUMN` statements |
-| Anything that makes Room recreate a table (rename/drop a column, change a type, nullability, default, PK or FK) | **Manual** `Migration(N, N + 1)` with the table-rebuild procedure below, in `core/database/src/main/kotlin/app/neutrodyne/core/database/migration/MigrationNToM.kt`, listed in `ALL_MIGRATIONS`. Never an `@AutoMigration` with `@RenameColumn`/`@DeleteColumn` specs: Room's generated rebuild has the two hazards below and cannot be fixed from a spec |
+| Anything that makes Room recreate a table (rename/drop a column, change a type, nullability, default, PK or FK) | **Manual** `Migration(N, N + 1)` with the table-rebuild procedure below, in `core/database/src/main/kotlin/ch/lkmc/neutrodyne/core/database/migration/MigrationNToM.kt`, listed in `ALL_MIGRATIONS`. Never an `@AutoMigration` with `@RenameColumn`/`@DeleteColumn` specs: Room's generated rebuild has the two hazards below and cannot be fixed from a spec |
 | Rename a table; move data between tables | Manual migration |
 
 Two hazards make table rebuilds dangerous here:

@@ -31,7 +31,7 @@ This document is the engineering-process contract: how every other document's co
 
 **Not covered here:** the version catalog and convention-plugin skeletons ([01 Toolchain and versions](01-foundation.md#toolchain-and-versions)); Gradle-side policy tasks `assertModuleGraph`, `verifyDependencyPolicy`, `verifyManifestPermissions`, `checkSpdxHeaders`, `checkBannedApis`, Licensee allow-list ([01 Licensing and dependency policy](01-foundation.md#licensing-and-dependency-policy)) — 09 only decides when CI runs them; the logging `Redactor` algorithm ([01 Logging and redaction](01-foundation.md#logging-and-redaction)); what each feature area tests (the `## Testing` sections of [02](02-data-model.md#testing), [03](03-feeds-and-discovery.md#testing), [04](04-youtube.md#testing), [05](05-groups-opml-backup.md#testing), [06](06-playback.md#testing), [07](07-downloads.md#testing), [08](08-ui-ux.md#testing)); the diagnostics screen's visuals ([08 Diagnostics](08-ui-ux.md#diagnostics)); YouTube legal texts, corresponding-source content and the hotfix runbook ([04 Licensing and legal](04-youtube.md#licensing-and-legal), [04 Maintenance and hotfix process](04-youtube.md#maintenance-and-hotfix-process)); Auto Backup rules ([05 Auto Backup](05-groups-opml-backup.md#auto-backup)); the `dataSync` declaration text ([07 Manifest and Play declaration](07-downloads.md#manifest-and-play-declaration)).
 
-**Repository files owned by this document** (created in the milestone shown in [Delivery by milestone](#delivery-by-milestone)): `.editorconfig`, `.github/workflows/{ci,nightly,release,record-screenshots,baseline-profile}.yml`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/ISSUE_TEMPLATE/{bug.yml,feature.yml,release.md}`, `renovate.json`, `config/detekt/detekt.yml`, `app/lint-baseline.xml`, `app/policy/locales.txt`, `scripts/release.sh`, `scripts/ci/*.sh`, `scripts/l10n/update-shipped-locales.sh`, `scripts/youtube/bump-extractor.sh`, `fastlane/metadata/android/**`, `fdroid/app.neutrodyne.yml` (draft of the fdroiddata recipe), `PRIVACY.md`, `SECURITY.md`. `CONTRIBUTING.md` content is 01's ([Copied code and contributions](01-foundation.md#copied-code-and-contributions)); 09 adds the testing and release sections.
+**Repository files owned by this document** (created in the milestone shown in [Delivery by milestone](#delivery-by-milestone)): `.editorconfig`, `.github/workflows/{ci,nightly,release,record-screenshots,baseline-profile}.yml`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/ISSUE_TEMPLATE/{bug.yml,feature.yml,release.md}`, `renovate.json`, `config/detekt/detekt.yml`, `app/lint-baseline.xml`, `app/policy/locales.txt`, `scripts/release.sh`, `scripts/ci/*.sh`, `scripts/l10n/update-shipped-locales.sh`, `scripts/youtube/bump-extractor.sh`, `fastlane/metadata/android/**`, `fdroid/ch.lkmc.neutrodyne.yml` (draft of the fdroiddata recipe), `PRIVACY.md`, `SECURITY.md`. `CONTRIBUTING.md` content is 01's ([Copied code and contributions](01-foundation.md#copied-code-and-contributions)); 09 adds the testing and release sections.
 
 ---
 
@@ -175,7 +175,7 @@ internal fun Project.configureAndroidTesting(ext: CommonExtension) {
     ext.defaultConfig.testInstrumentationRunnerArguments["clearPackageData"] = "true"
     if (providers.gradleProperty("neutrodyne.testScope").getOrElse("ci") == "ci")   // nightly/release scopes run everything
         ext.defaultConfig.testInstrumentationRunnerArguments["notAnnotation"] =
-            "app.neutrodyne.core.testing.Nightly,androidx.test.filters.FlakyTest"
+            "ch.lkmc.neutrodyne.core.testing.Nightly,androidx.test.filters.FlakyTest"
     ext.testOptions.unitTests.isIncludeAndroidResources = true   // Robolectric + Roborazzi need merged resources
     ext.testOptions.unitTests.isReturnDefaultValues = false      // unmocked android.* calls fail loudly
     ext.testOptions.animationsDisabled = true
@@ -206,10 +206,10 @@ internal fun Project.configureAndroidTesting(ext: CommonExtension) {
 
 ### Shared helpers
 
-`:core:testing` is an Android library and cannot be a dependency of the pure-JVM modules. The three helpers JVM tests also need are authored as **test fixtures of `:core:common`** (`java-test-fixtures` plugin, sources in `core/common/src/testFixtures/kotlin/app/neutrodyne/core/testing/`, package `app.neutrodyne.core.testing`) and re-exported by `:core:testing` with `api(testFixtures(project(":core:common")))`, so every module imports them from the same package. JVM modules declare `testImplementation(testFixtures(project(":core:common")))`; test edges are not asserted by the module graph ([01 Dependency rules](01-foundation.md#dependency-rules) rule 13).
+`:core:testing` is an Android library and cannot be a dependency of the pure-JVM modules. The three helpers JVM tests also need are authored as **test fixtures of `:core:common`** (`java-test-fixtures` plugin, sources in `core/common/src/testFixtures/kotlin/ch/lkmc/neutrodyne/core/testing/`, package `ch.lkmc.neutrodyne.core.testing`) and re-exported by `:core:testing` with `api(testFixtures(project(":core:common")))`, so every module imports them from the same package. JVM modules declare `testImplementation(testFixtures(project(":core:common")))`; test edges are not asserted by the module graph ([01 Dependency rules](01-foundation.md#dependency-rules) rule 13).
 
 ```kotlin
-package app.neutrodyne.core.testing
+package ch.lkmc.neutrodyne.core.testing
 
 /** Deterministic Clock (01). Optionally tied to a coroutine test scheduler's virtual time. */
 class TestClock(var nowMs: Long = DEFAULT_NOW, var elapsedMs: Long = 0L) : Clock {
@@ -245,7 +245,7 @@ object Goldens {
 
 ### `:core:testing` inventory
 
-Package `app.neutrodyne.core.testing`; dependencies per rule 9 (`:core:{domain, model, common}`, `:*:api`); `api` exports junit4, truth, turbine, coroutines-test, coil-test, hilt-android-testing ([01 Module layout](01-foundation.md#module-layout)).
+Package `ch.lkmc.neutrodyne.core.testing`; dependencies per rule 9 (`:core:{domain, model, common}`, `:*:api`); `api` exports junit4, truth, turbine, coroutines-test, coil-test, hilt-android-testing ([01 Module layout](01-foundation.md#module-layout)).
 
 | Item | Fakes / provides | Interface owner | From |
 |---|---|---|---|
@@ -276,7 +276,7 @@ Rule: an interface added to `:core:domain` or `*:api` by any document gets its `
 | `TestDb`, `SeedDatabase`, `FeedFixture`, `db/v1-fixture.sql` (02's names) | `:core:database` **Android test fixtures** (`android { testFixtures { enable = true } }`, `core/database/src/testFixtures/`, as 02 places them) — so other modules can consume them | `testImplementation(testFixtures(project(":core:database")))` in `:core:data`, `:core:artwork`, `:playback:impl`, `:download:impl`, `:app` |
 | `RecordingAppNavigator` (records `push`/`selectTab`/`pop`) | `:core:navigation` test fixtures | feature Compose tests via `LocalAppNavigator` |
 | `ReplayDownloader`, `RecordingDownloader` (04's names) | `:youtube:streams` test fixtures (GPL; never shipped) | `:youtube:streams` tests, `:app` `androidTest` (E7) |
-| `@TestInstallIn` Hilt modules (`TestSqliteDriverModule` and fake bindings) | `:app/src/test/kotlin/app/neutrodyne/di/` | Robolectric `@HiltAndroidTest` tests in `:app` |
+| `@TestInstallIn` Hilt modules (`TestSqliteDriverModule` and fake bindings) | `:app/src/test/kotlin/ch/lkmc/neutrodyne/di/` | Robolectric `@HiltAndroidTest` tests in `:app` |
 | `TestServer`, `TestSeeder` | `:app/src/androidTest` | E2E journeys |
 
 Unverified: Kotlin sources in AGP Android test fixtures under AGP 9.4 (AGP 8.x needed `android.experimental.enableTestFixturesKotlinSupport`); checked in M0 with `:core:navigation`, fallback: a `src/sharedTest` directory added to each consumer's test source set by path.
@@ -423,7 +423,7 @@ private fun Project.disableEmptyDeviceTests() = extensions.getByType<AndroidComp
 
 ### Out-of-process system tests
 
-Instrumented tests run inside the app's process, so killing the process (`am kill`, ProcessDeathResumeTest) or reinstalling the app kills the test. Such tests live in `:benchmark` (`com.android.test`, self-instrumenting, `targetProjectPath = ":app"`, `missingDimensionStrategy("distribution", "foss")`), drive the app with UI Automator 2.4.0 and `UiAutomation.executeShellCommand`, and run on `bench34`. Consequently `:benchmark` is created in **M6** (system tests), and gains Macrobenchmarks and the baseline-profile generator in M10/M11 ([Performance budgets](#performance-budgets)). Compose nodes are found by resource ID through `Modifier.semantics { testTagsAsResourceId = true }` on `NeutrodyneRoot` and 08's test tags ([08 Performance journeys](08-ui-ux.md#performance-journeys)). System tests target `:app`'s `fossDebug` variant (package `app.neutrodyne.debug`; the Macrobenchmark build types arrive with the baseline-profile plugin in M10), create their data through the UI (Library → "Add by URL"), and serve feeds and enclosures from a MockWebServer inside the `:benchmark` process on `127.0.0.1`, which the app reaches over loopback.
+Instrumented tests run inside the app's process, so killing the process (`am kill`, ProcessDeathResumeTest) or reinstalling the app kills the test. Such tests live in `:benchmark` (`com.android.test`, self-instrumenting, `targetProjectPath = ":app"`, `missingDimensionStrategy("distribution", "foss")`), drive the app with UI Automator 2.4.0 and `UiAutomation.executeShellCommand`, and run on `bench34`. Consequently `:benchmark` is created in **M6** (system tests), and gains Macrobenchmarks and the baseline-profile generator in M10/M11 ([Performance budgets](#performance-budgets)). Compose nodes are found by resource ID through `Modifier.semantics { testTagsAsResourceId = true }` on `NeutrodyneRoot` and 08's test tags ([08 Performance journeys](08-ui-ux.md#performance-journeys)). System tests target `:app`'s `fossDebug` variant (package `ch.lkmc.neutrodyne.debug`; the Macrobenchmark build types arrive with the baseline-profile plugin in M10), create their data through the UI (Library → "Add by URL"), and serve feeds and enclosures from a MockWebServer inside the `:benchmark` process on `127.0.0.1`, which the app reaches over loopback.
 
 ### Recorded responses
 
@@ -566,7 +566,7 @@ Pushing commits from workflows is deliberately avoided: pushes made with `GITHUB
 | Script | Purpose |
 |---|---|
 | `scripts/ci/check-apk.sh` | size budgets, 16 KB alignment, `play` dex check ([Build-output checks](#build-output-checks)) |
-| `scripts/ci/check-play-dex.sh <apk>` | `dexdump` (build-tools 36.0.0) class descriptors: fail on `Lorg/schabi/newpipe/`, `Lorg/mozilla/javascript/`, `Lapp/neutrodyne/youtube/streams/`; print the count of `Lj$/` classes (01's M9 desugaring check) |
+| `scripts/ci/check-play-dex.sh <apk>` | `dexdump` (build-tools 36.0.0) class descriptors: fail on `Lorg/schabi/newpipe/`, `Lorg/mozilla/javascript/`, `Lch/lkmc/neutrodyne/youtube/streams/`; print the count of `Lj$/` classes (01's M9 desugaring check) |
 | `scripts/ci/check-frozen-schemas.sh` | for every `N.json` that exists at the newest `v*` tag, `git diff --exit-code <tag> -- <file>` ([02 Schema export and versioning](02-data-model.md#schema-export-and-versioning)) |
 | `scripts/ci/check-fastlane.sh` | metadata limits ([Store metadata](#store-metadata)); banned words in `play` release notes |
 | `scripts/ci/repro-build.sh [--sign] [--path P] [--cpus N] [--umask U] <gradle args…>` | container build used by `repro`, `release.yml` and `verify-repro`; `--sign` mounts the keystore and passes `NEUTRODYNE_KEYSTORE*` |
@@ -891,7 +891,7 @@ Inclusion request at M11 after `v1.0.0` (FOSS licence, APK attached to GitHub re
 
 ### F-Droid
 
-Merge request to `fdroiddata` at M11 with the tag `v1.0.0`; the draft lives in `fdroid/app.neutrodyne.yml` and is updated with every release that changes build requirements.
+Merge request to `fdroiddata` at M11 with the tag `v1.0.0`; the draft lives in `fdroid/ch.lkmc.neutrodyne.yml` and is updated with every release that changes build requirements.
 
 ```yaml
 Categories:
@@ -930,7 +930,7 @@ CurrentVersionCode: 1000095
 
 - Requirements met by design: FLOSS toolchain and dependencies (Maven Central, Google Maven, JitPack allowed), no Play services/Firebase/Crashlytics in `foss` (01's ban), `dependenciesInfo` off (01), no prebuild patches needed (any patch would break the binary match), no git metadata read by Gradle (01), JDK 21 matching the [release container](#nightly-reproducibility-job).
 - `NonFreeNet` is declared pre-emptively (undisclosed anti-features are a rejection reason); F-Droid maintainers decide. NewPipe carries it; AntennaPod (directory search only) carries none.
-- M11 dry run: build the recipe locally with fdroidserver (`fdroid build -v -l app.neutrodyne` in fdroidserver's container) before opening the MR. Unverified: the current fdroidserver image name and local-build flags.
+- M11 dry run: build the recipe locally with fdroidserver (`fdroid build -v -l ch.lkmc.neutrodyne` in fdroidserver's container) before opening the MR. Unverified: the current fdroidserver image name and local-build flags.
 
 ### Google Play
 
@@ -997,7 +997,7 @@ Unverified: whether the `platforms;android-37` revision can change under the sam
 
 ### Nightly reproducibility job
 
-1. Start two containers from `debian:trixie@sha256:<digest>` (digest pinned, Renovate-managed) with different checkout paths (`/build/a` and `/home/vagrant/build/app.neutrodyne`, the latter mimicking F-Droid), different CPU counts (`--cpus=2` and `--cpus=4`) and different umasks (022, 002).
+1. Start two containers from `debian:trixie@sha256:<digest>` (digest pinned, Renovate-managed) with different checkout paths (`/build/a` and `/home/vagrant/build/ch.lkmc.neutrodyne`, the latter mimicking F-Droid), different CPU counts (`--cpus=2` and `--cpus=4`) and different umasks (022, 002).
 2. In each: install `openjdk-21-jdk-headless git unzip curl`, run `install-android-sdk.sh`, then `./gradlew --no-daemon --no-build-cache assembleFossRelease` (unsigned).
 3. Compare SHA-256 of the two APKs; on a difference run `diffoscope` and upload its HTML report.
 4. Report-only until M11; from M11 a difference opens a `release-blocker` issue.
@@ -1021,10 +1021,10 @@ Serves N8; mitigates risk P3. Delivered in M11 at the latest (PO-5 blocks M11). 
 Steps (registrant named by the PO):
 
 1. Create the Android Developer Console "Full Distribution" account ($25, government ID for a person; organisation verification for an organisation). The free limited-distribution account (20 devices) is not usable for public releases.
-2. Register package `app.neutrodyne` with our certificate SHA-256 and complete the console's key-ownership proof (Unverified mechanics).
+2. Register package `ch.lkmc.neutrodyne` with our certificate SHA-256 and complete the console's key-ownership proof (Unverified mechanics).
 3. If Play is used: Play-distributed apps are registered through the Play Console; add the off-Play registration there so sideloaded GitHub, IzzyOnDroid and F-Droid installs (same key) are covered.
 4. If F-Droid ships its own signature ([fallback](#fallback)): download F-Droid's APK, read its certificate and register it as an additional key (multiple keys per package are allowed; Google's open-source guide describes this case).
-5. `app.neutrodyne.debug` builds are installed over ADB by developers, which stays exempt.
+5. `ch.lkmc.neutrodyne.debug` builds are installed over ADB by developers, which stays exempt.
 
 **Testers before registration:** release-signed pre-releases from M0 on are affected in the four enforcement countries; testers there use ADB or the advanced flow (Developer Options toggle and a 24-hour wait). Users who later turn the advanced flow off cannot update an unverified app, which is why registration must precede the 1.0 announcement. A legal identity becomes tied to an app that extracts YouTube streams (risk L1); the PO's PO-1/PO-2 risk appetite applies.
 
@@ -1306,7 +1306,7 @@ Serves N5, R2.9; mitigates risk T6. Delivered in M2 (query timing), M10 (grid ja
 | PB12 | `foss` universal APK | < 25 MB (N5) | `check-apk.sh` | every PR |
 | PB13 | `play` universal APK | < 25 MB | `check-apk.sh` | every PR |
 | PB14 | Database at the N5 scale | ≤ 100 MB | 02's size measurement | M11 |
-| PB15 | App PSS peak during `CoverGridFling` + `PlayerExpandCollapse` | ≤ 250 MB (starting value, Unverified) | `MemoryUsageMetric(Mode.Max)` (experimental Macrobenchmark metric; fallback `dumpsys meminfo app.neutrodyne` in `teardownBlock`) | soft |
+| PB15 | App PSS peak during `CoverGridFling` + `PlayerExpandCollapse` | ≤ 250 MB (starting value, Unverified) | `MemoryUsageMetric(Mode.Max)` (experimental Macrobenchmark metric; fallback `dumpsys meminfo ch.lkmc.neutrodyne` in `teardownBlock`) | soft |
 | PB16 | 300-feed refresh with all feeds answering 304 | ≤ 3 min on Wi-Fi | 03's M11 performance check | soft |
 | PB17 | Splash hold | ≤ 400 ms | 01's start-up rule | M0 |
 
@@ -1315,7 +1315,7 @@ Budget changes are PO decisions (N5) and are recorded in this table.
 ### Macrobenchmark and profiles
 
 - `:benchmark` (from M10 for the journeys; module exists since M6) uses `benchmark-macro-junit4` 1.5.0 and the `androidx.baselineprofile` plugin with `targetProjectPath = ":app"`, `useConnectedDevices = false`, managed device `bench34` (`aosp`, API 34; profile generation needs an `aosp` image at API 33+ or root).
-- **Seeding:** the plugin-created `benchmarkRelease` and `nonMinifiedRelease` build types get an extra source directory `app/src/benchmarkShared/` (added to both via `sourceSets`) containing `BenchmarkSeedReceiver`, a receiver without intent filters, `exported="true"` and protected by `android:permission="android.permission.DUMP"` (held by the shell, not by apps), which fills the database with `SeedDatabase` (`benchmarkReleaseImplementation(testFixtures(project(":core:database")))`). The benchmark's `setupBlock` sends `am broadcast -n app.neutrodyne/.benchmark.BenchmarkSeedReceiver` once and waits for its marker file. The `release` variant never contains it. Unverified: variant-specific source sets and dependencies for plugin-created build types (M10 check).
+- **Seeding:** the plugin-created `benchmarkRelease` and `nonMinifiedRelease` build types get an extra source directory `app/src/benchmarkShared/` (added to both via `sourceSets`) containing `BenchmarkSeedReceiver`, a receiver without intent filters, `exported="true"` and protected by `android:permission="android.permission.DUMP"` (held by the shell, not by apps), which fills the database with `SeedDatabase` (`benchmarkReleaseImplementation(testFixtures(project(":core:database")))`). The benchmark's `setupBlock` sends `am broadcast -n ch.lkmc.neutrodyne/.benchmark.BenchmarkSeedReceiver` once and waits for its marker file. The `release` variant never contains it. Unverified: variant-specific source sets and dependencies for plugin-created build types (M10 check).
 - **Baseline and startup profiles:** generated from the same journeys (`ColdStartToFeeds` with `includeInStartupProfile = true`), `mergeIntoMain = true`, committed as text under `app/src/main/generated/baselineProfiles/`; `automaticGenerationDuringBuild = false` so normal and F-Droid builds never need an emulator. Regenerated with `baseline-profile.yml` before each minor release.
 - **Full display:** 08's Feeds route calls `ReportDrawnWhen { first page loaded }` ([08 Performance journeys](08-ui-ux.md#performance-journeys)), so `StartupTimingMetric` also reports time to full display; not budgeted in v1.
 - Results (`*-benchmarkData.json`) from the reference device are attached to the release checklist issue; a regression > 10 % against the previous minor release on PB1–PB4 blocks the release until explained.
@@ -1423,7 +1423,7 @@ Settings › Privacy page content (09): crash-reports switch; "What Neutrodyne c
 | `configureNeutrodyneTestTasks()`, `configureAndroidTesting()`, `configureManagedDevices()`, `disableEmptyDeviceTests()` | build-logic functions | `build-logic/convention` |
 | Gradle properties `updateGoldens`, `screenshotTier`, `mutationIterations`, `testBuildType`, `neutrodyne.testScope` | build switches | — |
 | System properties `neutrodyne.updateGoldens`, `neutrodyne.moduleDir`, `neutrodyne.rootDir`, `neutrodyne.screenshotTier`, `neutrodyne.mutationIterations` | test configuration | — |
-| `TestClock`, `MainDispatcherRule` (canonical names; physical location), `Goldens` | test helpers | `:core:common` test fixtures, package `app.neutrodyne.core.testing`, re-exported by `:core:testing` |
+| `TestClock`, `MainDispatcherRule` (canonical names; physical location), `Goldens` | test helpers | `:core:common` test fixtures, package `ch.lkmc.neutrodyne.core.testing`, re-exported by `:core:testing` |
 | `Nightly`, `ScreenshotTier`, `assumeTier` | test selection | `:core:testing` |
 | `Fake*` per [inventory](#coretesting-inventory), `*Contract` bases, data builders, `fakeImageLoader` | fakes | `:core:testing` |
 | `RecordingAppNavigator` | fake | `:core:navigation` test fixtures |
@@ -1443,7 +1443,7 @@ Settings › Privacy page content (09): crash-reports switch; "What Neutrodyne c
 | `privacy.crash_reports`, `diagnostics.verbose_log_until` | setting keys | `:core:model` registry |
 | Workflows `ci.yml`, `nightly.yml`, `release.yml`, `record-screenshots.yml`, `baseline-profile.yml`; jobs per [CI pipelines](#ci-pipelines); GitHub environment `release`; labels `run-instrumented`, `youtube-hotfix`, `nightly-failure`, `release-blocker` | CI | `.github/` |
 | Scripts per [CI scripts](#ci-scripts), `scripts/release.sh`, `scripts/release/corresponding-source.sh`, `scripts/l10n/update-shipped-locales.sh`, `scripts/youtube/bump-extractor.sh`, `scripts/ci/network-capture.sh` | scripts | `scripts/` |
-| `app/policy/locales.txt`, `app/lint-baseline.xml`, `config/detekt/detekt.yml`, `renovate.json`, `fdroid/app.neutrodyne.yml`, `PRIVACY.md`, `SECURITY.md`, `.editorconfig`, `app/proguard-test.pro` | files | repository |
+| `app/policy/locales.txt`, `app/lint-baseline.xml`, `config/detekt/detekt.yml`, `renovate.json`, `fdroid/ch.lkmc.neutrodyne.yml`, `PRIVACY.md`, `SECURITY.md`, `.editorconfig`, `app/proguard-test.pro` | files | repository |
 | Secrets `NEUTRODYNE_UPLOAD_KEYSTORE*`, `PLAY_SERVICE_ACCOUNT_JSON`; variables `NEUTRODYNE_CERT_SHA256`, `PLAY_PUBLISHING` | CI configuration | GitHub |
 
 ---

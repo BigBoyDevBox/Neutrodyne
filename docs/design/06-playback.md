@@ -31,10 +31,10 @@ One `MediaLibraryService` ([D37](../PLAN.md#3-key-decisions)) owns one `ExoPlaye
 
 | Module | Contents from this document |
 |---|---|
-| `:playback:api` (JVM, `app.neutrodyne.playback.api`) | `PlaybackController`, `PlaybackStateSource`, `PlaybackMaintenance` and their data types (below) |
+| `:playback:api` (JVM, `ch.lkmc.neutrodyne.playback.api`) | `PlaybackController`, `PlaybackStateSource`, `PlaybackMaintenance` and their data types (below) |
 | `:core:domain` | `QueueRepository`, `ChapterRepository` (interfaces owned here) |
 | `:core:model` | `UpNextItem`, `VirtualQueue`, `QueueItem`, `QueueOrigin`, `PlaySessionInfo`, `PlayContextInfo`, `AddResult`, `EpisodeChapter` |
-| `:playback:impl` (Android, `app.neutrodyne.playback.impl`) | Everything else ([package layout](#package-layout)); `@UnstableApi` opt-in module-wide ([01 Convention plugins](01-foundation.md#convention-plugins)) |
+| `:playback:impl` (Android, `ch.lkmc.neutrodyne.playback.impl`) | Everything else ([package layout](#package-layout)); `@UnstableApi` opt-in module-wide ([01 Convention plugins](01-foundation.md#convention-plugins)) |
 | `:core:testing` | `FakePlaybackController`, `FakePlaybackStateSource`, `FakeQueueRepository`, `FakeChapterRepository` (M0) |
 
 ```kotlin
@@ -175,7 +175,7 @@ data class EpisodeChapter(val startMs: Long, val endMs: Long?, val title: String
 ### Package layout
 
 ```
-playback/impl/src/main/kotlin/app/neutrodyne/playback/impl/
+playback/impl/src/main/kotlin/ch/lkmc/neutrodyne/playback/impl/
   NeutrodynePlaybackService.kt  PlaybackModule.kt (Hilt bindings, SimpleCache, initializers)
   player/   PlayerFactory  SessionPlayer  NdMediaSourceFactory  NdLoadErrorHandlingPolicy
             BoostLimiterProcessor  EndOfItemPauseArbiter
@@ -303,7 +303,7 @@ stateDiagram-v2
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 <uses-permission android:name="android.permission.WAKE_LOCK" />
 <application>
-  <service android:name="app.neutrodyne.playback.impl.NeutrodynePlaybackService"
+  <service android:name="ch.lkmc.neutrodyne.playback.impl.NeutrodynePlaybackService"
       android:exported="true" android:foregroundServiceType="mediaPlayback">          <!-- M4 -->
     <intent-filter>
       <action android:name="androidx.media3.session.MediaLibraryService" />
@@ -956,7 +956,7 @@ Serves N2, N7. Delivered in M4, verified in M5 and M11. Honours [D43](../PLAN.md
 
 **Demotion.** 10 min after a pause, error or end Media3 demotes the service (notification stays). A later background play request is refused by the platform and lands in Tap to resume.
 
-**Testing hooks.** `adb shell cmd audio set-enable-hardening throw` on an API 37 image turns silent muting into exceptions (M4 acceptance 4); a reboot test on an API 35+ image for the resumption card (M5; at targetSdk 37 the `BOOT_COMPLETED` FGS restriction is always in force, and `adb shell am compat enable FGS_BOOT_COMPLETED_RESTRICTIONS app.neutrodyne` forces it on a build with a lower target). While-in-use sources per the Android 17 page: a service started while the app is visible, notification clicks, widget interactions and media key events from an external device; a `BOOT_COMPLETED`-started FGS never qualifies.
+**Testing hooks.** `adb shell cmd audio set-enable-hardening throw` on an API 37 image turns silent muting into exceptions (M4 acceptance 4); a reboot test on an API 35+ image for the resumption card (M5; at targetSdk 37 the `BOOT_COMPLETED` FGS restriction is always in force, and `adb shell am compat enable FGS_BOOT_COMPLETED_RESTRICTIONS ch.lkmc.neutrodyne` forces it on a build with a lower target). While-in-use sources per the Android 17 page: a service started while the app is visible, notification clicks, widget interactions and media key events from an external device; a `BOOT_COMPLETED`-started FGS never qualifies.
 
 ---
 

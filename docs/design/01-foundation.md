@@ -433,10 +433,10 @@ internal fun Project.configureAndroidCommon(ext: CommonExtension) {
 }
 // targetSdk is set explicitly in the application plugin (AGP 9 defaults it to compileSdk if unset):
 //   defaultConfig.targetSdk = 37
-// namespace for libraries: "app.neutrodyne" + path.replace(':', '.')   (":core:model" -> "app.neutrodyne.core.model")
+// namespace for libraries: "ch.lkmc.neutrodyne" + path.replace(':', '.')   (":core:model" -> "ch.lkmc.neutrodyne.core.model")
 ```
 
-`compose-stability.conf` (repo root) lists `app.neutrodyne.core.model.**`, `kotlinx.collections.immutable.*`, `kotlin.time.Duration`. It is valid only because `:core:model` types are deeply immutable by rule ([Architecture patterns](#model-and-state-rules)).
+`compose-stability.conf` (repo root) lists `ch.lkmc.neutrodyne.core.model.**`, `kotlinx.collections.immutable.*`, `kotlin.time.Duration`. It is valid only because `:core:model` types are deeply immutable by rule ([Architecture patterns](#model-and-state-rules)).
 
 #### Gradle-side policy tasks
 
@@ -459,7 +459,7 @@ These run in `check`; CI (09) only invokes Gradle.
 
 Serves N11. Delivered in M0 (stubs), content by milestone per the "Content from" column of the canonical module list ([D13](../PLAN.md#3-key-decisions)).
 
-Every module except `:benchmark` (M6), `:playback:cast` and `:feature:widgets` (v1.x) is created in M0 as a compiling stub: `build.gradle.kts`, the package directory, one `internal` placeholder declaration and one placeholder test. Packages and AGP namespaces follow `app.neutrodyne` + path (`:youtube:streams` → `app.neutrodyne.youtube.streams`).
+Every module except `:benchmark` (M6), `:playback:cast` and `:feature:widgets` (v1.x) is created in M0 as a compiling stub: `build.gradle.kts`, the package directory, one `internal` placeholder declaration and one placeholder test. Packages and AGP namespaces follow `ch.lkmc.neutrodyne` + path (`:youtube:streams` → `ch.lkmc.neutrodyne.youtube.streams`).
 
 | Module | Plugins | Project dependencies (main) | External dependencies | Content from |
 |---|---|---|---|---|
@@ -850,7 +850,7 @@ Owns the conventions of [D35](../PLAN.md#3-key-decisions); each document owns it
 | `device_settings` | `filesDir/datastore/device_settings.preferences_pb` | never | SAF grants, volume UUIDs, prompt flags, selected tab/group, onboarding flags |
 
 ```kotlin
-// :core:model (package app.neutrodyne.core.model.settings)
+// :core:model (package ch.lkmc.neutrodyne.core.model.settings)
 enum class SettingsFile { PORTABLE, DEVICE }            // PORTABLE -> "settings", DEVICE -> "device_settings"
 sealed class SettingKey<T : Any>(val name: String, val default: T, val file: SettingsFile) {
     class Bool(name: String, default: Boolean, file: SettingsFile = SettingsFile.PORTABLE) : SettingKey<Boolean>(name, default, file)
@@ -934,7 +934,7 @@ Rules:
 ### Flavor modules
 
 ```kotlin
-// :app/src/foss/kotlin/app/neutrodyne/flavor/FlavorModule.kt   (M9 state; before M9 it is identical to the play module below
+// :app/src/foss/kotlin/ch/lkmc/neutrodyne/flavor/FlavorModule.kt   (M9 state; before M9 it is identical to the play module below
 // except for Distribution.FOSS)
 @Module @InstallIn(SingletonComponent::class)
 internal abstract class FlavorModule {
@@ -949,7 +949,7 @@ internal abstract class FlavorModule {
     }
 }
 
-// :app/src/play/kotlin/app/neutrodyne/flavor/FlavorModule.kt
+// :app/src/play/kotlin/ch/lkmc/neutrodyne/flavor/FlavorModule.kt
 @Module @InstallIn(SingletonComponent::class)
 internal abstract class FlavorModule {
     @Binds abstract fun streamResolver(impl: ExternalOnlyYouTubeStreamResolver): YouTubeStreamResolver   // :youtube:impl
@@ -1146,14 +1146,14 @@ Serves R3.5–R3.7, N8. Delivered in M0 (both flavors built and tested by CI fro
 | YouTube | layers A + B ([04 Flavor matrix](04-youtube.md#flavor-matrix)) | layer A only |
 | Proprietary SDKs | none | none in v1.0 (Cast in v1.x, PO-6) |
 | Self-update, links to the other flavor | none | none; the About screen links only to the repository root, never to releases or APKs |
-| `applicationId` | `app.neutrodyne` | `app.neutrodyne` (same; [PO-8](../PLAN.md#48-further-product-owner-decisions), [D61](../PLAN.md#3-key-decisions)) |
+| `applicationId` | `ch.lkmc.neutrodyne` | `ch.lkmc.neutrodyne` (same; [PO-8](../PLAN.md#48-further-product-owner-decisions), [D61](../PLAN.md#3-key-decisions)) |
 
 ```kotlin
 // :app/build.gradle.kts (what neutrodyne.android.application sets, plus app-specific lines)
 android {
-    namespace = "app.neutrodyne"
+    namespace = "ch.lkmc.neutrodyne"
     defaultConfig {
-        applicationId = "app.neutrodyne"
+        applicationId = "ch.lkmc.neutrodyne"
         targetSdk = 37
         versionCode = providers.gradleProperty("neutrodyne.versionCode").get().toInt()
         versionName = providers.gradleProperty("neutrodyne.versionName").get()
@@ -1406,7 +1406,7 @@ Serves N2, N7, N3. Delivered in M0 (app shell), extended in M1, M3, M4, M5, M6, 
 | `WAKE_LOCK` | `:playback:impl` (+ merged by media3, WorkManager) | M4 | ExoPlayer wake/Wi-Fi locks; WorkManager |
 | `RUN_USER_INITIATED_JOBS` | `:download:impl` | M6 | UIDT manual downloads (API 34+) |
 | `RECEIVE_BOOT_COMPLETED` | `:download:impl` (+ merged by WorkManager) | M6 | persisted UIDT job (`setPersisted(true)`); WorkManager reschedules — never starts an FGS |
-| `${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` | merged by `androidx.core` (declared `signature`-level and used by the app itself) | M0 | `ContextCompat.registerReceiver(…, RECEIVER_NOT_EXPORTED)` on API < 33 (P25). Unverified exact merged name; the first `verifyManifestPermissions` run in M0 shows it, and `permissions.txt` lists it with the release `applicationId` (`app.neutrodyne.…`) |
+| `${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` | merged by `androidx.core` (declared `signature`-level and used by the app itself) | M0 | `ContextCompat.registerReceiver(…, RECEIVER_NOT_EXPORTED)` on API < 33 (P25). Unverified exact merged name; the first `verifyManifestPermissions` run in M0 shows it, and `permissions.txt` lists it with the release `applicationId` (`ch.lkmc.neutrodyne.…`) |
 
 **Explicitly not requested** (adding any requires a PLAN amendment): `ACCESS_LOCAL_NETWORK` (v1.x, D28), `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM`, `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_AUDIO`, `MANAGE_EXTERNAL_STORAGE` (downloads use app-specific storage, D48), `FOREGROUND_SERVICE_SPECIAL_USE`, `BLUETOOTH_CONNECT`, `QUERY_ALL_PACKAGES`, `SYSTEM_ALERT_WINDOW`, any location permission, `com.google.android.gms.permission.AD_ID`. A library that merges one of these is fixed with `tools:node="remove"` in `:app` and a comment.
 
@@ -1439,18 +1439,18 @@ Serves N2, N7, N3. Delivered in M0 (app shell), extended in M1, M3, M4, M5, M6, 
     </activity>
     <activity android:name=".ExternalImportActivity" android:exported="true" />   <!-- :app; filters and theme: 05 (M3) -->
 
-    <service android:name="app.neutrodyne.playback.impl.NeutrodynePlaybackService" android:exported="true"
+    <service android:name="ch.lkmc.neutrodyne.playback.impl.NeutrodynePlaybackService" android:exported="true"
              android:foregroundServiceType="mediaPlayback" />   <!-- :playback:impl (M4); intent filters: 06 -->
     <receiver android:name="androidx.media3.session.MediaButtonReceiver" android:exported="true" />   <!-- :playback:impl (M5); MEDIA_BUTTON filter: 06 -->
     <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />  <!-- :playback:impl (M5); plain meta-data, no GMS code -->
 
-    <service android:name="app.neutrodyne.download.impl.ManualDownloadJobService" android:exported="false"
+    <service android:name="ch.lkmc.neutrodyne.download.impl.ManualDownloadJobService" android:exported="false"
              android:permission="android.permission.BIND_JOB_SERVICE" />                       <!-- :download:impl (M6) -->
     <service android:name="androidx.work.impl.foreground.SystemForegroundService"
              android:foregroundServiceType="dataSync" tools:node="merge" />                       <!-- :download:impl (M6) -->
-    <receiver android:name="app.neutrodyne.download.impl.DownloadActionReceiver" android:exported="false" />  <!-- :download:impl (M6) -->
+    <receiver android:name="ch.lkmc.neutrodyne.download.impl.DownloadActionReceiver" android:exported="false" />  <!-- :download:impl (M6) -->
 
-    <provider android:name="app.neutrodyne.core.artwork.ArtworkProvider" android:authorities="${applicationId}.artwork"
+    <provider android:name="ch.lkmc.neutrodyne.core.artwork.ArtworkProvider" android:authorities="${applicationId}.artwork"
               android:exported="true" />                       <!-- :core:artwork (M4); read-only contract: 08 -->
     <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.fileprovider"
               android:exported="false" android:grantUriPermissions="true">                        <!-- :app (M3); paths: 05, 07 -->

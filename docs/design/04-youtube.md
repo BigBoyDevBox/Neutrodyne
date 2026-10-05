@@ -30,12 +30,12 @@ A YouTube channel is a `podcast` row with `sourceType = YOUTUBE_CHANNEL`. Everyt
 
 | Module | Package | Licence | Contents |
 |---|---|---|---|
-| `:youtube:api` (JVM) | `app.neutrodyne.youtube.api` | Unlicense | `YtRef`, `YouTubeUrlClassifier`, all interfaces and data types below, pure helpers `YouTubeIds`, `YouTubeFeedUrls`, `YouTubeEntryRules`, `YouTubeThumbnails`, `YouTubeChapters`, `AudioStreamSelector`, `ResolvedUrlCache` |
-| `:youtube:impl` (Android) | `app.neutrodyne.youtube.impl` | Unlicense | `DefaultYouTubeChannelResolver`, `HtmlAutodiscoveryChannelResolver`, `ChannelPageParser`, `OEmbedClient`, `ExternalOnlyYouTubeStreamResolver`, `NoOpYouTubeEnricher`, `UnsupportedYouTubeChannelSearch`, `NoExtractorChannelLookup` |
-| `:youtube:streams` (Android, `foss`) | `app.neutrodyne.youtube.streams` | **GPL-3.0-or-later** | `NpeInitializer`, `OkHttpNpeDownloader`, `NpeYouTubeStreamResolver`, `InnertubeChannelResolver`, `NpeEnricher`, `NpeChannelSearch`, `NpeErrorClassifier`, `NpeAudioMapper` |
-| `:core:data` | `app.neutrodyne.core.data.youtube` | Unlicense | `YouTubeSourceAdapter` (03's `SourceAdapter` for `YOUTUBE_CHANNEL`: variant fetch, merge, enrichment, channel art; rules in this document), `YouTubeOutageMonitor`, `DefaultYouTubeHealth`, `YouTubeAlertNotifier`, `YouTubeChannelRepositoryImpl`, `YouTubeAvailabilityRecorderImpl` |
-| `:core:domain` | `app.neutrodyne.core.domain` | Unlicense | `YouTubeChannelRepository`, `YouTubeAvailabilityRecorder` |
-| `:feeds` | `app.neutrodyne.feeds.youtube` | Unlicense | `NewPipeSubscriptions`, `LibreTubeBackupParser`, `TakeoutSubscriptionsParser`, `UrlListParser` (pure, raw strings out; classification happens in `:core:data`, rule 8 of [01 Dependency rules](01-foundation.md#dependency-rules)) |
+| `:youtube:api` (JVM) | `ch.lkmc.neutrodyne.youtube.api` | Unlicense | `YtRef`, `YouTubeUrlClassifier`, all interfaces and data types below, pure helpers `YouTubeIds`, `YouTubeFeedUrls`, `YouTubeEntryRules`, `YouTubeThumbnails`, `YouTubeChapters`, `AudioStreamSelector`, `ResolvedUrlCache` |
+| `:youtube:impl` (Android) | `ch.lkmc.neutrodyne.youtube.impl` | Unlicense | `DefaultYouTubeChannelResolver`, `HtmlAutodiscoveryChannelResolver`, `ChannelPageParser`, `OEmbedClient`, `ExternalOnlyYouTubeStreamResolver`, `NoOpYouTubeEnricher`, `UnsupportedYouTubeChannelSearch`, `NoExtractorChannelLookup` |
+| `:youtube:streams` (Android, `foss`) | `ch.lkmc.neutrodyne.youtube.streams` | **GPL-3.0-or-later** | `NpeInitializer`, `OkHttpNpeDownloader`, `NpeYouTubeStreamResolver`, `InnertubeChannelResolver`, `NpeEnricher`, `NpeChannelSearch`, `NpeErrorClassifier`, `NpeAudioMapper` |
+| `:core:data` | `ch.lkmc.neutrodyne.core.data.youtube` | Unlicense | `YouTubeSourceAdapter` (03's `SourceAdapter` for `YOUTUBE_CHANNEL`: variant fetch, merge, enrichment, channel art; rules in this document), `YouTubeOutageMonitor`, `DefaultYouTubeHealth`, `YouTubeAlertNotifier`, `YouTubeChannelRepositoryImpl`, `YouTubeAvailabilityRecorderImpl` |
+| `:core:domain` | `ch.lkmc.neutrodyne.core.domain` | Unlicense | `YouTubeChannelRepository`, `YouTubeAvailabilityRecorder` |
+| `:feeds` | `ch.lkmc.neutrodyne.feeds.youtube` | Unlicense | `NewPipeSubscriptions`, `LibreTubeBackupParser`, `TakeoutSubscriptionsParser`, `UrlListParser` (pure, raw strings out; classification happens in `:core:data`, rule 8 of [01 Dependency rules](01-foundation.md#dependency-rules)) |
 
 YouTube Atom feeds are fetched and parsed by 03's generic engine in `:core:data`; no YouTube module parses Atom. `:youtube:streams` never binds `:youtube:api` interfaces itself; the `foss` `FlavorModule` does ([01 Dependency injection](01-foundation.md#dependency-injection) rule 6). `IpFamily` is declared in `:core:model` (not `:youtube:api`) so that `:core:network` can read it ([01 Interceptors](01-foundation.md#interceptors)).
 
@@ -976,7 +976,7 @@ Serves N8, N3; mitigates risks L1, L2, P1. Delivered in M0 (SPDX stub), M8 (Play
 
 - Only `youtube/streams/` is GPL-3.0-or-later (its own `LICENSE`; every source file starts with `// SPDX-License-Identifier: GPL-3.0-or-later`). NewPipe Extractor is GPL-3.0-or-later; the FSF lists the Unlicense as GPL-compatible, so the `foss` APK is a combined work distributed under GPL-3.0-or-later.
 - `:youtube:streams` exposes nothing beyond `:youtube:api` interfaces; only the `foss` `FlavorModule` references its classes. Pure logic that is not extractor glue (format selection, cache, chapters, rules) stays in Unlicense `:youtube:api`.
-- CI ([01 Licensing and dependency policy](01-foundation.md#licensing-and-dependency-policy), [09 CI pipelines](09-quality-and-release.md#ci-pipelines)): `checkSpdxHeaders`; `verifyDependencyPolicy` (no `:youtube:streams`, NewPipe or Rhino on `playReleaseRuntimeClasspath`); Licensee scoped exceptions; plus a dex check on the `playRelease` APK: no class in `org.schabi.newpipe`, `org.mozilla.javascript` or `app.neutrodyne.youtube.streams`.
+- CI ([01 Licensing and dependency policy](01-foundation.md#licensing-and-dependency-policy), [09 CI pipelines](09-quality-and-release.md#ci-pipelines)): `checkSpdxHeaders`; `verifyDependencyPolicy` (no `:youtube:streams`, NewPipe or Rhino on `playReleaseRuntimeClasspath`); Licensee scoped exceptions; plus a dex check on the `playRelease` APK: no class in `org.schabi.newpipe`, `org.mozilla.javascript` or `ch.lkmc.neutrodyne.youtube.streams`.
 - No code may be copied from NewPipe, LibreTube or Podcini into Unlicense modules (behaviour-only reuse rule of 01).
 
 ### Notices
@@ -1103,7 +1103,7 @@ Serves N11. No test in PR CI touches live YouTube (runners use data-centre IPs t
 | `YouTubeChannelRepositoryImplTest` | `:core:data`, Robolectric + fakes | `loadOlder` ingests through `OLDER_PAGE` (no `isNew`, no events), approximate dates truncated, 20-page cap, gate deny → `Failed`; `recheckAvailability` records `AVAILABLE`/new reason and records nothing on `Transient`; `ensureChannelArt` coalesces and respects the 30-day rule; `findRssAlternative` normalised title match and 8 s timeout | M8, M9 |
 | `playDebug` instrumented (GMD) | `:app` | YouTube rows show "Watch on YouTube", no queue/download actions, "Play group" skips them, TalkBack labels; intent fires `ACTION_VIEW` | M8 |
 | Minified `fossRelease` smoke (GMD, recorded responses) | `:app` | R8 keeps Rhino and extractor paths; one resolve and one chunked download against `ReplayDownloader` + MockWebServer googlevideo stand-in | M9 |
-| CI dex and classpath checks | 09 | `playRelease` contains no `org.schabi.newpipe`, `org.mozilla.javascript`, `app.neutrodyne.youtube.streams` | M9 |
+| CI dex and classpath checks | 09 | `playRelease` contains no `org.schabi.newpipe`, `org.mozilla.javascript`, `ch.lkmc.neutrodyne.youtube.streams` | M9 |
 
 Fixtures: `feeds/src/test/resources/corpus/youtube/` (`uulf_mkbhd.xml`, `channel_id_mkbhd.xml` with 3 Shorts, `uush_mkbhd.xml`, `uulv_nasa.xml`, `user_marquesbrownlee.xml`, `playlist_pl_oldest_first.xml`, `empty_channel.xml`); `youtube/impl/src/test/resources/youtube/` (`handle_mkbhd.html.gz`, `channel_canonical_only.html`, `consent_redirect.txt`, `oembed_3iRUwVzRDZQ.json`); `youtube/streams/src/test/resources/recorded/`; `feeds/src/test/resources/import/{newpipe,libretube,takeout,urllist}/`.
 

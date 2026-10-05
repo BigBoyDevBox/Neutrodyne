@@ -30,7 +30,7 @@ A group is a user-defined, many-to-many set of podcasts and YouTube channels wit
 |---|---|
 | `:core:model` | `Group`, `GroupDraft`, `GroupEdit`, `GroupNames`, `GroupPalette`, `GroupIcons`, `FeedTab`, `FeedCounts`, `VirtualCounts`, `FeedPrefs`, `DownloadAllEstimate`, `PlayContextSpec`, `SettingOverrides`, `SettingSource`, `Effective`, `EffectivePlayback`, `EffectiveAutoDownload`, `ImportOptions`, `SourceGroup`, `ImportSessionView`, `ImportItemView`, `GroupProposal`, `ExportRequest`, `PreparedExport`, `ExportLayout`, `BackupPreview`, `RestoreRequest`, `RestoreProgress`, `SnapshotStatus`, `PrivacyCounts` |
 | `:core:domain` | Interfaces `FeedRepository`, `GroupRepository`, `ScopeSettingsRepository`, `EffectiveSettingsResolver`, `PlayContextResolver`, `ImportRepository`, `ExportRepository`, `BackupRepository`; errors `GroupError`, `ImportError`, `BackupError`, `ExportError` |
-| `:feeds` (JVM) | `OpmlReader`, `OpmlWriter`, `ImportSourceSniffer`, `ImportDocuments`, `BackupCodec`, `ZipGuard` and their DTOs (packages `app.neutrodyne.feeds.opml`, `.importing`, `.backup`); 04's YouTube parsers sit beside them (`.youtube`) |
+| `:feeds` (JVM) | `OpmlReader`, `OpmlWriter`, `ImportSourceSniffer`, `ImportDocuments`, `BackupCodec`, `ZipGuard` and their DTOs (packages `ch.lkmc.neutrodyne.feeds.opml`, `.importing`, `.backup`); 04's YouTube parsers sit beside them (`.youtube`) |
 | `:core:data` | All implementations; `ImportClassifier`, `PayloadStore`, `OpmlExporter`, `BackupWriter`, `ImportFetchWorker`, `RestoreWorker`, `AutoSnapshotWorker`, `SnapshotScheduler`, `GroupNotificationChannels`, `FirstLaunchRestoreInitializer`, `ExportFilesCleaner` |
 | `:feature:feeds`, `:feature:groups`, `:feature:importexport`, `:feature:podcast` | ViewModels and screens for `FeedsKey`, `GroupEditKey`, `GroupsManageKey`, `GroupSettingsKey`, `AddToGroupsKey`, `AllGroupsKey`, `ImportKey`, `BackupKey`, `ExportKey`, `PodcastSettingsKey` (visuals: 08) |
 | `:app` | `ExternalImportActivity`, its manifest entries, `res/xml/data_extraction_rules.xml`, `res/xml/backup_rules.xml`, `res/xml-v28/backup_rules.xml`, the `cache/export/` entry of `res/xml/file_paths.xml` |
@@ -608,7 +608,7 @@ interface ExportRepository {
 ```
 
 ```kotlin
-// :feeds — app.neutrodyne.feeds.opml
+// :feeds — ch.lkmc.neutrodyne.feeds.opml
 data class ExportDocument(val title: String, val createdAt: Long, val groups: List<ExportGroup>,
                           val feeds: List<ExportFeed>)                 // groups in sortOrder
 data class ExportGroup(val key: String, val name: String, val colorArgb: Int?, val iconKey: String?)
@@ -823,7 +823,7 @@ Unselected `PREVIEW` items are never committed and stay `PREVIEW` (shown under "
 `ImportSourceSniffer` (`:feeds`) decides the format from bytes, never from MIME type or extension ([Sniffing](#sniffing)). For `OPML`, `OpmlReader` runs a cascade over the payload file (re-opened per pass):
 
 ```kotlin
-// :feeds — app.neutrodyne.feeds.opml
+// :feeds — ch.lkmc.neutrodyne.feeds.opml
 data class OpmlLimits(val maxDepth: Int = 32, val maxFeeds: Int = 10_000, val maxOutlines: Int = 200_000,
                       val maxAttrChars: Int = 8_192)
 enum class ParseMode { STRICT, RELAXED, SALVAGE }
@@ -1026,7 +1026,7 @@ Serves R1.6, R1.7. Delivered in [M3](../PLAN.md#m3-import-export-and-backup) (sn
 Every parser yields `ImportEntry`s that go through [Classify](#3-classify), [Group mapping](#4-group-mapping), preview, commit and fetch unchanged.
 
 ```kotlin
-// :feeds — app.neutrodyne.feeds.importing
+// :feeds — ch.lkmc.neutrodyne.feeds.importing
 data class ImportEntry(val ordinal: Int, val url: String, val title: String?, val customTitle: String?,
                        val htmlUrl: String?, val groupNames: List<String>, val preselect: Boolean,
                        val youtubeVariantsHint: Int?)
@@ -1084,7 +1084,7 @@ File `neutrodyne-backup-{yyyy-MM-dd-HHmm}.zip`, MIME `application/zip`, DEFLATE 
 The manifest is written last because it carries the hashes; readers open the local payload copy with `ZipFile` (random access), so position does not matter.
 
 ```kotlin
-// :feeds — app.neutrodyne.feeds.backup. Json: write encodeDefaults = false, explicitNulls = false;
+// :feeds — ch.lkmc.neutrodyne.feeds.backup. Json: write encodeDefaults = false, explicitNulls = false;
 // read ignoreUnknownKeys = true; no polymorphic type chosen by the file.
 @Serializable data class BackupManifest(
     val format: String = "neutrodyne-backup", val formatVersion: Int = 1, val minReaderVersion: Int = 1,
@@ -1418,7 +1418,7 @@ stateDiagram-v2
 M3 acceptance 6. Scripted as `scripts/ci/bmgr-check.sh` in 09's nightly `bmgr` job (API 29 and 36 emulators, [09 CI pipelines](09-quality-and-release.md#ci-pipelines)); run once by hand in M3 on API 26 (expect an empty backup set), 28 and 31 images to settle the Unverified points of [Rules XML](#rules-xml) ([Test backup and restore](https://developer.android.com/identity/data/testingbackup)):
 
 ```bash
-pkg=app.neutrodyne.debug
+pkg=ch.lkmc.neutrodyne.debug
 adb shell bmgr enable true
 adb shell bmgr transport com.android.localtransport/.LocalTransport
 adb shell settings put secure backup_local_transport_parameters 'is_encrypted=true,fake_encryption_flag=true'
@@ -1434,7 +1434,7 @@ Before `backupnow`, a debug-build-only "Write snapshot now" action in Settings �
 
 ## Receiving files
 
-Serves R1.1. Delivered in [M3](../PLAN.md#m3-import-export-and-backup). The activity is `app.neutrodyne.ExternalImportActivity` in `:app` ([01 Manifest and permissions](01-foundation.md#manifest-and-permissions) lists it; filters are defined here).
+Serves R1.1. Delivered in [M3](../PLAN.md#m3-import-export-and-backup). The activity is `ch.lkmc.neutrodyne.ExternalImportActivity` in `:app` ([01 Manifest and permissions](01-foundation.md#manifest-and-permissions) lists it; filters are defined here).
 
 ```xml
 <activity

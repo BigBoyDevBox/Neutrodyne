@@ -80,7 +80,7 @@ A hand-written streaming `XmlPullParser` maps RSS 2.0, Atom, RSS 1.0/RDF, iTunes
 ### Package layout
 
 ```
-feeds/src/main/kotlin/app/neutrodyne/feeds/
+feeds/src/main/kotlin/ch/lkmc/neutrodyne/feeds/
   model/      ParsedFeed, ParsedEpisode, Enclosure, AlternateEnclosure, ArtworkCandidate, Person, Funding,
               TranscriptRef, InlineChapter, Paging, ParseWarning, WarningCode, FeedFormat
   parse/      FeedParser, PullParserFactory, ParseLimits, Namespaces, HtmlEntities, InnerXml, PrologGuard,
@@ -95,7 +95,7 @@ feeds/src/main/kotlin/app/neutrodyne/feeds/
 `:feeds` has no project dependencies, no Android and no I/O beyond reading the streams it is handed ([01 Dependency rules](01-foundation.md#dependency-rules)). kxml2 2.3.0 is `compileOnly` + `testImplementation` because `org.xmlpull.v1` is in `android.jar` ([kxml2 POM](https://repo1.maven.org/maven2/net/sf/kxml/kxml2/2.3.0/kxml2-2.3.0.pom)).
 
 ```kotlin
-// :feeds — app.neutrodyne.feeds.parse
+// :feeds — ch.lkmc.neutrodyne.feeds.parse
 fun interface PullParserFactory { fun create(): XmlPullParser }
 // device (bound in :core:data): PullParserFactory { android.util.Xml.newPullParser() }  — AOSP KXmlParser
 // JVM tests:                     PullParserFactory { org.kxml2.io.KXmlParser() }
@@ -116,7 +116,7 @@ data class ParseLimits(val maxDepth: Int = 64, val maxItems: Int = 10_000, val m
 ```
 
 ```kotlin
-// :feeds — app.neutrodyne.feeds.model (immutable, @Serializable for golden tests)
+// :feeds — ch.lkmc.neutrodyne.feeds.model (immutable, @Serializable for golden tests)
 data class ParsedFeed(
     val format: FeedFormat,                              // RSS2, ATOM, RDF
     val title: String?, val author: String?, val descriptionHtml: String?, val link: String?,
@@ -423,7 +423,7 @@ An item is **accepted** only if it has a primary enclosure or an `externalMediaI
 ### Episode keys and matching helpers
 
 ```kotlin
-// :feeds — app.neutrodyne.feeds.identity (algorithm owned here, storage format: 02 Identity keys)
+// :feeds — ch.lkmc.neutrodyne.feeds.identity (algorithm owned here, storage format: 02 Identity keys)
 object EpisodeKeys {
     const val VERSION = 1
     fun primary(e: ParsedEpisode): String       // g: → u: → t: → l: → h: (02 grammar)
@@ -560,7 +560,7 @@ Serves R1.9, N1, N3. Delivered in M1. Storage: [02 Podcast feedKey and aliases](
 ### URL normalisation
 
 ```kotlin
-// :feeds — app.neutrodyne.feeds.identity
+// :feeds — ch.lkmc.neutrodyne.feeds.identity
 object UrlNormalizer {
     const val VERSION = 1                                   // a change is an identity-key version change (02)
     fun forIdentity(url: String): String?                   // null if not http(s)
@@ -937,7 +937,7 @@ Serves R4.8 (timestamps), N3, N6. Delivered in M1 (storage, sanitiser, block mod
 4. **Walk** the cleaned DOM into blocks; caps: 2,000 blocks, list nesting 4 (deeper flattened), 50 images.
 
 ```kotlin
-// :feeds — app.neutrodyne.feeds.html. Mirrored 1:1 into :core:model as ShowNotes / ShowNoteBlock / ShowNoteSpan
+// :feeds — ch.lkmc.neutrodyne.feeds.html. Mirrored 1:1 into :core:model as ShowNotes / ShowNoteBlock / ShowNoteSpan
 // by :core:data (01 open question 1, option b); 08 renders the :core:model mirror.
 data class ShowNotesDocument(val blocks: List<NoteBlock>)
 sealed interface NoteBlock {
