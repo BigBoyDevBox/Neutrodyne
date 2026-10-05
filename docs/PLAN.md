@@ -192,7 +192,7 @@ ADR-style register. "Conflict" marks a decision that resolves contradictory rese
 |---|---|---|---|---|---|
 | D1 | System architecture | Distributed: the device polls feeds; no Neutrodyne server | No backend to run or trust; private feeds stay private; works with authenticated feeds (AntennaPod model) | Central poller (Pocket Casts model) | PLAN, [03](design/03-feeds-and-discovery.md) |
 | D2 | Build flavors | One dimension `distribution`: `foss` (full app, GitHub/IzzyOnDroid/F-Droid) and `play` (Google Play, policy-compliant) | YouTube playback/download and Play policy are incompatible; one codebase, two binaries | Single build; separate repos | [01](design/01-foundation.md#build-flavors) |
-| D3 | Licensing structure (subject to PO-1) | Repository stays Unlicense; only `:youtube:streams` (NewPipe Extractor) is GPL-3.0-or-later and is a `foss`-only dependency; the `foss` APK is distributed under GPL-3.0-or-later, the `play` APK under the Unlicense | Keeps ~95 % of code public domain; FSF lists the Unlicense as GPL-compatible | Relicense all to GPL; YouTube.js clean-room route; official-only YouTube | [04](design/04-youtube.md#licensing-and-legal), [01](design/01-foundation.md#licensing-and-dependency-policy) |
+| D3 | Licensing structure (subject to PO-1) | Repository stays Unlicense; only `:youtube:streams` (NewPipe Extractor) is GPL-3.0-or-later and is a `foss`-only dependency; the `foss` APK is distributed under GPL-3.0-or-later; the `play` APK contains no GPL-3.0 code (Unlicense code plus permissively licensed dependencies) | Keeps ~95 % of code public domain; FSF lists the Unlicense as GPL-compatible | Relicense all to GPL; YouTube.js clean-room route; official-only YouTube | [04](design/04-youtube.md#licensing-and-legal), [01](design/01-foundation.md#licensing-and-dependency-policy) |
 | D4 | Toolchain | Kotlin 2.4.20, AGP 9.4.1 with built-in Kotlin (fallback 9.3.3), **Gradle 9.7.1**, KSP 2.3.12, JDK 21 runs Gradle, bytecode 17; no kapt | Only current AGP line; Compose 1.12 needs AGP ≥ 9.2. Conflict: Gradle 9.8.0 is current, but Kotlin 2.4.20 is tested only to Gradle 9.7.0, so stay on 9.7.1 | AGP 8.x; Gradle 9.8 | [01](design/01-foundation.md#toolchain-and-versions) |
 | D5 | SDK levels (subject to PO-7) | minSdk 26, compileSdk 37, targetSdk 37 | ~96.1 % reach; removes pre-O branches; Android 17 rules designed in | minSdk 24 / 29 / 31 | [01](design/01-foundation.md#toolchain-and-versions) |
 | D6 | Design system (subject to PO-4) | Compose BOM 2026.09.00, Material 3 **1.4.0 stable**; all components wrapped in `:core:designsystem` | Conflict: `stack.md` treated Expressive as an isolated alpha; `material3:1.5.0-alpha29` actually pulls Compose core `1.13.0-alpha01` into the whole app | Expressive at launch; Views | [08](design/08-ui-ux.md#theming-and-colour) |
@@ -270,7 +270,7 @@ Context: YouTube in-app audio playback and download (R3.5, R3.6) needs a stream 
 
 | Option | Consequences |
 |---|---|
-| **A (recommended).** Repository stays Unlicense; only `:youtube:streams` is GPL-3.0-or-later (SPDX headers), linked only into `foss`. The `foss` APK is distributed under GPL-3.0-or-later with corresponding source = the public git tag; the `play` APK stays Unlicense. | ~95 % of code stays public domain. README, About and licences screen state which licence applies to which artefact. F-Droid `License:` field is GPL-3.0-or-later. Contributors must not copy GPL module code into Unlicense modules (CI SPDX check). |
+| **A (recommended).** Repository stays Unlicense; only `:youtube:streams` is GPL-3.0-or-later (SPDX headers), linked only into `foss`. The `foss` APK is distributed under GPL-3.0-or-later with corresponding source = the public git tag; the `play` APK contains no GPL-3.0 code. | ~95 % of code stays public domain. README, About and licences screen state which licence applies to which artefact. F-Droid `License:` field is GPL-3.0-or-later. Contributors must not copy GPL module code into Unlicense modules (CI SPDX check). |
 | B. Relicense the whole repository to GPL-3.0-or-later. | Simplest legal story; GPL code (NewPipe, LibreTube) could be reused. Gives up the public-domain stance permanently for contributions. |
 | C. No GPL anywhere: build YouTube extraction on MIT YouTube.js + googlevideo + BgUtils inside an embedded JS engine or WebView. | Keeps everything permissive, and is ahead on SABR, but costs an estimated 2–3 additional milestones plus permanent maintenance of a JS bridge. |
 | D. Official-only YouTube everywhere (Atom feeds + "Open in YouTube"). | No GPL, no legal exposure, but **R3.5 and R3.6 are not delivered** in any build. |
@@ -443,11 +443,11 @@ flowchart TB
   API --> base
   data --> dom
   data --> db & dsx & net & feeds & art & ya
-  pi --> pa & dom & da & ya & art & db & dsx
+  pi --> pa & dom & da & ya & art & db & dsx & net
   di --> da & dom & ya & art & db & dsx & net
   yi --> ya & net
   ys --> ya & net
-  art --> db & net
+  art --> db & net & ya
   db --> base
 ```
 
