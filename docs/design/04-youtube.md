@@ -374,7 +374,7 @@ The page is about 2.5 MB; reading it fully for every subscribe is wasteful, henc
 
 ### Subscribe flow
 
-The YouTube branch of 03's add pipeline. 03's `AddPodcastResolver.resolve(input)` only classifies and returns `AddResolution.YouTube(ref)`; the add sheet's ViewModel (`:feature:discover`, 08) continues with the `:youtube:api` and `:core:domain` calls below; persistence is 03's `SubscribeUseCase.youTube` ([03 Subscribe transaction](03-feeds-and-discovery.md#subscribe-transaction)). There is **no in-memory Atom preview** for YouTube: the sheet shows channel metadata only, and the first episodes arrive through the normal refresh engine.
+The YouTube branch of 03's add pipeline. 03's `AddPodcastResolver.resolve(input)` only classifies (its YouTube pre-check runs before URL normalisation, so a bare `@handle` or `UC…` ID is accepted, [03 Input normalisation](03-feeds-and-discovery.md#input-normalisation)) and returns `AddResolution.YouTube(ref)`; the add sheet's ViewModel (`:feature:discover`, 08) continues with the `:youtube:api` and `:core:domain` calls below; persistence is 03's `SubscribeUseCase.youTube` ([03 Subscribe transaction](03-feeds-and-discovery.md#subscribe-transaction)). There is **no in-memory Atom preview** for YouTube: the sheet shows channel metadata only, and the first episodes arrive through the normal refresh engine.
 
 ```mermaid
 sequenceDiagram
@@ -385,7 +385,7 @@ sequenceDiagram
   participant Q as YouTubeChannelRepository
   participant S as SubscribeUseCase (03)
   participant E as Refresh engine (03) and YouTubeSourceAdapter
-  U->>A: paste or share a YouTube link
+  U->>A: paste or share a YouTube link, or type an @handle
   A-->>V: AddResolution.YouTube(ref)
   V->>R: resolve(ref, AVATAR)
   R-->>V: Resolved(UC id, title, avatar, banner, description)

@@ -8,7 +8,7 @@ Neutrodyne is a server-less, open-source Android podcast player organised around
 
 | ID | Feature | Plan |
 |---|---|---|
-| R1 | Import and export of subscriptions: tolerant OPML import with preview and report, grouped OPML export, NewPipe/LibreTube/Takeout import, full backup and restore, automatic Android backup | [R1](docs/PLAN.md#21-functional-requirements), [05](docs/design/05-groups-opml-backup.md) |
+| R1 | Import and export of subscriptions: tolerant OPML import with preview and report, grouped OPML export, NewPipe/LibreTube/Takeout import, full backup and restore, automatic Android backup (Android 9+ with a screen lock and a system backup transport such as Google backup or Seedvault) | [R1](docs/PLAN.md#21-functional-requirements), [05](docs/design/05-groups-opml-backup.md) |
 | R2 | Groups, each with its own episode feed: many-to-many groups shown as swipeable tabs, with filters, counts and per-group defaults | [R2](docs/PLAN.md#21-functional-requirements), [05](docs/design/05-groups-opml-backup.md#group-feeds) |
 | R3 | YouTube channels as podcasts: subscribe by link or handle; audio playback and downloads in the `foss` build, "Watch on YouTube" in the `play` build | [R3](docs/PLAN.md#21-functional-requirements), [04](docs/design/04-youtube.md) |
 | R4 | Streaming and downloading: background player with a database-owned queue, resumable downloads, auto-download and cleanup | [R4](docs/PLAN.md#21-functional-requirements), [06](docs/design/06-playback.md), [07](docs/design/07-downloads.md) |

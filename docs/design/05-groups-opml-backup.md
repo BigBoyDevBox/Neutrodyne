@@ -1288,7 +1288,7 @@ The whitelist is derived, not maintained by hand: every key in 01's `AllSettingK
 
 ## Auto Backup
 
-Serves R1.8, N1, N3. Delivered in [M3](../PLAN.md#m3-import-export-and-backup); M6 verifies that downloads stay out ([M6](../PLAN.md#m6-downloads) acceptance 7). Honours [D34](../PLAN.md#3-key-decisions), [D35](../PLAN.md#3-key-decisions), [PO-15](../PLAN.md#48-further-product-owner-decisions) default (on; no backup without encryption). Platform facts: [Auto Backup](https://developer.android.com/identity/data/autobackup).
+Serves R1.8, N1, N3. Delivered in [M3](../PLAN.md#m3-import-export-and-backup); M6 verifies that downloads stay out ([M6](../PLAN.md#m6-downloads) acceptance 7). Honours [D34](../PLAN.md#3-key-decisions), [D35](../PLAN.md#3-key-decisions), [PO-15](../PLAN.md#48-further-product-owner-decisions) default (on; no backup without encryption). Platform facts: [Auto Backup](https://developer.android.com/identity/data/autobackup). Auto Backup needs an active system backup transport: Google backup (Play services) or a ROM-integrated one such as [Seedvault](https://github.com/seedvault-app/seedvault); without one (many de-Googled ROMs) nothing is backed up, so R1.8 holds only on API 28+ with a screen lock and a transport, and the Android-backup row of 08's Backup and restore screen points to the manual backup.
 
 | Path | Cloud backup | Device-to-device | Why |
 |---|---|---|---|
