@@ -1410,23 +1410,29 @@ class RestoreMerger(/* DAOs, GroupMerger, SecretStore, SettingsRepository, Unsub
     suspend fun merge(source: StagedLibrary, policy: MergePolicy, categories: Set<RestoreCategory>,
                       captureWithBackupTimes: Boolean,                     // restore on a linked device, Merge
                       onUnmatched: (suspend (podcastSyncId: String, identityKey: String) -> Unit)?,  // link policies
-                      progress: (done: Int, total: Int) -> Unit): MergeSummary
+                      progress: (done: Int, total: Int) -> Unit,
+                      onApplied: (suspend (MergedRecord) -> Unit)? = null): MergeSummary
 }
 // :core:domain — the port 10's FirstLinkMerger uses (:sync:impl cannot depend on :core:data, PLAN 5.1 rule 4)
 interface LibraryMerger {
     suspend fun mergeStaged(stagingDir: String, policy: MergePolicy,
                             onUnmatched: suspend (podcastSyncId: String, identityKey: String) -> Unit,
-                            progress: (done: Int, total: Int) -> Unit): Outcome<MergeSummary, BackupError>
+                            progress: (done: Int, total: Int) -> Unit,
+                            onApplied: (suspend (MergedRecord) -> Unit)? = null): Outcome<MergeSummary, BackupError>
 }
 // :core:model
 enum class MergePolicy { RESTORE_MERGE, RESTORE_REPLACE, LINK_MERGE, LINK_REPLACE }
 data class MergeSummary(val podcastsAdded: Int, val podcastsMatched: Int, val groupsAdded: Int, val groupsMatched: Int,
                         val episodeLines: Int, val stubs: Int, val unmatched: Int, val skippedLines: Int)
+data class MergedRecord(val collection: String, val recordId: String, val fields: Map<String, MergedField>)
+data class MergedField(val value: JsonElement, val originalAtMs: Long, val origin: MergeValueOrigin)
+enum class MergeValueOrigin { LOCAL, STAGED }
 ```
 
 - **Inputs.** `LibraryV1`, streamed `EpisodeLineV1`s, `QueueV1` and `SettingsV1` — what an archive holds, and what 10's `FirstLinkMerger` writes into its staging directory with `BackupCodec` under the archive's entry names (`library.json`, `episodes.jsonl`, `queue.json`, `settings.json`; no manifest), mapping server records to `PodcastV1` (with `syncId`), `GroupV1` (`uuid`, `orderKey`, members), `EpisodeLineV1` (match hints as stub fields; field-clock milliseconds as `ts`, `posAt`, `pl`, `lp`) and `QueueV1` (Up next with `ok`, the session) ([10 Merge](10-sync.md#merge)). `LibraryMergerImpl` wraps the directory as a `StagedLibrary` and calls `merge` with all three categories.
 - **Policies.** `RESTORE_MERGE` and `RESTORE_REPLACE` are the table's Merge and Replace columns; `LINK_MERGE` is its First-link column; `LINK_REPLACE` (10's "Use the server's library on this device") is the Replace column with three differences: IDs are adopted as in `LINK_MERGE`, settings go through `applyRemote`, and unmatched lines are handled as in `LINK_MERGE`.
 - **Capture.** On a linked device every transaction runs inside `SyncStateDao.withApplying` (02), so nothing is captured implicitly. `captureWithBackupTimes` (restore on a linked device, Merge) records each value it changed with `SyncOutboxDao.captureAt` at the backup's own timestamps ([Restore while linked](#restore-while-linked)); the link policies capture nothing, because `FirstLinkMerger` uploads the merged library afterwards stamped from row timestamps ([10 Merge](10-sync.md#merge) step 5).
+- **First-link metadata (review 2026-10-06).** For link policies, `onApplied` runs inside each projection transaction after IDs are resolved, with logical record IDs and per-field winners (canonical sync field names). LOCAL values and `originalAtMs` are frozen before any projection write; STAGED values identify the winning source fields, whose complete HLCs and session writer remain in 10's staging records. Secret plaintext is never included. The callback writes only Room bookkeeping, never network, DataStore or secret files, so failure rolls the chunk back. First-link row timestamps preserve winning input times; resume uses saved per-field metadata rather than apply-time `now`. `MergeSummary` remains counts only; 10 uses these events for frozen captures, raw-state seeding and durable effects ([10 First-link choices](10-sync.md#first-link-choices)). Manual restore has no callback.
 - **Unmatched episode lines.** Restores stub every unmatched line that has an enclosure URL or YouTube ID (step 5). The link policies stub only lines that are queued, current, in progress (`pos > 0`, not played) or favourite, and hand every other unmatched line to `onUnmatched`, after its transaction commits; 10 parks the corresponding record in `sync_parked` until ingestion finds the episode ([10 Parked state and stubs](10-sync.md#parked-state-and-stubs)), so a first link does not create thousands of stubs for episodes the next refresh ingests anyway.
 - **IDs.** Link policies make a local podcast matched by feed key or alias take the record's `syncId`, and a local group matched by `nameKey` take the record's `uuid` (`GroupChannelSync.onUuidChanged`), so later records address them directly ([10 Redirects on clients](10-sync.md#redirects-on-clients)). Restores adopt a backup `syncId` only for inserted podcasts whose ID is free, and a backup `uuid` only in Replace.
 - **Idempotent.** Re-running a policy with the same input changes nothing further; 10 relies on this when a link is interrupted (`SyncStatus.LinkUnfinished`).
