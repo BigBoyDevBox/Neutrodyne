@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Unlicense
+import androidx.baselineprofile.gradle.consumer.BaselineProfileConsumerExtension
 import com.android.build.api.dsl.ApplicationExtension
 import org.gradle.api.Plugin
 import org.gradle.api.Project
@@ -18,7 +19,8 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
         extensions.configure<ApplicationExtension> {
             configureAndroidCommon(this)
             namespace = BASE_PACKAGE
-            testBuildType = "debug"
+            // Unit and instrumented tests run on debug; release-type smoke runs pass -PtestBuildType=release (09)
+            testBuildType = providers.gradleProperty("testBuildType").getOrElse(DEBUG)
             defaultConfig {
                 applicationId = BASE_PACKAGE
                 targetSdk = TARGET_SDK
@@ -56,10 +58,13 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
                 }
             }
             buildTypes {
-                getByName("release") {
+                getByName(RELEASE) {
                     optimization { enable = true }
+                    // Reproducible builds (09 Hygiene): PNGs are committed pre-optimised; no VCS metadata in the APK
+                    isCrunchPngs = false
+                    vcsInfo { include = false }
                 }
-                getByName("debug") {
+                getByName(DEBUG) {
                     applicationIdSuffix = ".debug"
                     versionNameSuffix = "-debug"
                     isPseudoLocalesEnabled = true
@@ -77,6 +82,13 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
             add("androidTestImplementation", bom)
         }
 
+        // Consumer of the baseline and startup profiles; creates benchmarkRelease and nonMinifiedRelease (D96, S19)
+        pluginManager.apply("androidx.baselineprofile")
+        extensions.configure<BaselineProfileConsumerExtension> {
+            saveInSrc = true
+            automaticGenerationDuringBuild = false
+        }
+
         configureLicensee()
         pluginManager.apply("neutrodyne.metro")
         pluginManager.apply("neutrodyne.android.lint")
@@ -84,6 +96,8 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
     }
 
     private companion object {
+        const val RELEASE = "release"
+        const val DEBUG = "debug"
         const val SIGNING_CONFIG = "neutrodynePublic"
         const val PUBLIC_PASSWORD = "neutrodyne"
         const val PUBLIC_ALIAS = "neutrodyne"

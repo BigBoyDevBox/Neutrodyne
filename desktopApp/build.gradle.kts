@@ -28,6 +28,7 @@ dependencies {
     runtimeOnly(libs.kxml2)
 
     // The desktop graph test (01 Testing)
+    testImplementation(project(":core:testing"))
     testImplementation(libs.junit4)
     testImplementation(libs.truth)
 }

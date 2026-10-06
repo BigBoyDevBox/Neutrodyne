@@ -2,19 +2,37 @@
 package ch.lkmc.neutrodyne.di
 
 import android.app.Application
+import androidx.work.WorkerFactory
+import ch.lkmc.neutrodyne.core.common.AppInitializer
 import ch.lkmc.neutrodyne.core.common.AppScope
+import ch.lkmc.neutrodyne.core.common.ApplicationScope
+import ch.lkmc.neutrodyne.core.model.BuildInfo
+import ch.lkmc.neutrodyne.work.MetroWorkerFactory
+import ch.lkmc.neutrodyne.youtube.YouTubeBindingsModule
+import dev.zacsweers.metro.Binds
 import dev.zacsweers.metro.DependencyGraph
 import dev.zacsweers.metro.Provides
+import kotlinx.coroutines.CoroutineScope
 
 /**
- * The Android main process's Metro graph (01 "Dependency injection", D82). Minimal M0a skeleton after
- * spike S8: the YouTube binding containers, ViewModelGraph, worker factory, member-injection functions
- * and `CoreBindings` arrive with M0a step 17.
+ * The Android main process's graph (01 Dependency injection, D82). It exists only in the main process
+ * (D73): `:ytx` builds [YtxGraph], `:acra` builds nothing.
  */
-@DependencyGraph(AppScope::class)
+@DependencyGraph(AppScope::class, bindingContainers = [YouTubeBindingsModule::class])
 interface AndroidAppGraph {
-    /** The graph's application instance, so framework code can reach it without a cast. */
     val application: Application
+
+    @ApplicationScope
+    val appScope: CoroutineScope
+
+    val initializers: Set<AppInitializer>
+
+    val workerFactory: WorkerFactory
+
+    val buildInfo: BuildInfo
+
+    @Binds
+    val MetroWorkerFactory.bindWorkerFactory: WorkerFactory
 
     @DependencyGraph.Factory
     fun interface Factory {

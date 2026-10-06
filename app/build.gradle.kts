@@ -5,6 +5,10 @@ plugins {
 
 val youtubeEngine = providers.gradleProperty("neutrodyne.youtubeEngine").orElse("true").get().toBoolean()
 
+// Shipped locales of both apps (09 Shipped locales and per-app language)
+val shippedLocales = providers.fileContents(layout.projectDirectory.file("policy/locales.txt")).asText.get()
+    .lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
+
 android {
     defaultConfig {
         fun prop(name: String) = providers.gradleProperty(name).orElse("").get()
@@ -14,7 +18,10 @@ android {
         buildConfigField("String", "ACRA_MAILTO", "\"${prop("neutrodyne.acraMailto")}\"")
         buildConfigField("String", "PODCASTINDEX_KEY", "\"${prop("neutrodyne.podcastIndexKey")}\"")
         buildConfigField("String", "PODCASTINDEX_SECRET", "\"${prop("neutrodyne.podcastIndexSecret")}\"")
+        buildConfigField("String", "SHIPPED_LOCALES", "\"${shippedLocales.joinToString(",")}\"")
     }
+    // BCP 47 `en-US` -> resource qualifier `en-rUS`
+    androidResources { localeFilters += shippedLocales.map { it.replace(Regex("-([A-Z]{2})$"), "-r$1") } }
     buildTypes {
         getByName("debug") {
             buildConfigField("String", "ACRA_MAILTO", "\"\"") // ACRA off in debug builds (D62)
@@ -40,9 +47,16 @@ dependencies {
     if (youtubeEngine) implementation(project(":youtube:ytdlp"))
 
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.profileinstaller)
     implementation(libs.androidx.work.runtime)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.collections.immutable)
+    implementation(libs.acra.mail)
+    implementation(libs.acra.dialog)
+
+    debugImplementation(libs.leakcanary.android)
 }
