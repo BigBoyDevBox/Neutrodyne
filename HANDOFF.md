@@ -1,6 +1,6 @@
 # Handoff — state of the Neutrodyne planning work
 
-This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-05 ~22:40 UTC. The replan for Kotlin Multiplatform, desktop and sync is complete and published to `main`; next come the owner's open questions, then M0.**
+This file lets another person or agent take over the work at any point. **Last updated: 2026-10-06.** The KMP replan is on `main`; planning-review fixes are proposed in the open PRs below. Implementation still starts at M0a.1.
 
 ## 1. What this repository is
 
@@ -47,6 +47,17 @@ Neutrodyne is a planned open-source podcast player. So far the repository holds 
 - 2026-10-05: owner decisions PO-1/2/5/8: yt-dlp, GitHub only, no verification, `ch.lkmc` (PR #2).
 - 2026-10-05: owner decisions PO-31–35: notify-only updates, no beta, no mirror, debug builds (PR #3).
 - 2026-10-05 16:2x–22:3x UTC: KMP + desktop + sync replan (PR #4). Steps: the lead pass (brief saved as [`docs/research/briefs/change-brief-3-kmp.md`](docs/research/briefs/change-brief-3-kmp.md)); new docs `10-sync.md` and `11-desktop.md`, each written and then reviewed; revision of `01`–`09`; two critics (42 findings); a fixer (40 fixed, 1 handed to the orchestrator for `CLAUDE.md`, 1 rejected because it targeted the scratch brief). `CLAUDE.md` is updated to match.
+
+### Planning review — 2026-10-06
+
+The owner requested fixes in PRs against `main`, with blocking review feedback addressed and **no merges**. These independent PRs remain open (fork branches under `BigBoyDevBox/Neutrodyne`):
+
+- [#5](https://github.com/L-K-M/Neutrodyne/pull/5): backup timestamps/history, OPML round trips, group undo and credential-commit coordination.
+- [#6](https://github.com/L-K-M/Neutrodyne/pull/6): safe RSS resume, download redirects, small-library YouTube outages and resolve deadlines.
+- [#7](https://github.com/L-K-M/Neutrodyne/pull/7): archive launcher paths and the scoped PBS licence-check contract; PO-48 remains pending.
+- [#8](https://github.com/L-K-M/Neutrodyne/pull/8): exact sync replay, raw state, resets, rekey collisions and crash-recoverable effects.
+
+Each branch passes link/anchor and Mermaid checks. Review comments and corrective commits are recorded on the PRs. Resume from their current heads; keep them open. The old replan publication instructions in §4 describe the completed 2026-10-05 task, not this review.
 
 ### Open owner questions (ask these next; each has a default in `docs/PLAN.md` §4)
 

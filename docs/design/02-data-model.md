@@ -383,6 +383,7 @@ erDiagram
     TEXT field PK
     INTEGER hlc
     TEXT nodeId
+    TEXT captureKind
   }
   sync_clock {
     TEXT coll PK
@@ -863,7 +864,7 @@ Serves R7.1, R7.3, R7.4, N1, N6 ([D93](../PLAN.md#3-key-decisions)). Delivered i
 
 | Rule | Detail |
 |---|---|
-| Inert without a server | With `sync_state.enabled = 0` no statement writes any `sync_*` row except the `sync_state` singleton created in `Callback.onCreate` ([R7.1](../PLAN.md#21-functional-requirements); `SyncInertTest`, M1 acceptance 11, MS0 acceptance 3) |
+| Inert without a server | With no configured server, only the `sync_state` singleton exists; `enabled = 0` makes every capture trigger inert. After a valid link token, explicit first-link metadata writes may run while capture stays disabled ([R7.1](../PLAN.md#21-functional-requirements); `SyncInertTest`, M1 acceptance 11, MS0 acceptance 3) |
 | Keys | Records are addressed by their canonical `rid` text, never by local row IDs, so outbox rows survive local re-keys of row IDs and a restore on another device has nothing to translate ([10 Record IDs](10-sync.md#record-ids)) |
 | No foreign keys | `rid` and `podcastSyncId` are text references that may point at records this device does not have; the deletion paths below keep the tables tidy instead |
 | Never travel | Not in backups (the database is never backed up; [D34](../PLAN.md#3-key-decisions)), not in the diagnostics export (`DiagExportScrub` empties them, [db-maintenance worker](#db-maintenance-worker)), not synced themselves |
@@ -905,8 +906,10 @@ data class SyncOutboxEntity(
     val field: String,            // wire field name, "*" (every field of the record) or "~rekey"
     val hlc: Long,                // packed milliseconds and counter; replay preserves both
     val nodeId: String,           // clock's original node; local captures use sync_state.nodeId
+    @ColumnInfo(defaultValue = "'LOCAL'") val captureKind: SyncCaptureKind = SyncCaptureKind.LOCAL,
     val value: String? = null,    // null: read the current local value at push time; else literal JSON
 )
+enum class SyncCaptureKind { LOCAL, REPLAY }  // device bookkeeping only; never a wire field
 ```
 
 - One row per `(coll, rid, field)`: repeated changes coalesce, so a 5-s position save for one episode rewrites one row. Literal values exist only where the source row is gone or the value is an explicit marker: `subscribed` `false`, `deleted` `true`, `in` `false`, `s.<override>` `null` after a settings row was deleted, `pos` `{"ms":0,"reset":true}`, `~rekey` `{"to": …}`, and 10's `captureLiteral` calls.
@@ -921,13 +924,13 @@ data class SyncOutboxEntity(
 @Entity(tableName = "sync_clock", primaryKeys = ["coll", "rid"], withoutRowId = true)
 data class SyncClockEntity(
     val coll: String, val rid: String,
-    val clocks: String,           // JSON: field clocks, raw episode/session state and pending effects (10)
+    val clocks: String,           // JSON: field clocks, raw records, setting baseline and pending effects (10)
 )
 ```
 
 One row per record this device has synced (≈ one per podcast, group, membership and episode with state). SQL never reads `clocks`; only `sync_cap_episode_rekey` renames a row ([Sync capture triggers](#sync-capture-triggers)). Retention deletes the rows of the episodes it deletes; unsubscribing deletes the rows of the podcast's `episode`, `upnext` and `member` records ([Unsubscribe and merge](#unsubscribe-and-merge), [Retention policy](#retention-policy)).
 
-Besides field-clock strings, the JSON holds redirect/alias entries and three typed metadata entries owned by 10: `raw` (accepted `RecordState` for `episode` and `session`, including reset flags and match hints), `pendingSetting` (value and clock awaiting DataStore), and `pendingAuth` (clock, target origin and an opaque `SecretStore` staging reference, never the password). Each entry commits with the page's cursor. Derived `episode_state` columns and an unadopted `play_session` are projections, not replay payloads; their raw values stay here. Metadata and field clocks are updated together on acknowledgement and pull, and merged field-wise on redirects. Pending effects are cleared only after idempotent completion; unlink clears their staged secrets too ([10 Durable apply effects](10-sync.md#durable-apply-effects)).
+Besides field-clock strings, the JSON holds redirect/alias entries and three typed metadata entries owned by 10: `raw` (`RawSyncRecord`: accepted field values, clocks, reset flags, hints and envelope `by`; an `auth` value is replaced by a protected-store reference), `pendingSetting` (value and clock awaiting DataStore), and `pendingAuth` (clock, target origin and an opaque `SecretStore` staging reference, never the password). Retain raw values for every collection: derived episode state, deferred sessions, unapplied settings and normalised display hints may differ from their wire inputs. Each entry commits with the page's cursor. Metadata and field clocks are updated together on first link, acknowledgement and pull, and merged field-wise on redirects. Pending effects are cleared only after idempotent completion; protected snapshots stay while referenced by raw state, and unlink clears them too ([10 Durable apply effects](10-sync.md#durable-apply-effects)).
 
 #### sync_parked
 
@@ -969,6 +972,8 @@ Serves R7.1, R7.3, R7.4, N1 ([D93](../PLAN.md#3-key-decisions)). Delivered in MS
 `rid` sources, by subselect on the parents (`X` = `NEW`, or `OLD` for a delete): podcast `X.syncId`; podcast settings `(SELECT syncId FROM podcast WHERE id = X.podcastId)`; group `X.uuid`; group settings `(SELECT uuid FROM podcast_group WHERE id = X.groupId)`; member `g.uuid || p.syncId` from `podcast_group g, podcast p`; episode and Up next `p.syncId || e.identityKey` from `episode e JOIN podcast p`; session `'current'`. A captured field's `value` is NULL (read at push time) unless a literal is shown.
 
 `played` and `pos` always capture literal **NEW** values with their clock: `played` stores `{"played": <bool>, "playedAt": <timestamp-or-null>}`; `pos` stores `{"ms": <positionMs>, "dur": <durationMs-or-null>, "src": <positionSource>}`, plus the internal `reset` marker on an explicit zero. A remote derivation can clear `playedAt` or project position 0 without changing the underlying user action, so reading these columns later would pair a different value with the captured clock. `ChangeBuilder` expands the played pair and promotes the reset marker ([10 Push](10-sync.md#push)). Every inserted outbox row also copies `sync_state.nodeId`.
+
+Explicit local mark-played/unplayed and reset helpers also record their literal intent inside the same transaction, even when the effective columns were already equal: an in-progress projection may have cleared `playedAt` while raw state still says `played = true`, and an effective position 0 may hide a non-zero raw position. Column-change triggers alone miss these actions. Mark-unplayed therefore captures the false played pair and the zero reset; a position-only reset captures its zero intent without inventing a played action. These helper captures use the trigger guard (`enabled AND NOT applying`), so remote derivations and remote resets never echo.
 
 | Trigger | Fires on | Wire fields captured |
 |---|---|---|
@@ -1080,9 +1085,9 @@ This is the HLC local-event rule of [10 Hybrid logical clocks](10-sync.md#hybrid
 | Method | SQL |
 |---|---|
 | `captureLiteral(coll, rid, field, json)` | the [HLC tick](#hlc-tick) with `AND enabled = 1`, then `INSERT OR REPLACE INTO sync_outbox(coll, rid, field, hlc, nodeId, value) SELECT :coll, :rid, :field, hlc, nodeId, :json FROM sync_state WHERE id = 0 AND enabled = 1` (an outer statement, so `OR REPLACE` applies) — local merges, "Keep mine" |
-| `captureAll(coll, rid)` | the same with `field = '*'` and `value = NULL` — settings (`SettingsCapture`), "Use this device's library everywhere" |
-| `captureAt(coll, rid, field, atMs)` | `atHlc = clamp(atMs, 2020-01-01, now) << 16` in Kotlin; insert with `nodeId = sync_state.nodeId` and `value = NULL`, or update only when `(atHlc, nodeId)` is greater than the pending row's `(hlc, nodeId)` — an older stamp never replaces a newer pending change; first link and restore while linked |
-| `captureStored(coll, rid, field, stored: FieldValue)` | Insert the supplied clock's packed `hlc`, original `nodeId` and literal value (including the internal position-reset marker), or raise only when the complete clock is greater than the pending row's. No wall-clock clamp or tick; full resync only. The value and clock must come from the same accepted write, never from derived columns |
+| `captureAll(coll, rid)` | the same with `field = '*'` and `value = NULL` — explicit whole-library snapshots. Never used for live setting intents: those use `captureLiteral("setting", key, "v", json)` |
+| `captureAt(coll, rid, field, atMs, literal: String? = null)` | `atHlc = clamp(atMs, 2020-01-01, now) << 16` in Kotlin; insert with the current `nodeId`, `captureKind = LOCAL` and the supplied literal, or update only when the complete clock is greater. First link and restore supply frozen played/position/session/setting values from their winning input, never a later projection; NULL remains available for unchanged, non-derived source fields |
+| `captureStored(coll, rid, field, stored: FieldValue)` | Insert the supplied packed `hlc`, original `nodeId`, `captureKind = REPLAY` and literal wire-field value, or raise only when the complete clock is greater. No clamp or tick. Resync iterates individual raw fields: `played` boolean and `playedAt` timestamp/null are separate rows with the same original clock; local capture pairs are a different representation |
 
 #### Installing and changing the triggers
 
@@ -1858,7 +1863,7 @@ DAOs over the [sync tables](#sync-tables) for 10's engine (MS0: `SyncOutboxDao` 
 | `SyncOutboxDao.rowsFor(coll, rids)` | `SELECT * FROM sync_outbox WHERE coll = :coll AND rid IN (:rids)` (all rows of the batch's records) |
 | `SyncOutboxDao.deleteAcked(coll, rid, field, hlc, nodeId)` | `DELETE FROM sync_outbox WHERE coll = :coll AND rid = :rid AND field = :field AND (hlc < :hlc OR (hlc = :hlc AND nodeId <= :nodeId))` — a change made during the round stays |
 | `SyncOutboxDao.deleteIfUnchanged(coll, rid, field, hlc, nodeId)` | `DELETE FROM sync_outbox WHERE coll = :coll AND rid = :rid AND field = :field AND hlc = :hlc AND nodeId = :nodeId` (a pending local change that lost to a newer remote value; 10 compares complete clocks in Kotlin) |
-| `SyncOutboxDao.restampAbove(max, hlc)` | `UPDATE sync_outbox SET hlc = :hlc WHERE hlc > :max` (after a clock-offset correction, 10) |
+| `SyncOutboxDao.restampAbove(max, localNodeId)` | In one transaction select only `captureKind = 'LOCAL' AND nodeId = :localNodeId AND hlc > :max`, ordered by the old clock. Assign a fresh tick to each distinct old clock, shared by that clock's rows, preserving ordering and equality; update matching unacknowledged bootstrap inputs too. Seed from corrected time and the greatest accepted clock. Never collapse all rows to one clock. REPLAY rows remain immutable even for this node; an admission failure stays visible |
 | `SyncOutboxDao.hasPushWorthy()` | `SELECT EXISTS (SELECT 1 FROM sync_outbox WHERE field <> 'pos' AND coll <> 'session')` (10's push scheduling) |
 | `SyncOutboxDao.pendingCounts()` | `SELECT coll, COUNT(*) AS n FROM sync_outbox GROUP BY coll` (diagnostics) |
 | `SyncClockDao.get(coll, rid)`, `getMany(coll, rids)`, `put(coll, rid, clocks)` | `SELECT … WHERE coll = :coll AND rid = :rid` / `rid IN (:rids)`; `INSERT OR REPLACE INTO sync_clock(coll, rid, clocks) VALUES (…)` (`sync_clock` has no triggers) |
