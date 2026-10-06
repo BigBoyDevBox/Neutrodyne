@@ -11,6 +11,15 @@ pluginManagement {
         }
         mavenCentral()
         gradlePluginPortal()
+        // The convention classpath (libs.chaquopy.gradlePlugin) resolves with these repositories:
+        // S7's self-built plugin lives in third_party/chaquopy-maven (see below).
+        exclusiveContent {
+            forRepository { maven(uri("third_party/chaquopy-maven")) }
+            filter {
+                includeModule("com.chaquo.python", "gradle")
+                includeGroup("com.chaquo.python.runtime")
+            }
+        }
     }
 }
 
@@ -26,6 +35,16 @@ dependencyResolutionManagement {
         }
         // Compose Multiplatform, org.jetbrains.androidx.*, Metro, Ktor, kotlinx, Skiko: all on Maven Central
         mavenCentral()
+        // S7 fallback: self-built Chaquopy master (17.1.0, commit a41f0c9) is the only source of
+        // com.chaquo.python*; the runtime artifacts inside are the published 17.0.0 payloads
+        // republished under 17.1.0 (provenance: third_party/chaquopy-maven/README.md).
+        exclusiveContent {
+            forRepository { maven(uri("third_party/chaquopy-maven")) }
+            filter {
+                includeModule("com.chaquo.python", "gradle")
+                includeGroup("com.chaquo.python.runtime")
+            }
+        }
     }
 }
 
