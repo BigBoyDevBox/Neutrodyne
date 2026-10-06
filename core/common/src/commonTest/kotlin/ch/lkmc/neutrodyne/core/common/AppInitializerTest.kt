@@ -41,7 +41,7 @@ class AppInitializerTest {
     @Test
     fun `a failure is logged and later initializers still run`() = runTest {
         val errors = mutableListOf<String>()
-        Log.install(LogSink { level, _, message, _ ->
+        Log.install(LogSink { level, _, message ->
             if (level == LogLevel.ERROR) errors += message
         })
         val calls = mutableListOf<String>()

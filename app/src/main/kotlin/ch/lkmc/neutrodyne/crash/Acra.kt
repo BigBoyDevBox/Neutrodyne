@@ -4,7 +4,9 @@ package ch.lkmc.neutrodyne.crash
 import android.app.Application
 import ch.lkmc.neutrodyne.BuildConfig
 import ch.lkmc.neutrodyne.R
+import org.acra.ACRA
 import org.acra.ReportField
+import org.acra.config.CoreConfigurationBuilder
 import org.acra.config.dialog
 import org.acra.config.mailSender
 import org.acra.data.StringFormat
@@ -30,7 +32,12 @@ private val REPORT_CONTENT = listOf(
  * (D62). Called from `NeutrodyneApplication.attachBaseContext` only when the mailbox is configured; [mailTo]
  * exists for `YtxIsolationTest`, which installs it with a test address.
  */
-internal fun installAcra(app: Application, mailTo: String = BuildConfig.ACRA_MAILTO) = app.initAcra {
+internal fun installAcra(app: Application, mailTo: String = BuildConfig.ACRA_MAILTO) {
+    ACRA.log = RedactingAcraLog // before init: ACRA logs the original exception before redaction runs
+    app.initAcra(acraConfiguration(app, mailTo))
+}
+
+private fun acraConfiguration(app: Application, mailTo: String): CoreConfigurationBuilder.() -> Unit = {
     buildConfigClass = BuildConfig::class.java
     sharedPreferencesName = ACRA_PREFERENCES
     reportFormat = StringFormat.KEY_VALUE_LIST

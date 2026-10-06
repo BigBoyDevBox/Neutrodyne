@@ -29,8 +29,11 @@ internal class YtxPython(context: Context) {
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(appContext))
         }
-        val started = Python.getInstance().also { python = it }
+        val started = Python.getInstance()
         started.getModule(SHIM_PACKAGE) // throws PyException if the packaged shim is absent
+
+        // Cache only after the shim imported, so a failed import is retried, never reported ready
+        python = started
         return started
     }
 

@@ -43,6 +43,16 @@ class CrashReportRedactorTest {
         assertThat(result.getString(CrashKey.SYNC.name)).doesNotContain(TOKEN)
     }
 
+    @Test
+    fun stackTraceLosesSecretsBehindIpv6Hosts() {
+        val data = CrashReportData()
+        data.put(ReportField.STACK_TRACE, "IOException: https://[2001:db8::1]/rss?token=$TOKEN")
+
+        CrashReportRedactor.redact(data)
+
+        assertThat(data.getString(ReportField.STACK_TRACE)).doesNotContain(TOKEN)
+    }
+
     private companion object {
         const val PASSWORD = "s3cret"
         const val TOKEN = "SECRETTOKEN"

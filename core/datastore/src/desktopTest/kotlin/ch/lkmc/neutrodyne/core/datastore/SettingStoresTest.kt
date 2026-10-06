@@ -60,7 +60,7 @@ class SettingStoresTest {
 
     @BeforeTest
     fun setUp() {
-        Log.install(LogSink { level, tag, message, _ -> logRecords += Triple(level, tag, message) })
+        Log.install(LogSink { level, tag, message -> logRecords += Triple(level, tag, message) })
         scope = CoroutineScope(SupervisorJob() + dispatcher)
         root = kotlin.io.path.createTempDirectory("nd-datastore-test").toFile()
     }

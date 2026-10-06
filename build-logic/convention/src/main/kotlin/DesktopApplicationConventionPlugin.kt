@@ -24,12 +24,13 @@ class DesktopApplicationConventionPlugin : Plugin<Project> {
 
         val compose = extensions.getByType<ComposeExtension>()
         val desktop = (compose as org.gradle.api.plugins.ExtensionAware).extensions.getByType<DesktopExtension>()
-        // run and the packaging tasks use the JDK 25 toolchain, not the JDK running Gradle (21)
-        val toolchains = extensions.getByType<JavaToolchainService>()
-        val jdk25 = toolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(DESKTOP_JDK)) }
         desktop.application {
             mainClass = "$BASE_PACKAGE.desktop.MainKt"
-            javaHome = jdk25.get().metadata.installationPath.asFile.absolutePath
+            // :desktopApp:run uses the JDK 25 toolchain when it is installed. Without it (the Android release
+            // container has only JDK 21) configuration must still succeed, so a missing toolchain leaves the
+            // default; desktop tasks then fail when run, never Android builds (review 2026-10-06). Packaging uses
+            // the pinned runtime of desktopApp/runtime.lock instead (11).
+            desktopJdk()?.let { javaHome = it }
             jvmArgs += "--enable-native-access=ALL-UNNAMED"
             // Compose resolves ProGuard (GPL-2.0, D3) through a detached configuration inside the release
             // task actions, so it never lands on a named configuration to scan. Disabling the release
@@ -46,4 +47,11 @@ class DesktopApplicationConventionPlugin : Plugin<Project> {
         configureModuleGraphAssert()
         configureNeutrodyneTestTasks()
     }
+}
+
+/** The installation path of the JDK 25 toolchain, or null when it is not installed on this machine. */
+private fun Project.desktopJdk(): String? {
+    val toolchains = extensions.getByType<JavaToolchainService>()
+    val launcher = toolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(DESKTOP_JDK)) }
+    return runCatching { launcher.get().metadata.installationPath.asFile.absolutePath }.getOrNull()
 }
