@@ -5,6 +5,11 @@ plugins {
 }
 
 kotlin {
+    // expect/actual annotation typealiases (BeforeTest/AfterTest -> org.junit) let commonMain test
+    // bases carry JUnit4 lifecycle annotations — silence the still-Beta warning.
+    compilerOptions {
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
     sourceSets {
         commonMain.dependencies {
             implementation(project(":core:domain"))

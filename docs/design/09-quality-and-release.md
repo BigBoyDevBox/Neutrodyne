@@ -253,6 +253,9 @@ abstract class MainDispatcherTest(val dispatcher: TestDispatcher = StandardTestD
     @BeforeTest fun setMainDispatcher() = Dispatchers.setMain(dispatcher)
     @AfterTest fun resetMainDispatcher() = Dispatchers.resetMain()
 }
+// 2026-10-06: @BeforeTest/@AfterTest are ch.lkmc.neutrodyne.core.testing's own expect annotations,
+// actual typealiases to org.junit.Before/After — kotlin.test's names live in kotlin-test-junit,
+// which KMP puts on test compilations only, never on a module's commonMain.
 
 /** desktopMain and androidMain (identical copies): the JUnit 4 form for JVM-only and device tests. */
 class MainDispatcherRule(val dispatcher: TestDispatcher = StandardTestDispatcher()) : TestWatcher() {
