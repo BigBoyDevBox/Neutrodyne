@@ -88,7 +88,7 @@ All verified 2026-10-04; the YouTube-engine, signature and CI-action rows on 202
 | | dbus-java (`dbus-java-core`, `dbus-java-transport-native-unixsocket`) | 5.2.2 | MIT ([dbus-java](https://github.com/hypfvieh/dbus-java)); Linux MPRIS, logind, portals, notifications in `:desktop:system` |
 | | Temurin (bundled desktop runtime and the server image's JDK) | 25 LTS (25.0.4.1+1 at planning time) | Not Gradle-managed: one vendor and version per release, pinned per target with its source tarball in `desktopApp/runtime.lock`; jlink'd, never modified; runtime exception of [D3](../PLAN.md#3-key-decisions) ([Temurin 25 releases](https://github.com/adoptium/temurin25-binaries/releases)); no Windows AArch64 build ([D88](../PLAN.md#3-key-decisions)) |
 | | WiX Toolset | 3.14 or 5.x | Build tool on the Windows runner only (MS-RL), found by jpackage; Unverified whether a default jpackage MSI embeds WiX-licensed binaries ([11 Packaging and the runtime exception](11-desktop.md#packaging-and-the-runtime-exception)) |
-| YouTube engine (Android: `:youtube:ytdlp` only, [D72](../PLAN.md#3-key-decisions)) | Chaquopy Gradle plugin and runtime (`com.chaquo.python:gradle`, plugin ID `com.chaquo.python`) | 17.0.0 (latest release on Maven Central, 2025-11-30); S7 may switch to a newer release or a self-built master 17.1.0 | MIT. Its published documentation names AGP 7.3–9.2 and allows the plugin in one module per app; master carries the AGP 9.x updates up to 9.4.1 and target API 37 → [S7](#s7-chaquopy-under-agp-941) |
+| YouTube engine (Android: `:youtube:ytdlp` only, [D72](../PLAN.md#3-key-decisions)) | Chaquopy Gradle plugin and runtime (`com.chaquo.python:gradle`, plugin ID `com.chaquo.python`) | **17.1.0, self-built** from master @ `a41f0c9` into `third_party/chaquopy-maven` (S7, 2026-10-06: released 17.0.0 of 2025-11-30 is not configuration-cache safe; the runtime payloads inside are the released 17.0.0 bits republished under 17.1.0) | MIT. Its published documentation names AGP 7.3–9.2 and allows the plugin in one module per app; master carries the AGP 9.x updates up to 9.4.1 and target API 37 → [S7](#s7-chaquopy-under-agp-941) |
 | | CPython runtime (Chaquopy `com.chaquo.python:target`) | 3.14.0-0 (fallback 3.13.9-0) | PSF-2.0; Python ≥ 3.12 exists only for `arm64-v8a` and `x86_64` ([D77](../PLAN.md#3-key-decisions)). Build-time `.pyc` compilation needs a build-host Python of the same minor version (`buildPython`): 3.14 in CI via `actions/setup-python`, and in 09's release container `python:3.14-slim-trixie` ([09 release.yml](09-quality-and-release.md#releaseyml); Debian trixie's own `python3` is 3.13). Bundled native libraries per [Python and native components](#python-and-native-components) |
 | YouTube engine (desktop: `:youtube:ytdlp-desktop`, [D90](../PLAN.md#3-key-decisions)) | python-build-standalone | release `20261003` (CPython 3.14.8) | Not Gradle-managed: fetched by `fetchPythonStandalone`, trimmed by `trimPythonStandalone`, pinned per target in `youtube/ytdlp-desktop/python-components.lock`; libedit instead of readline, `_gdbm` disabled upstream, `_dbm` and Tcl/Tk removed by our trim ([python-build-standalone](https://github.com/astral-sh/python-build-standalone/blob/main/docs/running.rst), [11 Desktop YouTube engine host](11-desktop.md#desktop-youtube-engine-host)) |
 | Both engine hosts | yt-dlp (official zipimport release asset `yt-dlp`, incl. yt-dlp-ejs 0.8.0) | 2026.08.19 | Unlicense; vendored once and packaged by both hosts (path and layout: 04), not Gradle-managed and not a Renovate dependency: bumped only to canary-approved versions by `scripts/engine/bump-ytdlp.sh` ([04 Engine updates](04-youtube.md#engine-updates)); no optional extras (never `mutagen`) |
@@ -166,7 +166,7 @@ dbusJava = "5.2.2"
 sqliteJdbc = "3.53.4.0"
 bouncycastle = "1.86"
 slf4j = "2.0.20"
-chaquopy = "17.0.0"                 # :youtube:ytdlp only; S7 may change it (newer release, or "17.1.0" from a local build of master)
+chaquopy = "17.1.0"                 # :youtube:ytdlp only; S7 (2026-10-06): self-built master @ a41f0c9 in third_party/chaquopy-maven (17.0.0 cannot do the configuration cache)
 tink = "1.23.0"                     # M9b
 quickjsKt = "1.0.15"                # M9b / MD3, only if the JS challenge provider ships (D75)
 acra = "5.14.2"
@@ -403,7 +403,7 @@ Rules for the catalog:
 
 1. Every external coordinate lives here; build files never hard-code a version. `resolutionStrategy { failOnDynamicVersions(); failOnChangingVersions() }` is applied by every convention plugin. Release candidates are allowed only where this table names them (`cmpMaterial3Adaptive`); alphas and betas never ([PO-4](../PLAN.md#po-4-material-3-expressive)).
 2. Module build files apply plugins only by `alias(libs.plugins.neutrodyne-*)` or by bare `id("…")` for plugins already on the build-logic classpath; versioned `alias(...)` is used only for tooling plugins not on that classpath (`detekt`, `roborazzi`, `android-test`).
-3. The Chaquopy plugin (`chaquopy-gradlePlugin`) is an `implementation` dependency of `build-logic/convention`, so it loads in the same classloader as AGP, and `:youtube:ytdlp` applies it by bare `id("com.chaquo.python")`. Unverified: that Chaquopy needs AGP's classloader (its documentation applies it with a versioned `plugins {}` entry); S7 records which form works. No other module may apply it ([common Android configuration](#common-android-configuration)). Its runtime artifacts (`com.chaquo.python:target`, runtime AARs) resolve from Maven Central, or from the local repository of S7's self-built fallback.
+3. The Chaquopy plugin (`chaquopy-gradlePlugin`) is an `implementation` dependency of `build-logic/convention`, so it loads in the same classloader as AGP, and `:youtube:ytdlp` applies it by bare `id("com.chaquo.python")`. S7 recorded (2026-10-06): this form works — the plugin never needed a versioned `plugins {}` entry. No other module may apply it ([common Android configuration](#common-android-configuration)). Its runtime artifacts (`com.chaquo.python.runtime:*`) resolve from the `third_party/chaquopy-maven` repository of S7's self-built fallback, which alone serves them and the plugin; the CPython `com.chaquo.python:target` zips come unchanged from Maven Central (they are not Maven artifacts on the runtime classpath — S7 measured `releaseRuntimeClasspath` empty of them; detached configurations package them straight into the variant).
 4. BOM-managed artifacts (OkHttp, Ktor, Coil; Android-only Compose) are declared without a version, so their platform must be on the same configuration. The convention plugins add `platform(okhttp-bom)`, `platform(ktor-bom)` and `platform(coil-bom)` to every configuration that declares one of their artifacts (in KMP modules through the source set's `dependencies { implementation(project.dependencies.platform(...)) }`; Unverified that KMP source-set dependencies accept platforms on both targets, S8 records it), and `neutrodyne.android.application` adds `platform(compose-bom)` to `:app`'s `implementation`, `debugImplementation` and `androidTestImplementation`. A module that exposes a BOM-managed artifact as `api` (`:core:network:okhttp` → `okhttp`, `:core:network` → `ktor-client-core`) also declares the platform as `api`.
 5. Plugin classes in `build-logic` have no type-safe `libs` accessor. They read the catalog with `val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")` and `libs.findLibrary("okhttp-bom").get()` / `libs.findVersion("kotlin").get().requiredVersion`. Module build scripts use the type-safe accessors.
 6. JetBrains' multiplatform builds of AndroidX libraries (`org.jetbrains.androidx.*`, `org.jetbrains.compose.material3*`) and the androidx coordinates they resolve to on Android are upgraded together in one Renovate group with Kotlin, KSP, Metro and Compose Multiplatform ([09 Dependency updates](09-quality-and-release.md#dependency-updates)); a bump that changes the Android resolution of `material3`, `adaptive` or `navigation3-ui` is reviewed against [D6](../PLAN.md#3-key-decisions) and [D7](../PLAN.md#3-key-decisions).
@@ -425,9 +425,12 @@ dependencyResolutionManagement {
     repositories {
         google { content { includeGroupByRegex("com\\.android.*"); includeGroupByRegex("com\\.google.*"); includeGroupByRegex("androidx.*") } }
         mavenCentral()   // Compose Multiplatform, org.jetbrains.androidx.*, Metro, Ktor, kotlinx, Skiko: all on Maven Central
-        // Only if S7 falls back to a self-built Chaquopy master: a local repository that alone serves com.chaquo.python
-        // exclusiveContent { forRepository { maven(uri("third_party/chaquopy-maven")) }; filter { includeGroupByRegex("com\\.chaquo\\.python.*") } }
+        // S7 fell back to a self-built Chaquopy master (2026-10-06): a local repository that alone serves com.chaquo.python
+        exclusiveContent { forRepository { maven(uri("third_party/chaquopy-maven")) }; filter { includeGroupByRegex("com\\.chaquo\\.python.*") } }
     }
+    // S7 measured: the same exclusiveContent block is also needed in this file's pluginManagement{}
+    // (the convention classpath resolves with pluginManagement repositories, not these) and in
+    // build-logic/settings.gradle.kts.
 }
 rootProject.name = "Neutrodyne"
 include(":app", ":desktopApp")
@@ -1523,7 +1526,7 @@ android {
         }
     }
     splits {
-        abi {                                    // Unverified: exact names under AGP 9's new DSL (S7 records them)
+        abi {                                    // AGP 9.4.1 names (S7, 2026-10-06): unchanged from AGP 8
             isEnable = true
             reset()
             include("arm64-v8a", "x86_64", "armeabi-v7a")
@@ -1549,8 +1552,11 @@ android {
         // benchmarkRelease and nonMinifiedRelease are created by androidx.baselineprofile from release; the convention plugin
         // sets signingConfig = neutrodynePublic on them too (Unverified whether they inherit it, S19)
     }
-    packaging { jniLibs { useLegacyPackaging = false } }   // S7 decides: true compresses the .so files (≈ 6 MB less per
-                                                          // 64-bit APK) and is required by fallback A2's exec'd launcher
+    packaging { jniLibs { useLegacyPackaging = false } }   // S7 measured (2026-10-06): legacy compresses the .so files
+                                                          // (−9.8 MB on arm64-v8a, −9.6 MB on x86_64, −2.6 MB on
+                                                          // armeabi-v7a) at the cost of extraction on install, and is
+                                                          // required by fallback A2's exec'd launcher — not needed for
+                                                          // PB12/PB13, so default packaging stands
 }
 dependencies {
     if (youtubeEngine) implementation(project(":youtube:ytdlp"))
@@ -1598,7 +1604,7 @@ chaquopy {
 
 | Reached by | Rule |
 |---|---|
-| Python through Chaquopy's Java interop (R8 cannot see it) | `youtube/ytdlp/consumer-rules.pro`: `-keep class ch.lkmc.neutrodyne.youtube.ytdlp.ytx.PyHttp { public <init>(...); public *; }` and its request/response holder classes, the same for `…ytx.QuickJsEngine` when the JS provider ships, and `-keep class ch.lkmc.neutrodyne.youtube.ytdlp.YtxTestHooks { *; }` (04's test hook, inert until an instrumentation test arms it; 09 owns how the release smoke test arms it). Unverified: whether Chaquopy's runtime AAR brings its own consumer rules (S7, S19) |
+| Python through Chaquopy's Java interop (R8 cannot see it) | `youtube/ytdlp/consumer-rules.pro`: `-keep class ch.lkmc.neutrodyne.youtube.ytdlp.ytx.PyHttp { public <init>(...); public *; }` and its request/response holder classes, the same for `…ytx.QuickJsEngine` when the JS provider ships, and `-keep class ch.lkmc.neutrodyne.youtube.ytdlp.YtxTestHooks { *; }` (04's test hook, inert until an instrumentation test arms it; 09 owns how the release smoke test arms it). S7 recorded (2026-10-06): Chaquopy ships no AAR and `chaquopy_java` carries no ProGuard rules, so these consumer rules are the only source; S19's release run re-checks them |
 | kotlinx-serialization | the library's bundled rules; our `@Serializable` classes are reached through generated serializers, and `NavKeySerializers` registers every polymorphic key explicitly, so no class is looked up by name (S19 checks a restored back stack on the release APK) |
 | Metro, Room 3 KMP (`@ConstructedBy`), Compose resources' generated `Res` | no reflection, no rules expected (S19 confirms); Compose resources are packaged under `composeResources/` and must survive resource shrinking (Unverified, S19 checks a localised string on the release APK) |
 | Media3, OkHttp, Ktor, Coil, ACRA, WorkManager, the bundled SQLite driver's JNI | the libraries' own consumer rules |
@@ -2023,7 +2029,7 @@ Attribute decisions:
 | `directBootAware` | not set | not supported |
 | `intentMatchingFlags` | not set | P27 |
 | `android:process` | only `YtxService` (`:ytx`); ACRA's sender declares `:acra` itself | [Application start-up](#application-start-up); `checkBannedApis` rejects any other declaration in our manifests |
-| `extractNativeLibs` / `jniLibs.useLegacyPackaging` | per [S7](#s7-chaquopy-under-agp-941): default packaging keeps `.so` files stored, page-aligned and loaded from the APK; legacy packaging compresses them (≈ 6 MB less per 64-bit APK) at the cost of extraction on install, and is required if fallback A2 execs a launcher | 01, recorded in [D77](../PLAN.md#3-key-decisions) if it deviates |
+| `extractNativeLibs` / `jniLibs.useLegacyPackaging` | S7 kept default packaging (2026-10-06): `.so` files stored, page-aligned and loaded from the APK; legacy packaging compresses them (measured −9.8 MB on the `arm64-v8a` release APK) at the cost of extraction on install, and is required if fallback A2 execs a launcher | 01, recorded in [D77](../PLAN.md#3-key-decisions) if it deviates |
 | `<queries>` | ACRA `mailto` only | P26 |
 | `debuggable` | not written in any source manifest; AGP injects `true` only for the local `debug` build type and nothing, so `false`, for `release`, `benchmarkRelease` and `nonMinifiedRelease`; the two plugin-created build types are profileable (Unverified: that AGP expresses this as [`<profileable android:shell="true"/>`](https://developer.android.com/guide/topics/manifest/profileable-element) in their merged manifest; 09's first Macrobenchmark run confirms it) | P41, [D96](../PLAN.md#3-key-decisions) |
 | `testOnly` | never in the release merged manifest or APK (Android Studio adds it when you click Run, [application element](https://developer.android.com/guide/topics/manifest/application-element); Unverified that a command-line `assembleRelease` never sets it, which PLAN M0 AC7 checks with `aapt2 dump badging`) | `verifyManifestPermissions`; PLAN M0 AC7 |
@@ -2074,7 +2080,7 @@ licensee {
 }
 ```
 
-Any further permissive licence on a Gradle dependency (e.g. ISC; a weak-copyleft licence such as EPL-2.0 needs a [D3](../PLAN.md#3-key-decisions) amendment first) needs a reviewed PR adding a scoped `allowDependency(...) { because(...) }`, never a global `allow`. Unverified: whether Licensee accepts a dependency when only one of its declared licences is allowed (then the JNA entries are unnecessary) — M0b records it; Bouncy Castle's and Skiko's POM licence forms (`allowUrl` if needed, M0b/MS1). Tink and quickjs-kt are Apache-2.0; Unverified: whether Chaquopy's runtime reaches `releaseRuntimeClasspath` as Maven artifacts with a POM licence (S7 records it) — if not, it is covered by the Android Python lockfile.
+Any further permissive licence on a Gradle dependency (e.g. ISC; a weak-copyleft licence such as EPL-2.0 needs a [D3](../PLAN.md#3-key-decisions) amendment first) needs a reviewed PR adding a scoped `allowDependency(...) { because(...) }`, never a global `allow`. Unverified: whether Licensee accepts a dependency when only one of its declared licences is allowed (then the JNA entries are unnecessary) — M0b records it; Bouncy Castle's and Skiko's POM licence forms (`allowUrl` if needed, M0b/MS1). Tink and quickjs-kt are Apache-2.0; S7 recorded (2026-10-06): Chaquopy's runtime does not reach `releaseRuntimeClasspath` (the plugin resolves it through detached configurations into the variant pipeline), so Licensee never sees it — it is covered by the Android Python lockfile and the manual AboutLibraries entries.
 
 ### Python and native components
 
@@ -2123,28 +2129,30 @@ aboutLibrariesId = "certifi-cacert"
 
 **Native allow-list** (`NativeLicencePolicy.kt`): the permissive set above plus `MIT-0` and `Unlicense OR MIT-0` (miniaudio, `elected = "MIT-0"`), and `LGPL-2.1-or-later` (or `LGPL-3.0-or-later`, which D3 also allows, for a component other than FFmpeg, such as the libmpv fallback) **only** for entries with `kind = "lgpl-shared"`, `linking = "dynamic"`, a `source` entry with URL and SHA-256, and a configure line without `--enable-gpl`, `--enable-version3` or `--enable-nonfree`.
 
-Inventory (component versions are those of the planned stack, Unverified until S7 reads them from the Chaquopy runtime; licences per [CPython's licence page](https://docs.python.org/3/license.html), [yt-dlp](https://github.com/yt-dlp/yt-dlp#licensing), [yt-dlp-ejs](https://github.com/yt-dlp/ejs), [Chaquopy](https://github.com/chaquo/chaquopy), [quickjs-kt](https://github.com/dokar3/quickjs-kt)):
+Inventory (S7 read the versions from the runtime on 2026-10-06 — CPython's own `Android/android.py` dep pins confirmed by the version strings inside the shipped `.so` files; the lockfile carries the details. The ABI-independent `assets/chaquopy/` payloads — both 64-bit `bootstrap-native` sets and the stdlib `.imy` files — also ship unchanged in the `armeabi-v7a` APK, where they are dead weight the ABI split cannot drop; measured in [S7](#s7-chaquopy-under-agp-941). Licences per [CPython's licence page](https://docs.python.org/3/license.html), [yt-dlp](https://github.com/yt-dlp/yt-dlp#licensing), [yt-dlp-ejs](https://github.com/yt-dlp/ejs), [Chaquopy](https://github.com/chaquo/chaquopy), [quickjs-kt](https://github.com/dokar3/quickjs-kt)):
 
-| Component | Version (planned) | Licence | Ships in |
+| Component | Version (measured by S7, 2026-10-06) | Licence | Ships in |
 |---|---|---|---|
-| CPython runtime and standard library | 3.14.0 | Python-2.0 (PSF-2.0 with the BeOpen, CNRI and CWI terms); its Licences entry and `THIRD_PARTY_NOTICES.md` text is CPython's full licence verbatim, including every "Licenses and Acknowledgements for Incorporated Software" notice (Mersenne Twister, SipHash24, strtod and dtoa, cfuhash, Global Unbounded Sequences, the Zstandard bindings and the others listed there, [CPython licence](https://docs.python.org/3/license.html)) | `arm64-v8a`, `x86_64` APKs (ABI-independent stdlib assets possibly also in `armeabi-v7a`, S7) |
-| mimalloc (CPython's allocator) | as bundled | MIT | 64-bit APKs |
-| Unicode Character Database extract (`unicodedata`, `str`) | as bundled | Unicode-3.0, data | 64-bit APKs |
-| OpenSSL (`libcrypto`, `libssl`; Python's `ssl` module, not used for network traffic, [D74](../PLAN.md#3-key-decisions)) | 3.0.18 | Apache-2.0 | 64-bit APKs |
-| SQLite (Python's `_sqlite3`) | 3.50.4 | blessing (public domain) | 64-bit APKs |
-| libffi, expat, HACL* | as bundled | MIT | 64-bit APKs |
-| mpdecimal | as bundled | BSD-2-Clause | 64-bit APKs |
-| zstd | as bundled | BSD-3-Clause (elected from `BSD-3-Clause OR GPL-2.0-only`) | 64-bit APKs |
-| xz (liblzma) | as bundled | 0BSD | 64-bit APKs |
-| bzip2 | as bundled | bzip2-1.0.6 | 64-bit APKs |
-| zlib | as bundled | Zlib | 64-bit APKs |
-| Chaquopy runtime (Java, JNI, bootstrap) | 17.0.0 (or S7's choice) | MIT | 64-bit APKs (Java part possibly in all three, S7) |
-| `libc++_shared.so` (shipped with Chaquopy's runtime) | NDK | Apache-2.0 WITH LLVM-exception | 64-bit APKs |
-| CA certificate bundle (certifi `cacert.pem`, shipped by Chaquopy) | as bundled | MPL-2.0, data only | 64-bit APKs |
-| yt-dlp (official zipimport release) | 2026.08.19 | Unlicense | 64-bit APKs, engine updates |
-| yt-dlp-ejs (inside the yt-dlp release) | 0.8.0 | Unlicense; its solver bundles meriyah (ISC) and astring (MIT) | 64-bit APKs, engine updates |
-| `neutrodyne_ytx` shim | — | Unlicense | 64-bit APKs |
-| QuickJS (inside quickjs-kt; only if the JS provider ships) | as bundled by 1.0.15 | MIT | 64-bit APKs |
+| CPython runtime and standard library | 3.14.0 | Python-2.0 (PSF-2.0 with the BeOpen, CNRI and CWI terms); its Licences entry and `THIRD_PARTY_NOTICES.md` text is CPython's full licence verbatim, including every "Licenses and Acknowledgements for Incorporated Software" notice (Mersenne Twister, SipHash24, strtod and dtoa, cfuhash, Global Unbounded Sequences, the Zstandard bindings and the others listed there, [CPython licence](https://docs.python.org/3/license.html)) | all three APKs (usable only on `arm64-v8a`, `x86_64`) |
+| mimalloc (CPython's allocator) | as bundled | MIT | all three APKs |
+| Unicode Character Database extract (`unicodedata`, `str`) | as bundled | Unicode-3.0, data | all three APKs |
+| OpenSSL (`libcrypto`, `libssl`; Python's `ssl` module, not used for network traffic, [D74](../PLAN.md#3-key-decisions)) | 3.0.18 (banner "OpenSSL 3.0.18 30 Sep 2025") | Apache-2.0 | all three APKs |
+| SQLite (Python's `_sqlite3`) | 3.50.4 (source id 2025-07-30) | blessing (public domain) | all three APKs |
+| libffi | 3.4.4 | MIT | all three APKs |
+| expat | 2.7.3 | MIT | all three APKs |
+| HACL* | as bundled | MIT | all three APKs |
+| mpdecimal | as bundled | BSD-2-Clause | all three APKs |
+| zstd | 1.5.7 | BSD-3-Clause (elected from `BSD-3-Clause OR GPL-2.0-only`) | all three APKs |
+| xz (liblzma) | 5.4.6 | 0BSD | all three APKs |
+| bzip2 | 1.0.8 | bzip2-1.0.6 | all three APKs |
+| zlib | 1.2.8 (NDK r28.2 sysroot build) | Zlib | all three APKs |
+| Chaquopy runtime (Java, JNI, bootstrap) | plugin 17.1.0 self-built @ `a41f0c9`; runtime payloads = released 17.0.0 republished under 17.1.0 (`third_party/chaquopy-maven`) | MIT | all three APKs |
+| LLVM libc++ (statically linked into Chaquopy's JNI libraries; no `libc++_shared.so` ships) | NDK r28.2 | Apache-2.0 WITH LLVM-exception | all three APKs |
+| CA certificate bundle (certifi `cacert.pem`, shipped by Chaquopy) | 2026.7.22 | MPL-2.0, data only | all three APKs |
+| yt-dlp (official zipimport release) | 2026.08.19 | Unlicense | 64-bit APKs, engine updates — vendored from M9a, not yet in the lockfile |
+| yt-dlp-ejs (inside the yt-dlp release) | 0.8.0 | Unlicense; its solver bundles meriyah (ISC) and astring (MIT) | 64-bit APKs, engine updates — from M9a |
+| `neutrodyne_ytx` shim | SHIM_API_VERSION 1 | Unlicense | all three APKs (packaged; unusable without a 64-bit interpreter) |
+| QuickJS (inside quickjs-kt; only if the JS provider ships) | as bundled by 1.0.15 | MIT | 64-bit APKs — from M9b |
 
 The desktop inventory (python-build-standalone CPython 3.14.8 and its bundled OpenSSL, SQLite, libffi, expat, mpdecimal, zstd, xz, bzip2, zlib, libedit and ncurses, with `_dbm`, `_gdbm`, Tcl/Tk, `pip` and the test suite removed; FFmpeg 9.0.x; miniaudio 0.11.x; the C++/WinRT headers) and the runtime's `legal/` contents are owned by [11 Packaging and the runtime exception](11-desktop.md#packaging-and-the-runtime-exception) and [11 Desktop YouTube engine host](11-desktop.md#desktop-youtube-engine-host), which keep their tables in step with the locks.
 
@@ -2254,7 +2262,7 @@ Delivered in M0a (S1–S12, S19) and M0b (S13 with 11). Each spike runs on a thr
 | S4 | Robolectric runs Room 3 with `AndroidSQLiteDriver` (DAO + migration tests) | pending | [02 Migrations and schema testing](02-data-model.md#migrations-and-schema-testing), [09 Test infrastructure](09-quality-and-release.md#test-infrastructure) |
 | S5 | Nav3 API names, per-tab state retention, sheet/dialog scenes (Android) | pending | [Navigation](#navigation), [08 Navigation](08-ui-ux.md#navigation) |
 | S6 | `sqlite-bundled` 16 KB alignment and APK size | pending | [09 Performance budgets](09-quality-and-release.md#performance-budgets) |
-| S7 | Chaquopy embeds CPython 3.14 in `:youtube:ytdlp` under AGP 9.4.1, Gradle 9.7.1, built-in Kotlin 2.4.20 and targetSdk 37, with the app's ABI splits, and starts in `:ytx` on API 26 and on the API 37 16 KB image; the release APKs' sizes against PB12/PB13 | pending | [D72](../PLAN.md#3-key-decisions), [D77](../PLAN.md#3-key-decisions) if they deviate; [04 YouTube engine](04-youtube.md#youtube-engine); [Python and native components](#python-and-native-components) (versions read from the runtime) |
+| S7 | Chaquopy embeds CPython 3.14 in `:youtube:ytdlp` under AGP 9.4.1, Gradle 9.7.1, built-in Kotlin 2.4.20 and targetSdk 37, with the app's ABI splits, and starts in `:ytx` on API 26 and on the API 37 16 KB image; the release APKs' sizes against PB12/PB13 | **go** (2026-10-06) via the self-built-master fallback: plugin 17.1.0 @ `a41f0c9` from `third_party/chaquopy-maven` (4.6 MB) + released 17.0.0 runtime payloads republished under 17.1.0; CPython 3.14.0; configuration cache clean; foreign-ABI bytes ≈ 3.5 MB per 64-bit split; `armeabi-v7a` carries 12.4 MB of unusable Python inside PB13; every `.so` 16 KB-aligned; `selftest` instrumented test written, runs on CI | [D72](../PLAN.md#3-key-decisions), [D77](../PLAN.md#3-key-decisions) if they deviate; [04 YouTube engine](04-youtube.md#youtube-engine); [Python and native components](#python-and-native-components) (versions read from the runtime) |
 | S8 | Metro across KMP modules and both shells | pending | [D82](../PLAN.md#3-key-decisions) if Koin; [Dependency injection](#dependency-injection) |
 | S9 | Compose Multiplatform UI stack on the desktop and Android | pending | [D6](../PLAN.md#3-key-decisions), [D7](../PLAN.md#3-key-decisions) if they deviate; [08 Navigation](08-ui-ux.md#navigation) |
 | S10 | Room 3 with the bundled driver on every desktop target | pending | [D9](../PLAN.md#3-key-decisions) if it deviates; [02 Conventions](02-data-model.md#conventions) |
@@ -2344,6 +2352,16 @@ flowchart LR
   d -->|no| kt["fallback Kotlin InnerTube port, amend D72"]
 ```
 
+- **Result (2026-10-06): go, via method step 4 (self-built master).** Step 1: Maven Central still lists 17.0.0 as the newest release (metadata timestamp 2025-11-30). Step 2–3 with 17.0.0: the plugin applies by bare `id("com.chaquo.python")` and builds `assembleDebug` under AGP 9.4.1, but it is **not configuration-cache safe** — it runs `check_build_python.py` as an external process during configuration, and its tasks capture non-serializable state (`TaskBuilder$BuildPackagesTask`, `Configuration`, `Project`, `JavaCompile`). Step 4: master's `a9f7d91` "Gradle modernizations" ([#1465](https://github.com/chaquo/chaquopy/pull/1465), milestone 17.1) rewrite the plugin around configuration-cache-safe task I/O, so master was built at pinned commit `a41f0c9d309c70a39a13775acfe40fa3dc94bfdd` (`VERSION.txt` 17.1.0) and published to `third_party/chaquopy-maven/` (**4.6 MB**, layout in its README; the lead narrowed the exclusive repository to the plugin and `com.chaquo.python.runtime` on 2026-10-06, so the 19 MB of CPython `target` zips resolve unchanged from Maven Central instead of being vendored). Only `product/gradle-plugin` is built locally — upstream's wrapper is too old for JDK 21 and a real runtime build needs the CPython `target/prefix` cross-compile tree — so the released **17.0.0** runtime artifacts (`chaquopy_java`, `bootstrap`, `chaquopy`, `libchaquopy_java`) are vendored at their true bytes and republished under the version the plugin asks for (17.1.0); master's runtime delta is irrelevant to us (`AssetPath.parent`, certifi bump, test fixes). With that, `./gradlew :youtube:ytdlp:build assembleDebug assembleRelease --configuration-cache` is green and the cache is stored and reused.
+  - **APK sizes (release, default packaging):** `arm64-v8a` 25,138,602 B, `x86_64` 25,089,417 B, `armeabi-v7a` 13,833,017 B — inside PB12 (< 40 MB) and PB13 (< 30 MB). Legacy packaging (`useLegacyPackaging = true`): 15,300,262 / 15,466,977 / 11,264,557 B; not needed, so the default stands ([Manifest and permissions](#manifest-and-permissions) row).
+  - **Foreign-ABI Chaquopy bytes** (stored uncompressed): `arm64-v8a` APK carries 3,550,162 B of `x86_64` payloads (bootstrap-native `.so` + `stdlib-x86_64.imy` + `requirements-x86_64.imy`); `x86_64` APK carries 3,505,248 B of `arm64-v8a` payloads — both under the 5 MB fallback trigger, so the ABI splits stay (no [D2](../PLAN.md#3-key-decisions) amendment). Chaquopy packages per-ABI content as assets, not `jniLibs`, which is why the splits cannot drop them.
+  - **`armeabi-v7a` APK:** every Python byte is unusable — 12,500,853 B uncompressed / 12,390,356 B in-zip (the whole `assets/chaquopy/` tree minus the 64-bit `lib/` libraries, which *are* filtered by the split); the APK stays inside PB13 at 13.83 MB, so this is accepted per the pass criteria (counted there; [Open questions](#open-questions) 13).
+  - **16 KB alignment:** `llvm-readelf -l` on every `.so` in the release APK — all `lib/arm64-v8a/*`, `assets/chaquopy/bootstrap-native/<abi>/*` and all 96 `.so` inside `stdlib-*.imy` — shows every LOAD segment at `0x4000` (16 KB). The `armeabi-v7a` APK contains no Chaquopy/CPython `lib/` libraries at all.
+  - **Component versions** (read from the shipped binaries and CPython 3.14.0's `Android/android.py` dep pins): CPython 3.14.0, OpenSSL 3.0.18 (2025-09-30), SQLite 3.50.4, libffi 3.4.4, expat 2.7.3, xz 5.4.6, bzip2 1.0.8, zstd 1.5.7, zlib 1.2.8 (NDK sysroot), mimalloc + HACL* + mpdecimal bundled, certifi 2026.7.22 (`cacert.pem` sha1-identical to master). Recorded in `youtube/ytdlp/python-components.lock` and the [inventory](#python-and-native-components).
+  - **Other answers the method asked for:** `splits.abi` DSL names unchanged under AGP 9.4.1 (`isEnable`/`reset()`/`include(…)`/`isUniversalApk`); Chaquopy ships no AAR and no consumer rules (our `consumer-rules.pro` is the only keep-rule source); the runtime never appears on `releaseRuntimeClasspath` (detached configurations → Licensee sees nothing; the lockfile and manual AboutLibraries entries cover it); `buildPython` comes from `-Pneutrodyne.buildPython=…` or `PATH` auto-detection (CI: `actions/setup-python` 3.14; the `python:3.14-slim-trixie` container check is CI-side, no Docker locally).
+  - **Host caveat found (2026-10-06):** CPython 3.14's own `venv` creates a `bin/𝜋thon` symlink (upstream Easter egg). Under a POSIX-locale Gradle daemon (`sun.jnu.encoding=ANSI_X3.4-1968`) the name mangles to `????thon` and `extractPythonBuildPackages` fails hashing it. Builds need a UTF-8 locale (`LANG=C.UTF-8`); GitHub runners and the release container are UTF-8 already.
+  - **Still open (device-side):** no KVM locally, so `Python.start` + `selftest` in `:ytx` on the API 26 GMD and the API 37 16 KB image, and the bind-to-answer timing, are exercised only by CI (`YtxSelfTestInstrumentedTest` under `youtube/ytdlp/src/androidTest`, compiled and packaged here). Master's read-only-`.so` change for target 37 (P35) is verified the same way.
+
 ### S8 Metro across KMP modules
 
 [D82](../PLAN.md#3-key-decisions), risk T22. Gates all DI code (M0a step 8).
@@ -2408,7 +2426,7 @@ flowchart LR
 | (M0a) | an APK containing `mutagen/__init__.py`, and one containing `libreadline.so`, each fail `check-apk.sh` (09) | pending |
 | (M0a) | `import java.io.File` in a `commonMain` file fails the build or `checkBannedApis`; an island in a `commonMain` dependency block fails `checkBannedApis` | pending |
 | (M0a) | `com.guardsquare:proguard-base` declared on any configuration fails `verifyDependencyPolicy`; the Compose desktop `*Release*` tasks are disabled | pending |
-| (M0a) | S7 outcome: Chaquopy version (release or master commit), Python version, packaging mode, foreign-ABI bytes per split, `selftest` on API 26 and API 37 16 KB | pending |
+| (M0a) | S7 outcome: Chaquopy version (release or master commit), Python version, packaging mode, foreign-ABI bytes per split, `selftest` on API 26 and API 37 16 KB | go (2026-10-06): Chaquopy 17.1.0 self-built @ `a41f0c9` + released 17.0.0 runtime payloads (`third_party/chaquopy-maven`, 4.6 MB), CPython 3.14.0, default packaging, 3.55 MB foreign-ABI in `arm64-v8a` / 3.51 MB in `x86_64`, `armeabi-v7a` carries 12.39 MB of unusable Python inside PB13; `selftest` instrumented test written for CI (no KVM locally) |
 | (M0a) | S8 outcome: Metro or Koin; test-graph API; injector-interface syntax; module-graph plugin KMP behaviour | pending |
 | (M0a) | the build fails when a module other than `:youtube:ytdlp` applies `com.chaquo.python`, when Hilt is applied, when KMP is combined with `com.android.library`, and when core-library desugaring is enabled | pending |
 | (M0a) | predictive back from Settings animates on API 36 (manual) | pending |
