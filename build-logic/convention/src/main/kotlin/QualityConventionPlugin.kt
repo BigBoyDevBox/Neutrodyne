@@ -9,5 +9,6 @@ import org.gradle.api.Project
 class QualityConventionPlugin : Plugin<Project> {
     override fun apply(target: Project) {
         check(target == target.rootProject) { "neutrodyne.quality is applied to the root project only" }
+        target.registerBrandAssetTasks()
     }
 }

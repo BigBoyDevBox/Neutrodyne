@@ -25,6 +25,7 @@ dependencies {
     implementation(libs.moduleGraphAssert.gradlePlugin)
     implementation(libs.aboutlibraries.gradlePlugin)
     implementation(libs.chaquopy.gradlePlugin)
+    testImplementation(libs.junit4)
 }
 
 gradlePlugin {
