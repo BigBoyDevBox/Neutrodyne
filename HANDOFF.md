@@ -1,6 +1,6 @@
 # Handoff — state of the Neutrodyne planning work
 
-This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-06.** The KMP replan and the first round of contributor review fixes (PRs #5–#8) are on `main`, and their review follow-ups are being applied. Next come the owner's open questions, then M0a.1.
+This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-06.** The KMP replan, the contributor review fixes (PRs #5–#8) and their follow-ups (PR #9) are on `main`. Next come the owner's open questions, then M0a.1. To hand implementation to another agent, use [`docs/IMPLEMENTATION-PROMPT.md`](docs/IMPLEMENTATION-PROMPT.md).
 
 ## 1. What this repository is
 
@@ -61,7 +61,13 @@ A contributor (Sol, fork `BigBoyDevBox/Neutrodyne`) opened four documentation PR
 
 - **Review:** each PR had its own adversarial reviewer, and a sixth agent checked how they interact once combined. The verdict for every PR was "merge with follow-ups": no blockers or majors.
 - **Merged:** all four on 2026-10-06, in order 5, 6, 7, 8.
-- **Follow-ups:** the reviews left 46 follow-up items: about 35 minor fixes and a few notes on changes outside each PR's stated scope. They are being applied on branch `ccr-ac54917e-u0kl2v` and will reach `main` in a follow-up PR. If this session stops, the full list is in [`docs/research/briefs/review-2026-10-06-prs-5-8.md`](docs/research/briefs/review-2026-10-06-prs-5-8.md). Check each item against the current text (`git log` shows what has already been fixed), fix the rest, run `tools/doccheck/`, then push and fast-forward `main`.
+- **Follow-ups:** the reviews left 46 follow-up items: about 35 minor fixes and a few notes on changes outside each PR's stated scope. All 46 were handled in [PR #9](https://github.com/L-K-M/Neutrodyne/pull/9), on `main` since 2026-10-06; a verifier pass confirmed them and both doc checks pass. Notable additions:
+  - **Control-feed check:** before a 1–2-channel library declares a YouTube outage, the app fetches two pinned control channel feeds (R3.3 amended).
+  - **Credential coordinator:** extended to sync password installs and every credential delete; arrives in M1b.
+  - **Staging-only `EpisodeLineV1.fc` field:** per-field clocks for first-link staging.
+  - **`SyncOutboxDao.captureIntent`:** captures mark-unplayed and position resets.
+  - **`LinuxDesktopEntryWriter`:** writes both the menu and autostart entries with spec-correct `Exec` quoting.
+  - **PBS patches and WiX:** both stay PO-48 proposed defaults awaiting the owner.
 
 ### Open owner questions (ask these next; each has a default in `docs/PLAN.md` §4)
 
