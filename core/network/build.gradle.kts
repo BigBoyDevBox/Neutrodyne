@@ -16,12 +16,14 @@ kotlin {
         }
         androidMain.dependencies {
             implementation(project.dependencies.platform(libs.ktor.bom))
-            implementation(project(":core:network:okhttp"))
+            // api, not implementation: the island's Metro contributions only reach a shell graph when
+            // the island is on the shell's compile classpath (S8, 2026-10-06)
+            api(project(":core:network:okhttp"))
             implementation(libs.ktor.client.okhttp)
         }
         desktopMain.dependencies {
             implementation(project.dependencies.platform(libs.ktor.bom))
-            implementation(project(":core:network:okhttp"))
+            api(project(":core:network:okhttp"))
             implementation(libs.ktor.client.okhttp)
         }
     }
