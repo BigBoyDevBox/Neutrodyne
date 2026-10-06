@@ -382,6 +382,7 @@ erDiagram
     TEXT rid PK
     TEXT field PK
     INTEGER hlc
+    TEXT nodeId
   }
   sync_clock {
     TEXT coll PK
@@ -897,12 +898,13 @@ The token is not here: it lives in `credential` with origin `sync:<host>` on And
 
 ```kotlin
 @Entity(tableName = "sync_outbox", primaryKeys = ["coll", "rid", "field"], withoutRowId = true,
-    indices = [Index("hlc")])
+    indices = [Index("hlc", "nodeId")])
 data class SyncOutboxEntity(
     val coll: String,             // podcast, group, member, episode, upnext, session, setting
     val rid: String,              // canonical record ID text
     val field: String,            // wire field name, "*" (every field of the record) or "~rekey"
-    val hlc: Long,                // packed clock of the newest local change of this field
+    val hlc: Long,                // packed milliseconds and counter; replay preserves both
+    val nodeId: String,           // clock's original node; local captures use sync_state.nodeId
     val value: String? = null,    // null: read the current local value at push time; else literal JSON
 )
 ```
@@ -911,17 +913,21 @@ data class SyncOutboxEntity(
 - `WITHOUT ROWID` because every access is by the text key (a rowid table would store the key twice); the `hlc` index serves the push order.
 - Rows leave only through 10: acknowledged rows up to the pushed clock, rows whose local change lost against a newer remote value, and `unlink()`.
 
+**Clock preservation (review 2026-10-06).** Compare `(hlc, nodeId)`, not milliseconds alone. Normal captures copy the current node; `captureStored` preserves a previously accepted field's complete HLC and literal payload for full resync. It never clamps, re-stamps or reads a derived local value. A replay is the same write, not a new user action ([10 Cursor semantics and resync](10-sync.md#cursor-semantics-and-resync)). For a literal `pos`, `ChangeBuilder` promotes its internal `reset` marker to the wire `FieldValue.reset` sibling of `v`; the marker never stays inside `v`.
+
 #### sync_clock
 
 ```kotlin
 @Entity(tableName = "sync_clock", primaryKeys = ["coll", "rid"], withoutRowId = true)
 data class SyncClockEntity(
     val coll: String, val rid: String,
-    val clocks: String,           // JSON: newest known clock per field, plus redirect, alias and settings entries (10)
+    val clocks: String,           // JSON: field clocks, raw episode/session state and pending effects (10)
 )
 ```
 
 One row per record this device has synced (≈ one per podcast, group, membership and episode with state). SQL never reads `clocks`; only `sync_cap_episode_rekey` renames a row ([Sync capture triggers](#sync-capture-triggers)). Retention deletes the rows of the episodes it deletes; unsubscribing deletes the rows of the podcast's `episode`, `upnext` and `member` records ([Unsubscribe and merge](#unsubscribe-and-merge), [Retention policy](#retention-policy)).
+
+Besides field-clock strings, the JSON holds redirect/alias entries and three typed metadata entries owned by 10: `raw` (accepted `RecordState` for `episode` and `session`, including reset flags and match hints), `pendingSetting` (value and clock awaiting DataStore), and `pendingAuth` (clock, target origin and an opaque `SecretStore` staging reference, never the password). Each entry commits with the page's cursor. Derived `episode_state` columns and an unadopted `play_session` are projections, not replay payloads; their raw values stay here. Metadata and field clocks are updated together on acknowledgement and pull, and merged field-wise on redirects. Pending effects are cleared only after idempotent completion; unlink clears their staged secrets too ([10 Durable apply effects](10-sync.md#durable-apply-effects)).
 
 #### sync_parked
 
@@ -961,6 +967,8 @@ Serves R7.1, R7.3, R7.4, N1 ([D93](../PLAN.md#3-key-decisions)). Delivered in MS
 #### Trigger set
 
 `rid` sources, by subselect on the parents (`X` = `NEW`, or `OLD` for a delete): podcast `X.syncId`; podcast settings `(SELECT syncId FROM podcast WHERE id = X.podcastId)`; group `X.uuid`; group settings `(SELECT uuid FROM podcast_group WHERE id = X.groupId)`; member `g.uuid || p.syncId` from `podcast_group g, podcast p`; episode and Up next `p.syncId || e.identityKey` from `episode e JOIN podcast p`; session `'current'`. A captured field's `value` is NULL (read at push time) unless a literal is shown.
+
+`played` and `pos` always capture literal **NEW** values with their clock: `played` stores `{"played": <bool>, "playedAt": <timestamp-or-null>}`; `pos` stores `{"ms": <positionMs>, "dur": <durationMs-or-null>, "src": <positionSource>}`, plus the internal `reset` marker on an explicit zero. A remote derivation can clear `playedAt` or project position 0 without changing the underlying user action, so reading these columns later would pair a different value with the captured clock. `ChangeBuilder` expands the played pair and promotes the reset marker ([10 Push](10-sync.md#push)). Every inserted outbox row also copies `sync_state.nodeId`.
 
 | Trigger | Fires on | Wire fields captured |
 |---|---|---|
@@ -1002,14 +1010,17 @@ BEGIN
   DELETE FROM sync_outbox WHERE coll = 'episode'
     AND rid = (SELECT p.syncId || e.identityKey FROM episode e JOIN podcast p ON p.id = e.podcastId WHERE e.id = NEW.episodeId)
     AND field IN (SELECT field FROM (
-          SELECT 'pos' AS field, NULL AS value WHERE NEW.positionMs > 0 AND NEW.positionMs IS NOT OLD.positionMs
-          UNION ALL SELECT 'pos', '{"ms":0,"reset":true}' WHERE NEW.positionMs = 0 AND OLD.positionMs <> 0));
-  INSERT INTO sync_outbox(coll, rid, field, hlc, value)
-    SELECT 'episode', r.rid, f.field, s.hlc, f.value
+          SELECT 'pos' AS field WHERE NEW.positionMs > 0 AND NEW.positionMs IS NOT OLD.positionMs
+          UNION ALL SELECT 'pos' WHERE NEW.positionMs = 0 AND OLD.positionMs <> 0));
+  INSERT INTO sync_outbox(coll, rid, field, hlc, nodeId, value)
+    SELECT 'episode', r.rid, f.field, s.hlc, s.nodeId, f.value
     FROM (SELECT p.syncId || e.identityKey AS rid FROM episode e JOIN podcast p ON p.id = e.podcastId
           WHERE e.id = NEW.episodeId) r,
          sync_state s,
-         (SELECT 'pos' AS field, NULL AS value WHERE NEW.positionMs > 0 AND NEW.positionMs IS NOT OLD.positionMs
+         (SELECT 'pos' AS field,
+                  '{"ms":' || NEW.positionMs || ',"dur":' || COALESCE(CAST(NEW.durationMs AS TEXT), 'null')
+                    || ',"src":"' || NEW.positionSource || '"}' AS value
+                  WHERE NEW.positionMs > 0 AND NEW.positionMs IS NOT OLD.positionMs
           UNION ALL SELECT 'pos', '{"ms":0,"reset":true}' WHERE NEW.positionMs = 0 AND OLD.positionMs <> 0) f
     WHERE s.id = 0;
 END;
@@ -1026,17 +1037,21 @@ WHEN (SELECT enabled AND NOT applying FROM sync_state WHERE id = 0)
     OR EXISTS (SELECT 1 FROM sync_outbox WHERE coll IN ('episode', 'upnext') AND rid = <oldRid>))
 BEGIN
   <tick>;
-  -- pending local changes move to the new rid and replace pending rows already there
+  -- Keep the complete newer clock on each side before renaming; never drop a newer target edit.
   DELETE FROM sync_outbox WHERE coll IN ('episode', 'upnext') AND rid = <newRid>
     AND EXISTS (SELECT 1 FROM sync_outbox o WHERE o.coll = sync_outbox.coll AND o.rid = <oldRid>
+                AND o.field = sync_outbox.field
+                AND (o.hlc > sync_outbox.hlc OR (o.hlc = sync_outbox.hlc AND o.nodeId >= sync_outbox.nodeId)));
+  DELETE FROM sync_outbox WHERE coll IN ('episode', 'upnext') AND rid = <oldRid>
+    AND EXISTS (SELECT 1 FROM sync_outbox o WHERE o.coll = sync_outbox.coll AND o.rid = <newRid>
                 AND o.field = sync_outbox.field);
   UPDATE sync_outbox SET rid = <newRid> WHERE coll IN ('episode', 'upnext') AND rid = <oldRid>;
   -- the clock row moves unless the new rid has one; 10's OutboxReader merges a leftover old row
   -- into it (field-wise maximum, in Kotlin) before it pushes the rekey
   UPDATE sync_clock SET rid = <newRid> WHERE coll IN ('episode', 'upnext') AND rid = <oldRid>
     AND NOT EXISTS (SELECT 1 FROM sync_clock c WHERE c.coll = sync_clock.coll AND c.rid = <newRid>);
-  INSERT INTO sync_outbox(coll, rid, field, hlc, value)
-    SELECT 'episode', <oldRid>, '~rekey', s.hlc, '{"to":' || <jsonString(newRid)> || '}'
+  INSERT INTO sync_outbox(coll, rid, field, hlc, nodeId, value)
+    SELECT 'episode', <oldRid>, '~rekey', s.hlc, s.nodeId, '{"to":' || <jsonString(newRid)> || '}'
     FROM sync_state s WHERE s.id = 0;
 END;
 ```
@@ -1064,9 +1079,10 @@ This is the HLC local-event rule of [10 Hybrid logical clocks](10-sync.md#hybrid
 
 | Method | SQL |
 |---|---|
-| `captureLiteral(coll, rid, field, json)` | the [HLC tick](#hlc-tick) with `AND enabled = 1`, then `INSERT OR REPLACE INTO sync_outbox(coll, rid, field, hlc, value) SELECT :coll, :rid, :field, hlc, :json FROM sync_state WHERE id = 0 AND enabled = 1` (an outer statement, so `OR REPLACE` applies) — local merges, "Keep mine" |
+| `captureLiteral(coll, rid, field, json)` | the [HLC tick](#hlc-tick) with `AND enabled = 1`, then `INSERT OR REPLACE INTO sync_outbox(coll, rid, field, hlc, nodeId, value) SELECT :coll, :rid, :field, hlc, nodeId, :json FROM sync_state WHERE id = 0 AND enabled = 1` (an outer statement, so `OR REPLACE` applies) — local merges, "Keep mine" |
 | `captureAll(coll, rid)` | the same with `field = '*'` and `value = NULL` — settings (`SettingsCapture`), "Use this device's library everywhere" |
-| `captureAt(coll, rid, field, atMs)` | `atHlc = clamp(atMs, 2020-01-01, now) << 16` in Kotlin; `INSERT OR IGNORE INTO sync_outbox(coll, rid, field, hlc, value) SELECT :coll, :rid, :field, :atHlc, NULL FROM sync_state WHERE id = 0 AND enabled = 1`, then `UPDATE sync_outbox SET hlc = :atHlc, value = NULL WHERE coll = :coll AND rid = :rid AND field = :field AND hlc < :atHlc` — an older stamp never replaces a newer pending change; first link and restore while linked |
+| `captureAt(coll, rid, field, atMs)` | `atHlc = clamp(atMs, 2020-01-01, now) << 16` in Kotlin; insert with `nodeId = sync_state.nodeId` and `value = NULL`, or update only when `(atHlc, nodeId)` is greater than the pending row's `(hlc, nodeId)` — an older stamp never replaces a newer pending change; first link and restore while linked |
+| `captureStored(coll, rid, field, stored: FieldValue)` | Insert the supplied clock's packed `hlc`, original `nodeId` and literal value (including the internal position-reset marker), or raise only when the complete clock is greater than the pending row's. No wall-clock clamp or tick; full resync only. The value and clock must come from the same accepted write, never from derived columns |
 
 #### Installing and changing the triggers
 
@@ -1177,7 +1193,7 @@ Serves R2.9, N5. Delivered in M1 (all indices exist in version 1, the sync ones 
 | `person`, `funding` | `(ownerType, ownerId)` | Owner lookup and deletes |
 | `import_item` | PK; `(sessionId, status)`; `podcastId` | Progress counts; FK |
 | other children | PKs starting with `episodeId` | FK cascades |
-| `sync_outbox` | PK `(coll, rid, field)` WITHOUT ROWID; `index_sync_outbox_hlc` | Trigger coalescing (delete + insert by key); push order |
+| `sync_outbox` | PK `(coll, rid, field)` WITHOUT ROWID; `index_sync_outbox_hlc_nodeId` | Trigger coalescing (delete + insert by key); complete-clock push order |
 | `sync_clock` | PK `(coll, rid)` WITHOUT ROWID | Clock lookup per record; rekey rename |
 | `sync_parked` | PK; `podcastSyncId`, `guid`, `enclosureKey` | Release after ingest; hint matching |
 
@@ -1837,11 +1853,11 @@ DAOs over the [sync tables](#sync-tables) for 10's engine (MS0: `SyncOutboxDao` 
 | `SyncStateDao.setError(code)` | `UPDATE sync_state SET lastError = :code WHERE id = 0 AND lastError IS NOT :code` |
 | `SyncStateDao.withApplying(block)` | [The applying protocol](#the-applying-protocol): `SELECT applying …`, `UPDATE sync_state SET applying = 1 WHERE id = 0`, `block`, `UPDATE sync_state SET applying = :previous WHERE id = 0` |
 | `SyncStateDao.unlink()` | One write transaction: `DELETE FROM sync_outbox`; `DELETE FROM sync_clock`; `DELETE FROM sync_parked`; `DELETE FROM sync_held`; `UPDATE sync_state SET enabled = 0, applying = 0, accountId = NULL, deviceId = NULL, cursor = NULL, hlc = 0, nodeId = NULL, clockOffsetMs = 0, protocol = NULL, linkedAt = NULL, lastSyncAt = NULL, lastError = NULL WHERE id = 0` (`serverUrl` kept for a quick re-link, [10 Unlink and Delete my data](10-sync.md#unlink-and-delete-my-data)) |
-| `SyncOutboxDao.captureLiteral`, `captureAll`, `captureAt` | [Kotlin-side captures](#kotlin-side-captures) |
+| `SyncOutboxDao.captureLiteral`, `captureAll`, `captureAt`, `captureStored` | [Kotlin-side captures](#kotlin-side-captures) |
 | `SyncOutboxDao.firstRecords(limit)` | `SELECT coll, rid, MIN(hlc) AS firstHlc FROM sync_outbox GROUP BY coll, rid ORDER BY firstHlc, coll, rid LIMIT :limit` (push batches of ≤ 1,000 records) |
 | `SyncOutboxDao.rowsFor(coll, rids)` | `SELECT * FROM sync_outbox WHERE coll = :coll AND rid IN (:rids)` (all rows of the batch's records) |
-| `SyncOutboxDao.deleteAcked(coll, rid, field, hlc)` | `DELETE FROM sync_outbox WHERE coll = :coll AND rid = :rid AND field = :field AND hlc <= :hlc` — a change made during the round stays |
-| `SyncOutboxDao.deleteIfUnchanged(coll, rid, field, hlc)` | `DELETE FROM sync_outbox WHERE coll = :coll AND rid = :rid AND field = :field AND hlc = :hlc` (a pending local change that lost to a newer remote value; 10 compares clocks in Kotlin) |
+| `SyncOutboxDao.deleteAcked(coll, rid, field, hlc, nodeId)` | `DELETE FROM sync_outbox WHERE coll = :coll AND rid = :rid AND field = :field AND (hlc < :hlc OR (hlc = :hlc AND nodeId <= :nodeId))` — a change made during the round stays |
+| `SyncOutboxDao.deleteIfUnchanged(coll, rid, field, hlc, nodeId)` | `DELETE FROM sync_outbox WHERE coll = :coll AND rid = :rid AND field = :field AND hlc = :hlc AND nodeId = :nodeId` (a pending local change that lost to a newer remote value; 10 compares complete clocks in Kotlin) |
 | `SyncOutboxDao.restampAbove(max, hlc)` | `UPDATE sync_outbox SET hlc = :hlc WHERE hlc > :max` (after a clock-offset correction, 10) |
 | `SyncOutboxDao.hasPushWorthy()` | `SELECT EXISTS (SELECT 1 FROM sync_outbox WHERE field <> 'pos' AND coll <> 'session')` (10's push scheduling) |
 | `SyncOutboxDao.pendingCounts()` | `SELECT coll, COUNT(*) AS n FROM sync_outbox GROUP BY coll` (diagnostics) |
@@ -2163,7 +2179,7 @@ Serves N1, N5, N9, R7.1. Test infrastructure, runners and CI wiring are owned by
 | `SyncCaptureTest` (spike S14) | Desktop JVM + GMD (API 26 framework driver and the bundled driver) | Every synced column of the [trigger set](#trigger-set) produces exactly one coalesced outbox row per field and every device-local column none; delete literals; parents gone produce nothing (unsubscribe, group delete cascades); outer `INSERT OR IGNORE` re-adds after a pending removal leave `in` without a literal `false`; `withApplying` suppresses capture and nests; bulk mark-played of 5,000 rows, restore, import commit and the 5-s position save; the `hlc` is strictly increasing within a transaction | MS0 |
 | `SyncTriggersTest`, `SyncJsonStringTest` | Desktop JVM | Rendered SQL equals the golden `sync-triggers.sql`; every `UPDATE OF` column exists; `ensure` reinstalls a missing, changed or extra trigger and is a no-op otherwise; `jsonString` equals kotlinx.serialization's encoding for every key kind, quotes, backslashes, tab, LF and CR | MS0 |
 | `SyncTriggerCostTest` | GMD on the reference phone; desktop JVM recorded | The 5-s position save costs ≤ 1 ms more with triggers on (MS0 acceptance 3) | MS0 |
-| `SyncBookkeepingTest` | Desktop JVM | `captureAt` never lowers a pending clock; `deleteAcked` keeps a newer pending change; `moveRecord` keeps the larger clock per field; `unlink()` empties the four tables and keeps `serverUrl`; rekey moves outbox and clock rows and records `~rekey` only for records known to sync; retention deletes the deleted episodes' clock rows and captures nothing | MS0, MS2 |
+| `SyncBookkeepingTest` | Desktop JVM | `captureAt` never lowers a pending clock; `captureStored` retains value, counter and original node; `deleteAcked` compares the full clock and keeps a newer pending change; `moveRecord` and the rendered rekey trigger keep the larger clock per field (older source/newer target and the reverse, node ties included), without PK collisions; raw episode/session metadata moves with its clocks; `unlink()` empties the four tables and keeps `serverUrl`; retention captures nothing | MS0, MS2 |
 | `DownloadClaimTest` | Desktop JVM + GMD | Two concurrent claimers: exactly one wins; priority/requestedAt order; metered, charging, YouTube, `nextAttemptAt` filters | M6 |
 | `AutoDownloadCandidatesTest`, `CleanupCandidatesTest`, `DownloadAllCandidatesTest` | Desktop JVM | D67 watermark and `isNew`; tombstones; protected set (favourite, current, next 3 Up next, unplayed MANUAL, in-progress AUTO) and its place in the keep-N window; download-all excludes `QUEUED`…`COMPLETED` rows and tombstones, caps at 200 with a correct total | M6 |
 | `DownloadDaoTest` | Desktop JVM | Reconcile with live tokens (`QUEUED`/`SYSTEM` and Task Manager `PAUSED`); `markWait` writes only changed rows (zero invalidations on repeat); `requeueChangedEnclosures`; `queuedNeeds` aggregates on an empty and a mixed lane; (M9a) `queuedNeeds` ignores `YOUTUBE_ENGINE_OFF` rows (a lane holding only such rows reports `queued = 0` and `due` NULL); `markYouTubeEngineWaits`/`clearYouTubeEngineWaits` touch only queued YouTube rows and write nothing on repeat; `failYouTubeRowsWithoutEngine` fails every non-completed YouTube row, returns its `.part` path and leaves `COMPLETED`, `MISSING` and RSS rows untouched | M6, M9a |
