@@ -58,6 +58,10 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
             buildTypes {
                 getByName("release") {
                     optimization { enable = true }
+                    // 09 Reproducible builds › Hygiene: PNGs ship pre-optimised, and the
+                    // VCS info block would leak .git state and break rebuild parity.
+                    isCrunchPngs = false
+                    vcsInfo { include = false }
                 }
                 getByName("debug") {
                     applicationIdSuffix = ".debug"
