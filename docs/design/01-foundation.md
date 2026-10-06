@@ -1711,7 +1711,7 @@ fun OkHttpClient.pinnedToFamily(family: IpFamily): OkHttpClient
 interface NeutrodyneHttpClients { fun client(kind: HttpClientKind): HttpClient }   // one HttpClient per kind, app-lifetime
 // androidMain and desktopMain (the same few lines, wiring the island):
 //   HttpClient(OkHttp) { engine { preconfigured = networkClients[kind] }; expectSuccess = false
-//                        followRedirects = kind != FEED; install(ContentNegotiation) { json(NeutrodyneJson) }
+//                        followRedirects = kind != FEED // DOWNLOAD: HttpRedirect with allowHttpsDowngrade = true (D28, like 03's feed chain, never with credentials); install(ContentNegotiation) { json(NeutrodyneJson) }
 //                        install(UserAgent) { agent = userAgent.value } }   // UserAgentProvider (:core:common)
 ```
 
@@ -1723,7 +1723,7 @@ Ktor's own timeouts (`HttpTimeout`) are not installed: the OkHttp clients carry 
 | API | Apple, fyyd, Podcast Index search (03); small JSON calls such as oEmbed (04) and Podcasting 2.0 chapters JSON (06); the approved engine manifest, its signature and yt-dlp's `SHA2-256SUMS`/`.sig` (04, M9b; MD3 on the desktop); the update check's single GET of `neutrodyne-update.json` (09 `GitHubUpdateSource`, M11a; `releases/latest/download` only, never `api.github.com`; the APK or installer itself is downloaded by the user's browser, never by the app) | 15 s / 30 s (inherited) / 8 s | the 8 s call timeout caps the whole call and equals the canonical per-provider timeout |
 | IMAGE | Coil `OkHttpNetworkFetcherFactory` (08) | 15 s / 20 s / 60 s | Coil disk cache only |
 | MEDIA | Media3 `OkHttpDataSource.Factory` (06, Android); `HttpByteSource` (11, desktop) | 15 s / 30 s / none | `Accept-Encoding: identity` (byte-exact ranges, `SimpleCache` and `SpanCache` keys) |
-| DOWNLOAD | the transfer core of 07 (common, on Ktor); the `yt-dlp` engine file, ≤ 10 MB (04, M9b; MD3); never an app APK or installer (the apps download no updates, [D78](../PLAN.md#3-key-decisions)) | 15 s / 60 s / none | `Accept-Encoding: identity`; 07 asserts it in tests |
+| DOWNLOAD | the transfer core of 07 (common, on Ktor); the `yt-dlp` engine file, ≤ 10 MB (04, M9b; MD3); never an app APK or installer (the apps download no updates, [D78](../PLAN.md#3-key-decisions)) | 15 s / 60 s / none | `Accept-Encoding: identity`; `https → http` downgrades followed without credentials (D28, like 03's feed chain); 07 asserts it in tests |
 | YOUTUBE | `PyHttp` in `:ytx` (04, M9a): every request yt-dlp makes on Android (InnerTube, watch page) | 15 s / 30 s / 60 s | derived from the credential-free core (no `AuthInterceptor`); per call `pinnedToFamily(family)` with the family the main process passes ([D74](../PLAN.md#3-key-decisions)); cancellation of a call cancels its OkHttp `Call`s (04) |
 | SYNC | `SyncClient` and `SyncEventsClient` (10, MS2) | 15 s / 30 s / 60 s; the SSE call derives a client with no read and no call timeout (the heartbeat bounds it, 10) | derived from the credential-free core: no `AuthInterceptor` (the device token is added per request by `SyncClient`, never by a shared interceptor); the only client that may pass the Android LAN guard, and only while `LocalNetworkAccess.syncAllowed` is true ([LAN guard](#interceptors)) |
 
