@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Unlicense
 import org.gradle.api.Plugin
 import org.gradle.api.Project
+import org.gradle.jvm.toolchain.JavaLanguageVersion
+import org.gradle.jvm.toolchain.JavaToolchainService
 import org.gradle.kotlin.dsl.getByType
 import org.jetbrains.compose.ComposeExtension
 import org.jetbrains.compose.desktop.DesktopExtension
@@ -22,8 +24,12 @@ class DesktopApplicationConventionPlugin : Plugin<Project> {
 
         val compose = extensions.getByType<ComposeExtension>()
         val desktop = (compose as org.gradle.api.plugins.ExtensionAware).extensions.getByType<DesktopExtension>()
+        // run and the packaging tasks use the JDK 25 toolchain, not the JDK running Gradle (21)
+        val toolchains = extensions.getByType<JavaToolchainService>()
+        val jdk25 = toolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(DESKTOP_JDK)) }
         desktop.application {
             mainClass = "$BASE_PACKAGE.desktop.MainKt"
+            javaHome = jdk25.get().metadata.installationPath.asFile.absolutePath
             jvmArgs += "--enable-native-access=ALL-UNNAMED"
         }
 
