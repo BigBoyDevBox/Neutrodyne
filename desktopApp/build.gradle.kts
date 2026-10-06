@@ -26,4 +26,8 @@ dependencies {
     implementation(compose.desktop.currentOs)
     implementation(libs.kotlinx.coroutines.swing)
     runtimeOnly(libs.kxml2)
+
+    // The desktop graph test (01 Testing)
+    testImplementation(libs.junit4)
+    testImplementation(libs.truth)
 }
