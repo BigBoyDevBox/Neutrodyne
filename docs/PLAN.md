@@ -1583,7 +1583,7 @@ flowchart LR
 - **Acceptance criteria:**
   1. With both apps in the foreground or playing, a played mark, a group rename and an Up next reorder appear on the other device within 10 s (PB31).
   2. Pausing on the phone and opening the desktop app shows "Continue on this device" with the episode and position; tapping it plays from that position; a playing device ignores remote sessions until it stops.
-  3. A remote "played" for the episode playing here neither stops nor seeks playback and stops further local position writes for it.
+  3. A winning remote mark that makes the current episode effectively played neither stops nor seeks playback and stops further position writes for it. An older mark hidden by a newer listening position does not freeze the saver or post a played notice.
   4. On Android, SSE runs only while the UI is visible or playback runs (no SSE connection 1 min after backgrounding without playback); SSE reconnects through Caddy and nginx with the documented configuration.
 - **Dependencies:** MS2, M5, MD1b.
 - **Design refs:** [10 Conflict resolution](design/10-sync.md#conflict-resolution), [10 Client sync engine](design/10-sync.md#client-sync-engine), [06 Shared playback core](design/06-playback.md#shared-playback-core).
