@@ -5,10 +5,21 @@ plugins {
 }
 
 kotlin {
+    // expect/actual classes and objects (Nfc, DateFormatter, StoragePaths) are 01's shim
+    // mechanism for the two JVM islands — silence the still-Beta warning.
+    compilerOptions {
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
     sourceSets {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.datetime)
+        }
+        desktopMain.dependencies {
+            // JNA for SHGetKnownFolderPath(FOLDERID_LocalAppData) — AppDirs' Windows fallback
+            // when %LOCALAPPDATA% is unset or relative (11 AppDirs).
+            implementation(libs.jna)
+            implementation(libs.jna.platform)
         }
     }
 }
