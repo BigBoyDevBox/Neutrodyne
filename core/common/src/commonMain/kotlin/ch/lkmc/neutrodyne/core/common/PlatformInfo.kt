@@ -20,6 +20,12 @@ interface PlatformInfo {
     val userAgentPlatform: String
 
     /**
+     * `Build.VERSION.SDK_INT` on Android, `null` on the desktop. `:core:network:okhttp`'s
+     * `LocalNetworkGuard` reads it: the LAN guard engages only on Android API 37+ (01 Interceptors).
+     */
+    val androidSdkInt: Int?
+
+    /**
      * ISO 3166-1 alpha-2 uppercase from the system locale (`DE`) — the `discover.country`
      * default (03) and Podcast Index `cc` hint. Derived, never a stored setting.
      */

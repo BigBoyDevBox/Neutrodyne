@@ -12,6 +12,7 @@ import kotlinx.coroutines.test.runTest
 private object FakePlatform : PlatformInfo {
     override val kind = PlatformKind.DESKTOP
     override val userAgentPlatform = "Linux; x64"
+    override val androidSdkInt: Int? = null
     override val regionCode = "DE"
 }
 
@@ -30,6 +31,7 @@ class UserAgentProviderTest {
             object : PlatformInfo {
                 override val kind = PlatformKind.DESKTOP
                 override val userAgentPlatform = "Linüx; x64"
+                override val androidSdkInt: Int? = null
                 override val regionCode = "DE"
             },
             "0.1.0",

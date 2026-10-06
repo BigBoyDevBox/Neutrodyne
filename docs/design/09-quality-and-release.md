@@ -184,6 +184,8 @@ internal fun Project.configureNeutrodyneTestTasks() {
 }
 ```
 
+2026-10-06, S12: the checked-in `configureNeutrodyneTestTasks` also passes Robolectric's required JDK-21 module flags on every `Test` task — `--add-opens` for `java.base`'s internals plus `--add-exports java.base/jdk.internal.access=ALL-UNNAMED`; without them every host test dies with `IllegalAccessException` (Robolectric's instrumented classes reach into `SharedSecrets`). Harmless for non-Robolectric tasks and cheaper than a per-module opt-in.
+
 ```kotlin
 // build-logic: neutrodyne.android.testing (:app, :playback:impl, :youtube:ytdlp). Catalog access per 01 catalog rule 5 (no
 // type-safe accessors in plugin classes); okhttp-bom is already on test/androidTest configurations (01 catalog rule 4).
