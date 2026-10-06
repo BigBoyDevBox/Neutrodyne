@@ -1743,7 +1743,7 @@ Progress: `ImportDao.observeProgress(sid)` = `SELECT status, COUNT(*) FROM impor
 ```sql
 SELECT p.feedKey, e.id, e.identityKey, e.guid, e.title, e.pubDate, e.enclosureUrl, e.enclosureType, e.durationMs,
        e.externalMediaId, e.link,
-       s.playedAt, s.playCount, s.startedAt, s.isFavorite, s.downloadDismissedAt, s.measuredDurationMs,
+       s.playedAt, s.playCount, s.startedAt, s.lastPlayedAt, s.isFavorite, s.downloadDismissedAt, s.measuredDurationMs,
        s.updatedAt AS stateUpdatedAt, pos.positionMs, pos.positionSource, pos.updatedAt AS positionUpdatedAt,
        COALESCE(d.state = 'COMPLETED', 0) AS downloaded
 FROM episode e
@@ -1759,7 +1759,7 @@ ORDER BY e.id
 LIMIT 1000
 ```
 
-The columns map 1:1 to 05's `EpisodeLineV1` fields; the `kv` of each line is `EpisodeKeys.versionOf(identityKey)`. The read transaction is `withReadTransaction`; only local files are written inside it (no `ContentResolver`). When the Auto Backup snapshot exceeds its size guard, 05 drops or slims lines in Kotlin before writing them; the query itself does not change.
+The columns map 1:1 to 05's `EpisodeLineV1` fields (`s.lastPlayedAt` → `lp`); the `kv` of each line is `EpisodeKeys.versionOf(identityKey)`. `stateUpdatedAt` is NULL for lines whose episode has no `episode_state` row (queue-only, download-only or current-episode rows): the writer maps that to `ts = 0`, 05's no-state-change sentinel. `positionUpdatedAt` maps to `posAt` independently of `ts`. The read transaction is `withReadTransaction`; only local files are written inside it (no `ContentResolver`). When the Auto Backup snapshot exceeds its size guard, 05 drops or slims lines in Kotlin before writing them; the query itself does not change.
 
 ### Restore matching
 
@@ -1972,7 +1972,7 @@ Selecting and deleting in the same write transaction closes the race with a user
 | Step | Action | Frequency |
 |---|---|---|
 | 1 | Retention batches until none left or deadline | daily |
-| 2 | Orphan sweeps: `DELETE FROM person WHERE (ownerType = 'EPISODE' AND ownerId NOT IN (SELECT id FROM episode)) OR (ownerType = 'PODCAST' AND ownerId NOT IN (SELECT id FROM podcast))`; same for `funding`; `DELETE FROM credential WHERE origin <> 'podcastindex' AND origin NOT LIKE 'sync:%' AND id NOT IN (SELECT credentialId FROM podcast WHERE credentialId IS NOT NULL)` (keeps the sync token, 10) | daily |
+| 2 | Orphan sweeps: `DELETE FROM person WHERE (ownerType = 'EPISODE' AND ownerId NOT IN (SELECT id FROM episode)) OR (ownerType = 'PODCAST' AND ownerId NOT IN (SELECT id FROM podcast))`; same for `funding`; `DELETE FROM credential WHERE origin <> 'podcastindex' AND origin NOT LIKE 'sync:%' AND id NOT IN (SELECT credentialId FROM podcast WHERE credentialId IS NOT NULL)` (keeps the sync token, 10). The credential delete holds the process-wide backup mutex (shared with 05's `BackupWriter`/`RestoreMerger`) around the delete: a restore stores its credentials with `SecretStore.put` outside any Room transaction before transaction A references them (05), so a sweep between the two would delete a live credential and fail transaction A with an FK violation. Deliberately no age guard instead: a resumable restore re-runs from step 1, so the put→reference gap across a stop or restart is unbounded and any fixed age would be arbitrary | daily |
 | 3 | Import-session cleanup (rule owned by 05): `ImportDao.expiredSessions(now − 7 d)` ([Import commit](#import-commit)); delete `<cache>/{payloadPath}`, then `deleteSession(id)`. Takes over from 05's `AutoSnapshotWorker`, which runs the same calls on Android in M3–M10 (the desktop has no snapshot worker: [Open questions](#open-questions) 13) | daily |
 | 3a | Sync housekeeping, only while linked: `SyncParkedDao.expire(now − 180 d)` ([sync_parked](#sync_parked)) | daily |
 | 4 | Ask `ArtworkStore` (08) to collect garbage using [Artwork references](#artwork-references) (08's `ArtworkSyncWorker` also does this after each sync) | daily |
