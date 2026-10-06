@@ -10,6 +10,8 @@ kotlin {
             implementation(project(":core:model"))
             implementation(project(":core:common"))
             implementation(libs.androidx.datastore.preferences.core)
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.collections.immutable)
             implementation(libs.okio)
         }
     }

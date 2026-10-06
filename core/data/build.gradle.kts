@@ -19,6 +19,8 @@ kotlin {
             implementation(project(":youtube:api"))
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.datetime)
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.collections.immutable)
             implementation(libs.okio)
         }
         androidMain.dependencies {
@@ -26,6 +28,11 @@ kotlin {
         }
         desktopMain.dependencies {
             implementation(project(":feeds:jvm"))
+        }
+        // Wiring DataStoreBindings' providers in desktopTest mentions the DataStore type
+        // (implementation deps of :core:datastore are otherwise invisible here).
+        desktopTest.dependencies {
+            implementation(libs.androidx.datastore.preferences.core)
         }
     }
 }
