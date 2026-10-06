@@ -63,6 +63,8 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
                     // Reproducible builds (09 Hygiene): PNGs are committed pre-optimised; no VCS metadata in the APK
                     isCrunchPngs = false
                     vcsInfo { include = false }
+                    // Keeps the androidTest APK intact when -PtestBuildType=release runs the smoke tests (09)
+                    if (file(TEST_KEEP_RULES).exists()) testProguardFiles(TEST_KEEP_RULES)
                 }
                 getByName(DEBUG) {
                     applicationIdSuffix = ".debug"
@@ -102,6 +104,7 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
         const val RELEASE = "release"
         const val DEBUG = "debug"
         const val BENCHMARK_RELEASE = "benchmarkRelease"
+        const val TEST_KEEP_RULES = "proguard-test.pro"
         const val SIGNING_CONFIG = "neutrodynePublic"
         const val PUBLIC_PASSWORD = "neutrodyne"
         const val PUBLIC_ALIAS = "neutrodyne"
