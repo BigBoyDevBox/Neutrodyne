@@ -1,10 +1,20 @@
-# Handoff — state of the Neutrodyne planning work
+# Handoff — state of the Neutrodyne work
 
-This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-06.** The KMP replan, the contributor review fixes (PRs #5–#8) and their follow-ups (PR #9) are on `main`. Next come the owner's open questions, then M0a.1. To hand implementation to another agent, use [`docs/IMPLEMENTATION-PROMPT.md`](docs/IMPLEMENTATION-PROMPT.md).
+This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-06.** The plan is final on `main`; **implementation has started with M0a.1** (see §0). The implementation brief is [`docs/IMPLEMENTATION-PROMPT.md`](docs/IMPLEMENTATION-PROMPT.md).
+
+## 0. Implementation status
+
+| Milestone | State | Branch / PR | Notes |
+|---|---|---|---|
+| M0a.1 | in progress | `impl/m0a1-scaffold` | Build scaffold done: wrapper, catalog, `build-logic` convention plugins, all 44 modules as stubs, committed keystore. **S1 go** (KGP 2.4.20 + AGP 9.4.1; KGP shows in root `buildEnvironment`, not `:app:`, because the plugins load through the included build). In progress: `:core:common`/`:core:model`, `:core:navigation`, policy tasks, CI and scripts, spikes S7 (Chaquopy) and S8 (Metro). Next: network, datastore, design system and UI host, feature stubs, `:app`, S19, release `v0.1.0`. |
+
+**Toolchain used locally:** Temurin 21 and 25 (Gradle toolchains via `org.gradle.java.installations.paths` in `~/.gradle/gradle.properties`), Android SDK with build tools 36/37 and platform 37, host CPython 3.14 for Chaquopy's `buildPython`. No KVM on the development machine: instrumented tests and Gradle Managed Devices run only on CI.
+
+**Resume:** `git fetch && git checkout impl/m0a1-scaffold`; read the M0 checklist in `docs/design/01-foundation.md`; `export JAVA_HOME=<jdk21> ANDROID_HOME=<sdk>`; `./gradlew assembleDebug assembleRelease desktopTest`.
 
 ## 1. What this repository is
 
-Neutrodyne is a planned open-source podcast player. So far the repository holds **only the plan**: there is no code. The sources of truth are:
+Neutrodyne is an open-source podcast player in development. The sources of truth are:
 
 - [CLAUDE.md](CLAUDE.md): the owner's standing conventions. Read this first; they are binding.
 - [docs/PLAN.md](docs/PLAN.md): the master plan, holding requirements (R/N-ids), decisions (D-ids), owner decisions (PO-ids), the roadmap (M-ids), risks and the glossary.
