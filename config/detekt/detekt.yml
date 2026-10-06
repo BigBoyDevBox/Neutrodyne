@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Unlicense
+# detekt 2.0.0-alpha.6 (09 detekt): buildUponDefaultConfig = true, SARIF only,
+# non-blocking until a stable detekt supports Kotlin 2.4 / AGP 9. Baseline:
+# config/detekt/baseline.xml.
+complexity:
+  CyclomaticComplexMethod:
+    threshold: 15
+  LongMethod:
+    threshold: 80
+    ignoreAnnotated: ['Composable']
+  TooGenericExceptionCaught:
+    active: true
+naming:
+  MagicNumber:
+    active: false # off; 09 leaves it off in tests and Compose files
+comments:
+  ForbiddenComment:
+    active: true
+    values: ['TODO'] # a TODO must carry an issue link (09)
