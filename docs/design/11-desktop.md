@@ -297,7 +297,7 @@ R8.3, R1.1. The OS hands Neutrodyne `.opml` files and `feed:`, `podcast:`, `pcas
 - **Linux desktop entry.** DEB and RPM install our own desktop entry `ch.lkmc.neutrodyne.desktop` and hicolor icons through package files we write ourselves (the DEB resources `control`, `postinst` and `postrm`, the RPM spec `neutrodyne.spec`, [Linux DEB, RPM and tar.gz](#linux-deb-rpm-and-targz)) and pass through jpackage's resource directory (jpackage 25 looks these names up as overridable resources, [`LinuxDebBundler.java`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jpackage/linux/classes/jdk/jpackage/internal/LinuxDebBundler.java)); jpackage's own desktop integration stays off (no Linux icon, shortcut or file association options), because jpackage names its entry `<package>-<launcher>.desktop` ([`DesktopIntegration.java`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jpackage/linux/classes/jdk/jpackage/internal/DesktopIntegration.java)), here `neutrodyne-Neutrodyne.desktop`, and the frozen name is `ch.lkmc.neutrodyne.desktop` ([D61](../PLAN.md#3-key-decisions)). The scripts are written from the Desktop Entry specification ([desktop entry spec](https://specifications.freedesktop.org/desktop-entry-spec/latest/)), never copied from jpackage's GPL-2.0+CE templates. Unverified: that jpackage 25 accepts a complete replacement RPM spec and DEB scripts from the resource directory; S13 checks. Fallback: jpackage's entry with a `Neutrodyne.desktop` template override carrying our `MimeType` line, and D61's Linux entry name amended to `neutrodyne-Neutrodyne.desktop` ([Open questions](#open-questions) 2).
 
 ```ini
-# ch.lkmc.neutrodyne.desktop (DEB/RPM: /usr/share/applications; tar.gz: ~/.local/share/applications)
+# ch.lkmc.neutrodyne.desktop — DEB/RPM package template (/usr/share/applications)
 [Desktop Entry]
 Type=Application
 Name=Neutrodyne
@@ -306,6 +306,24 @@ Comment=Podcasts organised in groups
 Exec=/opt/neutrodyne/bin/Neutrodyne %U
 TryExec=/opt/neutrodyne/bin/Neutrodyne
 Icon=neutrodyne
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=text/x-opml;x-scheme-handler/neutrodyne;x-scheme-handler/feed;x-scheme-handler/podcast;x-scheme-handler/pcast;x-scheme-handler/itpc;
+StartupWMClass=ch-lkmc-neutrodyne-desktop-MainKt
+```
+
+The fixed `/opt` template above is the DEB/RPM entry only (`Icon=neutrodyne` from the package hicolor icons). A tar.gz extraction has no fixed entry: Settings › Desktop › "Add to applications menu" generates a per-user entry at `~/.local/share/applications/ch.lkmc.neutrodyne.desktop` from the running archive (launcher resolved from `jpackage.app-path`), with per-user icons under `~/.local/share/icons/hicolor/`. It writes only under `~/.local/share/`, never under `/usr/share`, and starts no process ([01 DC4](01-foundation.md#desktop-compliance)): desktops pick the new or rewritten entry up themselves, and the install guidance names the optional user-run cache refresh ([First install and every update](#first-install-and-every-update)). Re-running it after the archive moved rewrites the entry (stale paths are refreshed, never duplicated). Name, GenericName, Comment, Categories, MimeType and StartupWMClass match the package template; only Exec, TryExec and Icon carry the extraction's paths, quoted and escaped per the Desktop Entry specification: in Exec the launcher path is wrapped in double quotes when it contains spaces or tabs (backslash, double-quote, backtick and dollar escaped inside the quotes) and a literal `%` is written `%%`, keeping the single trailing `%U`; TryExec is the raw absolute launcher path and Icon the raw absolute icon path, both with no field codes and no `%` rewriting):
+
+```ini
+# generated user entry — absolute paths of this extraction (example with spaces)
+[Desktop Entry]
+Type=Application
+Name=Neutrodyne
+GenericName=Podcast player
+Comment=Podcasts organised in groups
+Exec="/home/alex/apps/My Apps/Neutrodyne/bin/Neutrodyne" %U
+TryExec=/home/alex/apps/My Apps/Neutrodyne/bin/Neutrodyne
+Icon=/home/alex/.local/share/icons/hicolor/256x256/apps/neutrodyne.png
 Terminal=false
 Categories=AudioVideo;Audio;Player;
 MimeType=text/x-opml;x-scheme-handler/neutrodyne;x-scheme-handler/feed;x-scheme-handler/podcast;x-scheme-handler/pcast;x-scheme-handler/itpc;
@@ -1302,7 +1320,7 @@ Our libraries (`ndmedia`, FFmpeg) load from `<resources>/native/` by absolute pa
 - **DEB** (`dpkg-deb` via jpackage) and **RPM** (`rpmbuild`) install to `/opt/neutrodyne`; the release job renames them to `neutrodyne-{v}-linux-{x64|arm64}.{deb|rpm}`; RPM versions contain no `-` and our SemVer has none; the packages are not signed. Our maintainer scripts install and remove the desktop entry and the hicolor icons (`png/neutrodyne-{16…512}.png`, [08 Brand assets](08-ui-ux.md#brand-assets)) and run `update-desktop-database` and `gtk-update-icon-cache` when present ([Links and files from the OS](#links-and-files-from-the-os)). miniaudio loads PulseAudio or ALSA at run time, so `ndmedia` adds no hard package dependency; the README states the PulseAudio or PipeWire-pulse requirement.
 - **Portable dependencies.** Left alone, jpackage derives the DEB's `Depends` from `ldd` and `dpkg -S` on the build host and the RPM's `Requires` from `rpm -q --whatprovides`, with `Autoreq: 0` in its spec template ([`LinuxPackageBundler.java`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jpackage/linux/classes/jdk/jpackage/internal/LinuxPackageBundler.java), [`LinuxDebBundler.java`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jpackage/linux/classes/jdk/jpackage/internal/LinuxDebBundler.java), [`template.spec`](https://raw.githubusercontent.com/openjdk/jdk25u/master/src/jdk.jpackage/linux/classes/jdk/jpackage/internal/resources/template.spec)). On the `ubuntu-24.04` runners that would name Ubuntu 24.04's renamed packages (for example `libasound2t64`), which older distributions inside our glibc ≥ 2.31 floor do not have, and an RPM built on Ubuntu would get no `Requires` at all (the runner's RPM database is empty). Our own `control` therefore lists `Depends` with alternatives (`libc6 (>= 2.31), libasound2t64 | libasound2, libx11-6, libxext6, libxi6, libxrender1, libxtst6, libfreetype6, libfontconfig1, zlib1g`; `Recommends: libpulse0 | pipewire-pulse, libgl1, libgtk-3-0`), and our `neutrodyne.spec` lists the same libraries by soname (`libasound.so.2()(64bit)`, `libX11.so.6()(64bit)`, …; both targets are 64-bit ELF, so the marker applies to x64 and arm64). S13 installs the DEB on Debian 11, Ubuntu 20.04, 22.04 and 24.04 and the RPM on Fedora and openSUSE Leap, each minimal with a desktop, and the list is fixed from the failures.
 - **DEB compression.** Ubuntu's `dpkg-deb` compresses with zstd by default, which Debian 11's dpkg (inside our floor) cannot read; Debian's default is xz ([Ubuntu dpkg-deb](https://manpages.ubuntu.com/manpages/noble/en/man1/dpkg-deb.1.html), [Debian dpkg-deb](https://manpages.debian.org/bookworm/dpkg/dpkg-deb.1.en.html)). The Linux jobs set `DPKG_DEB_COMPRESSOR_TYPE=xz` (honoured since dpkg 1.21.10), and `check-desktop-image.sh` checks the member names (`data.tar.xz`) with `ar t`.
-- **tar.gz** `neutrodyne-{v}-linux-{arch}.tar.gz`: the app image as `Neutrodyne/`; start `Neutrodyne/bin/Neutrodyne`; no system integration until Settings › Desktop › "Add to applications menu" writes a user desktop entry and icons under `~/.local/share/`.
+- **tar.gz** `neutrodyne-{v}-linux-{arch}.tar.gz`: the app image as `Neutrodyne/`; start `Neutrodyne/bin/Neutrodyne`; no system integration until Settings › Desktop › "Add to applications menu" writes a generated per-user desktop entry and icons under `~/.local/share/` (actual launcher and icon absolute paths, [Links and files from the OS](#links-and-files-from-the-os)); re-run it after moving the extracted folder to refresh the entry.
 
 ### Runtime exception obligations and checks
 
@@ -1350,7 +1368,7 @@ Following FFmpeg's compliance checklist ([FFmpeg legal](https://ffmpeg.org/legal
 |---|---|---|
 | `desktopApp/runtime.lock` | `vendor`, `version`, per target `{archiveUrl, sha256}`, `sourceTarball {name, url, sha256}` | `check-runtime-sources.sh`, the runner set-up |
 | `playback/native/native-components.lock` | Per component (FFmpeg, miniaudio, C++/WinRT headers): `name`, `version`, `spdx` (`LGPL-2.1-or-later`, `MIT-0`, `MIT`), `sourceUrl`, `sha256` | `checkNativeLicences` against D3's allow-list ([01 Python and native components](01-foundation.md#python-and-native-components)) |
-| `youtube/ytdlp-desktop/python-components.lock` | PBS release tag, CPython version, per target `{archive, sha256}`, the component list with SPDX IDs from `PYTHON.json`, and (2026-10-05) `pbsSource {name, url, sha256}` for `python-build-standalone-{pbsTag}-src.tar.gz` | `checkPythonLicences`; `check-runtime-sources.sh --release` |
+| `youtube/ytdlp-desktop/python-components.lock` | PBS release tag, CPython version, per target `{archive, sha256}`, the component list with SPDX IDs from `PYTHON.json`, (2026-10-05) `pbsSource {tag, name, url, sha256}` for `python-build-standalone-{pbsTag}-src.tar.gz`, and the pinned PBS build patches as `kind = "pbs-patches"` with `licence = "MPL-2.0"` (never `kind = "data"`, [01 Python and native components](01-foundation.md#python-and-native-components)) | `checkPythonLicences`; `check-runtime-sources.sh --release` |
 | `desktopApp/wix.lock` (2026-10-05) | WiX version, installer `{url, sha256}`, `source {name, url, sha256}` for `wix-{wix}-src.tar.gz`, and the expected entries of the MSI `Binary` table (`wixhelper.dll`, WiX Util's custom-action DLL, the WixUI bitmaps) | the Windows job's set-up; `check-desktop-image.sh` (MSI `Binary` table); `check-runtime-sources.sh --release` |
 
 ### Sizes
@@ -1442,7 +1460,7 @@ Download only from the project's GitHub release page; desktop builds carry no pu
 **Linux:**
 
 1. Debian or Ubuntu: `sudo apt install ./neutrodyne-{v}-linux-x64.deb`. Fedora or openSUSE: `sudo dnf install ./neutrodyne-{v}-linux-x64.rpm` or `sudo zypper install ./neutrodyne-{v}-linux-x64.rpm`. The app appears in the applications menu.
-2. Any distribution: `tar -xzf neutrodyne-{v}-linux-x64.tar.gz` and start `./Neutrodyne/bin/Neutrodyne`; Settings › Desktop › "Add to applications menu" adds a menu entry and link handling.
+2. Any distribution: `tar -xzf neutrodyne-{v}-linux-x64.tar.gz` and start `./Neutrodyne/bin/Neutrodyne`; Settings › Desktop › "Add to applications menu" adds a menu entry and link handling. If the menu entry does not show up, run `update-desktop-database ~/.local/share/applications`.
 3. **Updates:** install the newer package the same way (it replaces the old version); for the tar.gz, extract the new archive in place of the old folder.
 4. Requirements: glibc 2.31 or later, PulseAudio or PipeWire with `pipewire-pulse`, X11 or XWayland. Screen readers are not supported on Linux ([Accessibility](#linux-screen-reader-gap)).
 
@@ -1680,6 +1698,7 @@ Serves N1, N4, N5, N7, N8, N11 for the desktop; risks T19, T20, T24, T25, T26. R
 | `SingleInstanceTest` | `desktopTest`, two JVMs started by the test (test sources are outside the `ProcessBuilder` rule) | second launch delivers its arguments and exits 0 without creating a window; owner still starting (no port file) → retries then succeeds; wrong token rejected; oversize line rejected; owner killed → the lock is free at once; stale `instance.port` overwritten (M0 AC11) | M0b |
 | `DesktopOpenHandlerTest` | `desktopTest` | every input row of [Links and files from the OS](#links-and-files-from-the-os) → its route; relative paths resolved against `cwd`; > 20 inputs truncated; directory and unknown type → message; inputs before the first frame queued in order | M0b, MD2 |
 | `UrlSchemeRegistrarTest` | nightly on `windows-2025` | `neutrodyne` written; a foreign `feed` handler is not overwritten; one of ours is updated to the current launcher; "take over" overwrites | MD2 |
+| `LinuxDesktopEntryTest` | `desktopTest` (pure, fake home) | user entry generated from a non-`/opt` extraction path containing spaces: Exec double-quoted with `%U` (`%` written `%%` in Exec only), TryExec the bare launcher path and Icon an absolute path, both with no `%` rewriting, MimeType kept; moving the archive and re-running refreshes Exec, TryExec and Icon without duplicating the entry; writes only under `~/.local/share`, never under `/usr/share`, and starts no process | MD2 |
 | `CloseBehaviourTest` | `desktopTest` with fakes | idle close quits within 2 s; close while playing or downloading hides and shows the tray; `KEEP_RUNNING` always hides; hidden and idle for 10 min quits (`TestClock`); no tray support → iconify (MD2 AC3) | M0b, MD2 |
 | `DesktopJobRunnerTest` | `desktopTest`, `TestClock`, fake lanes | only due work runs; `poke` runs a lane within one dispatch and coalesces; a running lane is never started twice, a poke during a run reruns it once; an exception backs the lane off and leaves the others running; after a simulated 3-h sleep (`Resumed`, and separately a wall-clock jump without a notice) every overdue lane starts within 2 min (M1 AC10, MD2 AC6); `stop(3 s)` cancels and returns | M1a, MD2 |
 | `PowerPolicyTest` | `desktopTest` with fake `PowerMonitor`, `IdleSleepInhibitor`, engine | `Suspending` → pause and an event position save before returning; `Resumed` → nothing plays, pools evicted, lanes poked; inhibitor held exactly while playing (MD2 AC2) | MD2 |
