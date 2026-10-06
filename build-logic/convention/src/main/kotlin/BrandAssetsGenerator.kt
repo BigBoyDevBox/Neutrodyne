@@ -9,7 +9,6 @@ import java.io.ByteArrayInputStream
 import java.util.Locale
 import java.util.TreeMap
 import javax.imageio.ImageIO
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -28,10 +27,11 @@ internal enum class FitTarget {
     /** The bounding box's diagonal equals the target size — the mark fits the 66-dp safe circle. */
     BOUNDING_DIAGONAL,
 
-    /** The bounding box's width equals the target size — the mark at 75 % of a rounded square's side. */
-    BOUNDING_WIDTH,
-
-    /** The longer bounding-box side equals the target size — tray glyphs and the notification silhouette. */
+    /**
+     * The longer bounding-box side equals the target size — the mark at 75 % of a rounded square's side (the
+     * near-square N is taller than wide, so fitting by width alone let its caps touch the square's edge),
+     * tray glyphs and the notification silhouette.
+     */
     LONGER_SIDE,
 }
 
@@ -48,9 +48,9 @@ internal object BrandAssets {
     private val AMBER = Color(AMBER_RGB)
     private val TEMPLATE_BLACK = Color(0x000000)
 
-    // Soft-alpha separation against navy (08 Brand assets): divisor 96, cut-off 0.04
+    // Soft-alpha separation against navy (08 Brand assets): divisor 96, cut-off 0.10 (tuned in the M0b review)
     const val ALPHA_DIVISOR = 96.0
-    const val ALPHA_CUTOFF = 0.04
+    const val ALPHA_CUTOFF = 0.10
 
     // Android adaptive icon (08): 108 dp layers, the mark inside a centred 66 dp safe circle
     const val ADAPTIVE_LAYER_DP = 108.0
@@ -169,14 +169,18 @@ internal object BrandAssets {
 
     // ---- Soft-alpha separation against the measured navy (08 Brand assets) ----
 
-    /** alpha = largest channel difference from navy / 96, clamped to 0..1; the glow keeps its falloff. */
+    /**
+     * alpha = largest channel *increase* over navy / 96, clamped to 0..1; the glow keeps its falloff. Only
+     * brightening counts: the artwork's background vignette is darker than the corner navy (up to 27 levels),
+     * and an absolute difference would turn it into a faint rectangle behind the mark (M0b review, 2026-10-06).
+     */
     internal fun softAlphaAgainstNavy(r: Int, g: Int, b: Int): Double {
         val navy = NAVY_RGB
-        val diff = max(
-            abs(r - (navy shr 16 and 0xFF)),
-            max(abs(g - (navy shr 8 and 0xFF)), abs(b - (navy and 0xFF))),
-        )
-        return minOf(diff / ALPHA_DIVISOR, 1.0)
+        val increase = max(
+            r - (navy shr 16 and 0xFF),
+            max(g - (navy shr 8 and 0xFF), b - (navy and 0xFF)),
+        ).coerceAtLeast(0)
+        return minOf(increase / ALPHA_DIVISOR, 1.0)
     }
 
     /** fg = (px - (1 - alpha) * navy) / alpha per channel, clamped to 0..255. */
@@ -239,7 +243,6 @@ internal object BrandAssets {
         val bounds = mark.bounds
         val dimension = when (fit) {
             FitTarget.BOUNDING_DIAGONAL -> bounds.diagonal
-            FitTarget.BOUNDING_WIDTH -> bounds.width
             FitTarget.LONGER_SIDE -> max(bounds.width, bounds.height)
         }
         val scale = targetSize / dimension
@@ -269,7 +272,6 @@ internal object BrandAssets {
         val bounds = silhouette.bounds()
         val dimension = when (fit) {
             FitTarget.BOUNDING_DIAGONAL -> bounds.diagonal
-            FitTarget.BOUNDING_WIDTH -> bounds.width
             FitTarget.LONGER_SIDE -> max(bounds.width, bounds.height)
         }
         val scale = targetSize / dimension
@@ -330,9 +332,9 @@ internal object BrandAssets {
         return canvas(sizePx) {
             fillRoundedSquare(this, NAVY, margin, corner, sizePx)
             if (sizePx <= SILHOUETTE_MAX_PX) {
-                fillSilhouette(this, silhouette, AMBER, FitTarget.BOUNDING_WIDTH, SQUARE_MARK_WIDTH_FRACTION * side, sizePx)
+                fillSilhouette(this, silhouette, AMBER, FitTarget.LONGER_SIDE, SQUARE_MARK_WIDTH_FRACTION * side, sizePx)
             } else {
-                drawMark(this, mark, FitTarget.BOUNDING_WIDTH, SQUARE_MARK_WIDTH_FRACTION * side, sizePx)
+                drawMark(this, mark, FitTarget.LONGER_SIDE, SQUARE_MARK_WIDTH_FRACTION * side, sizePx)
             }
         }
     }
@@ -345,7 +347,7 @@ internal object BrandAssets {
         val corner = ICNS_CORNER_PX * scale
         return canvas(sizePx) {
             fillRoundedSquare(this, NAVY, margin, corner, sizePx)
-            drawMark(this, mark, FitTarget.BOUNDING_WIDTH, ICNS_MARK_WIDTH_FRACTION * side, sizePx)
+            drawMark(this, mark, FitTarget.LONGER_SIDE, ICNS_MARK_WIDTH_FRACTION * side, sizePx)
         }
     }
 
@@ -454,7 +456,6 @@ internal object BrandAssets {
         val bounds = silhouette.bounds()
         val dimension = when (fit) {
             FitTarget.BOUNDING_DIAGONAL -> bounds.diagonal
-            FitTarget.BOUNDING_WIDTH -> bounds.width
             FitTarget.LONGER_SIDE -> max(bounds.width, bounds.height)
         }
         val scale = targetSize / dimension
