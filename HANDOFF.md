@@ -1,6 +1,6 @@
 # Handoff — state of the Neutrodyne planning work
 
-This file lets another person or agent take over the work at any point. **Last updated: 2026-10-06.** The KMP replan is on `main`; planning-review fixes are proposed in the open PRs below. Implementation still starts at M0a.1.
+This file lets another person or agent take over the work at any point. It is updated at every stage. **Last updated: 2026-10-06.** The KMP replan and the first round of contributor review fixes (PRs #5–#8) are on `main`, and their review follow-ups are being applied. Next come the owner's open questions, then M0a.1.
 
 ## 1. What this repository is
 
@@ -50,14 +50,18 @@ Neutrodyne is a planned open-source podcast player. So far the repository holds 
 
 ### Planning review — 2026-10-06
 
-The owner requested fixes in PRs against `main`, with blocking review feedback addressed and **no merges**. These independent PRs remain open (fork branches under `BigBoyDevBox/Neutrodyne`):
+A contributor (Sol, fork `BigBoyDevBox/Neutrodyne`) opened four documentation PRs that fix review findings. The owner asked us to review them and merge as appropriate.
 
-- [#5](https://github.com/L-K-M/Neutrodyne/pull/5): backup timestamps/history, OPML round trips, group undo and credential-commit coordination.
-- [#6](https://github.com/L-K-M/Neutrodyne/pull/6): safe RSS resume, download redirects, small-library YouTube outages and resolve deadlines.
-- [#7](https://github.com/L-K-M/Neutrodyne/pull/7): archive launcher paths and the scoped PBS licence-check contract; PO-48 remains pending.
-- [#8](https://github.com/L-K-M/Neutrodyne/pull/8): exact sync replay, raw state, resets, rekey collisions and crash-recoverable effects.
+| PR | Topic |
+|---|---|
+| [#5](https://github.com/L-K-M/Neutrodyne/pull/5) | Backup timestamps and history, OPML round trips, group undo, credential-commit coordination |
+| [#6](https://github.com/L-K-M/Neutrodyne/pull/6) | Safe RSS resume, download redirects, small-library YouTube outages, resolve deadlines |
+| [#7](https://github.com/L-K-M/Neutrodyne/pull/7) | Archive launcher paths and the scoped PBS licence-check contract (PO-48 stays pending) |
+| [#8](https://github.com/L-K-M/Neutrodyne/pull/8) | Exact sync replay, raw state, resets, rekey collisions, crash-recoverable effects |
 
-Each branch passes link/anchor and Mermaid checks. Review comments and corrective commits are recorded on the PRs. Resume from their current heads; keep them open. The old replan publication instructions in §4 describe the completed 2026-10-05 task, not this review.
+- **Review:** each PR had its own adversarial reviewer, and a sixth agent checked how they interact once combined. The verdict for every PR was "merge with follow-ups": no blockers or majors.
+- **Merged:** all four on 2026-10-06, in order 5, 6, 7, 8.
+- **Follow-ups:** the reviews left 46 follow-up items: about 35 minor fixes and a few notes on changes outside each PR's stated scope. They are being applied on branch `ccr-ac54917e-u0kl2v` and will reach `main` in a follow-up PR. If this session stops, the full list is in [`docs/research/briefs/review-2026-10-06-prs-5-8.md`](docs/research/briefs/review-2026-10-06-prs-5-8.md). Check each item against the current text (`git log` shows what has already been fixed), fix the rest, run `tools/doccheck/`, then push and fast-forward `main`.
 
 ### Open owner questions (ask these next; each has a default in `docs/PLAN.md` §4)
 
