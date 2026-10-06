@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Unlicense
+# Exact expected uses-permission set of the :app release merged manifest (01 Manifest and permissions).
+# verifyManifestPermissions fails on any difference in either direction.
+# The M0a rows still arrive with the module manifests that own them: ACCESS_NETWORK_STATE
+# (:core:network) and POST_NOTIFICATIONS (:app) are declared by the packages that author those manifests.
+android.permission.INTERNET
+ch.lkmc.neutrodyne.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION

@@ -789,13 +789,13 @@ indent_size = 2
 trim_trailing_whitespace = false
 ```
 
-A new `CompositionLocal` requires adding its name here in the same PR (review point). Unverified: the exact compose-rules 0.6.7 key names (`compose_allowed_composition_locals`, `compose_disallow_material2`), checked in M0a.
+A new `CompositionLocal` requires adding its name here in the same PR (review point). Verified 2026-10-06 (M0a): the compose-rules 0.6.7 key names are exactly `compose_allowed_composition_locals` and `compose_disallow_material2` (read from the `io.nlopez.compose.rules:ktlint` ruleset jar).
 
 `ndmedia`'s C, C++/WinRT and Objective-C sources (`playback/native/src/native/`, from MD0) follow `.clang-format` (based on LLVM style, 4-space indent, 120 columns), checked in `static` with `clang-format --dry-run --Werror` from the runner image's LLVM (a build tool, never shipped; Unverified that `ubuntu-24.04` carries a recent `clang-format`, else it is installed pinned). Vendored upstream sources (miniaudio, the C++/WinRT headers) are excluded. Python scripts and the shim are checked with `ruff format --check` (MIT; a build tool, never shipped).
 
 ### detekt
 
-`buildUponDefaultConfig = true`, `parallel = true`, baseline `config/detekt/baseline.xml`, SARIF uploaded with category `detekt`; every source set of every Kotlin module. Tuned rules: `CyclomaticComplexMethod` threshold 15, `LongMethod` 80 lines (ignore `@Composable`), `MagicNumber` off in tests and Compose files, `ForbiddenComment` for `TODO` without an issue link, `TooGenericExceptionCaught` on (reinforces 01's `suspendRunCatching` rule). Becomes blocking when a stable detekt release supports Kotlin 2.4 and AGP 9 (1.23.8 stops at Kotlin 2.0.21 / AGP 8.8.1); Renovate must not "downgrade to stable".
+`buildUponDefaultConfig = true`, `parallel = true`, baseline `config/detekt/baseline.xml`, SARIF uploaded with category `detekt`; every source set of every Kotlin module. Tuned rules: `CyclomaticComplexMethod` threshold 15, `LongMethod` 80 lines (ignore `@Composable`), `MagicNumber` off in tests and Compose files, `ForbiddenComment` for `TODO` without an issue link, `TooGenericExceptionCaught` on (reinforces 01's `suspendRunCatching` rule). Becomes blocking when a stable detekt release supports Kotlin 2.4 and AGP 9 (1.23.8 stops at Kotlin 2.0.21 / AGP 8.8.1); Renovate must not "downgrade to stable". Verified 2026-10-06 (M0a): the 2.0 Gradle plugin ID is `dev.detekt` (the 1.x `io.gitlab.arturbosch` ID is gone) and the config keys renamed — `allowedComplexity`/`allowedLines` replace `threshold`, `ForbiddenComment` lives in `style`; `config/detekt/detekt.yml` uses the new names.
 
 ### Build-output checks
 

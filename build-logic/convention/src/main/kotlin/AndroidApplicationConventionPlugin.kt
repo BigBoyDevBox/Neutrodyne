@@ -10,78 +10,82 @@ import org.gradle.kotlin.dsl.dependencies
  * `debug` (local, `.debug`), every build type signed by the committed public keystore, per-ABI APKs, Compose.
  */
 class AndroidApplicationConventionPlugin : Plugin<Project> {
-    override fun apply(target: Project) = with(target) {
-        pluginManager.apply("com.android.application")
-        pluginManager.apply("org.jetbrains.kotlin.plugin.compose")
-        assertKotlinPluginVersion()
+    override fun apply(target: Project) =
+        with(target) {
+            pluginManager.apply("com.android.application")
+            pluginManager.apply("org.jetbrains.kotlin.plugin.compose")
+            assertKotlinPluginVersion()
 
-        extensions.configure<ApplicationExtension> {
-            configureAndroidCommon(this)
-            namespace = BASE_PACKAGE
-            testBuildType = "debug"
-            defaultConfig {
-                applicationId = BASE_PACKAGE
-                targetSdk = TARGET_SDK
-                versionCode = providers.gradleProperty("neutrodyne.versionCode").get().toInt()
-                versionName = providers.gradleProperty("neutrodyne.versionName").get()
-            }
-            buildFeatures {
-                buildConfig = true
-                compose = true
-            }
-            androidResources { generateLocaleConfig = true }
-            dependenciesInfo {
-                includeInApk = false
-                includeInBundle = false
-            }
-            signingConfigs {
-                // Committed and public on purpose (D61, 01 Signing config)
-                create(SIGNING_CONFIG) {
-                    storeFile = rootProject.file("signing/neutrodyne-public.keystore")
-                    storeType = "pkcs12"
-                    storePassword = PUBLIC_PASSWORD
-                    keyAlias = PUBLIC_ALIAS
-                    keyPassword = PUBLIC_PASSWORD
-                    enableV1Signing = false
-                    enableV2Signing = true
-                    enableV3Signing = true
+            extensions.configure<ApplicationExtension> {
+                configureAndroidCommon(this)
+                namespace = BASE_PACKAGE
+                testBuildType = "debug"
+                defaultConfig {
+                    applicationId = BASE_PACKAGE
+                    targetSdk = TARGET_SDK
+                    versionCode = providers.gradleProperty("neutrodyne.versionCode").get().toInt()
+                    versionName = providers.gradleProperty("neutrodyne.versionName").get()
                 }
-            }
-            splits {
-                abi {
-                    isEnable = true
-                    reset()
-                    include(*PUBLISHED_ABIS)
-                    isUniversalApk = false
+                buildFeatures {
+                    buildConfig = true
+                    compose = true
                 }
-            }
-            buildTypes {
-                getByName("release") {
-                    optimization { enable = true }
+                androidResources { generateLocaleConfig = true }
+                dependenciesInfo {
+                    includeInApk = false
+                    includeInBundle = false
                 }
-                getByName("debug") {
-                    applicationIdSuffix = ".debug"
-                    versionNameSuffix = "-debug"
-                    isPseudoLocalesEnabled = true
+                signingConfigs {
+                    // Committed and public on purpose (D61, 01 Signing config)
+                    create(SIGNING_CONFIG) {
+                        storeFile = rootProject.file("signing/neutrodyne-public.keystore")
+                        storeType = "pkcs12"
+                        storePassword = PUBLIC_PASSWORD
+                        keyAlias = PUBLIC_ALIAS
+                        keyPassword = PUBLIC_PASSWORD
+                        enableV1Signing = false
+                        enableV2Signing = true
+                        enableV3Signing = true
+                    }
                 }
-                // Every build type, including those androidx.baselineprofile creates, uses the public key
-                configureEach { signingConfig = signingConfigs.getByName(SIGNING_CONFIG) }
+                splits {
+                    abi {
+                        isEnable = true
+                        reset()
+                        include(*PUBLISHED_ABIS)
+                        isUniversalApk = false
+                    }
+                }
+                buildTypes {
+                    getByName("release") {
+                        optimization { enable = true }
+                    }
+                    getByName("debug") {
+                        applicationIdSuffix = ".debug"
+                        versionNameSuffix = "-debug"
+                        isPseudoLocalesEnabled = true
+                    }
+                    // Every build type, including those androidx.baselineprofile creates, uses the public key
+                    configureEach { signingConfig = signingConfigs.getByName(SIGNING_CONFIG) }
+                }
+                packaging { jniLibs { useLegacyPackaging = false } }
             }
-            packaging { jniLibs { useLegacyPackaging = false } }
+
+            dependencies {
+                val bom = platform(libs.lib("androidx-compose-bom"))
+                add("implementation", bom)
+                add("debugImplementation", bom)
+                add("androidTestImplementation", bom)
+            }
+
+            configureLicensee()
+            registerDependencyPolicy()
+            registerManifestPermissions()
+            configureModuleGraphAssert()
+            pluginManager.apply("neutrodyne.metro")
+            pluginManager.apply("neutrodyne.android.lint")
+            pluginManager.apply("neutrodyne.android.testing")
         }
-
-        dependencies {
-            val bom = platform(libs.lib("androidx-compose-bom"))
-            add("implementation", bom)
-            add("debugImplementation", bom)
-            add("androidTestImplementation", bom)
-        }
-
-        configureLicensee()
-        pluginManager.apply("neutrodyne.metro")
-        pluginManager.apply("neutrodyne.android.lint")
-        pluginManager.apply("neutrodyne.android.testing")
-    }
 
     private companion object {
         const val SIGNING_CONFIG = "neutrodynePublic"

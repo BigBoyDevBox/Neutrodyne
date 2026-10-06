@@ -69,6 +69,7 @@ composeRules = "0.6.7"
 detekt = "2.0.0-alpha.6"
 licensee = "1.14.1"
 moduleGraphAssert = "2.9.1"
+tomlj = "1.1.1"                     # build-logic only: parses python-components.lock (Apache-2.0)
 
 [libraries]
 # Compose Multiplatform (common code; Android variants resolve androidx.compose 1.12.1)
@@ -229,6 +230,8 @@ licensee-gradlePlugin = { module = "app.cash.licensee:app.cash.licensee.gradle.p
 moduleGraphAssert-gradlePlugin = { module = "com.jraska.module.graph.assertion:com.jraska.module.graph.assertion.gradle.plugin", version.ref = "moduleGraphAssert" }
 aboutlibraries-gradlePlugin = { module = "com.mikepenz.aboutlibraries.plugin:com.mikepenz.aboutlibraries.plugin.gradle.plugin", version.ref = "aboutlibraries" }
 chaquopy-gradlePlugin = { module = "com.chaquo.python:gradle", version.ref = "chaquopy" }   # same classloader as AGP (catalog rule 3)
+detekt-gradlePlugin = { module = "dev.detekt:dev.detekt.gradle.plugin", version.ref = "detekt" }
+tomlj = { module = "org.tomlj:tomlj", version.ref = "tomlj" }   # build-logic lockfile parser; never in a product classpath
 
 [bundles]
 common-test = ["kotlin-test", "turbine", "kotlinx-coroutines-test"]
@@ -253,7 +256,9 @@ ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 metro = { id = "dev.zacsweers.metro", version.ref = "metro" }
 room3 = { id = "androidx.room3", version.ref = "room3" }
 baselineprofile = { id = "androidx.baselineprofile", version.ref = "baselineprofile" }
-detekt = { id = "dev.detekt", version.ref = "detekt" }            # Unverified: 2.0 plugin id (1.x was io.gitlab.arturbosch.detekt)
+detekt = { id = "dev.detekt", version.ref = "detekt" }
+aboutlibraries = { id = "com.mikepenz.aboutlibraries.plugin", version.ref = "aboutlibraries" }
+aboutlibraries-android = { id = "com.mikepenz.aboutlibraries.plugin.android", version.ref = "aboutlibraries" }
 roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
 # com.chaquo.python has no entry: it is on the build-logic classpath and applied by bare id (catalog rule 3)
 # convention plugins (no version: provided by the included build)

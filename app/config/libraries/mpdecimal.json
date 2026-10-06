@@ -1,0 +1,10 @@
+{
+  "uniqueId": "neutrodyne:mpdecimal",
+  "name": "mpdecimal",
+  "description": "CPython _decimal",
+  "website": "https://www.bytereef.org/mpdecimal/",
+  "developers": [],
+  "licenses": [
+    "bsd_2_clause"
+  ]
+}

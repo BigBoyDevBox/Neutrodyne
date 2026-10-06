@@ -13,6 +13,9 @@ internal fun Project.configureNeutrodyneTestTasks() {
         systemProperty("user.country", "DE")
         systemProperty("user.timezone", "America/St_Johns")
         maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
-        testLogging { events("failed"); exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
+        testLogging {
+            events("failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
     }
 }
