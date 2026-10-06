@@ -11,25 +11,26 @@ import kotlin.test.assertSame
 class OutcomeTest {
     @Test
     fun `map transforms the success value`() {
-        assertEquals(Outcome.Ok(6), Outcome.Ok(3).map { it * 2 })
+        assertEquals(Outcome.Success(6), Outcome.Success(3).map { it * 2 })
     }
 
     @Test
-    fun `map leaves errors untouched`() {
-        val err = Outcome.Err(IllegalStateException("boom"))
-        val mapped = err.map { _: Int -> 0 }
-        assertSame(err, mapped)
+    fun `map leaves failures untouched`() {
+        val failure = Outcome.Failure(7)
+        val mapped = failure.map { _: Int -> 0 }
+        assertSame(failure, mapped)
     }
 
     @Test
-    fun `getOrNull unwraps Ok only`() {
-        assertEquals("v", Outcome.Ok("v").getOrNull())
-        assertNull(Outcome.Err(RuntimeException()).getOrNull())
+    fun `getOrNull unwraps Success only`() {
+        assertEquals("v", Outcome.Success("v").getOrNull())
+        assertNull(Outcome.Failure(IllegalStateException()).getOrNull())
     }
 
     @Test
-    fun `Err carries the cause`() {
-        val cause = RuntimeException("x")
-        assertIs<Outcome.Err>(Outcome.Err(cause)).also { assertSame(cause, it.cause) }
+    fun `Failure carries the typed error`() {
+        val error = IllegalStateException("boom")
+        val failure = assertIs<Outcome.Failure<IllegalStateException>>(Outcome.Failure(error))
+        assertSame(error, failure.error)
     }
 }
