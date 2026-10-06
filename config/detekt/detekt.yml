@@ -1,19 +1,33 @@
 # SPDX-License-Identifier: Unlicense
-# detekt 2.0.0-alpha.6 (09 detekt): buildUponDefaultConfig = true, SARIF only,
-# non-blocking until a stable detekt supports Kotlin 2.4 / AGP 9. Baseline:
-# config/detekt/baseline.xml.
+# detekt 2.0.0-alpha.6 config (09 detekt). Report-only; buildUponDefaultConfig is set on the Gradle
+# extension, so only deviations from the detekt defaults live here. 2.0 renamed the threshold keys to
+# allowedComplexity / allowedLines (1.x used `threshold`) and moved ForbiddenComment into `style`.
 complexity:
   CyclomaticComplexMethod:
-    threshold: 15
+    allowedComplexity: 15
   LongMethod:
-    threshold: 80
-    ignoreAnnotated: ['Composable']
+    allowedLines: 80
+    # @Composable functions legitimately run long; detekt ignores them via this list.
+    ignoreAnnotated: [ 'Composable' ]
+
+exceptions:
   TooGenericExceptionCaught:
-    active: true
-naming:
-  MagicNumber:
-    active: false # off; 09 leaves it off in tests and Compose files
-comments:
+    active: true # reinforces 01's suspendRunCatching rule (already on by default; kept explicit)
+
+style:
   ForbiddenComment:
     active: true
-    values: ['TODO'] # a TODO must carry an issue link (09)
+    comments:
+      - reason: 'Forbidden FIXME marker in comment, please fix the problem.'
+        value: 'FIXME:'
+      - reason: 'Forbidden STOPSHIP marker in comment, please address the problem before shipping the code.'
+        value: 'STOPSHIP:'
+      - reason: 'TODO without an issue link; reference the tracking issue (TODO(#123) or a URL).'
+        value: 'TODO'
+    # A TODO is acceptable only while it names its tracking issue.
+    allowedPatterns: 'TODO.*(#\d+|[A-Z]+-\d+|https?://)'
+  MagicNumber:
+    # The default excludes the 1.x test dir names; add this repo's desktopTest/androidHostTest/androidDeviceTest.
+    excludes: [ '**/test/**', '**/commonTest/**', '**/desktopTest/**', '**/androidTest/**',
+                '**/androidHostTest/**', '**/androidUnitTest/**', '**/androidDeviceTest/**',
+                '**/androidInstrumentedTest/**', '**/jvmTest/**', '**/*.kts' ]

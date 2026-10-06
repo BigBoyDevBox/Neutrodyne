@@ -4,7 +4,7 @@ package ch.lkmc.neutrodyne.core.common
 
 /**
  * Localised date formatting, small per-platform shim (01 Source sets and JVM islands):
- * `java.time.format.DateTimeFormatter` on both targets — the `expect` exists to keep `java.*` out
+ * the JDK's date-time formatter on both targets — the `expect` exists to keep JDK packages out
  * of `commonMain`. Uses the app locale: the test harness sets `user.language=de`,
  * `user.country=DE`, and unit tests assert locale-invariant structure only.
  *

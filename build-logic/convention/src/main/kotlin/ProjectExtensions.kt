@@ -33,15 +33,18 @@ internal fun VersionCatalog.version(alias: String): String = findVersion(alias).
  * ":youtube:ytdlp-desktop" -> "ch.lkmc.neutrodyne.youtube.ytdlpdesktop"; ":app" and ":desktopApp" are special.
  */
 internal val Project.neutrodyneNamespace: String
-    get() = when (path) {
-        ":app" -> BASE_PACKAGE
-        ":desktopApp" -> "$BASE_PACKAGE.desktop"
-        else -> BASE_PACKAGE + path.replace(':', '.').replace("-", "")
-    }
+    get() =
+        when (path) {
+            ":app" -> BASE_PACKAGE
+            ":desktopApp" -> "$BASE_PACKAGE.desktop"
+            else -> BASE_PACKAGE + path.replace(':', '.').replace("-", "")
+        }
 
 /** Rejects plugins the plan bans or confines (01 Common Android configuration). */
 internal fun Project.installPluginGuards() {
-    pluginManager.withPlugin("org.jetbrains.kotlin.android") { error("kotlin-android is banned: AGP 9 built-in Kotlin") }
+    pluginManager.withPlugin(
+        "org.jetbrains.kotlin.android",
+    ) { error("kotlin-android is banned: AGP 9 built-in Kotlin") }
     pluginManager.withPlugin("org.jetbrains.kotlin.kapt") { error("kapt is banned: use KSP") }
     pluginManager.withPlugin("com.google.dagger.hilt.android") { error("Hilt is removed: Metro (D82)") }
     pluginManager.withPlugin("com.chaquo.python") {

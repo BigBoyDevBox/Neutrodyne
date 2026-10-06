@@ -15,24 +15,25 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
  * plain JVM islands join through `com.android.lint`.
  */
 class AndroidLintConventionPlugin : Plugin<Project> {
-    override fun apply(target: Project) = with(target) {
-        pluginManager.withPlugin("org.jetbrains.kotlin.jvm") {
-            pluginManager.apply("com.android.lint")
-            extensions.configure<Lint> { configureNeutrodyneLint(this@with) }
-        }
-        pluginManager.withPlugin("com.android.application") {
-            extensions.configure<ApplicationExtension> { lint { configureNeutrodyneLint(this@with) } }
-        }
-        pluginManager.withPlugin("com.android.library") {
-            extensions.configure<LibraryExtension> { lint { configureNeutrodyneLint(this@with) } }
-        }
-        pluginManager.withPlugin("com.android.kotlin.multiplatform.library") {
-            val kotlin = extensions.getByType<KotlinMultiplatformExtension>()
-            (kotlin as ExtensionAware).extensions.configure<KotlinMultiplatformAndroidLibraryTarget>("android") {
-                lint { configureNeutrodyneLint(this@with) }
+    override fun apply(target: Project) =
+        with(target) {
+            pluginManager.withPlugin("org.jetbrains.kotlin.jvm") {
+                pluginManager.apply("com.android.lint")
+                extensions.configure<Lint> { configureNeutrodyneLint(this@with) }
+            }
+            pluginManager.withPlugin("com.android.application") {
+                extensions.configure<ApplicationExtension> { lint { configureNeutrodyneLint(this@with) } }
+            }
+            pluginManager.withPlugin("com.android.library") {
+                extensions.configure<LibraryExtension> { lint { configureNeutrodyneLint(this@with) } }
+            }
+            pluginManager.withPlugin("com.android.kotlin.multiplatform.library") {
+                val kotlin = extensions.getByType<KotlinMultiplatformExtension>()
+                (kotlin as ExtensionAware).extensions.configure<KotlinMultiplatformAndroidLibraryTarget>("android") {
+                    lint { configureNeutrodyneLint(this@with) }
+                }
             }
         }
-    }
 }
 
 private fun Lint.configureNeutrodyneLint(project: Project) {
@@ -40,7 +41,8 @@ private fun Lint.configureNeutrodyneLint(project: Project) {
     abortOnError = true
     sarifReport = true
     disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion", "MissingTranslation")
-    fatal += setOf("StringFormatInvalid", "StringFormatMatches", "MissingQuantity", "UnusedResources", "ExtraTranslation")
+    fatal +=
+        setOf("StringFormatInvalid", "StringFormatMatches", "MissingQuantity", "UnusedResources", "ExtraTranslation")
     enable += setOf("StopShip")
     if (project.path == ":app") {
         checkDependencies = true

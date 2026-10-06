@@ -7,7 +7,7 @@ package ch.lkmc.neutrodyne.core.common
  * tokens (`https://user:pass@host/rss/a8F3kq09ZpLm2xQ?token=abc`), so every log message passes
  * through [text] before it reaches a sink, and code that holds a URL calls `url.redacted()`.
  *
- * Rules (from the design, matched by the reference `java.net.URI` behaviour where applicable):
+ * Rules (from the design, matched by the JDK URI parser's behaviour where applicable):
  *
  * 1. Unparsable input logs as `<unparsable url, N chars>` — never the raw string.
  * 2. Anything before the last `@` in an authority is user-info → replaced by `***@`.

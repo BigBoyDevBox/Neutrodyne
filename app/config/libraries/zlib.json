@@ -1,0 +1,10 @@
+{
+  "uniqueId": "neutrodyne:zlib",
+  "name": "zlib",
+  "description": "Compression; NDK sysroot zlib",
+  "website": "https://zlib.net",
+  "developers": [],
+  "licenses": [
+    "zlib"
+  ]
+}

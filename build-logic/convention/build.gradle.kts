@@ -25,11 +25,23 @@ dependencies {
     implementation(libs.moduleGraphAssert.gradlePlugin)
     implementation(libs.aboutlibraries.gradlePlugin)
     implementation(libs.chaquopy.gradlePlugin)
+    implementation(libs.detekt.gradlePlugin)
+    implementation(libs.tomlj)
+
+    testImplementation(libs.kotlin.test)
+    testImplementation(libs.junit4)
+}
+
+tasks.withType<Test>().configureEach {
+    useJUnit()
 }
 
 gradlePlugin {
     plugins {
-        fun register(id: String, className: String) = register(id) {
+        fun register(
+            id: String,
+            className: String,
+        ) = register(id) {
             this.id = id
             implementationClass = className
         }

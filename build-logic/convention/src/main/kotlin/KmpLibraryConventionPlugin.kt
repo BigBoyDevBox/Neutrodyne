@@ -13,41 +13,54 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
  * (Android consumes it), common test bundle plus `:core:testing` (01 Convention plugins).
  */
 class KmpLibraryConventionPlugin : Plugin<Project> {
-    override fun apply(target: Project) = with(target) {
-        installPluginGuards()
-        pluginManager.apply("org.jetbrains.kotlin.multiplatform")
-        pluginManager.apply("com.android.kotlin.multiplatform.library")
-        pluginManager.apply("neutrodyne.android.lint")
-        assertKotlinPluginVersion()
-        forbidDynamicVersions()
+    override fun apply(target: Project) =
+        with(target) {
+            installPluginGuards()
+            pluginManager.apply("org.jetbrains.kotlin.multiplatform")
+            pluginManager.apply("com.android.kotlin.multiplatform.library")
+            pluginManager.apply("neutrodyne.android.lint")
+            assertKotlinPluginVersion()
+            forbidDynamicVersions()
 
-        val kotlin = extensions.getByType<KotlinMultiplatformExtension>()
-        (kotlin as ExtensionAware).extensions.configure<KotlinMultiplatformAndroidLibraryTarget>("android") {
-            namespace = neutrodyneNamespace
-            compileSdk = COMPILE_SDK
-            minSdk = MIN_SDK
-            compilerOptions { jvmTarget.set(JvmTarget.fromTarget(ANDROID_JVM_TARGET.toString())) }
-        }
-        kotlin.jvm("desktop") {
-            compilerOptions { jvmTarget.set(JvmTarget.fromTarget(ANDROID_JVM_TARGET.toString())) }
-        }
-        kotlin.applyDefaultHierarchyTemplate()
+            val kotlin = extensions.getByType<KotlinMultiplatformExtension>()
+            (kotlin as ExtensionAware).extensions.configure<KotlinMultiplatformAndroidLibraryTarget>("android") {
+                namespace = neutrodyneNamespace
+                compileSdk = COMPILE_SDK
+                minSdk = MIN_SDK
+                compilerOptions { jvmTarget.set(JvmTarget.fromTarget(ANDROID_JVM_TARGET.toString())) }
+            }
+            kotlin.jvm("desktop") {
+                compilerOptions { jvmTarget.set(JvmTarget.fromTarget(ANDROID_JVM_TARGET.toString())) }
+            }
+            kotlin.applyDefaultHierarchyTemplate()
 
-        kotlin.sourceSets.getByName("commonTest").dependencies {
-            implementation(libs.findBundle("common-test").get())
-            if (path !in TESTING_SELF_AND_DEPENDENCIES) implementation(project(":core:testing"))
+            kotlin.sourceSets.getByName("commonTest").dependencies {
+                implementation(libs.findBundle("common-test").get())
+                if (path !in TESTING_SELF_AND_DEPENDENCIES) implementation(project(":core:testing"))
+            }
+            kotlin.sourceSets.getByName("desktopTest").dependencies {
+                implementation(libs.findBundle("jvm-test").get())
+            }
+            registerDependencyPolicy()
+            if (path == ":core:testing") configureModuleGraphAssert()
+            configureNeutrodyneTestTasks()
         }
-        kotlin.sourceSets.getByName("desktopTest").dependencies {
-            implementation(libs.findBundle("jvm-test").get())
-        }
-        configureNeutrodyneTestTasks()
-    }
 
     private companion object {
         /** `:core:testing` and the main modules it depends on cannot use it in their own tests (cycle). */
-        val TESTING_SELF_AND_DEPENDENCIES = setOf(
-            ":core:testing", ":core:model", ":core:common", ":core:domain", ":core:database", ":core:navigation",
-            ":playback:api", ":download:api", ":youtube:api", ":sync:api", ":sync:protocol",
-        )
+        val TESTING_SELF_AND_DEPENDENCIES =
+            setOf(
+                ":core:testing",
+                ":core:model",
+                ":core:common",
+                ":core:domain",
+                ":core:database",
+                ":core:navigation",
+                ":playback:api",
+                ":download:api",
+                ":youtube:api",
+                ":sync:api",
+                ":sync:protocol",
+            )
     }
 }

@@ -31,12 +31,19 @@ class DesktopApplicationConventionPlugin : Plugin<Project> {
             mainClass = "$BASE_PACKAGE.desktop.MainKt"
             javaHome = jdk25.get().metadata.installationPath.asFile.absolutePath
             jvmArgs += "--enable-native-access=ALL-UNNAMED"
+            // Compose resolves ProGuard (GPL-2.0, D3) through a detached configuration inside the release
+            // task actions, so it never lands on a named configuration to scan. Disabling the release
+            // build type's ProGuard is the enforceable gate; verifyDependencyPolicy asserts that no
+            // ProGuard task stays enabled (2026-10-06).
+            buildTypes.release.proguard.isEnabled.set(false)
         }
 
         // Compose desktop's *Release* tasks run ProGuard (GPL-2.0); they are never part of any build (D3)
         tasks.matching { it.name.contains("Release") }.configureEach { enabled = false }
 
         configureLicensee()
+        registerDependencyPolicy()
+        configureModuleGraphAssert()
         configureNeutrodyneTestTasks()
     }
 }

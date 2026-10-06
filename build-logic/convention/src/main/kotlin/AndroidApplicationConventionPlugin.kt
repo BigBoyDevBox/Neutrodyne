@@ -95,6 +95,9 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
         }
 
         configureLicensee()
+        registerDependencyPolicy()
+        registerManifestPermissions()
+        configureModuleGraphAssert()
         pluginManager.apply("neutrodyne.metro")
         pluginManager.apply("neutrodyne.android.lint")
         pluginManager.apply("neutrodyne.android.testing")

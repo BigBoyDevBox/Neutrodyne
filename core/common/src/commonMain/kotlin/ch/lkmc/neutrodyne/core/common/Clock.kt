@@ -3,8 +3,8 @@
 package ch.lkmc.neutrodyne.core.common
 
 /**
- * Both clocks a service might need (01 Coroutines and threading): `System.currentTimeMillis` and
- * `SystemClock`/`System.nanoTime` style elapsed time. The device implementation is bound
+ * Both clocks a service might need (01 Coroutines and threading): wall-clock epoch milliseconds and
+ * monotonic elapsed time (the platform's uptime clock). The device implementation is bound
  * `@SingleIn(AppScope::class)` by the shells; tests substitute `TestClock` from `:core:testing`.
  */
 interface Clock {

@@ -15,30 +15,32 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
  * `-Xjdk-release=17`, because Android consumes the JAR (01 Source sets and JVM islands).
  */
 class JvmIslandConventionPlugin : Plugin<Project> {
-    override fun apply(target: Project) = with(target) {
-        installPluginGuards()
-        pluginManager.apply("org.jetbrains.kotlin.jvm")
-        pluginManager.apply("neutrodyne.metro")
-        pluginManager.apply("neutrodyne.android.lint")
-        assertKotlinPluginVersion()
-        forbidDynamicVersions()
+    override fun apply(target: Project) =
+        with(target) {
+            installPluginGuards()
+            pluginManager.apply("org.jetbrains.kotlin.jvm")
+            pluginManager.apply("neutrodyne.metro")
+            pluginManager.apply("neutrodyne.android.lint")
+            assertKotlinPluginVersion()
+            forbidDynamicVersions()
 
-        extensions.configure<JavaPluginExtension> {
-            sourceCompatibility = JavaVersion.VERSION_17
-            targetCompatibility = JavaVersion.VERSION_17
-        }
-        tasks.withType<JavaCompile>().configureEach { options.release.set(ANDROID_JVM_TARGET) }
-        extensions.configure<KotlinJvmProjectExtension> {
-            compilerOptions {
-                jvmTarget.set(JvmTarget.JVM_17)
-                freeCompilerArgs.add("-Xjdk-release=$ANDROID_JVM_TARGET")
+            extensions.configure<JavaPluginExtension> {
+                sourceCompatibility = JavaVersion.VERSION_17
+                targetCompatibility = JavaVersion.VERSION_17
             }
+            tasks.withType<JavaCompile>().configureEach { options.release.set(ANDROID_JVM_TARGET) }
+            extensions.configure<KotlinJvmProjectExtension> {
+                compilerOptions {
+                    jvmTarget.set(JvmTarget.JVM_17)
+                    freeCompilerArgs.add("-Xjdk-release=$ANDROID_JVM_TARGET")
+                }
+            }
+            dependencies {
+                add("testImplementation", libs.findBundle("jvm-test").get())
+                add("testImplementation", libs.findBundle("common-test").get())
+                add("testImplementation", project(":core:testing"))
+            }
+            registerDependencyPolicy()
+            configureNeutrodyneTestTasks()
         }
-        dependencies {
-            add("testImplementation", libs.findBundle("jvm-test").get())
-            add("testImplementation", libs.findBundle("common-test").get())
-            add("testImplementation", project(":core:testing"))
-        }
-        configureNeutrodyneTestTasks()
-    }
 }

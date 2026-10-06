@@ -1,0 +1,10 @@
+{
+  "uniqueId": "neutrodyne:expat",
+  "name": "expat",
+  "description": "XML parser (CPython pyexpat)",
+  "website": "https://libexpat.github.io",
+  "developers": [],
+  "licenses": [
+    "mit"
+  ]
+}
