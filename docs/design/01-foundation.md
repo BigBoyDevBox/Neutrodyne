@@ -2284,7 +2284,7 @@ Delivered in M0a (S1–S12, S19) and M0b (S13 with 11). Each spike runs on a thr
 
 | ID | Question | Result (fill in) | Recorded also in |
 |---|---|---|---|
-| S1 | KGP 2.4.20, the KMP plugin and `com.android.kotlin.multiplatform.library` resolve and build under AGP 9.4.1 | pending | D4 note in PLAN if fallback |
+| S1 | KGP 2.4.20, the KMP plugin and `com.android.kotlin.multiplatform.library` resolve and build under AGP 9.4.1 | **go** (2026-10-06): AGP 9.4.1 kept, no buildscript pin; every KMP module compiles for `android` and `desktop`, `:app` and `:desktopApp` consume them, KSP 2.3.12, Metro and the Compose compiler run; the in-build assertion holds; KGP shows in the root `buildEnvironment` (`2.2.10 -> 2.4.20`), not in `:app:buildEnvironment` | D4 note in PLAN if fallback |
 | S2 | Room 3 `@RawQuery` can return `PagingSource` from `commonMain` | pending | [02 Key queries](02-data-model.md#key-queries) |
 | S3 | `foreign_keys` enforced with `BundledSQLiteDriver` on every pooled connection | pending | [02 Conventions](02-data-model.md#conventions) |
 | S4 | Robolectric runs Room 3 with `AndroidSQLiteDriver` (DAO + migration tests) | pending | [02 Migrations and schema testing](02-data-model.md#migrations-and-schema-testing), [09 Test infrastructure](09-quality-and-release.md#test-infrastructure) |
@@ -2305,7 +2305,7 @@ Spikes owned elsewhere (procedure and results in the owning document): **S13** d
 - **Method:** build-logic declares `implementation(libs.kotlin.gradlePlugin)` (and the other plugin artifacts). Run `./gradlew :app:buildEnvironment`, `./gradlew :core:common:compileKotlinDesktop :core:common:compileAndroidMain --info` (Unverified task names of the Android-KMP target) and `:desktopApp:compileKotlin`. Add an in-build assertion to every convention plugin: `check(project.getKotlinPluginVersion() == libs.findVersion("kotlin").get().requiredVersion) { "KGP drift: …" }` with `libs` from `VersionCatalogsExtension` ([catalog rule 5](#gradlelibsversionstoml)) (Unverified API location: `org.jetbrains.kotlin.gradle.plugin.getKotlinPluginVersion`). Build `assembleDebug assembleRelease`.
 - **Pass:** `kotlin-gradle-plugin:2.2.10 -> 2.4.20` (or `:2.4.20`) in the output; one KMP module with `com.android.kotlin.multiplatform.library` and `jvm("desktop")` compiles both targets and is consumed by `:app` and `:desktopApp`; KSP 2.3.12, Metro and the Compose compiler plugin run; only deprecation warnings.
 - **Fallback 1:** root `build.gradle.kts` `buildscript { dependencies { classpath(libs.kotlin.gradlePlugin) } }`. **Fallback 2:** set `agp = "9.3.3"` (needs Gradle ≥ 9.5.0, satisfied by 9.7.1; Compose 1.12 needs AGP ≥ 9.2, satisfied), rerun. Record which applied.
-- **CI hook:** the `static` job greps `:app:buildEnvironment` for `kotlin-gradle-plugin.*2.4.20` (PLAN M0 AC3) in addition to the in-build assertion.
+- **CI hook:** the `static` job greps `:app:buildEnvironment` for `kotlin-gradle-plugin.*2.4.20` (PLAN M0 AC3) in addition to the in-build assertion. **Result (2026-10-06): go.** `./gradlew :app:buildEnvironment` lists no plugin classpath at all, because the plugins load through the included build `build-logic` rather than a `buildscript` block; the root project's `buildEnvironment` shows `org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.10 -> 2.4.20`, so the `static` job greps `./gradlew -q buildEnvironment` instead (PLAN M0 AC3's check, same intent).
 
 ```mermaid
 flowchart LR
