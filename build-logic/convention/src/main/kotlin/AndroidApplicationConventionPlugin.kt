@@ -71,6 +71,9 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
                 }
                 // Every build type, including those androidx.baselineprofile creates, uses the public key
                 configureEach { signingConfig = signingConfigs.getByName(SIGNING_CONFIG) }
+                // The plugin copies release's legacy minify flag, not AGP 9's optimization {} block, so
+                // benchmarkRelease is minified explicitly to measure what users run (S19, 2026-10-06)
+                matching { it.name == BENCHMARK_RELEASE }.configureEach { optimization { enable = true } }
             }
             packaging { jniLibs { useLegacyPackaging = false } }
         }
@@ -98,6 +101,7 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
     private companion object {
         const val RELEASE = "release"
         const val DEBUG = "debug"
+        const val BENCHMARK_RELEASE = "benchmarkRelease"
         const val SIGNING_CONFIG = "neutrodynePublic"
         const val PUBLIC_PASSWORD = "neutrodyne"
         const val PUBLIC_ALIAS = "neutrodyne"
