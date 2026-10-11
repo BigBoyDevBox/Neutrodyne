@@ -31,6 +31,7 @@ import androidx.navigation3.ui.NavDisplay
 import androidx.navigation3.ui.defaultPopTransitionSpec
 import androidx.navigation3.ui.defaultPredictivePopTransitionSpec
 import androidx.navigation3.ui.defaultTransitionSpec
+import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneMotion
 import ch.lkmc.neutrodyne.core.navigation.EntryProviderInstaller
@@ -47,6 +48,7 @@ import ch.lkmc.neutrodyne.core.navigation.TopLevelKey
  */
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
+@Suppress("FunctionNaming") // Compose functions use PascalCase.
 public fun NeutrodyneNavHost(
     state: NavigationState,
     installers: Set<EntryProviderInstaller>,
@@ -80,7 +82,10 @@ public fun NeutrodyneNavHost(
     val entries = state.visibleTabs().flatMap { decoratedByTab.getValue(it) }
 
     val adaptive = rememberListDetailSceneStrategy<NavKey>(directive = directive)
-    val panes = remember(state) { PaneSceneStrategy(state) }
+    val panes =
+        remember(state, provider) {
+            PaneSceneStrategy(state) { key, tab -> withPaneRole(key, provider(key), tab) }
+        }
     panes.updateCurrent(
         adaptive,
         decoratedByTab,
@@ -89,12 +94,13 @@ public fun NeutrodyneNavHost(
 
     // The scene transitions share the pane-swap spec so reduced motion snaps both (see 08).
     val motionSpec = NeutrodyneMotion.navigation<IntOffset>()
+    val events = LocalNavigationEventDispatcherOwner.current?.navigationEventDispatcher
 
     SharedTransitionLayout {
         NavDisplay(
             entries = entries,
             modifier = modifier,
-            onBack = { state.pop() },
+            onBack = { panes.onBack(events?.transitionState?.value) },
             sceneStrategies =
                 listOf(
                     rememberNdBottomSheetSceneStrategy(),

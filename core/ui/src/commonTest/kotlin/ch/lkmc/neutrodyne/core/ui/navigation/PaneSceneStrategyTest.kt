@@ -108,7 +108,7 @@ class PaneSceneStrategyTest {
                 TOP_LEVEL_TABS.associateWith { NavBackStack<NavKey>(it) },
                 mutableStateOf(FeedsKey),
             )
-        private val strategy = PaneSceneStrategy(navigation)
+        private val strategy = PaneSceneStrategy(navigation) { key, tab -> entry(key, tab) }
         private val scope = SceneStrategyScope<NavKey>()
         private val adaptive =
             ListDetailSceneStrategy<NavKey>(

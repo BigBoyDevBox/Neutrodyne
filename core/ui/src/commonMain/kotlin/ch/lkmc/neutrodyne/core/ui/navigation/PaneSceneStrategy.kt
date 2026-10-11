@@ -44,6 +44,7 @@ import androidx.navigation3.scene.SceneStrategyScope
 import androidx.navigation3.ui.LocalNavAnimatedContentScope
 import androidx.navigationevent.NavigationEventDispatcher
 import androidx.navigationevent.NavigationEventDispatcherOwner
+import androidx.navigationevent.NavigationEventTransitionState
 import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneMotion
 import ch.lkmc.neutrodyne.core.navigation.NdSceneMetadata
@@ -55,12 +56,37 @@ internal const val PANE_NAV_KEY = "ndPaneNavKey"
 /** Scene retention owns the animation; the real stacks remain the only navigation membership. */
 internal class PaneSceneStrategy(
     private val navigation: NavigationState,
+    private val entryProvider: (NavKey, TopLevelKey) -> NavEntry<NavKey>,
 ) : SceneStrategy<NavKey> {
     private lateinit var adaptive: ListDetailSceneStrategy<NavKey>
     private val rendering = mutableMapOf<TopLevelKey, PaneRendering>()
     private var activeKey by mutableStateOf<PaneSceneKey?>(null)
     private var selectedTab: TopLevelKey? = null
     private var paneAnimations: Map<String, Any> = emptyMap()
+    private var completedGesture: NavigationEventTransitionState.InProgress? = null
+
+    /** A bound Material handler can repeat an obsolete count after its history changed. */
+    internal fun onBack(transition: NavigationEventTransitionState?) {
+        val gesture = transition as? NavigationEventTransitionState.InProgress
+        if (gesture == null) {
+            navigation.pop()
+            return
+        }
+        if (completedGesture === gesture) return
+        completedGesture = gesture
+
+        val live =
+            navigation.visibleTabs().flatMap { tab ->
+                navigation.stack(tab).map { entryProvider(it, tab) }
+            }
+        val scene = with(adaptive) { SceneStrategyScope<NavKey>().calculateScene(live) }
+        val internalBack = scene?.previousEntries?.lastOrNull() in scene?.entries.orEmpty()
+        val target = if (internalBack) requireNotNull(scene).previousEntries else live.dropLast(1)
+
+        // The processor retains this gesture object throughout the synchronous completion.
+        // Apply the live plan once, not once per callback from the departing scaffold.
+        repeat(live.size - target.size) { navigation.pop() }
+    }
 
     /** Only actual stack emissions advance anchors; predictive prefixes merely query them. */
     internal fun updateCurrent(
@@ -72,6 +98,12 @@ internal class PaneSceneStrategy(
         this.paneAnimations = paneAnimations
         val switchingTabs = selectedTab != null && selectedTab != navigation.selectedTab
         selectedTab = navigation.selectedTab
+        val mutation =
+            when {
+                switchingTabs -> PaneMutation.TabSwitch
+                navigation.lastChangeWasPop -> PaneMutation.Back
+                else -> PaneMutation.Forward
+            }
 
         for ((tab, entries) in entriesByTab) {
             // An overlay does not change the adaptive scene underneath its window.
@@ -87,30 +119,7 @@ internal class PaneSceneStrategy(
                     previous.snapshot.value != snapshot.value -> previous.changeAllocation(snapshot)
                     else -> previous.changeContent(tab, snapshot)
                 }
-            val entering =
-                when {
-                    switchingTabs || previous == null -> {
-                        emptySet()
-                    }
-
-                    previous.snapshot == snapshot -> {
-                        previous.enteringRoles
-                    }
-
-                    navigation.lastChangeWasPop || previous.snapshot.value != snapshot.value -> {
-                        emptySet()
-                    }
-
-                    previous.snapshot.tops[PaneRole.List] != snapshot.tops[PaneRole.List] -> {
-                        emptySet()
-                    }
-
-                    else -> {
-                        PaneRole.entries.filterTo(mutableSetOf()) {
-                            previous.snapshot.tops[it] != snapshot.tops[it]
-                        }
-                    }
-                }
+            val entering = enteringRolesFor(previous, snapshot, mutation)
             rendering[tab] = current.copy(enteringRoles = entering)
         }
 
@@ -184,6 +193,26 @@ private enum class PaneRole(
     Extra(NdSceneMetadata.PANE_EXTRA, ThreePaneScaffoldRole.Tertiary),
 }
 
+private enum class PaneMutation {
+    TabSwitch,
+    Back,
+    Forward,
+}
+
+/** Unchanged snapshots retain their cover state even when the latest action was Back. */
+private fun enteringRolesFor(
+    previous: PaneRendering?,
+    target: PaneSnapshot,
+    mutation: PaneMutation,
+): Set<PaneRole> =
+    when {
+        mutation == PaneMutation.TabSwitch || previous == null -> emptySet()
+        previous.snapshot == target -> previous.enteringRoles
+        mutation == PaneMutation.Back || previous.snapshot.value != target.value -> emptySet()
+        previous.snapshot.tops[PaneRole.List] != target.tops[PaneRole.List] -> emptySet()
+        else -> PaneRole.entries.filterTo(mutableSetOf()) { previous.snapshot.tops[it] != target.tops[it] }
+    }
+
 private fun paneRole(entry: NavEntry<NavKey>): PaneRole? =
     PaneRole.entries.firstOrNull { it.marker == entry.metadata[NdSceneMetadata.KEY_PANE] }
 
@@ -214,11 +243,12 @@ private data class PaneRendering(
     fun keyFor(
         tab: TopLevelKey,
         target: PaneSnapshot,
-    ): PaneSceneKey {
-        if (target.value != snapshot.value) return key
-        if (target.tops == anchorTops) return anchorKey
-        return PaneSceneKey(tab, epoch, target.tops)
-    }
+    ): PaneSceneKey =
+        when {
+            target.value != snapshot.value -> key
+            target.tops == anchorTops -> anchorKey
+            else -> PaneSceneKey(tab, epoch, target.tops)
+        }
 
     fun changeAllocation(target: PaneSnapshot): PaneRendering = PaneRendering(target, epoch + 1, target.tops, key, key)
 
@@ -260,7 +290,7 @@ private class PaneScene(
         SideEffect { owner?.navigationEventDispatcher?.isEnabled = active }
         val exiting = !active && LocalNavAnimatedContentScope.current.transition.targetState == EnterExitState.PostExit
 
-        // Exit scenes still draw, but their private scaffold handlers cannot pop live history.
+        // Disable new input to exit scenes; already-bound completion is guarded by onBack.
         Box(Modifier.fillMaxSize().then(if (exiting) Modifier.clearAndSetSemantics {} else Modifier)) {
             // A committed exit is no longer an accessible screen; a cancellable source remains active.
             CompositionLocalProvider(LocalPaneSceneMotion provides PaneSceneMotion(key, enteringRoles)) {
@@ -303,6 +333,7 @@ internal fun rememberPaneFocusDecorator(): NavEntryDecorator<NavKey> =
     }
 
 @Composable
+@Suppress("FunctionNaming") // Compose functions use PascalCase.
 private fun PaneFocusContent(entry: NavEntry<NavKey>) {
     val requester = remember { FocusRequester() }
     var focused by remember { mutableStateOf(false) }
@@ -329,6 +360,7 @@ private fun PaneFocusContent(entry: NavEntry<NavKey>) {
 }
 
 @Composable
+@Suppress("FunctionNaming") // Compose functions use PascalCase.
 private fun PaneEntryContent(
     entry: NavEntry<NavKey>,
     role: PaneRole,
@@ -360,13 +392,14 @@ internal fun paneSceneTransition(
     ordinary: NdSceneTransition,
 ): NdSceneTransition {
     if (initial !is PaneScene || target !is PaneScene || initial.key.tab != target.key.tab) return ordinary
-    if (initial.snapshot.value != target.snapshot.value) return NdSceneTransition.Instant
-    if (ordinary == NdSceneTransition.SlideInCover &&
-        initial.snapshot.tops[PaneRole.List] == target.snapshot.tops[PaneRole.List]
-    ) {
-        return NdSceneTransition.PaneCover
+    return when {
+        initial.snapshot.value != target.snapshot.value -> NdSceneTransition.Instant
+
+        ordinary == NdSceneTransition.SlideInCover &&
+            initial.snapshot.tops[PaneRole.List] == target.snapshot.tops[PaneRole.List] -> NdSceneTransition.PaneCover
+
+        else -> ordinary
     }
-    return ordinary
 }
 
 internal fun snappedPaneAnimations(): Map<String, Any> =
