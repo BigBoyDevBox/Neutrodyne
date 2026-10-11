@@ -124,6 +124,17 @@ public object FeedDates {
             .mapIndexed { i, m -> m to i + 1 }
             .toMap()
 
+    private val combiningMarks = Regex("""\p{M}+""")
+
+    private fun foldMarks(token: String): String = combiningMarks.replace(token, "")
+
+    /**
+     * `localisedMonths` re-keyed by combining-mark-folded form, so decomposed (NFD) month
+     * spellings hit the same entry as the NFC keys.
+     */
+    private val foldedLocalisedMonths: Map<String, String> =
+        localisedMonths.mapKeys { (k, _) -> foldMarks(k) }
+
     /**
      * `d[.] MMM yyyy|yy H:mm[:ss[.fff]] [±HHMM|±HH:MM]`, case-insensitive; the leading weekday is dropped
      * first and localised months and named zones are normalised (03 Dates steps 1–4). A trailing dot on
@@ -131,7 +142,7 @@ public object FeedDates {
      * ("3. Okt. 2024" — the German/Swiss/Austrian convention).
      */
     private val datePart =
-        """^(\d{1,2})\.?\s+([A-Za-zÀ-ſ]+)\.?\s+(\d{2}|\d{4})\s+(\d{1,2}):(\d{1,2})""" +
+        """^(\d{1,2})\.?\s+([A-Za-zÀ-ſ\p{M}]+)\.?\s+(\d{2}|\d{4})\s+(\d{1,2}):(\d{1,2})""" +
             """(?::(\d{1,2})(?:[.,](\d{1,9}))?)?"""
     private val zonePart = """(?:\s*([+-]\d{2}:?\d{2}))?$"""
     private val rfc822 = Regex(datePart + zonePart)
@@ -251,7 +262,11 @@ public object FeedDates {
         val day = groups[1].toIntOrNull() ?: return null
 
         val monthToken = groups[2].lowercase().removeSuffix(".")
-        val month = englishMonths[monthToken] ?: localisedMonths[monthToken]?.let { englishMonths[it.lowercase()] }
+        // Decomposed accents (NFD "Ma\u0308r") never equal the NFC map keys — fold combining
+        // marks on both sides so "Mär" matches however the feed encoded it.
+        val month =
+            englishMonths[monthToken]
+                ?: foldedLocalisedMonths[foldMarks(monthToken)]?.let { englishMonths[it.lowercase()] }
         if (month == null) return null
 
         val rawYear = groups[3]

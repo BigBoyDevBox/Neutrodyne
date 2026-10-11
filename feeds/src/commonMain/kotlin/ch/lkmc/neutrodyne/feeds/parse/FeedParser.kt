@@ -26,6 +26,7 @@ public interface FeedParser {
         open: () -> okio.Source,
         httpCharset: String?,
         baseUrl: String,
+        limits: ParseLimits = ParseLimits(),
     ): ParseResult
 
     public companion object {
@@ -73,6 +74,7 @@ public data class ParseLimits(
     val maxTextChars: Int = 512 * 1024,
     val maxUrlChars: Int = 4_096,
     val maxTagAttributes: Int = 1_000,
+    /** Bounds only the declaration sniff/decode step — the `<!ENTITY` scan covers the whole prolog. */
     val prologScanBytes: Int = 64 * 1024,
     /** Whole-document bound, counted while `parse` buffers the source; matches the fetch body cap. */
     val maxDocumentBytes: Long = 32L * 1024 * 1024,

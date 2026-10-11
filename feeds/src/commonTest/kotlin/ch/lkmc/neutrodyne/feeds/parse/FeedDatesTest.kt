@@ -114,6 +114,9 @@ class FeedDatesTest {
         // strip counts letters-with-marks, not letters alone.
         val nfc = assertNotNull(FeedDates.parse("Mié, 3 Okt 2026 10:00:00 +0100"))
         assertEquals(nfc, FeedDates.parse("Mié, 3 Okt 2026 10:00:00 +0100"))
+        // Month names too: "Mär" written NFD must hit the same entry as the NFC spelling.
+        val nfcMonth = assertNotNull(FeedDates.parse("Di, 3 Mär 2026 10:00:00 +0100"))
+        assertEquals(nfcMonth, FeedDates.parse("Di, 3 Ma\u0308r 2026 10:00:00 +0100"))
     }
 
     @Test

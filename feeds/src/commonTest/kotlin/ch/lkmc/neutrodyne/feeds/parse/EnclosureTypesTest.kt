@@ -56,6 +56,9 @@ class EnclosureTypesTest {
         assertEquals("audio/mpeg", EnclosureTypes.effective("application/octet-stream", "https://e.example/a.mp3"))
         assertEquals("audio/mp4", EnclosureTypes.effective(null, "https://e.example/a.m4a"))
         assertEquals("audio/aac", EnclosureTypes.effective("bogus", "https://e.example/a.aac"))
+        // A declared type with a subtype but no usable extension survives verbatim — it is
+        // stored and displayed as declared, but `primary` never selects a non-playable prefix.
+        assertEquals("bogus", EnclosureTypes.effective("bogus", "https://e.example/page"))
         assertEquals("audio/ogg", EnclosureTypes.effective(null, "https://e.example/a.oga"))
         assertEquals("audio/opus", EnclosureTypes.effective(null, "https://e.example/a.opus"))
         assertEquals("audio/flac", EnclosureTypes.effective(null, "https://e.example/a.flac"))

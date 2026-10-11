@@ -118,10 +118,10 @@ public object UrlNormalizer {
         val decoded = percentDecode(raw)
         if (decoded.isEmpty()) return null
         if (hasNumericTail(decoded)) {
-            // A numeric last label commits the host to IPv4 (WHATWG): "127.1", "0x7f.1",
-            // "2130706433" and "0177.0.0.1" all resolve to 127.0.0.1 on the fetch client, so
-            // identity must share that canonical form — and a numeric tail that fails the
-            // IPv4 grammar is an invalid host, never a domain name.
+            // A numeric last label commits the host to IPv4 ("127.1", "2130706433" resolve to
+            // 127.0.0.1 through the fetch stack — OkHttp passes the spelling verbatim to
+            // InetAddress, which accepts decimal shorthand). A numeric tail that fails the
+            // grammar is an invalid or ambiguous host, never a domain name.
             return parseIpv4NumberHost(decoded)
         }
         val ascii = decoded.lowercase().idnaToAsciiOrNull() ?: return null
@@ -188,18 +188,22 @@ public object UrlNormalizer {
             val head = host.substringBeforeLast('.')
             return head.isNotEmpty() && hasNumericTail(head)
         }
-        // WHATWG runs the IPv4 number parser on the last label: `0x` + zero-or-more hex
-        // digits counts as a number (a bare `0x` parses as 0); `0x` + a non-hex suffix is a
-        // domain label, not a number.
+        // `0x` + zero-or-more hex digits still commits the label to the numeric parser —
+        // where it then fails, since the fetch stack reads decimal only (see
+        // [parseIpv4NumberHost]); `0x` + a non-hex suffix is a domain label, not a number.
         return tail.all { it in '0'..'9' } ||
             (tail.length >= 2 && tail.startsWith("0x", true) && tail.drop(2).all { it in hexDigits })
     }
 
     /**
-     * Parses a WHATWG IPv4 number host — 1–4 dot-separated decimal, `0x` hex or leading-`0`
-     * octal parts, only the last allowed to exceed 255 — and emits canonical dotted-quad.
-     * Unlike the strict [parseIpv4Tail] used inside IPv6 literals, octal/hex spellings are
-     * legal here. Null when the grammar or a range bound fails.
+     * Parses an IPv4-number host — 1–4 dot-separated decimal parts, only the last allowed to
+     * exceed 255 — and emits canonical dotted-quad. WHATWG also defines `0x` hex and
+     * leading-`0` octal parts, but no fetch target agrees on those spellings: the JVM's
+     * InetAddress (which OkHttp hands the verbatim host to) reads `0177.1` as 177.0.0.1 and
+     * rejects `0x7f.1` outright, so honouring WHATWG here could key an identity to an address
+     * the fetch never touches — or mint one for a host that never resolves. Ambiguous
+     * spellings are rejected instead: no identity, like port 0. Null when the grammar or a
+     * range bound fails.
      */
     private fun parseIpv4NumberHost(host: String): String? {
         var labels = host.split('.')
@@ -219,19 +223,16 @@ public object UrlNormalizer {
         }
     }
 
-    /** One IPv4 part: `0x` hex, leading-`0` octal, else decimal; empty or bad digits → null. */
+    /**
+     * One IPv4 part, decimal only with no leading zeros — the intersection of WHATWG and
+     * what the decimal-only JVM fetch stack actually resolves. Hex/octal spellings are
+     * ambiguous across resolvers and rejected; a leading sign is not a digit and is
+     * rejected the same way.
+     */
     private fun ipv4Number(part: String): Long? {
-        val (radix, digits) =
-            when {
-                part.length >= 2 && part.startsWith("0x", true) -> 16 to part.substring(2)
-                part.length > 1 && part.startsWith('0') -> 8 to part.substring(1)
-                else -> 10 to part
-            }
-        // A bare `0x` is 0 per the IPv4 number parser (empty after the prefix → (0, true));
-        // otherwise toLongOrNull accepts a leading sign, which WHATWG's grammar does not.
-        if (digits.isEmpty()) return if (radix == 16) 0 else null
-        if (digits.any { it.digitToIntOrNull(radix) == null }) return null
-        return digits.toLongOrNull(radix)
+        if (part.isEmpty() || (part.length > 1 && part[0] == '0')) return null
+        if (part.any { it !in '0'..'9' }) return null
+        return part.toLongOrNull()
     }
 
     /** Parses an IPv6 address into its eight 16-bit groups, or null when the grammar is violated. */

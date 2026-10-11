@@ -75,12 +75,17 @@ class EpisodeKeysTest {
         assertNull(EpisodeKeys.titleDayKey("Episode 42", null))
         assertNull(EpisodeKeys.titleDayKey("", 1791030896000L))
         assertNull(EpisodeKeys.titleDayKey(null, 1791030896000L))
+        // Whitespace-only titles are keyless too — trim precedes the emptiness check.
+        assertNull(EpisodeKeys.titleDayKey("   ", 1791030896000L))
     }
 
     @Test
     fun linkKey() {
         val key = EpisodeKeys.primary(episode(link = "https://example.com/ep-1"))
         assertEquals("l:cdbce1b074f7cf4b346ffdb683fc78363bd903e6", key)
+        // Surrounding whitespace is trimmed before hashing — both spellings share a key.
+        val spaced = episode(link = "  https://example.com/ep-1  ")
+        assertEquals(key, EpisodeKeys.primary(spaced))
     }
 
     @Test

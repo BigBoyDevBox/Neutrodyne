@@ -173,11 +173,16 @@ public object EpisodeContentHash {
                     ?.toString()
                     .orEmpty()
                     .fieldEsc(),
-                e.artwork
-                    .firstOrNull()
-                    ?.url
-                    .orEmpty()
-                    .fieldEsc(),
+                // Every candidate is hashed, not just the winner: a secondary-entry change is
+                // still stored content, and a reorder changes the ingest-time winner.
+                list(e.artwork) {
+                    listOf(
+                        it.url,
+                        it.source.name,
+                        it.width?.toString().orEmpty(),
+                        it.height?.toString().orEmpty(),
+                    )
+                },
                 e.link.orEmpty().fieldEsc(),
                 e.chaptersUrl.orEmpty().fieldEsc() + FIELD_SEPARATOR + e.chaptersType.orEmpty().fieldEsc(),
                 e.externalMediaId.orEmpty().fieldEsc(),

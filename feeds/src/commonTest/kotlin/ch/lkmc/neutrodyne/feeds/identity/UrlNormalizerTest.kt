@@ -7,6 +7,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.measureTime
 
 /**
@@ -74,6 +75,15 @@ class UrlNormalizerTest {
         assertEquals("example.com/b", UrlNormalizer.forIdentity("https://example.com/a/../b"))
         assertEquals("example.com/a", UrlNormalizer.forIdentity("https://example.com/a/b/.."))
         assertEquals("example.com/", UrlNormalizer.forIdentity("https://example.com/../.."))
+        // `%2e` decodes to `.` (unreserved) before dot-segment removal — the WHATWG
+        // `.%2e`/`%2e.`/`%2e%2e` forms collapse exactly like `..`, case-insensitively.
+        assertEquals("example.com/b", UrlNormalizer.forIdentity("https://example.com/a/%2e%2e/b"))
+        assertEquals("example.com/b", UrlNormalizer.forIdentity("https://example.com/a/%2E./b"))
+        assertEquals("example.com/b", UrlNormalizer.forIdentity("https://example.com/a/.%2e/b"))
+        assertEquals(
+            UrlNormalizer.forIdentity("https://example.com/a/../b"),
+            UrlNormalizer.forIdentity("https://example.com/a/%2e%2e/b"),
+        )
     }
 
     @Test
@@ -99,7 +109,8 @@ class UrlNormalizerTest {
         assertEquals("example.com/feed", UrlNormalizer.forIdentity("http:\\\\example.com/feed"))
         assertEquals("example.com/feed", UrlNormalizer.forIdentity("https:///example.com/feed"))
         assertEquals("example.com/feed", UrlNormalizer.forIdentity("http://example.com/feed"))
-        // A single slash on a non-special scheme is path, not authority.
+        // WHATWG lists ftp as a special scheme too — the slash tolerance is deliberately
+        // http(s)-gated because `forIdentity` yields no identity outside http(s) anyway.
         val parts = splitLenient("ftp:/example.com/feed")
         assertNull(parts.host)
         assertEquals("/example.com/feed", parts.path)
@@ -108,7 +119,7 @@ class UrlNormalizerTest {
     /**
      * Dot-segment removal must be an indexed linear scan: re-slicing the remaining input once per
      * segment turns `"../" * N` quadratic. A 4× input may cost at most 8× the time (linear ≈ 4×,
-     * quadratic ≈ 16×) and the large run stays under a generous absolute budget.
+     * quadratic ≈ 16×); a loose absolute ceiling guards against a corrupted small sample.
      */
     @Test
     fun dotSegmentRemovalIsLinear() {
@@ -144,6 +155,9 @@ class UrlNormalizerTest {
             large < small * QUADRATIC_SLACK,
             "dot segments took $small for $DOT_SMALL, $large for 4x — quadratic would be ~16x",
         )
+        // Loose absolute tripwire: ~30 s for ten 480 KB normalizations is impossible for any
+        // working implementation yet catches a corrupted small sample masking a blowup.
+        assertTrue(large < 30.seconds, "dot segments took $large for ${DOT_SMALL * 4}")
     }
 
     @Test
@@ -245,9 +259,9 @@ class UrlNormalizerTest {
         assertNull(UrlNormalizer.forIdentity("http://[1::2::3]/f")) // two `::`
         assertNull(UrlNormalizer.forIdentity("http://[12345::]/f")) // group over 4 hex digits
         assertNull(UrlNormalizer.forIdentity("http://[::ffff:256.1.1.1]/f")) // octet > 255
-        // Deliberately stricter than the host-level grammar (which accepts octal
-        // `0177.0.0.1`): WHATWG reuses one number parser here and accepts `01.2.3.4`, but the
-        // embedded IPv4 tail stays plain decimal by design — a safe reject.
+        // The embedded IPv4 tail stays plain decimal, matching the host-level grammar:
+        // WHATWG reuses one number parser here and accepts `01.2.3.4`, but no fetch target
+        // agrees on leading-zero spellings — a safe reject.
         assertNull(UrlNormalizer.forIdentity("http://[::ffff:01.2.3.4]/f")) // leading zero octet
         assertNull(UrlNormalizer.forIdentity("http://[1.2.3.4::]/f")) // IPv4 must be the tail
         assertNull(UrlNormalizer.forIdentity("http://[fe80::1%]/f")) // empty zone
@@ -284,14 +298,12 @@ class UrlNormalizerTest {
     }
 
     @Test
-    fun numericTailHostsAreWhatwgIpv4() {
-        // WHATWG's ends-in-a-number rule: these all resolve to 127.0.0.1 on the fetch client
-        // (OkHttp parses the same shorthand), so identity must share the canonical dotted form.
+    fun numericTailHostsAreDecimalIpv4LikeTheFetchClient() {
+        // Decimal shorthand agrees end to end: OkHttp passes the spelling verbatim to
+        // InetAddress, which parses "127.1" and "2130706433" as 127.0.0.1 — so identity
+        // shares the canonical dotted form.
         assertEquals("127.0.0.1/feed", UrlNormalizer.forIdentity("http://127.1/feed"))
-        assertEquals("127.0.0.1/feed", UrlNormalizer.forIdentity("http://0x7f.1/feed"))
-        assertEquals("127.0.0.1/feed", UrlNormalizer.forIdentity("http://0X7F.1/feed"))
         assertEquals("127.0.0.1/feed", UrlNormalizer.forIdentity("http://2130706433/feed"))
-        assertEquals("127.0.0.1/feed", UrlNormalizer.forIdentity("http://0177.0.0.1/feed"))
         assertEquals("127.0.0.1/feed", UrlNormalizer.forIdentity("http://127.0.0.1/feed"))
         // Shorthand and dotted spellings share one identity, like the fetcher.
         assertEquals(
@@ -312,16 +324,22 @@ class UrlNormalizerTest {
         assertNull(UrlNormalizer.forIdentity("http://1.2.3.4.5/x")) // too many parts
         assertNull(UrlNormalizer.forIdentity("http://4294967296/x")) // > 2^32-1
         assertNull(UrlNormalizer.forIdentity("http://a.1/x")) // "a" is not a number
-        assertNull(UrlNormalizer.forIdentity("http://08.1.1.1/x")) // leading 0 → octal, 8 invalid
-        // A bare `0x` is 0 per the IPv4 number parser (empty after the prefix → (0, true)).
-        assertEquals("0.0.0.0/x", UrlNormalizer.forIdentity("http://0x/x"))
-        // toLongOrNull would accept a sign; WHATWG's grammar does not — signed parts must
-        // never canonicalise onto a real host's identity.
+        assertNull(UrlNormalizer.forIdentity("http://08.1.1.1/x")) // leading 0, ambiguous radix
+        // Hex/octal spellings are rejected, not WHATWG-parsed: InetAddress reads "0177.1" as
+        // 177.0.0.1 (decimal) and cannot parse "0x7f.1" at all — identity must not name a
+        // host the fetch reaches differently or cannot reach.
+        assertNull(UrlNormalizer.forIdentity("http://0x7f.1/feed"))
+        assertNull(UrlNormalizer.forIdentity("http://0X7F.1/feed"))
+        assertNull(UrlNormalizer.forIdentity("http://0177.0.0.1/feed"))
+        assertNull(UrlNormalizer.forIdentity("http://0177.1/feed"))
+        assertNull(UrlNormalizer.forIdentity("http://0300.0250.0001.0001/feed"))
+        assertNull(UrlNormalizer.forIdentity("http://0x/x"))
+        // Signed parts are not digits — never canonicalise onto a real host's identity.
         assertNull(UrlNormalizer.forIdentity("http://0x-1.0x1/x"))
         assertNull(UrlNormalizer.forIdentity("http://0x+1.1/x"))
         assertNull(UrlNormalizer.forIdentity("http://+1.2/x"))
-        // `0x` + zero-or-more hex digits is numeric-committed; `0x` + a non-hex suffix is a
-        // domain label. `www.0x` still dies on the non-numeric "www" part.
+        // `0x` + hex still commits to the numeric parser (and fails it); `0x` + a non-hex
+        // suffix is a domain label. `www.0x` dies on the non-numeric "www" part.
         assertNull(UrlNormalizer.forIdentity("http://www.0x/x"))
         assertEquals("api.0xtra/x", UrlNormalizer.forIdentity("http://api.0xtra/x"))
         assertEquals("example.0xg/x", UrlNormalizer.forIdentity("http://example.0xg/x"))
@@ -338,6 +356,9 @@ class UrlNormalizerTest {
         assertNull(splitLenient("http://[::1]:80abc/feed").host)
         assertNull(splitLenient("http://[::1]:80abc/feed").port)
         assertNull(UrlNormalizer.forIdentity("http://[::1]:80abc/feed"))
+        // An empty literal is malformed, not an empty host.
+        assertNull(splitLenient("https://[]/feed").host)
+        assertNull(UrlNormalizer.forIdentity("https://[]/feed"))
         // A bare unbracketed IPv6 literal is not host "2001" + port "db8::1".
         assertNull(splitLenient("http://2001:db8::1/feed").host)
         assertNull(splitLenient("http://2001:db8::1/feed").port)

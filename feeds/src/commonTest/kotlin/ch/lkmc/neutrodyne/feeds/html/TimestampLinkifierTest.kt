@@ -26,6 +26,10 @@ class TimestampLinkifierTest {
     fun secondsMustBeTwoDigitsSoRatiosNeverMatch() {
         assertEquals(emptyList(), timestamps("aspect ratio 16:9"))
         assertEquals(emptyList(), timestamps("v1.2:3"))
+        // Out-of-range seconds never match — "10:60" is not a timestamp.
+        assertEquals(emptyList(), timestamps("at 10:60"))
+        // Position zero is a valid seek target, unlike "0:00"-as-duration placeholders.
+        assertEquals(listOf("0:00" to 0L), timestamps("intro 0:00"))
     }
 
     @Test
@@ -38,6 +42,9 @@ class TimestampLinkifierTest {
         assertEquals(emptyList(), timestamps("meeting 2:45 pm"))
         assertEquals(emptyList(), timestamps("sendezeit 20:15 Uhr"))
         assertEquals(emptyList(), timestamps("runtime 10:30h"))
+        // Case-insensitive markers ("AM"/"uhr") suppress identically.
+        assertEquals(emptyList(), timestamps("listen at 10:30 AM"))
+        assertEquals(emptyList(), timestamps("sendezeit 20:15 uhr"))
         assertEquals(listOf("10:30" to 630_000L), timestamps("plain 10:30 stays"))
     }
 

@@ -91,7 +91,8 @@ internal fun splitLenient(raw: String): UrlParts {
         if (hostPort.isNotEmpty()) {
             if (hostPort.startsWith("[")) {
                 val close = hostPort.indexOf(']')
-                if (close > 0) {
+                // `close > 1`: an empty literal ("[]") is malformed, not an empty host.
+                if (close > 1) {
                     // After `]` only `:digits` may follow; other residue is invalid (the JDK's
                     // `URI` rejects it) and must not silently drop into the parts.
                     val afterBracket = hostPort.substring(close + 1)

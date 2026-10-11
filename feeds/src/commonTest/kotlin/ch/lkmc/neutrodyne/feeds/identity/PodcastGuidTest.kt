@@ -31,6 +31,12 @@ class PodcastGuidTest {
         assertNull(PodcastGuid.parse("00000000-0000-0000-0000-000000000000"))
         // 32 hex digits and 4 hyphens, but the groups are not 8-4-4-4-12.
         assertNull(PodcastGuid.parse("9b024349-ccf05f-69a60-96b8-2873eab3c"))
+        // Well-formed non-v5 UUIDs are accepted: feeds supply arbitrary UUID versions and the
+        // contract is shape-plus-non-nil, not UUID-version-checked.
+        assertEquals(
+            "9b024349-ccf0-4f69-a609-6b82873eab3c",
+            PodcastGuid.parse("9b024349-ccf0-4f69-a609-6b82873eab3c"),
+        )
     }
 
     @Test

@@ -62,6 +62,8 @@ class DurationsTest {
         assertNull(Durations.parseMs("0:00:00"))
         assertNull(Durations.parseMs("0"))
         assertNull(Durations.parseMs("00:00:00.000"))
+        assertNull(Durations.parseMs("0.000"))
+        assertNull(Durations.parseMs("00:00.000"))
         // A genuinely tiny duration is not a placeholder: the boundary is at zero, not below it.
         assertEquals(1L, Durations.parseMs("0.001"))
     }
