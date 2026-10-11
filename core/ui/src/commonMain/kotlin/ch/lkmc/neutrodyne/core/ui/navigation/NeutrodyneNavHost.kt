@@ -20,7 +20,9 @@ import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneSt
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSerializable
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
 import androidx.navigation3.runtime.NavEntry
@@ -37,6 +39,7 @@ import androidx.navigation3.ui.defaultPredictivePopTransitionSpec
 import androidx.navigation3.ui.defaultTransitionSpec
 import ch.lkmc.neutrodyne.core.navigation.EntryProviderInstaller
 import ch.lkmc.neutrodyne.core.navigation.LocalNavTab
+import ch.lkmc.neutrodyne.core.navigation.NavKeySerializers
 import ch.lkmc.neutrodyne.core.navigation.NdSceneMetadata
 import ch.lkmc.neutrodyne.core.navigation.TopLevelKey
 
@@ -62,11 +65,22 @@ public fun NeutrodyneNavHost(
             }
         }
 
+    // Wipe-outgoing keys held in their real stack until the swap commits. Persisted so a
+    // departure interrupted by recreation still completes — the restored composition replays
+    // the wipe and the ordinary pop path clears the outgoing entry's bookkeeping once.
+    val departing =
+        rememberSerializable(
+            stateSerializer = DepartureSetSerializer,
+            configuration = NavKeySerializers.savedStateConfiguration,
+        ) {
+            mutableStateOf(emptySet<NavKey>())
+        }
+
     // A pushed key's pane role is not decorated yet when the top diff runs, so the diff reads
     // roles straight from the entry provider.
     val retention =
         remember(provider) {
-            PaneRetention().apply {
+            PaneRetention(departing).apply {
                 roleResolver = { key ->
                     provider(key).metadata[NdSceneMetadata.KEY_PANE] as? String
                 }
@@ -74,10 +88,12 @@ public fun NeutrodyneNavHost(
         }
     val stacks = state.tabs.associateWith { state.stack(it) }
 
-    // A pane whose top entry just changed — push or pop — keeps the outgoing top pinned above
-    // its successor on the decorated list below, so the pane callsite keeps emitting it
-    // through the swap: decorator onPop (ViewModel/saveable clearing) is keyed on this list's
-    // membership, and the pane's own retention machinery never sees a gap to re-enter across.
+    // A pane whose top entry just changed keeps the outgoing top as its pane top through the
+    // swap so the callsite keeps emitting it: a pushed-over top is lifted above its successor
+    // on the decorated list below, while a popped top stays in the real stack as a departing
+    // entry whose deferred pop commits when the swap settles — decorator onPop
+    // (ViewModel/saveable clearing) is keyed on this list's membership, and scene back
+    // bookkeeping always sees the true stack contents.
     retention.beginPass(stacks)
 
     val decoratedByTab: Map<TopLevelKey, List<NavEntry<NavKey>>> =
@@ -115,7 +131,10 @@ public fun NeutrodyneNavHost(
             NavDisplay(
                 entries = displayedEntries,
                 modifier = modifier,
-                onBack = { state.pop() },
+                // A departing pane top is already logically popped: it drains first and the
+                // real pop follows — the scaffold's repeat count only decides whether a real
+                // pop still owes (see PaneRetention.onBackDrain).
+                onBack = { if (retention.onBackDrain(state.selectedTab)) state.pop() },
                 sceneStrategies =
                     listOf(
                         rememberNdBottomSheetSceneStrategy(),

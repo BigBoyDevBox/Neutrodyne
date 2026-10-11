@@ -3,6 +3,7 @@
 package ch.lkmc.neutrodyne.core.ui.navigation
 
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -49,6 +50,7 @@ import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import ch.lkmc.neutrodyne.core.navigation.DiscoverKey
 import ch.lkmc.neutrodyne.core.navigation.DownloadsKey
 import ch.lkmc.neutrodyne.core.navigation.EntryProviderInstaller
+import ch.lkmc.neutrodyne.core.navigation.EpisodeKey
 import ch.lkmc.neutrodyne.core.navigation.FeedsKey
 import ch.lkmc.neutrodyne.core.navigation.LibraryKey
 import ch.lkmc.neutrodyne.core.navigation.LicencesKey
@@ -345,9 +347,9 @@ class NavHostTransitionHostTest {
         setFixedHost(installers = OwnerInstallers, directive = TwoPaneDirective)
         rule.runOnUiThread { pushSettingsChain() }
         settle()
-        rule.onNodeWithTag(INCREMENT_TAG).performClick()
+        rule.onNodeWithTag("$LICENCES_TAG-inc").performClick()
         settle()
-        val original = assertNotNull(OwnerProbe.snapshot, "licences page never composed")
+        val original = assertNotNull(OwnerProbe.snapshots[LICENCES_TAG], "licences page never composed")
         assertEquals(1, original.saved)
 
         rule.mainClock.autoAdvance = false
@@ -361,7 +363,7 @@ class NavHostTransitionHostTest {
             if (present) {
                 assertTrue(!exited, "licences re-entered composition mid-wipe")
                 outgoingSeen = true
-                val now = OwnerProbe.snapshot
+                val now = OwnerProbe.snapshots[LICENCES_TAG]
                 assertEquals(original.vm, now?.vm, "outgoing ViewModel was recreated")
                 assertEquals(original.owner, now?.owner, "outgoing ViewModelStoreOwner changed")
                 assertEquals(1, now?.saved, "outgoing rememberSaveable state was reset")
@@ -415,6 +417,217 @@ class NavHostTransitionHostTest {
         navigation.push(SettingsHomeKey)
         navigation.push(SettingsKey(SettingsPage.ABOUT))
         navigation.push(LicencesKey)
+    }
+
+    // endregion
+
+    // region pin interruption (retargeted swaps, scene back, recreation)
+
+    /**
+     * Re-pushing the detail four frames into its own wipe: the pop's pin and the push's pin
+     * overlap, and both must drop rather than strand the still-live About entry — its ViewModel
+     * and `rememberSaveable` state must survive the whole cycle.
+     */
+    @Test
+    fun expandedRepushDuringWipeKeepsTheLiveStackIntact() {
+        OwnerProbe.reset()
+        setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        rule.runOnUiThread {
+            navigation.push(SettingsHomeKey)
+            navigation.push(SettingsKey(SettingsPage.ABOUT))
+        }
+        settle()
+        rule.onNodeWithTag("$ABOUT_PAGE_TAG-inc").performClick()
+        settle()
+        val originalAbout =
+            assertNotNull(OwnerProbe.snapshots[ABOUT_PAGE_TAG], "about page never composed")
+        rule.runOnUiThread { navigation.push(LicencesKey) }
+        settle()
+
+        rule.mainClock.autoAdvance = false
+        rule.runOnUiThread { navigation.pop() }
+        advanceFrames(4)
+        assertTrue(
+            rule.onAllNodesWithTag(LICENCES_TAG).fetchSemanticsNodes().isNotEmpty(),
+            "pin not active when the interrupt begins",
+        )
+        rule.runOnUiThread { navigation.push(LicencesKey) }
+        advanceFrames(8)
+        settle()
+
+        assertEquals(LicencesKey, navigation.stack(FeedsKey).last())
+        val about = OwnerProbe.snapshots[ABOUT_PAGE_TAG]
+        assertEquals(originalAbout.vm, about?.vm, "live About ViewModel was cleared mid-swap")
+        assertTrue(originalAbout.vm !in OwnerProbe.cleared, "live About VM was cleared")
+
+        // The covered-page preview legitimately shows the initial `saved` value while About
+        // emits inside the transport — the state itself must survive in the holder: popping
+        // re-tops About at its callsite, where rememberSaveable restores it.
+        rule.mainClock.autoAdvance = true
+        rule.runOnUiThread { navigation.pop() }
+        settle()
+        assertEquals(SettingsKey(SettingsPage.ABOUT), navigation.stack(FeedsKey).last())
+        assertEquals(
+            1,
+            OwnerProbe.snapshots[ABOUT_PAGE_TAG]?.saved,
+            "live About rememberSaveable state was lost",
+        )
+    }
+
+    /**
+     * A push into a pane mid-wipe retargets the swap: the old pin must release rather than
+     * overlap the covered entry's new emission — a second `SaveableStateProvider` for the same
+     * key crashes the composition.
+     */
+    @Test
+    fun expandedPushDuringWipeDoesNotDuplicatePaneEmissions() {
+        setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        // Push step by step so About emits at the detail callsite before Licences lands — a
+        // batched push never tops About, leaving its contentKey out of the emitted set and
+        // hiding the retargeted-swap defect.
+        rule.runOnUiThread {
+            navigation.push(SettingsHomeKey)
+            navigation.push(SettingsKey(SettingsPage.ABOUT))
+        }
+        settle()
+        rule.runOnUiThread { navigation.push(LicencesKey) }
+        settle()
+
+        rule.mainClock.autoAdvance = false
+        rule.runOnUiThread { navigation.pop() }
+        advanceFrames(4)
+        assertTrue(
+            rule.onAllNodesWithTag(LICENCES_TAG).fetchSemanticsNodes().isNotEmpty(),
+            "pin not active when the interrupt begins",
+        )
+        rule.runOnUiThread { navigation.push(SettingsKey(SettingsPage.APPEARANCE)) }
+        advanceFrames(12)
+        settle()
+
+        assertEquals(SettingsKey(SettingsPage.APPEARANCE), navigation.stack(FeedsKey).last())
+        assertTrue(
+            rule.onAllNodesWithTag(APPEARANCE_PAGE_TAG).fetchSemanticsNodes().isNotEmpty(),
+            "the retargeted detail never rendered",
+        )
+    }
+
+    /**
+     * The scaffold's back handling counts `allEntries - previousEntries`; the transient pin is
+     * not a real back entry. A predictive commit mid-wipe must still pop exactly to the scaffold
+     * boundary (About), not one entry further (SettingsHome).
+     */
+    @Test
+    fun expandedPredictiveCommitDoesNotCountThePinnedEntry() {
+        setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        rule.runOnUiThread {
+            navigation.push(SettingsHomeKey)
+            navigation.push(SettingsKey(SettingsPage.ABOUT))
+            navigation.push(EpisodeKey(1))
+            navigation.push(EpisodeKey(2))
+        }
+        settle()
+
+        rule.mainClock.autoAdvance = false
+        rule.runOnUiThread { navigation.pop() }
+        advanceFrames(4)
+        val input = DirectNavigationEventInput()
+        val eventDispatcher =
+            assertNotNull(dispatcher, "no NavigationEventDispatcher owner in the host")
+        rule.runOnUiThread {
+            eventDispatcher.addInput(input)
+            input.backStarted(NavigationEvent(NavigationEvent.EDGE_LEFT, 0f, 16f, 400f))
+            input.backProgressed(NavigationEvent(NavigationEvent.EDGE_LEFT, 0.4f, 300f, 400f))
+        }
+        advanceFrames(2)
+        rule.runOnUiThread { input.backCompleted() }
+        advanceFrames(12)
+        settle()
+
+        assertEquals(
+            SettingsKey(SettingsPage.ABOUT),
+            navigation.stack(FeedsKey).last(),
+            "the scaffold counted the transient pin as a real back entry",
+        )
+    }
+
+    /**
+     * Instant back takes the same `repeat(count) { onBack() }` path as a completed predictive
+     * gesture — a started+completed input with no progress events. On the extra-pane fixture
+     * the scaffold boundary counts two entries (the departing ghost plus the live entry under
+     * it), so the commit must drain the ghost and pop once, landing on About.
+     */
+    @Test
+    fun expandedSystemBackDuringWipePopsOnlyRealEntries() {
+        setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        rule.runOnUiThread {
+            navigation.push(SettingsHomeKey)
+            navigation.push(SettingsKey(SettingsPage.ABOUT))
+            navigation.push(EpisodeKey(1))
+            navigation.push(EpisodeKey(2))
+        }
+        settle()
+
+        rule.mainClock.autoAdvance = false
+        rule.runOnUiThread { navigation.pop() }
+        advanceFrames(4)
+        val input = DirectNavigationEventInput()
+        val eventDispatcher =
+            assertNotNull(dispatcher, "no NavigationEventDispatcher owner in the host")
+        rule.runOnUiThread {
+            eventDispatcher.addInput(input)
+            input.backStarted(NavigationEvent(NavigationEvent.EDGE_LEFT, 0f, 16f, 400f))
+            input.backCompleted()
+        }
+        advanceFrames(12)
+        settle()
+
+        assertEquals(
+            SettingsKey(SettingsPage.ABOUT),
+            navigation.stack(FeedsKey).last(),
+            "system back counted the transient departing entry as a real back entry",
+        )
+    }
+
+    /**
+     * Recreation discards the remembered pin, but the decorators still counted the pinned key
+     * as a stack member at disposal and skipped its pop cleanup — the popped ViewModel and its
+     * saved state then orphaned into the activity-retained stores. Reopening must see a fresh
+     * owner, and the original must have been cleared exactly once.
+     */
+    @Test
+    fun expandedRecreationDuringWipeClearsThePoppedOwner() {
+        OwnerProbe.reset()
+        setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        rule.runOnUiThread { pushSettingsChain() }
+        settle()
+        val original =
+            assertNotNull(OwnerProbe.snapshots[LICENCES_TAG], "licences page never composed")
+
+        rule.mainClock.autoAdvance = false
+        rule.runOnUiThread { navigation.pop() }
+        advanceFrames(4)
+
+        rule.activityRule.scenario.recreate()
+        rule.activityRule.scenario.onActivity {
+            it.setContent(content = requireNotNull(hostContent))
+        }
+        settle()
+
+        assertEquals(SettingsKey(SettingsPage.ABOUT), navigation.stack(FeedsKey).last())
+        assertTrue(LicencesKey !in navigation.stack(FeedsKey))
+        advanceFrames(64)
+        rule.runOnUiThread { navigation.push(LicencesKey) }
+        settle()
+
+        assertEquals(
+            1,
+            OwnerProbe.cleared.count { it == original.vm },
+            "popped original ViewModel leaked across the configuration change",
+        )
+        assertTrue(
+            original.vm != OwnerProbe.snapshots[LICENCES_TAG]?.vm,
+            "the reopened licences entry reused the popped ViewModel",
+        )
     }
 
     // endregion
@@ -488,12 +701,14 @@ class NavHostTransitionHostTest {
 
     // region hosts
 
+    private var hostContent: (@Composable () -> Unit)? = null
+
     private fun setFixedHost(
         installers: Set<EntryProviderInstaller> = HostInstallers,
         directive: PaneScaffoldDirective? = null,
         layoutDirection: LayoutDirection = LayoutDirection.Ltr,
     ) {
-        rule.setContent {
+        hostContent = {
             val state = rememberNavigationState()
             navigation = state
             dispatcher = LocalNavigationEventDispatcherOwner.current?.navigationEventDispatcher
@@ -512,6 +727,7 @@ class NavHostTransitionHostTest {
                 )
             }
         }
+        rule.setContent(hostContent!!)
         settle()
     }
 
@@ -558,7 +774,12 @@ class NavHostTransitionHostTest {
     // region clock and pixels
 
     private fun advanceFrames(frames: Int) {
-        repeat(frames) { rule.mainClock.advanceTimeByFrame() }
+        // The semantics fetch after each frame forces pending recompositions to apply — plain
+        // advanceTimeByFrame leaves a queued pass un-run until the next sync point.
+        repeat(frames) {
+            rule.mainClock.advanceTimeByFrame()
+            rule.onRoot(useUnmergedTree = true).fetchSemanticsNode()
+        }
     }
 
     /** Pumps one frame at a time and reports whether [condition] held within [maxFrames]. */
@@ -657,6 +878,9 @@ private const val PODCAST_TAG = "podcast-pane"
 private const val SETTINGS_TAG = "settings-pane"
 private const val ABOUT_TAG = "about-pane"
 private const val LICENCES_TAG = "licences-pane"
+private const val EXTRA_TAG = "extra-pane"
+private const val ABOUT_PAGE_TAG = "page-ABOUT"
+private const val APPEARANCE_PAGE_TAG = "page-APPEARANCE"
 
 private val FEEDS_COLOR = Color(0xFFD32F2F)
 private val LIBRARY_COLOR = Color(0xFF2E7D32)
@@ -752,6 +976,61 @@ private val OwnerInstallers: Set<EntryProviderInstaller> =
         }
     }
 
+/**
+ * The expanded chain with owner probes on every roled page — Settings pages report under
+ * `page-<page>` tags, episodes under [EXTRA_TAG] — so interrupted swaps can assert which
+ * emission stayed composed.
+ */
+private val ProbedInstallers: Set<EntryProviderInstaller> =
+    buildSet {
+        add { entry<FeedsKey>(metadata = NdSceneMetadata.paneList()) { Sentinel(FEEDS_COLOR, FEEDS_TAG) } }
+        add {
+            entry<LibraryKey>(metadata = NdSceneMetadata.paneList()) {
+                Sentinel(LIBRARY_COLOR, LIBRARY_TAG)
+            }
+        }
+        add {
+            entry<UpNextKey>(metadata = NdSceneMetadata.paneList()) {
+                Sentinel(Color(0xFF6A1B9A), "up-next-pane")
+            }
+        }
+        add {
+            entry<DownloadsKey>(metadata = NdSceneMetadata.paneList()) {
+                Sentinel(Color(0xFF00838F), "downloads-pane")
+            }
+        }
+        add {
+            entry<DiscoverKey>(metadata = NdSceneMetadata.paneList()) {
+                Sentinel(Color(0xFFEF6C00), "discover-pane")
+            }
+        }
+        add {
+            entry<PodcastKey>(metadata = NdSceneMetadata.paneDetail()) {
+                Sentinel(PODCAST_COLOR, PODCAST_TAG)
+            }
+        }
+        add {
+            entry<SettingsHomeKey>(metadata = NdSceneMetadata.paneList()) {
+                Sentinel(SETTINGS_COLOR, SETTINGS_TAG)
+            }
+        }
+        add {
+            entry<SettingsKey>(metadata = NdSceneMetadata.paneDetail()) { key ->
+                OwnerProbePage("page-${key.page}")
+            }
+        }
+        add {
+            entry<LicencesKey>(metadata = NdSceneMetadata.paneDetail()) {
+                OwnerProbePage(LICENCES_TAG)
+            }
+        }
+        add {
+            entry<EpisodeKey>(metadata = NdSceneMetadata.paneExtra()) {
+                OwnerProbePage(EXTRA_TAG)
+            }
+        }
+    }
+
 /** The same settings keys with no pane roles — each entry lands in its own scene. */
 private val DistinctInstallers: Set<EntryProviderInstaller> =
     buildSet {
@@ -772,13 +1051,11 @@ private val DefaultsProvider =
         entry<PodcastKey> { Sentinel(PODCAST_COLOR, PODCAST_TAG) }
     }
 
-private const val INCREMENT_TAG = "licences-increment"
-
-/** Records the live owner triple of the licences page so frames can assert continuity. */
+/** Records the live owner triple per page tag so frames can assert continuity. */
 private object OwnerProbe {
     val nextIdentity = AtomicInteger(1)
     val cleared = mutableListOf<Int>()
-    var snapshot: Snapshot? = null
+    val snapshots = mutableMapOf<String, Snapshot>()
 
     data class Snapshot(
         val vm: Int,
@@ -788,7 +1065,7 @@ private object OwnerProbe {
 
     fun reset() {
         cleared.clear()
-        snapshot = null
+        snapshots.clear()
     }
 }
 
@@ -802,17 +1079,17 @@ private class OwnerProbeVm : ViewModel() {
 
 @Suppress("FunctionNaming") // composables are PascalCase
 @Composable
-private fun OwnerProbePage() {
+private fun OwnerProbePage(tag: String = LICENCES_TAG) {
     val vm = viewModel { OwnerProbeVm() }
     val owner = LocalViewModelStoreOwner.current
     val saved = rememberSaveable { mutableIntStateOf(0) }
     SideEffect {
-        OwnerProbe.snapshot =
+        OwnerProbe.snapshots[tag] =
             OwnerProbe.Snapshot(vm.identity, System.identityHashCode(owner), saved.intValue)
     }
-    Column(Modifier.fillMaxSize().testTag(LICENCES_TAG)) {
-        Text("licences|saved=${saved.intValue}")
-        Button(onClick = { saved.intValue++ }, modifier = Modifier.testTag(INCREMENT_TAG)) {
+    Column(Modifier.fillMaxSize().testTag(tag)) {
+        Text("$tag|saved=${saved.intValue}")
+        Button(onClick = { saved.intValue++ }, modifier = Modifier.testTag("$tag-inc")) {
             Text("increment")
         }
     }
