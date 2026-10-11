@@ -17,8 +17,10 @@ import androidx.compose.material3.adaptive.layout.calculatePaneScaffoldDirective
 import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneStrategy
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -47,6 +49,7 @@ import androidx.navigationevent.DirectNavigationEventInput
 import androidx.navigationevent.NavigationEvent
 import androidx.navigationevent.NavigationEventDispatcher
 import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
+import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
 import ch.lkmc.neutrodyne.core.navigation.DiscoverKey
 import ch.lkmc.neutrodyne.core.navigation.DownloadsKey
 import ch.lkmc.neutrodyne.core.navigation.EntryProviderInstaller
@@ -357,8 +360,7 @@ class NavHostTransitionHostTest {
 
         var exited = false
         var outgoingSeen = false
-        repeat(WIPE_FRAME_BOUND * 2) {
-            rule.mainClock.advanceTimeByFrame()
+        advanceFramesUntil(WIPE_FRAME_BOUND * 2) {
             val present = rule.onAllNodesWithTag(LICENCES_TAG).fetchSemanticsNodes().isNotEmpty()
             if (present) {
                 assertTrue(!exited, "licences re-entered composition mid-wipe")
@@ -374,8 +376,10 @@ class NavHostTransitionHostTest {
                 exited || original.vm !in OwnerProbe.cleared,
                 "outgoing ViewModel cleared while the wipe still drew it",
             )
+            exited
         }
         assertTrue(outgoingSeen, "the wipe never drew the outgoing page")
+        assertTrue(exited, "the outgoing emission never exited the wipe")
 
         settle()
         assertTrue(rule.onAllNodesWithTag(LICENCES_TAG).fetchSemanticsNodes().isEmpty())
@@ -632,6 +636,241 @@ class NavHostTransitionHostTest {
 
     // endregion
 
+    // region retargets, compact release and same-class replace
+
+    /**
+     * Mid-wipe retarget (the zombie-pin regression): popping Licences then pushing Podcast
+     * three frames into the wipe commits Licences' departure immediately — it must never
+     * ghost back while the Podcast pop wipes, and its owner must clear exactly once.
+     */
+    @Test
+    fun expandedPushDuringWipeDoesNotGhostThePoppedEntry() {
+        OwnerProbe.reset()
+        setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        rule.runOnUiThread { pushSettingsChain() }
+        settle()
+        val original =
+            assertNotNull(OwnerProbe.snapshots[LICENCES_TAG], "licences page never composed")
+
+        rule.mainClock.autoAdvance = false
+        rule.runOnUiThread { navigation.pop() }
+        advanceFrames(3)
+        rule.runOnUiThread { navigation.push(PodcastKey(9)) }
+        advanceFrames(3)
+        rule.runOnUiThread { navigation.pop() }
+
+        val ghosted =
+            advanceFramesUntil(GHOST_WATCH_FRAME_BOUND) {
+                rule.onAllNodesWithTag(LICENCES_TAG).fetchSemanticsNodes().isNotEmpty()
+            }
+        assertTrue(!ghosted, "licences re-appeared after its wipe was retargeted")
+        settle()
+
+        assertEquals(SettingsKey(SettingsPage.ABOUT), navigation.stack(FeedsKey).last())
+        assertTrue(LicencesKey !in navigation.stack(FeedsKey))
+        assertEquals(
+            1,
+            OwnerProbe.cleared.count { it == original.vm },
+            "licences ViewModel must clear exactly once",
+        )
+    }
+
+    /**
+     * A layout collapse before the pop leaves no pane slot to claim the popped entry: the
+     * departure must commit at the first unslotted emission instead of pinning the popped
+     * screen visibly on the real stack until the 800 ms expiry backstop.
+     */
+    @Test
+    fun compactPopCommitsThePoppedDetailPromptly() {
+        val directive = setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        rule.runOnUiThread { pushSettingsChain() }
+        settle()
+        rule.runOnUiThread { directive.value = PaneScaffoldDirective.Default }
+        settle()
+
+        rule.mainClock.autoAdvance = false
+        rule.runOnUiThread { navigation.pop() }
+
+        val framesToGone = framesUntilAbsent(LICENCES_TAG, PROMPT_RELEASE_FRAME_BOUND)
+        assertTrue(
+            framesToGone < PROMPT_RELEASE_FRAME_BOUND,
+            "popped licences stayed visible ${framesToGone}f on the one-pane layout",
+        )
+        settle()
+        assertEquals(SettingsKey(SettingsPage.ABOUT), navigation.stack(FeedsKey).last())
+        assertTrue(LicencesKey !in navigation.stack(FeedsKey))
+    }
+
+    /**
+     * The same release when the layout collapses mid-wipe: the in-flight departure commits
+     * as soon as the one-pane scene emits it unslotted.
+     */
+    @Test
+    fun compactResizeMidWipeCommitsTheDeparturePromptly() {
+        val directive = setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        rule.runOnUiThread { pushSettingsChain() }
+        settle()
+
+        rule.mainClock.autoAdvance = false
+        rule.runOnUiThread { navigation.pop() }
+        advanceFrames(3)
+        rule.runOnUiThread { directive.value = PaneScaffoldDirective.Default }
+
+        // The deferred pop commits at the first unslotted emission; what remains visible is
+        // only the ordinary collapse-cover and pop-wipe animations, not a dead pin.
+        advanceFrames(4)
+        assertTrue(
+            LicencesKey !in navigation.stack(FeedsKey),
+            "the departing entry stayed on the real stack after the collapse",
+        )
+        val framesToGone = framesUntilAbsent(LICENCES_TAG, COLLAPSE_EXIT_FRAME_BOUND)
+        assertTrue(
+            framesToGone < COLLAPSE_EXIT_FRAME_BOUND,
+            "the departing entry stayed visible ${framesToGone}f after the collapse",
+        )
+        settle()
+        assertTrue(LicencesKey !in navigation.stack(FeedsKey))
+    }
+
+    /**
+     * Stale emitted marks must not hide a compact push: with no pane to cover, the pushed
+     * detail appears as the scene's top immediately — a cover pin would only strand the
+     * outgoing on a slot that does not exist.
+     */
+    @Test
+    fun compactPushShowsThePushedDetailPromptly() {
+        val directive = setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        rule.runOnUiThread { pushSettingsChain() }
+        settle()
+        rule.runOnUiThread { directive.value = PaneScaffoldDirective.Default }
+        settle()
+
+        rule.mainClock.autoAdvance = false
+        rule.runOnUiThread { navigation.push(PodcastKey(9)) }
+
+        val framesToShown = framesUntilPresent(PODCAST_TAG, PROMPT_RELEASE_FRAME_BOUND)
+        assertTrue(
+            framesToShown < PROMPT_RELEASE_FRAME_BOUND,
+            "the pushed detail stayed hidden ${framesToShown}f under a one-pane layout",
+        )
+        settle()
+        assertEquals(PodcastKey(9), navigation.stack(FeedsKey).last())
+    }
+
+    /**
+     * `pushDetail` swaps a same-class detail in place as forward navigation: the newcomer
+     * covers over the still-painted outgoing rather than wiping the outgoing out over it.
+     */
+    @Test
+    fun expandedSameClassDetailReplaceCoversForward() {
+        setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        rule.runOnUiThread {
+            // NeutrodyneRoot mirrors the scaffold partition count onto the state — the
+            // same-class replace only applies under a multi-pane layout.
+            navigation.panePartitions = 2
+            navigation.push(SettingsHomeKey)
+            navigation.push(PodcastKey(1))
+        }
+        settle()
+        rule.mainClock.autoAdvance = false
+        val detailRest = leftEdgeOf(rule.onRoot().captureToImage().toPixelMap(), PODCAST_COLOR)
+
+        rule.runOnUiThread { navigation.pushDetail(PodcastKey(2)) }
+
+        var wiped = false
+        var covered = false
+        repeat(WIPE_FRAME_BOUND) {
+            rule.mainClock.advanceTimeByFrame()
+            rule.onRoot(useUnmergedTree = true).fetchSemanticsNode()
+            val pixels = rule.onRoot().captureToImage().toPixelMap()
+            if (
+                leftEdgeOf(pixels, PODCAST_COLOR) > detailRest &&
+                leftEdgeOf(pixels, PODCAST2_COLOR) == detailRest
+            ) {
+                wiped = true
+            }
+            if (
+                leftEdgeOf(pixels, PODCAST2_COLOR) > detailRest &&
+                leftEdgeOf(pixels, PODCAST_COLOR) == detailRest
+            ) {
+                covered = true
+            }
+        }
+        assertTrue(!wiped, "a forward same-class replace animated as a back wipe")
+        assertTrue(covered, "the replacement never covered over the outgoing detail")
+        settle()
+        assertEquals(PodcastKey(2), navigation.stack(FeedsKey).last())
+        assertTrue(PodcastKey(1) !in navigation.stack(FeedsKey))
+    }
+
+    /**
+     * A push landing mid-cover retargets the swap forward: the interrupted incoming drops
+     * to the resting base and the newest top covers over it — never a backwards wipe.
+     */
+    @Test
+    fun expandedPushDuringCoverCoversTheNewestTop() {
+        setFixedHost(installers = ProbedInstallers, directive = TwoPaneDirective)
+        rule.runOnUiThread {
+            navigation.push(SettingsHomeKey)
+            navigation.push(PodcastKey(1))
+        }
+        settle()
+        rule.mainClock.autoAdvance = false
+
+        rule.runOnUiThread { navigation.push(PodcastKey(2)) }
+        advanceFrames(3)
+        val detailRest = leftEdgeOf(rule.onRoot().captureToImage().toPixelMap(), PODCAST_COLOR)
+
+        rule.runOnUiThread { navigation.push(PodcastKey(3)) }
+
+        var covered = false
+        var wiped = false
+        repeat(WIPE_FRAME_BOUND) {
+            rule.mainClock.advanceTimeByFrame()
+            rule.onRoot(useUnmergedTree = true).fetchSemanticsNode()
+            val pixels = rule.onRoot().captureToImage().toPixelMap()
+            val incoming = leftEdgeOf(pixels, PODCAST3_COLOR)
+            if (incoming > detailRest) covered = true
+            if (incoming == detailRest && leftEdgeOf(pixels, PODCAST2_COLOR) > detailRest) {
+                wiped = true
+            }
+        }
+        assertTrue(covered, "the retargeted push landing ran no cover motion")
+        assertTrue(!wiped, "the retargeted push landing played backwards")
+        settle()
+        assertEquals(PodcastKey(3), navigation.stack(FeedsKey).last())
+    }
+
+    /**
+     * 08 promises a 0 ms snap under reduced motion and the pane swap already honours it;
+     * the outer scene cover/wipe must use the same spec — a default spring would still run.
+     * Unroled entries isolate the outer transform: the cover slides in from the end edge,
+     * so a mid-transit frame shows the incoming's left edge still inside the window.
+     */
+    @Test
+    fun reducedMotionSnapsTheOuterCover() {
+        setFixedHost(installers = DistinctInstallers, reducedMotion = true)
+        rule.runOnUiThread { navigation.push(SettingsKey(SettingsPage.ABOUT)) }
+        rule.mainClock.autoAdvance = false
+        val windowEnd =
+            rule
+                .onRoot()
+                .captureToImage()
+                .toPixelMap()
+                .width - 1
+
+        val midTransit =
+            advanceFramesUntil(WIPE_FRAME_BOUND) {
+                leftEdgeOf(rule.onRoot().captureToImage().toPixelMap(), ABOUT_COLOR)
+                    .let { it in 1 until windowEnd }
+            }
+        assertTrue(!midTransit, "the outer cover kept animating under reduced motion")
+        settle()
+        assertTrue(rule.onAllNodesWithTag(ABOUT_TAG).fetchSemanticsNodes().isNotEmpty())
+    }
+
+    // endregion
+
     // region platform defaults (pre-fix diagnostics)
 
     /**
@@ -703,11 +942,14 @@ class NavHostTransitionHostTest {
 
     private var hostContent: (@Composable () -> Unit)? = null
 
+    /** Returns the directive state — assigning a new directive resizes the live host. */
     private fun setFixedHost(
         installers: Set<EntryProviderInstaller> = HostInstallers,
         directive: PaneScaffoldDirective? = null,
         layoutDirection: LayoutDirection = LayoutDirection.Ltr,
-    ) {
+        reducedMotion: Boolean = false,
+    ): MutableState<PaneScaffoldDirective?> {
+        val directiveState = mutableStateOf(directive)
         hostContent = {
             val state = rememberNavigationState()
             navigation = state
@@ -715,12 +957,13 @@ class NavHostTransitionHostTest {
             CompositionLocalProvider(
                 LocalAppNavigator provides state,
                 LocalLayoutDirection provides layoutDirection,
+                LocalReducedMotion provides reducedMotion,
             ) {
                 NeutrodyneNavHost(
                     state = state,
                     installers = installers,
                     directive =
-                        directive
+                        directiveState.value
                             ?: calculatePaneScaffoldDirective(
                                 currentWindowAdaptiveInfo(supportLargeAndXLargeWidth = true),
                             ),
@@ -729,6 +972,7 @@ class NavHostTransitionHostTest {
         }
         rule.setContent(hostContent!!)
         settle()
+        return directiveState
     }
 
     /**
@@ -792,6 +1036,32 @@ class NavHostTransitionHostTest {
             if (condition()) return true
         }
         return false
+    }
+
+    /** Advances one frame at a time; frames until [tag] has no node left, or [maxFrames]. */
+    private fun framesUntilAbsent(
+        tag: String,
+        maxFrames: Int,
+    ): Int {
+        repeat(maxFrames) { frame ->
+            rule.mainClock.advanceTimeByFrame()
+            rule.onRoot(useUnmergedTree = true).fetchSemanticsNode()
+            if (rule.onAllNodesWithTag(tag).fetchSemanticsNodes().isEmpty()) return frame + 1
+        }
+        return maxFrames
+    }
+
+    /** Advances one frame at a time; frames until [tag] first has a node, or [maxFrames]. */
+    private fun framesUntilPresent(
+        tag: String,
+        maxFrames: Int,
+    ): Int {
+        repeat(maxFrames) { frame ->
+            rule.mainClock.advanceTimeByFrame()
+            rule.onRoot(useUnmergedTree = true).fetchSemanticsNode()
+            if (rule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()) return frame + 1
+        }
+        return maxFrames
     }
 
     private fun settle() {
@@ -867,6 +1137,15 @@ class NavHostTransitionHostTest {
         /** 640 ms — still inside the 700 ms default fade. */
         const val FADE_FRAME_BOUND = 40
 
+        /** A retargeted departure is dead by the next pass — this window only watches ghosts. */
+        const val GHOST_WATCH_FRAME_BOUND = 60
+
+        /** 384 ms — a no-slot release takes a few frames; the stale-emitted stall was ~544 ms. */
+        const val PROMPT_RELEASE_FRAME_BOUND = 24
+
+        /** 768 ms — the collapse cover plus pop wipe together, still under the 800 ms expiry. */
+        const val COLLAPSE_EXIT_FRAME_BOUND = 48
+
         const val PIXEL_STRIDE = 4
         const val COLOR_TOLERANCE = 0.15f
     }
@@ -875,16 +1154,22 @@ class NavHostTransitionHostTest {
 private const val FEEDS_TAG = "feeds-pane"
 private const val LIBRARY_TAG = "library-pane"
 private const val PODCAST_TAG = "podcast-pane"
+private const val PODCAST2_TAG = "podcast-pane-2"
+private const val PODCAST3_TAG = "podcast-pane-3"
 private const val SETTINGS_TAG = "settings-pane"
 private const val ABOUT_TAG = "about-pane"
 private const val LICENCES_TAG = "licences-pane"
 private const val EXTRA_TAG = "extra-pane"
 private const val ABOUT_PAGE_TAG = "page-ABOUT"
 private const val APPEARANCE_PAGE_TAG = "page-APPEARANCE"
+private const val PODCAST2_ID = 2L
+private const val PODCAST3_ID = 3L
 
 private val FEEDS_COLOR = Color(0xFFD32F2F)
 private val LIBRARY_COLOR = Color(0xFF2E7D32)
 private val PODCAST_COLOR = Color(0xFF1565C0)
+private val PODCAST2_COLOR = Color(0xFF004D40)
+private val PODCAST3_COLOR = Color(0xFFBF360C)
 private val SETTINGS_COLOR = Color(0xFFF9A825)
 private val ABOUT_COLOR = Color(0xFF00695C)
 private val LICENCES_COLOR = Color(0xFF4E342E)
@@ -1005,8 +1290,12 @@ private val ProbedInstallers: Set<EntryProviderInstaller> =
             }
         }
         add {
-            entry<PodcastKey>(metadata = NdSceneMetadata.paneDetail()) {
-                Sentinel(PODCAST_COLOR, PODCAST_TAG)
+            entry<PodcastKey>(metadata = NdSceneMetadata.paneDetail()) { key ->
+                when (key.podcastId) {
+                    PODCAST2_ID -> Sentinel(PODCAST2_COLOR, PODCAST2_TAG)
+                    PODCAST3_ID -> Sentinel(PODCAST3_COLOR, PODCAST3_TAG)
+                    else -> Sentinel(PODCAST_COLOR, PODCAST_TAG)
+                }
             }
         }
         add {

@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: Unlicense
 
-// The nlopez compositionlocal-allowlist check mis-evaluates declarations in this file — names
-// added to compose_allowed_composition_locals pass and fail nondeterministically while the same
-// mechanism works elsewhere — so the file is suppressed instead.
-@file:Suppress("ktlint:compose:compositionlocal-allowlist")
-
 package ch.lkmc.neutrodyne.core.ui.navigation
 
 import androidx.compose.animation.AnimatedContentTransitionScope
@@ -12,6 +7,7 @@ import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.layout.LocalAnimatedPaneOverride
 import androidx.compose.material3.adaptive.layout.PaneScaffoldDirective
@@ -24,6 +20,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSerializable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
 import androidx.navigation3.runtime.NavEntry
 import androidx.navigation3.runtime.NavEntryDecorator
@@ -37,6 +34,7 @@ import androidx.navigation3.ui.NavDisplay
 import androidx.navigation3.ui.defaultPopTransitionSpec
 import androidx.navigation3.ui.defaultPredictivePopTransitionSpec
 import androidx.navigation3.ui.defaultTransitionSpec
+import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneMotion
 import ch.lkmc.neutrodyne.core.navigation.EntryProviderInstaller
 import ch.lkmc.neutrodyne.core.navigation.LocalNavTab
 import ch.lkmc.neutrodyne.core.navigation.NavKeySerializers
@@ -117,11 +115,14 @@ public fun NeutrodyneNavHost(
     // Entries that can land in an adaptive pane carry the pane transport, so a same-scene
     // content swap can translate the pinned outgoing and incoming emissions (see
     // PaneTransportContent).
-    val displayedEntries = entries.map { it.withPaneTransport() }
+    val displayedEntries = entries.map { it.withPaneTransport(retention) }
     retention.indexEntries(entries)
 
     // Pinned entries a pane never emitted (the pane was not composed) would linger; expire them.
     PinnedEntryExpiry(retention)
+
+    // The scene transitions share the pane-swap spec so reduced motion snaps both (see 08).
+    val motionSpec = NeutrodyneMotion.effects<IntOffset>()
 
     SharedTransitionLayout {
         CompositionLocalProvider(
@@ -142,19 +143,23 @@ public fun NeutrodyneNavHost(
                         rememberListDetailSceneStrategy(directive = directive),
                     ),
                 transitionSpec = {
-                    transformFor(classifyTransition(initialState, targetState)) {
+                    transformFor(classifyTransition(initialState, targetState), motionSpec) {
                         defaultTransitionSpec<NavKey>().invoke(this)
                     }
                 },
                 popTransitionSpec = {
                     transformFor(
                         classifyPopTransition(initialState, targetState, state.lastChangeWasPop),
+                        motionSpec,
                     ) {
                         defaultPopTransitionSpec<NavKey>().invoke(this)
                     }
                 },
                 predictivePopTransitionSpec = { swipeEdge ->
-                    transformFor(classifyPredictivePopTransition(initialState, targetState)) {
+                    transformFor(
+                        classifyPredictivePopTransition(initialState, targetState),
+                        motionSpec,
+                    ) {
                         defaultPredictivePopTransitionSpec<NavKey>().invoke(this, swipeEdge)
                     }
                 },
@@ -229,6 +234,7 @@ internal fun classifyPredictivePopTransition(
 
 private fun <S> AnimatedContentTransitionScope<S>.transformFor(
     kind: NdSceneTransition,
+    motionSpec: FiniteAnimationSpec<IntOffset>,
     platformDefault: AnimatedContentTransitionScope<S>.() -> ContentTransform,
 ): ContentTransform =
     when (kind) {
@@ -242,7 +248,10 @@ private fun <S> AnimatedContentTransitionScope<S>.transformFor(
 
         NdSceneTransition.SlideInCover -> {
             ContentTransform(
-                slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start),
+                slideIntoContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Start,
+                    animationSpec = motionSpec,
+                ),
                 ExitTransition.None,
             )
         }
@@ -250,7 +259,10 @@ private fun <S> AnimatedContentTransitionScope<S>.transformFor(
         NdSceneTransition.SlideOutWipe -> {
             ContentTransform(
                 EnterTransition.None,
-                slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End),
+                slideOutOfContainer(
+                    AnimatedContentTransitionScope.SlideDirection.End,
+                    animationSpec = motionSpec,
+                ),
             )
         }
     }

@@ -1,11 +1,5 @@
 // SPDX-License-Identifier: Unlicense
 
-// The nlopez compositionlocal-allowlist check mis-evaluates declarations in the navigation
-// package — names added to compose_allowed_composition_locals pass and fail
-// nondeterministically while the same mechanism works elsewhere — so the file is suppressed
-// like NeutrodyneNavHost.kt.
-@file:Suppress("ktlint:compose:compositionlocal-allowlist")
-
 package ch.lkmc.neutrodyne.core.ui.navigation
 
 import androidx.compose.animation.core.animate
@@ -20,6 +14,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.ProvidableCompositionLocal
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -136,12 +131,12 @@ internal class PaneRetention(
         for ((tab, liveStack) in stacks) {
             val previousStack = previousStacks[tab]
             if (previousStack != null) diffPaneTops(tab, previousStack, liveStack)
-            // A pin whose covered key left the stack is dead: for a wipe the outgoing is
-            // committed now; a cover's outgoing still lives in the stack so it just releases.
+            // A pin whose covered key left the stack is dead: an outgoing that is departing
+            // commits now; a still-live cover outgoing just releases.
             pins.entries.removeIf { entry ->
                 val pin = entry.value
                 if (pin.tab != tab || pin.coveredNavKey in liveStack) return@removeIf false
-                if (pin.direction == NdSceneTransition.SlideOutWipe) {
+                if (pin.navKey in departing.value) {
                     val role = roleOf[pin.navKey] ?: roleResolver(pin.navKey)
                     if (role != null) snappedRoles.getOrPut(tab) { mutableSetOf() } += role
                     commitDeparture(tab, pin.navKey)
@@ -277,14 +272,28 @@ internal class PaneRetention(
             if (previousTop == currentTop) continue
             val previousKey = contentKeyOf[previousTop]
             if (previousKey == null || previousKey !in emitted || previousTop in pins) continue
+            // The new outgoing is mid-cover as another pin's incoming — that cover is
+            // superseded: the incoming now emits at the callsite, so the old pin must
+            // release or the same entry emits at two positions.
+            pins.entries.removeIf { it.value.coveredNavKey == previousTop }
             when {
-                // Back pop: keep the outgoing top in the real stack as departing — its
-                // callsite keeps emitting it and the deferred pop commits on settle.
+                // Outgoing top removed and replaced in one pass: a reveal of an existing
+                // entry is a back pop (wipe); a brand-new pane top is a forward replace
+                // (cover over the departing outgoing).
                 previousTop !in live -> {
                     liveStack.add(previousTop)
                     departing.value += previousTop
                     pins[previousTop] =
-                        Pin(previousTop, currentTop, tab, NdSceneTransition.SlideOutWipe)
+                        Pin(
+                            previousTop,
+                            currentTop,
+                            tab,
+                            if (currentTop in previousStack) {
+                                NdSceneTransition.SlideOutWipe
+                            } else {
+                                NdSceneTransition.SlideInCover
+                            },
+                        )
                 }
 
                 // Forward push: the new top landed above a still-live previous top — pin the
@@ -347,19 +356,36 @@ internal class PaneRetention(
     /** The decorated entry covered by [pin] — its sole emission lives in the transition Box. */
     fun coveredEntry(pin: Pin): NavEntry<NavKey>? = entryFor[contentKeyOf[pin.coveredNavKey]]
 
+    /** Whether [key] holds a deferred pop waiting for its swap to commit. */
+    fun isDeparting(key: NavKey): Boolean = key in departing.value
+
     /** Drops pins [stamp] recorded before the timeout; releases them all at once. */
     fun expireAll(stamp: Set<NavKey>) {
         stamp.forEach(::unpin)
     }
 
-    /** Drops [key]'s pin; a wipe pin also commits its deferred pop from the real stack. */
+    /** Drops [key]'s pin; an outgoing that is departing also commits its deferred pop. */
     fun unpin(key: NavKey) {
         val pin = pins.remove(key) ?: return
-        if (pin.direction == NdSceneTransition.SlideOutWipe) {
-            liveStacks[pin.tab]?.remove(pin.navKey)
-            departing.value -= pin.navKey
-            previousStacks[pin.tab]?.let {
-                previousStacks = previousStacks + (pin.tab to (it - pin.navKey))
+        if (pin.navKey in departing.value) {
+            commitDeparture(pin.tab, pin.navKey)
+        }
+    }
+
+    /**
+     * An emission with no pane slot — the scene is single-pane — can never be claimed by a
+     * swap: a popped screen would stay visibly on the real stack or a pushed one hidden
+     * beneath the lifted outgoing until the 800 ms expiry. Release the pin and commit any
+     * deferred pop as soon as the entry emits unslotted.
+     */
+    fun releaseUnslotted(key: NavKey) {
+        unpin(key)
+        if (key in departing.value) {
+            val tab = liveStacks.entries.firstOrNull { key in it.value }?.key
+            if (tab != null) {
+                commitDeparture(tab, key)
+            } else {
+                dropDeparture(key)
             }
         }
     }
@@ -417,14 +443,28 @@ private class NdPaneSwapOverride(
  * recomposition, and the outgoing's bookkeeping disposes it exactly once.
  */
 @Composable
-private fun PaneTransportContent(decorated: NavEntry<NavKey>) {
+private fun PaneTransportContent(
+    decorated: NavEntry<NavKey>,
+    retention: PaneRetention,
+) {
     val slot = LocalNdPaneSlot.current
-    slot?.retention?.emitted?.add(decorated.contentKey)
     val navKey = decorated.metadata[ND_NAV_KEY] as? NavKey
-    val pin = navKey?.let { slot?.retention?.pins?.get(it) }
-    val incoming = pin?.let { slot?.retention?.coveredEntry(it) }
-    if (slot != null && pin != null && incoming != null) {
-        slot.arm(pin.navKey, pin.direction)
+    if (slot == null) {
+        // No pane slot claimed this emission — the scene is single-pane — so a pin or
+        // deferred pop on it can never arm: the popped screen would stay visibly on the
+        // real stack or the pushed one hidden beneath the lifted outgoing until the
+        // 800 ms expiry. Commit the release as soon as it emits unslotted.
+        if (navKey != null && (retention.pins.containsKey(navKey) || retention.isDeparting(navKey))) {
+            SideEffect { retention.releaseUnslotted(navKey) }
+        }
+        decorated.Content()
+        return
+    }
+    slot.retention.emitted.add(decorated.contentKey)
+    val pin = navKey?.let { slot.retention.pins[it] }
+    val incoming = pin?.let { slot.retention.coveredEntry(it) }
+    if (pin != null && incoming != null) {
+        slot.arm(pin.navKey)
     }
     val wiping = incoming != null && pin?.direction == NdSceneTransition.SlideOutWipe
     val covering = incoming != null && pin?.direction == NdSceneTransition.SlideInCover
@@ -433,8 +473,13 @@ private fun PaneTransportContent(decorated: NavEntry<NavKey>) {
     // swap Box would recreate the decorated ViewModelStoreOwner wrapper the test asserts on.
     Box(Modifier.fillMaxSize().clipToBounds()) {
         val towardEnd = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1f else 1f
+        // The incoming emits only here, so its mark is recorded directly — entryFor entries
+        // are unwrapped and would not reach this content's own emitted bookkeeping.
         // Beneath: the incoming pane revealed as the outgoing wipes toward the layout end.
-        if (wiping) incoming.Content()
+        if (wiping) {
+            retention.emitted.add(incoming.contentKey)
+            incoming.Content()
+        }
         // `size` inside the graphicsLayer block is the pane's draw-time size, so the width is
         // known without measuring ahead of composition.
         Box(
@@ -447,6 +492,7 @@ private fun PaneTransportContent(decorated: NavEntry<NavKey>) {
         }
         // On top: the incoming pane covering from the layout end on a push.
         if (covering) {
+            retention.emitted.add(incoming.contentKey)
             Box(
                 Modifier.fillMaxSize().graphicsLayer {
                     translationX = size.width * (1f - (slot?.progress ?: 1f)) * towardEnd
@@ -459,9 +505,9 @@ private fun PaneTransportContent(decorated: NavEntry<NavKey>) {
 }
 
 /** Wraps pane-roled entries in the pane transport; other entries pass through. */
-internal fun NavEntry<NavKey>.withPaneTransport(): NavEntry<NavKey> =
+internal fun NavEntry<NavKey>.withPaneTransport(retention: PaneRetention): NavEntry<NavKey> =
     if (metadata.containsKey(ND_PANE_SLOT)) {
-        NavEntry(navEntry = this) { PaneTransportContent(this) }
+        NavEntry(navEntry = this) { PaneTransportContent(this, retention) }
     } else {
         this
     }
@@ -474,10 +520,6 @@ internal class PaneSlot(
     var outgoingKey by mutableStateOf<NavKey?>(null)
         private set
 
-    /** Cover for a forward push, wipe for a back pop — mirrors the outer scene transform pair. */
-    var direction by mutableStateOf(NdSceneTransition.SlideInCover)
-        private set
-
     /** 0 -> 1 over the swap; written by the running animation, read in the draw phase. */
     var progress by mutableFloatStateOf(1f)
 
@@ -486,12 +528,8 @@ internal class PaneSlot(
         private set
 
     /** Arms the slot for [navKey]'s pin; a repeated emission of the same pin is a no-op. */
-    fun arm(
-        navKey: NavKey,
-        direction: NdSceneTransition,
-    ) {
+    fun arm(navKey: NavKey) {
         if (outgoingKey == navKey) return
-        this.direction = direction
         outgoingKey = navKey
         progress = 0f
         swapVersion++
