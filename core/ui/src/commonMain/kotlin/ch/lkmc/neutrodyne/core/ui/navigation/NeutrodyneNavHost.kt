@@ -9,16 +9,13 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
-import androidx.compose.material3.adaptive.layout.LocalAnimatedPaneOverride
 import androidx.compose.material3.adaptive.layout.PaneScaffoldDirective
 import androidx.compose.material3.adaptive.navigation3.ListDetailSceneStrategy
 import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneStrategy
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSerializable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
@@ -37,7 +34,6 @@ import androidx.navigation3.ui.defaultTransitionSpec
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneMotion
 import ch.lkmc.neutrodyne.core.navigation.EntryProviderInstaller
 import ch.lkmc.neutrodyne.core.navigation.LocalNavTab
-import ch.lkmc.neutrodyne.core.navigation.NavKeySerializers
 import ch.lkmc.neutrodyne.core.navigation.NdSceneMetadata
 import ch.lkmc.neutrodyne.core.navigation.TopLevelKey
 
@@ -63,42 +59,11 @@ public fun NeutrodyneNavHost(
             }
         }
 
-    // Wipe-outgoing keys held in their real stack until the swap commits. Persisted so a
-    // departure interrupted by recreation still completes — the restored composition replays
-    // the wipe and the ordinary pop path clears the outgoing entry's bookkeeping once.
-    val departing =
-        rememberSerializable(
-            stateSerializer = DepartureSetSerializer,
-            configuration = NavKeySerializers.savedStateConfiguration,
-        ) {
-            mutableStateOf(emptySet<NavKey>())
-        }
-
-    // A pushed key's pane role is not decorated yet when the top diff runs, so the diff reads
-    // roles straight from the entry provider.
-    val retention =
-        remember(provider) {
-            PaneRetention(departing).apply {
-                roleResolver = { key ->
-                    provider(key).metadata[NdSceneMetadata.KEY_PANE] as? String
-                }
-            }
-        }
-    val stacks = state.tabs.associateWith { state.stack(it) }
-
-    // A pane whose top entry just changed keeps the outgoing top as its pane top through the
-    // swap so the callsite keeps emitting it: a pushed-over top is lifted above its successor
-    // on the decorated list below, while a popped top stays in the real stack as a departing
-    // entry whose deferred pop commits when the swap settles — decorator onPop
-    // (ViewModel/saveable clearing) is keyed on this list's membership, and scene back
-    // bookkeeping always sees the true stack contents.
-    retention.beginPass(stacks)
-
     val decoratedByTab: Map<TopLevelKey, List<NavEntry<NavKey>>> =
         state.tabs.associateWith { tab ->
             key(tab) {
                 rememberDecoratedNavEntries(
-                    backStack = retention.augmentedStack(tab, stacks.getValue(tab)),
+                    backStack = state.stack(tab),
                     entryDecorators =
                         listOf(
                             rememberSaveableStateHolderNavEntryDecorator(),
@@ -112,60 +77,40 @@ public fun NeutrodyneNavHost(
 
     val entries = state.visibleTabs().flatMap { decoratedByTab.getValue(it) }
 
-    // Entries that can land in an adaptive pane carry the pane transport, so a same-scene
-    // content swap can translate the pinned outgoing and incoming emissions (see
-    // PaneTransportContent).
-    val displayedEntries = entries.map { it.withPaneTransport(retention) }
-    retention.indexEntries(entries)
-
-    // Pinned entries a pane never emitted (the pane was not composed) would linger; expire them.
-    PinnedEntryExpiry(retention)
-
     // The scene transitions share the pane-swap spec so reduced motion snaps both (see 08).
     val motionSpec = NeutrodyneMotion.effects<IntOffset>()
 
     SharedTransitionLayout {
-        CompositionLocalProvider(
-            LocalAnimatedPaneOverride provides
-                rememberPaneSwapOverride(LocalAnimatedPaneOverride.current, retention),
-        ) {
-            NavDisplay(
-                entries = displayedEntries,
-                modifier = modifier,
-                // A departing pane top is already logically popped: it drains first and the
-                // real pop follows — the scaffold's repeat count only decides whether a real
-                // pop still owes (see PaneRetention.onBackDrain).
-                onBack = { if (retention.onBackDrain(state.selectedTab)) state.pop() },
-                sceneStrategies =
-                    listOf(
-                        rememberNdBottomSheetSceneStrategy(),
-                        rememberNdDialogSceneStrategy(),
-                        rememberListDetailSceneStrategy(directive = directive),
-                    ),
-                transitionSpec = {
-                    transformFor(classifyTransition(initialState, targetState), motionSpec) {
-                        defaultTransitionSpec<NavKey>().invoke(this)
-                    }
-                },
-                popTransitionSpec = {
-                    transformFor(
-                        classifyPopTransition(initialState, targetState, state.lastChangeWasPop),
-                        motionSpec,
-                    ) {
-                        defaultPopTransitionSpec<NavKey>().invoke(this)
-                    }
-                },
-                predictivePopTransitionSpec = { swipeEdge ->
-                    transformFor(
-                        classifyPredictivePopTransition(initialState, targetState),
-                        motionSpec,
-                    ) {
-                        defaultPredictivePopTransitionSpec<NavKey>().invoke(this, swipeEdge)
-                    }
-                },
-                sharedTransitionScope = this,
-            )
-        }
+        NavDisplay(
+            entries = entries,
+            modifier = modifier,
+            onBack = { state.pop() },
+            sceneStrategies =
+                listOf(
+                    rememberNdBottomSheetSceneStrategy(),
+                    rememberNdDialogSceneStrategy(),
+                    rememberListDetailSceneStrategy(directive = directive),
+                ),
+            transitionSpec = {
+                transformFor(classifyTransition(initialState, targetState), motionSpec) {
+                    defaultTransitionSpec<NavKey>().invoke(this)
+                }
+            },
+            popTransitionSpec = {
+                transformFor(
+                    classifyPopTransition(initialState, targetState, state.lastChangeWasPop),
+                    motionSpec,
+                ) {
+                    defaultPopTransitionSpec<NavKey>().invoke(this)
+                }
+            },
+            predictivePopTransitionSpec = { swipeEdge ->
+                transformFor(classifyPredictivePopTransition(initialState, targetState), motionSpec) {
+                    defaultPredictivePopTransitionSpec<NavKey>().invoke(this, swipeEdge)
+                }
+            },
+            sharedTransitionScope = this,
+        )
     }
 }
 
@@ -334,8 +279,7 @@ private fun withPaneRole(
         contentKey = entry.contentKey,
         metadata =
             entry.metadata - NdSceneMetadata.KEY_PANE - NdSceneMetadata.KEY_DETAIL_PLACEHOLDER +
-                pane + mapOf(NdSceneMetadata.KEY_TAB to tab) + mapOf(ND_NAV_KEY to key) +
-                if (role != null) mapOf(ND_PANE_SLOT to role) else emptyMap(),
+                pane + mapOf(NdSceneMetadata.KEY_TAB to tab),
         content = { entry.Content() },
     )
 }
