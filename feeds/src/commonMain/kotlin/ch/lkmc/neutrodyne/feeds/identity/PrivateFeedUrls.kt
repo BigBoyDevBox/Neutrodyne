@@ -66,6 +66,10 @@ public object PrivateFeedUrls {
             "_hsenc",
         )
 
+    private val youTubeFeedHosts = setOf("youtube.com", "www.youtube.com")
+
+    private const val YOUTUBE_FEED_PATH = "/feeds/videos.xml"
+
     /** Whether [url] looks like a private (token-carrying) feed URL. */
     public fun looksPrivate(url: String): Boolean {
         val parts = splitLenient(url)
@@ -76,6 +80,12 @@ public object PrivateFeedUrls {
         // A missing host skips only the host list: query and path token checks still run on
         // scheme-less or malformed input (a stored reference may carry the token anyway).
         val host = parts.host?.lowercase()
+
+        // YouTube's feed endpoint, the stored feedUrl of every YouTube subscription (02), carries
+        // only public channel, playlist or user IDs: 24-character channel IDs would otherwise
+        // count every YouTube channel as a private link in export and sync warnings.
+        if (host in youTubeFeedHosts && parts.path == YOUTUBE_FEED_PATH) return false
+
         if (host != null && privateHosts.any { host == it || host.endsWith(".$it") }) return true
 
         // Token-bearing query parameter names, then long tokens in any query value.

@@ -142,4 +142,19 @@ class PrivateFeedUrlsTest {
         assertFalse(PrivateFeedUrls.looksPrivate("https://feeds.example.com/show.rss"))
         assertFalse(PrivateFeedUrls.looksPrivate("https://example.com/podcasts/my-show?lang=de"))
     }
+
+    @Test
+    fun youTubeFeedIdsArePublic() {
+        // The app stores every YouTube subscription as this endpoint (02 feedUrl); its channel,
+        // playlist and legacy user IDs are public, not secrets.
+        val feed = "www.youtube.com/feeds/videos.xml"
+        val channel = "channel_id=UC_x5XG1OV2P6uZZ5FSM9Ttw"
+        assertFalse(PrivateFeedUrls.looksPrivate("https://$feed?$channel"))
+        assertFalse(PrivateFeedUrls.looksPrivate("https://$feed?playlist_id=PLBCF2DAC6FFB574DE"))
+        assertFalse(PrivateFeedUrls.looksPrivate("https://youtube.com/feeds/videos.xml?user=GoogleDevelopers"))
+        // Credentials still win, and other YouTube paths or look-alike hosts get no exemption.
+        assertTrue(PrivateFeedUrls.looksPrivate("https://u:p@$feed?$channel"))
+        assertTrue(PrivateFeedUrls.looksPrivate("https://www.youtube.com/other?$channel"))
+        assertTrue(PrivateFeedUrls.looksPrivate("https://youtube.com.evil.example/feeds/videos.xml?$channel"))
+    }
 }
