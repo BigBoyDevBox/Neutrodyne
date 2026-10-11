@@ -155,9 +155,10 @@ public object FeedDates {
     /**
      * Whitespace runs collapse to one ASCII space; \s alone misses the space separators of
      * typeset dates and the invisible characters (ZWSP/ZWNJ/ZWJ, line separators, BOM) that
-     * CMS-generated date strings carry.
+     * CMS-generated date strings carry. U+0085 (NEL) is listed explicitly: Android's ICU \s
+     * includes it and the JVM's does not, and the parsed date feeds the t: identity key.
      */
-    private val whitespaceRun = Regex("""[\s\u00A0\u1680\u2000-\u200D\u2028\u2029\u202F\u205F\u3000\uFEFF]+""")
+    private val whitespaceRun = Regex("""[\s\u0085\u00A0\u1680\u2000-\u200D\u2028\u2029\u202F\u205F\u3000\uFEFF]+""")
 
     /**
      * Parses a feed date to epoch milliseconds UTC, or null when no form matches (03 Dates).

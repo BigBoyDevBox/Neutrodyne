@@ -282,4 +282,13 @@ class FeedDatesTest {
         assertNull(FeedDates.parse("\u0663 Oct 2024 10:00:00 +0000"))
         assertNull(FeedDates.parse("3 Oct 2024 1\u0660:00:00 +0000"))
     }
+
+    @Test
+    fun nextLineSeparatesLikeAnySpace() {
+        // ICU's whitespace class (Android) includes U+0085 NEL and the JVM's does not; the date,
+        // and with it the t: key's day, must not depend on which one ran.
+        val spaced = assertNotNull(FeedDates.parse("3 Oct 2024 10:00:00 +0000"))
+        assertEquals(spaced, FeedDates.parse("3\u0085Oct 2024 10:00:00 +0000"))
+        assertEquals(spaced, FeedDates.parse("Thu,\u00853 Oct 2024 10:00:00 +0000"))
+    }
 }
