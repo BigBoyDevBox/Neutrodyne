@@ -23,6 +23,10 @@ class PrivateFeedUrlsTest {
         assertTrue(PrivateFeedUrls.looksPrivate("https://feeds.example.com/feed?auth_token=short"))
         assertTrue(PrivateFeedUrls.looksPrivate("https://feeds.example.com/feed?feed_token=short"))
         assertTrue(PrivateFeedUrls.looksPrivate("https://feeds.example.com/feed?token_id=1"))
+        // camelCase credential names compare lowercased: one entry covers every casing.
+        assertTrue(PrivateFeedUrls.looksPrivate("https://feeds.example.com/feed?accessToken=short"))
+        assertTrue(PrivateFeedUrls.looksPrivate("https://feeds.example.com/feed?authToken=abc"))
+        assertTrue(PrivateFeedUrls.looksPrivate("https://feeds.example.com/feed?SessionId=x"))
         assertFalse(PrivateFeedUrls.looksPrivate("https://feeds.example.com/feed?category=news"))
         // Near-miss names must not trip a substring match on token/auth/key: the `_` boundary
         // is required, so "author", "tokenize", "keyword", "monkey" stay public.
@@ -62,6 +66,33 @@ class PrivateFeedUrlsTest {
         assertFalse(
             PrivateFeedUrls.looksPrivate("https://feeds.example.com/feed.rss?gclid=EAIaIQobChMI1234567890abcdef"),
         )
+        // Every whitelisted click-ID/attribution name stays public with a token-shaped value.
+        for (name in listOf(
+            "msclkid",
+            "dclid",
+            "ttclid",
+            "twclid",
+            "igshid",
+            "yclid",
+            "li_fat_id",
+            "mc_eid",
+            "mkt_tok",
+            "_hsenc",
+        )) {
+            assertFalse(
+                PrivateFeedUrls.looksPrivate("https://feeds.example.com/feed?$name=a1b2c3d4e5f6g7h8i9j0k1l2"),
+                "$name must be exempt",
+            )
+        }
+        // utm_* campaign values and Mailchimp's mc_cid are marketing attribution, not secrets.
+        assertFalse(
+            PrivateFeedUrls.looksPrivate("https://feeds.example.com/feed?utm_campaign=a1b2c3d4e5f6g7h8i9j0k1"),
+        )
+        assertFalse(
+            PrivateFeedUrls.looksPrivate(
+                "https://feeds.example.com/feed?utm_source=newsletter&mc_cid=9f8e7d6c5b4a3f2e1d0c9b8a",
+            ),
+        )
         // A tracking param alongside a real token still flags.
         assertTrue(
             PrivateFeedUrls.looksPrivate(
@@ -96,6 +127,11 @@ class PrivateFeedUrlsTest {
         assertTrue(PrivateFeedUrls.looksPrivate("https://cdn.memberfulcontent.com/f"))
         // Host matching is case-insensitive (DNS is).
         assertTrue(PrivateFeedUrls.looksPrivate("https://PATREON.COM/rss/xyz"))
+        // A port does not hide the host — the list compares the host part only.
+        assertTrue(PrivateFeedUrls.looksPrivate("https://patreon.com:8443/rss/xyz"))
+        // A private host appearing in the path or query is not the *host* — no match.
+        assertFalse(PrivateFeedUrls.looksPrivate("https://example.com/feed?next=https://patreon.com/x"))
+        assertFalse(PrivateFeedUrls.looksPrivate("https://example.com/mirrors/patreon.com/feed"))
         // The suffix check does not match unrelated hosts.
         assertFalse(PrivateFeedUrls.looksPrivate("https://notpatreon.com/feed"))
         assertFalse(PrivateFeedUrls.looksPrivate("https://patreon.com.evil.example/feed"))

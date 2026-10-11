@@ -64,6 +64,33 @@ class TimestampLinkifierTest {
     }
 
     @Test
+    fun isoDatesAndAdjacentLettersDoNotMatch() {
+        // The `T` between date and time is a letter — word-char boundaries exclude the whole
+        // ISO timestamp instead of linkifying its time part.
+        assertEquals(emptyList(), timestamps("Premiere: 2026-10-06T10:30:15Z"))
+        assertEquals(emptyList(), timestamps("Live am 2026-10-06T20:15"))
+        // Letters glued directly to the digits are not word boundaries either.
+        assertEquals(emptyList(), timestamps("x10:30"))
+        assertEquals(emptyList(), timestamps("10:30x"))
+        // Punctuation and real text still leave the timestamp a candidate.
+        assertEquals(listOf("10:30" to 630_000L), timestamps("(10:30)"))
+        assertEquals(listOf("75:12" to 4_512_000L), timestamps("at 75:12!"))
+        assertEquals(listOf("1:23:45" to 5_025_000L), timestamps("seek 1:23:45."))
+    }
+
+    @Test
+    fun markerTailSeesUnicodeLetters() {
+        // "h" glued to an umlaut word is prose — the ASCII \w class would miss the tail.
+        assertEquals(listOf("10:30" to 630_000L), timestamps("10:30 hört"))
+        assertEquals(listOf("20:15" to 1_215_000L), timestamps("20:15 Uhrzeiten"))
+        // Real whole-word markers still suppress.
+        assertEquals(emptyList(), timestamps("10:30 h"))
+        assertEquals(emptyList(), timestamps("10:30h"))
+        assertEquals(emptyList(), timestamps("10:30 Uhr"))
+        assertEquals(emptyList(), timestamps("10:30 p.m."))
+    }
+
+    @Test
     fun multipleTimestampsWithTextSpans() {
         val spans = TimestampLinkifier.linkify("Intro 0:30, then 1:15:00 end")
         val stamps = spans.filterIsInstance<NoteSpan.Timestamp>()

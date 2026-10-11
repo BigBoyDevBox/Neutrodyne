@@ -19,6 +19,14 @@ public object PrivateFeedUrls {
             "sig",
             "signature",
             "access_token",
+            // camelCase credential names compare lowercased, so one entry covers every casing.
+            "accesstoken",
+            "authtoken",
+            "refreshtoken",
+            "idtoken",
+            "sessionid",
+            "apisecret",
+            "clientsecret",
             "session",
             "sid",
             "uid",
@@ -53,6 +61,7 @@ public object PrivateFeedUrls {
             "yclid",
             "li_fat_id",
             "mc_eid",
+            "mc_cid",
             "mkt_tok",
             "_hsenc",
         )
@@ -94,7 +103,9 @@ public object PrivateFeedUrls {
 
     private fun looksLikeTokenQueryValue(query: String): Boolean =
         query.split('&').any { param ->
-            param.substringBefore('=').lowercase() !in trackingParams &&
+            val name = param.substringBefore('=').lowercase()
+            // utm_* campaign slugs are public marketing attribution like the click IDs above.
+            name !in trackingParams && !name.startsWith("utm_") &&
                 tokenIn(param.substringAfter('=', "")) != null
         }
 

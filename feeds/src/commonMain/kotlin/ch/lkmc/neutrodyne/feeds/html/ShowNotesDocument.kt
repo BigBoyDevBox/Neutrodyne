@@ -41,7 +41,7 @@ public sealed interface NoteBlock {
 }
 
 public sealed interface NoteSpan {
-    /** Style bits: [ShowNotesStyles.BOLD] 1, [ITALIC] 2, [UNDERLINE] 4, [CODE] 8. */
+    /** Style bits: [ShowNotesStyles.BOLD] 1, [ShowNotesStyles.ITALIC] 2, [ShowNotesStyles.UNDERLINE] 4, [ShowNotesStyles.CODE] 8. */
     public data class Text(
         val text: String,
         val style: Int = ShowNotesStyles.NONE,

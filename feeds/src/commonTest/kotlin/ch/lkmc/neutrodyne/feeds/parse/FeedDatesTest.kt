@@ -109,6 +109,14 @@ class FeedDatesTest {
     }
 
     @Test
+    fun decomposedAccentedWeekdayStillStrips() {
+        // "Mié" written NFD (e + combining acute U+0301) is three code units — the weekday
+        // strip counts letters-with-marks, not letters alone.
+        val nfc = assertNotNull(FeedDates.parse("Mié, 3 Okt 2026 10:00:00 +0100"))
+        assertEquals(nfc, FeedDates.parse("Mié, 3 Okt 2026 10:00:00 +0100"))
+    }
+
+    @Test
     fun twoDigitYearsFollowRfc5322() {
         // 00–49 → 20xx, 50–99 → 19xx (RFC 5322 §4.3), boundary years included.
         assertEquals(981201600000L, FeedDates.parse("Sat, 03 Feb 01 12:00:00 +0000"))

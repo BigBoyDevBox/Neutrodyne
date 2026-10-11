@@ -129,7 +129,11 @@ public object UrlNormalizer {
         // and "." strips to empty: either would collide or forge identities. LDH, dots and
         // '_' are the only characters a valid post-IDNA host can contain.
         return ascii.removeSuffix(".").takeIf {
-            it.isNotEmpty() && it.all { c -> c in 'a'..'z' || c in '0'..'9' || c == '.' || c == '-' || c == '_' }
+            it.isNotEmpty() &&
+                it.all { c -> c in 'a'..'z' || c in '0'..'9' || c == '.' || c == '-' || c == '_' } &&
+                // Empty labels ("example..com", "a.b..") can never resolve — unfetchable hosts
+                // get no identity, same rule as port 0.
+                it.split('.').none { label -> label.isEmpty() }
         }
     }
 
@@ -184,7 +188,11 @@ public object UrlNormalizer {
             val head = host.substringBeforeLast('.')
             return head.isNotEmpty() && hasNumericTail(head)
         }
-        return tail.all { it in '0'..'9' } || (tail.length >= 2 && tail.startsWith("0x", true))
+        // WHATWG runs the IPv4 number parser on the last label: `0x` + zero-or-more hex
+        // digits counts as a number (a bare `0x` parses as 0); `0x` + a non-hex suffix is a
+        // domain label, not a number.
+        return tail.all { it in '0'..'9' } ||
+            (tail.length >= 2 && tail.startsWith("0x", true) && tail.drop(2).all { it in hexDigits })
     }
 
     /**
@@ -215,12 +223,14 @@ public object UrlNormalizer {
     private fun ipv4Number(part: String): Long? {
         val (radix, digits) =
             when {
-                part.length > 2 && part.startsWith("0x", true) -> 16 to part.substring(2)
+                part.length >= 2 && part.startsWith("0x", true) -> 16 to part.substring(2)
                 part.length > 1 && part.startsWith('0') -> 8 to part.substring(1)
                 else -> 10 to part
             }
-        // toLongOrNull accepts a leading sign; WHATWG's grammar does not.
-        if (digits.isEmpty() || digits.any { it.digitToIntOrNull(radix) == null }) return null
+        // A bare `0x` is 0 per the IPv4 number parser (empty after the prefix → (0, true));
+        // otherwise toLongOrNull accepts a leading sign, which WHATWG's grammar does not.
+        if (digits.isEmpty()) return if (radix == 16) 0 else null
+        if (digits.any { it.digitToIntOrNull(radix) == null }) return null
         return digits.toLongOrNull(radix)
     }
 
@@ -347,6 +357,8 @@ public object UrlNormalizer {
         var path = if (rawPath.isEmpty()) "/" else percentEncodeUnsafe(rawPath.replace('\\', '/'), PATH_SAFE)
         path = normalisePercentEncoding(path)
         path = removeDotSegments(path)
+        // A path reduced to nothing by the dot-segment pass still resolves to the root.
+        if (path.isEmpty()) path = "/"
         if (path.length > 1 && path.endsWith("/")) path = path.dropLast(1)
         return path
     }

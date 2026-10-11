@@ -313,19 +313,23 @@ class UrlNormalizerTest {
         assertNull(UrlNormalizer.forIdentity("http://4294967296/x")) // > 2^32-1
         assertNull(UrlNormalizer.forIdentity("http://a.1/x")) // "a" is not a number
         assertNull(UrlNormalizer.forIdentity("http://08.1.1.1/x")) // leading 0 → octal, 8 invalid
-        assertNull(UrlNormalizer.forIdentity("http://0x/x")) // bare 0x, no digits
+        // A bare `0x` is 0 per the IPv4 number parser (empty after the prefix → (0, true)).
+        assertEquals("0.0.0.0/x", UrlNormalizer.forIdentity("http://0x/x"))
         // toLongOrNull would accept a sign; WHATWG's grammar does not — signed parts must
         // never canonicalise onto a real host's identity.
         assertNull(UrlNormalizer.forIdentity("http://0x-1.0x1/x"))
         assertNull(UrlNormalizer.forIdentity("http://0x+1.1/x"))
         assertNull(UrlNormalizer.forIdentity("http://+1.2/x"))
-        // A `0x`-prefixed tail is numeric-committed even without valid hex: WHATWG's
-        // ends-in-a-number test is prefix-only, so these fail the IPv4 parse and are
-        // unfetchable (OkHttp agrees) — not valid LDH names.
-        assertNull(UrlNormalizer.forIdentity("http://api.0xtra/x"))
+        // `0x` + zero-or-more hex digits is numeric-committed; `0x` + a non-hex suffix is a
+        // domain label. `www.0x` still dies on the non-numeric "www" part.
         assertNull(UrlNormalizer.forIdentity("http://www.0x/x"))
+        assertEquals("api.0xtra/x", UrlNormalizer.forIdentity("http://api.0xtra/x"))
+        assertEquals("example.0xg/x", UrlNormalizer.forIdentity("http://example.0xg/x"))
         // A real DNS name keeps the IDNA path.
         assertEquals("example.com/x", UrlNormalizer.forIdentity("http://example.com/x"))
+        // Empty labels after IDNA can never resolve — the whole host is rejected.
+        assertNull(UrlNormalizer.forIdentity("http://example..com/"))
+        assertNull(UrlNormalizer.forIdentity("http://a.b../x"))
     }
 
     @Test
