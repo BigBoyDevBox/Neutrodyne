@@ -596,4 +596,17 @@ class UrlNormalizerTest {
         // between an L2-resident small doc and the 480 KB large one on a shared runner.
         const val QUADRATIC_SLACK = 12
     }
+
+    @Test
+    fun escapesAcceptOnlyAsciiHexDigits() {
+        // OkHttp decodes only ASCII hex escapes; a fullwidth "%\uFF13\uFF11" must not decode to "1"
+        // and alias the real a1b.com feed (the fetcher rejects this host outright).
+        assertNull(UrlNormalizer.forIdentity("http://a%\uFF13\uFF11b.com/feed"))
+        assertEquals("a1b.com/feed", UrlNormalizer.forIdentity("http://a%31b.com/feed"))
+        // In a path the fullwidth escape must not alias the ASCII one either.
+        assertNotEquals(
+            UrlNormalizer.forIdentity("http://example.com/a%31"),
+            UrlNormalizer.forIdentity("http://example.com/a%\uFF13\uFF11"),
+        )
+    }
 }

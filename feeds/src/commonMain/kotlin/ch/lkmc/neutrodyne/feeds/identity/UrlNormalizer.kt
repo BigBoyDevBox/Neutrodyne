@@ -504,8 +504,10 @@ public object UrlNormalizer {
         var i = 0
         while (i < text.length) {
             val c = text[i]
-            val high = text.getOrNull(i + 1)?.digitToIntOrNull(16)
-            val low = text.getOrNull(i + 2)?.digitToIntOrNull(16)
+            // ASCII hex only, like the fetcher: digitToIntOrNull would also take fullwidth and
+            // other Unicode digits, so "%\uFF13\uFF11" would decode to "1" where OkHttp keeps it.
+            val high = text.getOrNull(i + 1)?.takeIf { it in hexDigits }?.digitToInt(16)
+            val low = text.getOrNull(i + 2)?.takeIf { it in hexDigits }?.digitToInt(16)
             if (c == '%' && high != null && low != null) {
                 bytes.add(((high shl 4) or low).toByte())
                 i += 3
