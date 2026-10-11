@@ -31,6 +31,7 @@ import androidx.navigation3.ui.NavDisplay
 import androidx.navigation3.ui.defaultPopTransitionSpec
 import androidx.navigation3.ui.defaultPredictivePopTransitionSpec
 import androidx.navigation3.ui.defaultTransitionSpec
+import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneMotion
 import ch.lkmc.neutrodyne.core.navigation.EntryProviderInstaller
 import ch.lkmc.neutrodyne.core.navigation.LocalNavTab
@@ -69,6 +70,7 @@ public fun NeutrodyneNavHost(
                             rememberSaveableStateHolderNavEntryDecorator(),
                             rememberViewModelStoreNavEntryDecorator(),
                             rememberTabLocalNavEntryDecorator(tab),
+                            rememberPaneFocusDecorator(),
                         ),
                     entryProvider = { key -> withPaneRole(key, provider(key), tab) },
                 )
@@ -77,8 +79,16 @@ public fun NeutrodyneNavHost(
 
     val entries = state.visibleTabs().flatMap { decoratedByTab.getValue(it) }
 
+    val adaptive = rememberListDetailSceneStrategy<NavKey>(directive = directive)
+    val panes = remember(state) { PaneSceneStrategy(state) }
+    panes.updateCurrent(
+        adaptive,
+        decoratedByTab,
+        if (LocalReducedMotion.current) snappedPaneAnimations() else emptyMap(),
+    )
+
     // The scene transitions share the pane-swap spec so reduced motion snaps both (see 08).
-    val motionSpec = NeutrodyneMotion.effects<IntOffset>()
+    val motionSpec = NeutrodyneMotion.navigation<IntOffset>()
 
     SharedTransitionLayout {
         NavDisplay(
@@ -89,7 +99,7 @@ public fun NeutrodyneNavHost(
                 listOf(
                     rememberNdBottomSheetSceneStrategy(),
                     rememberNdDialogSceneStrategy(),
-                    rememberListDetailSceneStrategy(directive = directive),
+                    panes,
                 ),
             transitionSpec = {
                 transformFor(classifyTransition(initialState, targetState), motionSpec) {
@@ -109,7 +119,8 @@ public fun NeutrodyneNavHost(
                     defaultPredictivePopTransitionSpec<NavKey>().invoke(this, swipeEdge)
                 }
             },
-            sharedTransitionScope = this,
+            // Expanded panes share movable entries, not whole-entry animated bounds.
+            sharedTransitionScope = if (directive.maxHorizontalPartitions == 1) this else null,
         )
     }
 }
@@ -125,6 +136,7 @@ internal enum class NdSceneTransition {
     PlatformDefault,
     Instant,
     SlideInCover,
+    PaneCover,
     SlideOutWipe,
 }
 
@@ -146,7 +158,7 @@ internal fun classifyTransition(
         }
 
         else -> {
-            NdSceneTransition.SlideInCover
+            paneSceneTransition(initial, target, NdSceneTransition.SlideInCover)
         }
     }
 
@@ -162,7 +174,7 @@ internal fun classifyPopTransition(
 ): NdSceneTransition =
     when {
         initial is OverlayScene || target is OverlayScene -> NdSceneTransition.PlatformDefault
-        lastChangeWasPop -> NdSceneTransition.SlideOutWipe
+        lastChangeWasPop -> paneSceneTransition(initial, target, NdSceneTransition.SlideOutWipe)
         else -> NdSceneTransition.Instant
     }
 
@@ -174,7 +186,7 @@ internal fun classifyPredictivePopTransition(
     if (initial is OverlayScene || target is OverlayScene) {
         NdSceneTransition.PlatformDefault
     } else {
-        NdSceneTransition.SlideOutWipe
+        paneSceneTransition(initial, target, NdSceneTransition.SlideOutWipe)
     }
 
 private fun <S> AnimatedContentTransitionScope<S>.transformFor(
@@ -199,6 +211,11 @@ private fun <S> AnimatedContentTransitionScope<S>.transformFor(
                 ),
                 ExitTransition.None,
             )
+        }
+
+        NdSceneTransition.PaneCover -> {
+            // The pane's child transition supplies the clock; retain the covered scene until it finishes.
+            ContentTransform(EnterTransition.None, ExitTransition.KeepUntilTransitionsFinished)
         }
 
         NdSceneTransition.SlideOutWipe -> {
@@ -276,10 +293,10 @@ private fun withPaneRole(
         }
     return NavEntry(
         key = key,
-        contentKey = entry.contentKey,
+        contentKey = "$tab:${entry.contentKey}",
         metadata =
-            entry.metadata - NdSceneMetadata.KEY_PANE - NdSceneMetadata.KEY_DETAIL_PLACEHOLDER +
-                pane + mapOf(NdSceneMetadata.KEY_TAB to tab),
+            entry.metadata - NdSceneMetadata.KEY_DETAIL_PLACEHOLDER +
+                pane + mapOf(NdSceneMetadata.KEY_TAB to tab, PANE_NAV_KEY to key),
         content = { entry.Content() },
     )
 }
