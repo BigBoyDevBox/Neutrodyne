@@ -312,7 +312,6 @@ class UrlNormalizerTest {
         )
         // Multi-label forms fill the missing octets from the last part.
         assertEquals("10.0.0.1/x", UrlNormalizer.forIdentity("http://10.1/x"))
-        assertEquals("0.0.0.1/x", UrlNormalizer.forIdentity("http://1./x"))
         assertEquals("255.255.255.255/x", UrlNormalizer.forIdentity("http://4294967295/x"))
     }
 
@@ -333,6 +332,13 @@ class UrlNormalizerTest {
         assertNull(UrlNormalizer.forIdentity("http://0177.0.0.1/feed"))
         assertNull(UrlNormalizer.forIdentity("http://0177.1/feed"))
         assertNull(UrlNormalizer.forIdentity("http://0300.0250.0001.0001/feed"))
+        // A trailing dot makes the JVM fetch stack treat the host as a resolver name, not a
+        // literal: OkHttp keeps "127.1." verbatim and InetAddress sends it to DNS. Identity
+        // must not key it to 127.0.0.1.
+        assertNull(UrlNormalizer.forIdentity("http://127.1./feed"))
+        assertNull(UrlNormalizer.forIdentity("http://127.0.0.1./feed"))
+        assertNull(UrlNormalizer.forIdentity("http://2130706433./feed"))
+        assertNull(UrlNormalizer.forIdentity("http://1./x"))
         assertNull(UrlNormalizer.forIdentity("http://0x/x"))
         // Signed parts are not digits — never canonicalise onto a real host's identity.
         assertNull(UrlNormalizer.forIdentity("http://0x-1.0x1/x"))

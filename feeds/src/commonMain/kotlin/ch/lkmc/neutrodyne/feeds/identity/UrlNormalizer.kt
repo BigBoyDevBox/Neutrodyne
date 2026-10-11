@@ -206,9 +206,10 @@ public object UrlNormalizer {
      * range bound fails.
      */
     private fun parseIpv4NumberHost(host: String): String? {
-        var labels = host.split('.')
-        if (labels.size > 1 && labels.last().isEmpty()) labels = labels.dropLast(1)
-        if (labels.isEmpty() || labels.size > 4 || labels.any { it.isEmpty() }) return null
+        // No trailing-dot form: the fetch stack reads "127.1." as a resolver name (OkHttp keeps
+        // it verbatim, InetAddress sends it to DNS), never as the literal 127.0.0.1.
+        val labels = host.split('.')
+        if (labels.size > 4 || labels.any { it.isEmpty() }) return null
         val numbers = labels.map { ipv4Number(it) ?: return null }
         for (i in 0 until numbers.size - 1) if (numbers[i] > 0xFF) return null
         // The last part fills all remaining octets.

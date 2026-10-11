@@ -117,6 +117,11 @@ class FeedDatesTest {
         // Month names too: "Mär" written NFD must hit the same entry as the NFC spelling.
         val nfcMonth = assertNotNull(FeedDates.parse("Di, 3 Mär 2026 10:00:00 +0100"))
         assertEquals(nfcMonth, FeedDates.parse("Di, 3 Ma\u0308r 2026 10:00:00 +0100"))
+        // Accented registry keys too, not only those that fold onto an English key ("mär" -> "mar").
+        val fevrier = assertNotNull(FeedDates.parse("3 févr 2026 10:00:00 +0100"))
+        assertEquals(fevrier, FeedDates.parse("3 fe\u0301vr 2026 10:00:00 +0100"))
+        val aout = assertNotNull(FeedDates.parse("3 août 2026 10:00:00 +0100"))
+        assertEquals(aout, FeedDates.parse("3 aou\u0302t 2026 10:00:00 +0100"))
     }
 
     @Test

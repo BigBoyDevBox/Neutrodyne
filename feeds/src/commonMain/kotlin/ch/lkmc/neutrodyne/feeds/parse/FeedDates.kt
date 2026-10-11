@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Unlicense
 package ch.lkmc.neutrodyne.feeds.parse
 
+import ch.lkmc.neutrodyne.feeds.text.nfc
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.UtcOffset
@@ -123,17 +124,6 @@ public object FeedDates {
         listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
             .mapIndexed { i, m -> m to i + 1 }
             .toMap()
-
-    private val combiningMarks = Regex("""\p{M}+""")
-
-    private fun foldMarks(token: String): String = combiningMarks.replace(token, "")
-
-    /**
-     * `localisedMonths` re-keyed by combining-mark-folded form, so decomposed (NFD) month
-     * spellings hit the same entry as the NFC keys.
-     */
-    private val foldedLocalisedMonths: Map<String, String> =
-        localisedMonths.mapKeys { (k, _) -> foldMarks(k) }
 
     /**
      * `d[.] MMM yyyy|yy H:mm[:ss[.fff]] [±HHMM|±HH:MM]`, case-insensitive; the leading weekday is dropped
@@ -262,11 +252,11 @@ public object FeedDates {
         val day = groups[1].toIntOrNull() ?: return null
 
         val monthToken = groups[2].lowercase().removeSuffix(".")
-        // Decomposed accents (NFD "Ma\u0308r") never equal the NFC map keys — fold combining
-        // marks on both sides so "Mär" matches however the feed encoded it.
+        // Decomposed accents (NFD "fe\u0301vr") never equal the NFC map keys — compose the
+        // token first so "févr" matches however the feed encoded it.
         val month =
             englishMonths[monthToken]
-                ?: foldedLocalisedMonths[foldMarks(monthToken)]?.let { englishMonths[it.lowercase()] }
+                ?: localisedMonths[monthToken.nfc()]?.let { englishMonths[it.lowercase()] }
         if (month == null) return null
 
         val rawYear = groups[3]
