@@ -1175,8 +1175,10 @@ Mapping of every tag the safelist lets through — blocks: `p` → `Paragraph`; 
 `TimestampLinkifier` turns text outside links into `Timestamp` spans:
 
 ```
-(?<![\d:.])(?:(\d{1,2}):([0-5]\d):([0-5]\d)|(\d{1,3}):([0-5]\d))(?![\d:])(?!\h*(?i:am|pm|a\.m\.|p\.m\.|uhr|h\b))
+(?<![\p{L}\p{N}_:.])(?:([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])|([0-9]{1,3}):([0-5][0-9]))(?![\p{L}\p{N}_:])(?![ \t\u00A0\u1680\u180E\u2000-\u200A\u202F\u205F\u3000]*(?i:(?:am|pm|uhr|h)(?![\p{L}\p{N}_])|a\.m\.?(?![\p{L}\p{N}_])|p\.m\.?(?![\p{L}\p{N}_])))
 ```
+
+Digits are ASCII `[0-9]`, never `\d`: Android's ICU regex reads `\d` as any Unicode decimal digit (`\p{Nd}`), so the same pattern would match more on Android than on the desktop JVM, and a supplementary digit such as U+1D7CF (mathematical bold 1) would match yet fail `toLong()`. The same rule holds for every feeds regex whose digits are parsed.
 
 Groups 1–3 are `H:MM:SS`, groups 4–5 `M:SS` with minutes up to 999 (show notes often write "75:12" for long episodes); `positionMs = (h · 3600 + m · 60 + s) · 1000`. Seconds must be two digits, so ratios such as "16:9" never match. The renderer (08) shows spans beyond a known episode duration as plain text; a tap seeks when the episode is current and otherwise calls `PlaybackController.playEpisodeAt(episodeId, positionMs)` ([06 Chapters](06-playback.md#chapters)). Times of day ("10:30 am", "20:15 Uhr", "10:30h") are excluded by the look-ahead — `\h*` tolerates only horizontal whitespace (spaces, tabs, NBSP-class characters; any count works, so `10:30   pm` is excluded too), never a line break, so a paragraph starting "Am …" after a timestamp still linkifies; remaining false positives (a bare "14:30") are accepted because they only seek.
 

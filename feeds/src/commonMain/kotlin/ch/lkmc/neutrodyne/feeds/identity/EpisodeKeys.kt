@@ -17,7 +17,7 @@ public object EpisodeKeys {
     public const val VERSION: Int = 1
 
     private const val DAY_SUFFIX = "T00:00:00Z"
-    private val versionPrefix = Regex("""^(\d+)[gutlh]:""")
+    private val versionPrefix = Regex("""^([0-9]+)[gutlh]:""")
 
     /** The primary key of [e]: `g:` → `u:` → `t:` → `l:` → `h:` (the last always applies). */
     public fun primary(e: ParsedEpisode): String =

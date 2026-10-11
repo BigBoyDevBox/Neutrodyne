@@ -132,23 +132,23 @@ public object FeedDates {
      * ("3. Okt. 2024" — the German/Swiss/Austrian convention).
      */
     private val datePart =
-        """^(\d{1,2})\.?\s+([A-Za-zÀ-ſ\p{M}]+)\.?\s+(\d{2}|\d{4})\s+(\d{1,2}):(\d{1,2})""" +
-            """(?::(\d{1,2})(?:[.,](\d{1,9}))?)?"""
-    private val zonePart = """(?:\s*([+-]\d{2}:?\d{2}))?$"""
+        """^([0-9]{1,2})\.?\s+([A-Za-zÀ-ſ\p{M}]+)\.?\s+([0-9]{2}|[0-9]{4})\s+([0-9]{1,2}):([0-9]{1,2})""" +
+            """(?::([0-9]{1,2})(?:[.,]([0-9]{1,9}))?)?"""
+    private val zonePart = """(?:\s*([+-][0-9]{2}:?[0-9]{2}))?$"""
     private val rfc822 = Regex(datePart + zonePart)
 
     /** An ISO offset without a colon (`+0200`) gets one so kotlinx-datetime's format accepts it. */
-    private val offsetWithoutColon = Regex("""([+-]\d{2})(\d{2})$""")
+    private val offsetWithoutColon = Regex("""([+-][0-9]{2})([0-9]{2})$""")
 
     /** A space before a trailing ISO offset ("…12:34:56 +02:00", "… +0200") is removed so the
      * space-strip and the colon insertion below compose for "YYYY-MM-DD HH:MM:SS ±HHMM". */
-    private val spaceBeforeOffset = Regex("""\s+([+-]\d{2}:?\d{2}|Z)$""")
+    private val spaceBeforeOffset = Regex("""\s+([+-][0-9]{2}:?[0-9]{2}|Z)$""")
 
     /** RFC 5322 CFWS: some feeds append a parenthetical zone comment, e.g. "…10:00:00 +0000 (UTC)". */
-    private val trailingZoneComment = Regex("""\s*\([A-Za-z]{2,5}(?:[+-]\d{1,2})?\)$""")
+    private val trailingZoneComment = Regex("""\s*\([A-Za-z]{2,5}(?:[+-][0-9]{1,2})?\)$""")
 
     /** The numeric-offset tail that makes a preceding parenthetical a zone comment. */
-    private val numericZone = Regex("""[+-]\d{2}:?\d{2}""")
+    private val numericZone = Regex("""[+-][0-9]{2}:?[0-9]{2}""")
 
     private val utcMidnightOffset = UtcOffset.ZERO
 

@@ -274,4 +274,12 @@ class FeedDatesTest {
         val expectedRfc = assertNotNull(FeedDates.parse("Tue, 1 Oct 2024 12:00:00 +0000"))
         assertEquals(expectedRfc, FeedDates.parse("Tue,\u20281 Oct 2024 12:00:00 +0000"))
     }
+
+    @Test
+    fun nonAsciiDigitsAreNotDates() {
+        // ASCII digits only, so the t: identity key's day never differs between Android
+        // (ICU \d) and the desktop JVM.
+        assertNull(FeedDates.parse("\u0663 Oct 2024 10:00:00 +0000"))
+        assertNull(FeedDates.parse("3 Oct 2024 1\u0660:00:00 +0000"))
+    }
 }

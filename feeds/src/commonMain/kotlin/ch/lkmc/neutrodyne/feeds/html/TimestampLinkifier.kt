@@ -16,7 +16,10 @@ import ch.lkmc.neutrodyne.feeds.html.ShowNotesStyles.NONE
  */
 public object TimestampLinkifier {
     private val lookbehind = """(?<![\p{L}\p{N}_:.])"""
-    private val clock = """(?:(\d{1,2}):([0-5]\d):([0-5]\d)|(\d{1,3}):([0-5]\d))"""
+
+    // ASCII [0-9], never \d: Android's ICU regex reads \d as any Unicode decimal digit, and a
+    // supplementary one ("\uD835\uDFCF", mathematical bold 1) matches yet fails toLong().
+    private val clock = """(?:([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])|([0-9]{1,3}):([0-5][0-9]))"""
 
     // Each marker must be a whole word: "10:30 ample" linkifies while "10:30 am" does not.
     // The marker's tail check must see Unicode letters, not the ASCII \w class: "h" glued to

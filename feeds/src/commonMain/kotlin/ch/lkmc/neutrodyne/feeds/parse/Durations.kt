@@ -17,7 +17,7 @@ public object Durations {
     /** Durations over 48 h are treated as garbage (03 Durations). */
     public const val MAX_VALUE_MS: Long = 48L * 60 * 60 * 1000
 
-    private val numericPart = Regex("""\d+(?:\.\d+)?""")
+    private val numericPart = Regex("""[0-9]+(?:\.[0-9]+)?""")
 
     /** Parses a duration string to milliseconds, or null when it is not a valid duration. */
     public fun parseMs(raw: String): Long? {

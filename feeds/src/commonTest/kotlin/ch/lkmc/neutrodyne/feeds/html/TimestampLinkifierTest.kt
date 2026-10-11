@@ -166,4 +166,14 @@ class TimestampLinkifierTest {
                 .style,
         )
     }
+
+    @Test
+    fun nonAsciiDigitsNeverLinkify() {
+        // Android's ICU regex reads \d as any Unicode decimal digit; the pattern must stay
+        // ASCII so a supplementary digit (mathematical bold 1 and 0) never reaches toLong().
+        for (text in listOf("\uD835\uDFCF\uD835\uDFCE:30", "10:3\uD835\uDFCE", "\u0661\u0662:34:56")) {
+            val spans = TimestampLinkifier.linkify(text)
+            assertEquals(listOf<NoteSpan>(NoteSpan.Text(text, ShowNotesStyles.NONE)), spans, text)
+        }
+    }
 }

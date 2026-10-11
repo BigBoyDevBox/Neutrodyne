@@ -105,4 +105,11 @@ class DurationsTest {
         assertNull(Durations.parseMs("9223372036854775807:00"))
         assertNull(Durations.parseMs("9223372036854775807:00:00"))
     }
+
+    @Test
+    fun nonAsciiDigitsAreNotDurations() {
+        // ASCII digits only on every target (Android's ICU \d would also take Arabic-Indic).
+        assertNull(Durations.parseMs("\u0661\u0662:\u0663\u0660"))
+        assertNull(Durations.parseMs("1:\uD835\uDFCE"))
+    }
 }
