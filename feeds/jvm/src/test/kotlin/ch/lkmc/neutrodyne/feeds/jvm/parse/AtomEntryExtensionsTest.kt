@@ -2,11 +2,13 @@
 package ch.lkmc.neutrodyne.feeds.jvm.parse
 
 import ch.lkmc.neutrodyne.feeds.model.ParsedFeed
+import ch.lkmc.neutrodyne.feeds.model.WarningCode
 import ch.lkmc.neutrodyne.feeds.parse.ParseResult
 import okio.Buffer
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 /**
  * iTunes, `content:encoded`, Dublin Core and PSC extension elements inside an Atom `entry` dispatch
@@ -58,7 +60,37 @@ class AtomEntryExtensionsTest {
         assertEquals("first", feed.items.single().guid)
     }
 
-    /** Duplicate text slots are first-wins everywhere, not only under Atom (03 Field mapping). */
+    /** Item-level `atom:link rel="alternate"` is first-wins, like the channel-level one. */
+    @Test
+    fun duplicateAlternateLinkKeepsTheFirst() {
+        val feed =
+            feedOf(
+                "<feed xmlns=\"http://www.w3.org/2005/Atom\">" +
+                    "<entry><id>e1</id><title>Ep</title>" +
+                    "<link rel=\"alternate\" href=\"https://first.test/ep\"/>" +
+                    "<link rel=\"alternate\" href=\"https://second.test/mirror\"/>" +
+                    "</entry></feed>",
+            )
+        assertEquals("https://first.test/ep", feed.items.single().link)
+    }
+
+    @Test
+    fun pscChapterWithAnUnparsableStartWarnsAndSkips() {
+        val feed =
+            feedOf(
+                "<feed xmlns=\"http://www.w3.org/2005/Atom\" " +
+                    "xmlns:psc=\"http://podlove.org/simple-chapters\">" +
+                    "<entry><id>e1</id><title>Ep</title>" +
+                    "<psc:chapters><psc:chapter start=\"soon\" title=\"intro\"/>" +
+                    "<psc:chapter start=\"0:30\" title=\"keep\"/></psc:chapters>" +
+                    "</entry></feed>",
+            )
+        val item = feed.items.single()
+        assertEquals(1, item.inlineChapters.size)
+        assertEquals("keep", item.inlineChapters.single().title)
+        assertTrue(feed.warnings.any { it.code == WarningCode.BAD_DURATION }, feed.warnings.toString())
+    }
+
     @Test
     fun duplicateItunesSummaryAndContentEncodedKeepTheFirst() {
         val feed =

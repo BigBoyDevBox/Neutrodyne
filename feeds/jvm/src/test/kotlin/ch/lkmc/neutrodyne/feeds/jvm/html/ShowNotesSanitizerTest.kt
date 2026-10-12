@@ -96,6 +96,8 @@ class ShowNotesSanitizerTest {
     fun everyTagOfTheMappingTable() {
         val blocks =
             blocksOf(
+                // "line two" in <pre> sits at column 0 on purpose: <pre> preserves leading
+                // whitespace, so re-indenting that line would break the assertion.
                 """
             <h2>Heading</h2>
             <p>b <b>bold</b> <strong>strong</strong> <i>it</i> <em>em</em> <cite>cite</cite> <u>u</u>

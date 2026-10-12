@@ -1330,7 +1330,9 @@ private class ParseSession(
             "chapters" -> {
                 val rawUrl = attr(parser, "url")
                 item.chaptersUrl = urlOrNull(rawUrl, baseOf(parser, item.base), item.index)
-                item.chaptersType = attr(parser, "type")?.trim()?.takeIf { it.isNotEmpty() }
+                // The type labels the chapters document; without a resolved URL there is none.
+                item.chaptersType =
+                    if (item.chaptersUrl != null) attr(parser, "type")?.trim()?.takeIf { it.isNotEmpty() } else null
                 if (rawUrl.isNullOrBlank()) warn(WarningCode.BAD_URL, item.index, "chapters")
                 skipElement(parser)
             }
@@ -1388,7 +1390,8 @@ private class ParseSession(
                     }
 
                     null, "", "alternate" -> {
-                        item.atomAlternateLink = urlOrNull(attr(parser, "href"), baseOf(parser, item.base), item.index)
+                        val href = urlOrNull(attr(parser, "href"), baseOf(parser, item.base), item.index)
+                        if (href != null && item.atomAlternateLink == null) item.atomAlternateLink = href
                     }
                 }
                 skipElement(parser)
@@ -1609,7 +1612,9 @@ private class ParseSession(
             ) {
                 val chapterBase = baseOf(parser, chaptersBase)
                 val startMs = Durations.parsePositionMs(attr(parser, "start").orEmpty())
-                if (startMs != null) {
+                if (startMs == null) {
+                    warn(WarningCode.BAD_DURATION, item.index, attr(parser, "start").orEmpty().take(SHORT_DETAIL_CHARS))
+                } else {
                     item.inlineChapters.add(
                         InlineChapter(
                             startMs = startMs,
@@ -1894,7 +1899,8 @@ private class ParseSession(
                     }
 
                     null, "", "alternate" -> {
-                        item.atomAlternateLink = urlOrNull(attr(parser, "href"), baseOf(parser, item.base), item.index)
+                        val href = urlOrNull(attr(parser, "href"), baseOf(parser, item.base), item.index)
+                        if (href != null && item.atomAlternateLink == null) item.atomAlternateLink = href
                     }
                 }
                 skipElement(parser)

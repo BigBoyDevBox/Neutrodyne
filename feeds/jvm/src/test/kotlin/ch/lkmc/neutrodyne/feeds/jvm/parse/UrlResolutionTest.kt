@@ -391,6 +391,23 @@ class UrlResolutionTest {
         )
     }
 
+    /** A chapters `type` without a resolvable `url` is dropped with the URL, not stored orphaned. */
+    @Test
+    fun chaptersTypeIsDroppedWithItsUrl() {
+        val feed =
+            feedOf(
+                "<rss version=\"2.0\" xmlns:podcast=\"https://podcastindex.org/namespace/1.0\">" +
+                    "<channel><title>F</title>" +
+                    "<item><title>Ep</title>" +
+                    "<podcast:chapters url=\"ftp://cdn.test/ch.json\" type=\"application/json+chapters\"/>" +
+                    "</item></channel></rss>",
+            )
+        val item = feed.items.single()
+        assertEquals(null, item.chaptersUrl)
+        assertEquals(null, item.chaptersType)
+        assertTrue(feed.warnings.any { it.code == WarningCode.BAD_URL }, feed.warnings.toString())
+    }
+
     /** The spec spells the aspect attribute `aspect-ratio`; the draft's `aspect` still works. */
     @Test
     fun podcastImageBannerAcceptsAspectRatio() {
