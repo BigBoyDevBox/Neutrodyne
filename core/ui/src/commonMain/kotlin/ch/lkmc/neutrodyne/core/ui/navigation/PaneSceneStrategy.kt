@@ -64,11 +64,15 @@ internal class PaneSceneStrategy(
     private var selectedTab: TopLevelKey? = null
     private var paneAnimations: Map<String, Any> = emptyMap()
     internal val currentTab: TopLevelKey get() = navigation.selectedTab
+    internal val selectionGeneration: Long get() = navigation.selectionGeneration
     internal val canGoBack: Boolean get() = currentTab != FeedsKey || navigation.stack(currentTab).size > 1
 
-    /** The event handler supplies the originating tab, even before selection recomposes. */
-    internal fun completeBack(origin: TopLevelKey) {
-        if (origin != currentTab) return
+    /** The generation rejects intervening tab changes, even before selection recomposes. */
+    internal fun completeBack(
+        origin: TopLevelKey,
+        generation: Long,
+    ) {
+        if (generation != selectionGeneration || origin != currentTab) return
         val live = liveEntries()
         val scene = with(adaptive) { SceneStrategyScope<NavKey>().calculateScene(live) }
         val internalBack = scene?.previousEntries?.lastOrNull() in scene?.entries.orEmpty()

@@ -5,11 +5,14 @@ package ch.lkmc.neutrodyne.core.ui.navigation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.navigation3.runtime.NavBackStack
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.rememberNavBackStack
@@ -41,6 +44,10 @@ public class NavigationState internal constructor(
     public val tabs: List<TopLevelKey> get() = TOP_LEVEL_TABS
 
     public val selectedTab: TopLevelKey get() = selected.value
+
+    // Unsaved gesture invalidation: a round trip still changes this when selection writes coalesce.
+    internal var selectionGeneration: Long by mutableLongStateOf(0L)
+        private set
 
     /**
      * The pane partition count the root renders (set by `NeutrodyneRoot` from the adaptive
@@ -74,7 +81,7 @@ public class NavigationState internal constructor(
         // 08 Re-tap behaviour: re-selecting the shown destination pops its stack back to the
         // root; the root entry itself stays, so its saved scroll position survives.
         if (key == selected.value) resetTab(key)
-        selected.value = key
+        changeSelection(key)
     }
 
     override fun pop(): Boolean {
@@ -85,7 +92,7 @@ public class NavigationState internal constructor(
             return true
         }
         if (selectedTab != FeedsKey) {
-            selected.value = FeedsKey
+            changeSelection(FeedsKey)
             return true
         }
         return false
@@ -104,7 +111,7 @@ public class NavigationState internal constructor(
         lastChangeWasPop = false
         resetTab(tab)
         stack(tab).addAll(stack)
-        selected.value = tab
+        changeSelection(tab)
     }
 
     override fun pushDetail(key: NavKey) {
@@ -114,6 +121,13 @@ public class NavigationState internal constructor(
             stack.removeAt(stack.size - 1)
         }
         stack.add(key)
+    }
+
+    private fun changeSelection(tab: TopLevelKey) {
+        if (tab == selected.value) return
+
+        selectionGeneration++
+        selected.value = tab
     }
 }
 

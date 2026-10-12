@@ -35,7 +35,11 @@ internal fun NavigationBackDispatch(panes: PaneSceneStrategy, content: @Composab
         onDispose { events.dispose() }
     }
     val enabled = panes.canGoBack
-    SideEffect { events.isBackEnabled = enabled }
+    val selectionGeneration = panes.selectionGeneration
+    SideEffect {
+        events.cancelPreviewIfSelectionChanged(selectionGeneration)
+        events.isBackEnabled = enabled
+    }
 
     CompositionLocalProvider(
         LocalNavigationEventDispatcherOwner provides events,
@@ -48,28 +52,34 @@ private class BackEventOwner(
 ) : NavigationEventDispatcherOwner {
     override val navigationEventDispatcher = NavigationEventDispatcher()
     private val preview = DirectNavigationEventInput()
-    private var origin: TopLevelKey? = null
+    private var origin: BackOrigin? = null
+    private var previewActive = false
     private val handler =
         object : NavigationEventHandler<NavigationEventInfo>(NavigationEventInfo.None, false) {
             override fun onBackStarted(event: NavigationEvent) {
-                origin = panes.currentTab
+                origin = BackOrigin(panes.currentTab, panes.selectionGeneration)
+                previewActive = true
                 preview.backStarted(event)
             }
 
             override fun onBackProgressed(event: NavigationEvent) {
-                preview.backProgressed(event)
+                cancelPreviewIfSelectionChanged(panes.selectionGeneration)
+                if (previewActive) preview.backProgressed(event)
             }
 
             override fun onBackCancelled() {
-                if (origin != null) preview.backCancelled()
+                cancelPreview()
                 origin = null
             }
 
             override fun onBackCompleted() {
                 // Completion-only input reaches this once too, without a synthetic gesture token.
-                panes.completeBack(origin ?: panes.currentTab)
+                panes.completeBack(
+                    origin?.tab ?: panes.currentTab,
+                    origin?.selectionGeneration ?: panes.selectionGeneration,
+                )
                 // End native seeking after the real stack changed, without executing its repeat callbacks.
-                if (origin != null) preview.backCancelled()
+                cancelPreview()
                 origin = null
             }
         }
@@ -77,6 +87,21 @@ private class BackEventOwner(
     fun attach(parent: NavigationEventDispatcher) {
         navigationEventDispatcher.addInput(preview)
         parent.addHandler(handler)
+    }
+
+    fun cancelPreviewIfSelectionChanged(selectionGeneration: Long) {
+        val gesture = origin ?: return
+        if (gesture.selectionGeneration == selectionGeneration) return
+
+        // Keep the origin until completion so cancellation cannot become a completion-only Back.
+        cancelPreview()
+    }
+
+    private fun cancelPreview() {
+        if (!previewActive) return
+
+        previewActive = false
+        preview.backCancelled()
     }
 
     var isBackEnabled: Boolean
@@ -90,6 +115,11 @@ private class BackEventOwner(
         navigationEventDispatcher.dispose()
     }
 }
+
+private data class BackOrigin(
+    val tab: TopLevelKey,
+    val selectionGeneration: Long,
+)
 
 private class EntryBackOwner(
     val parent: NavigationEventDispatcherOwner,
