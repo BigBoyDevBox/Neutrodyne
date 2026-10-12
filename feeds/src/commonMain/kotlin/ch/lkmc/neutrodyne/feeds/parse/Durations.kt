@@ -20,7 +20,18 @@ public object Durations {
     private val numericPart = Regex("""[0-9]+(?:\.[0-9]+)?""")
 
     /** Parses a duration string to milliseconds, or null when it is not a valid duration. */
-    public fun parseMs(raw: String): Long? {
+    public fun parseMs(raw: String): Long? = parseMs(raw, zeroIsMissing = true)
+
+    /**
+     * Same grammar as [parseMs] for a position, not a duration: `psc:chapter@start` legitimately
+     * opens at `0:00`, so an all-zero value is a real position, not a missing-duration placeholder.
+     */
+    public fun parsePositionMs(raw: String): Long? = parseMs(raw, zeroIsMissing = false)
+
+    private fun parseMs(
+        raw: String,
+        zeroIsMissing: Boolean,
+    ): Long? {
         val parts = raw.trim().split(':')
         if (parts.size > MAX_PARTS) return null
 
@@ -53,7 +64,7 @@ public object Durations {
         if (totalMs > MAX_VALUE_MS) return null
         // "00:00"-style placeholders mean the feed carries no real duration — an unknown, not a
         // zero-length episode.
-        if (totalMs == 0L) return null
+        if (zeroIsMissing && totalMs == 0L) return null
         return totalMs
     }
 }

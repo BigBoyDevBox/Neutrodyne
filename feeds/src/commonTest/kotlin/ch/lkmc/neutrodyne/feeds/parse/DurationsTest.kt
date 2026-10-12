@@ -69,6 +69,19 @@ class DurationsTest {
     }
 
     @Test
+    fun positionsKeepAllZeroValues() {
+        // `psc:chapter@start` is a position, not a duration: the common opening chapter sits at
+        // "0:00", so the same all-zero shapes that reject as durations parse as position zero.
+        assertEquals(0L, Durations.parsePositionMs("0:00"))
+        assertEquals(0L, Durations.parsePositionMs("00:00:00.000"))
+        assertEquals(0L, Durations.parsePositionMs("0"))
+        assertEquals(42_000L, Durations.parsePositionMs("00:42"))
+        // The rest of the grammar is shared: garbage and over-cap shapes still reject.
+        assertNull(Durations.parsePositionMs("1.2.3"))
+        assertNull(Durations.parsePositionMs("49:00:00"))
+    }
+
+    @Test
     fun shapeRejectionsAndLeniency() {
         // Empty components, stray separators and non-`digits.fraction` shapes reject.
         assertNull(Durations.parseMs(":30"))
