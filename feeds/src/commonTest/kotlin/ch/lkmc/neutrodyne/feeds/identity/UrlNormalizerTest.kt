@@ -619,5 +619,10 @@ class UrlNormalizerTest {
         // The same rejections hold after IDNA: a trailing dot or a non-numeric leading label.
         assertNull(UrlNormalizer.forIdentity("https://\uFF11\uFF12\uFF17.\uFF11./feed"))
         assertNull(UrlNormalizer.forIdentity("https://example.\uFF11\uFF12\uFF13/feed"))
+        // ASCII spellings get the same verdicts, and every dot IDNA maps to '.' behaves alike.
+        assertNull(UrlNormalizer.forIdentity("https://127.1./feed"))
+        assertNull(UrlNormalizer.forIdentity("https://example.123/feed"))
+        assertEquals("127.0.0.1/feed", UrlNormalizer.forIdentity("https://127\uFF0E1/feed"))
+        assertEquals("127.0.0.1/feed", UrlNormalizer.forIdentity("https://127\uFF611/feed"))
     }
 }
