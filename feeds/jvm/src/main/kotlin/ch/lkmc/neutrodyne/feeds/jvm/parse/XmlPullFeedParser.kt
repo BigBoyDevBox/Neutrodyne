@@ -65,20 +65,24 @@ public class XmlPullFeedParser(
         limits: ParseLimits,
     ): ParseResult {
         // Check the byte bound before materialization or decoding. Okio can read ahead one
-        // segment while requesting the first byte over the bound.
+        // segment while requesting the first byte over the bound. Exceptions from open or the
+        // buffering read are I/O failures, not malformed input: they propagate unchanged per the
+        // FeedParser.parse contract, which deliberately has no ParseFailure reason for them.
+        val probeBytes =
+            if (limits.maxDocumentBytes == Long.MAX_VALUE) {
+                Long.MAX_VALUE
+            } else {
+                limits.maxDocumentBytes + 1L
+            }
         val bytes =
-            try {
-                open().buffer().use { source ->
-                    if (source.request(limits.maxDocumentBytes + 1L)) {
-                        return ParseResult.Failed(
-                            ParseFailure.TOO_LARGE,
-                            "document over ${limits.maxDocumentBytes} bytes",
-                        )
-                    }
-                    source.readByteArray()
+            open().buffer().use { source ->
+                if (source.request(probeBytes)) {
+                    return ParseResult.Failed(
+                        ParseFailure.TOO_LARGE,
+                        "document over ${limits.maxDocumentBytes} bytes",
+                    )
                 }
-            } catch (e: Exception) {
-                return ParseResult.Failed(ParseFailure.MALFORMED, "unreadable source: ${e.javaClass.simpleName}")
+                source.readByteArray()
             }
 
         // Step 3: first pass with encoding sniffing (never a Reader, never the HTTP charset). The
@@ -207,11 +211,6 @@ private class ParseSession(
                     return ParseResult.Failed(ParseFailure.MALFORMED, it.detail)
                 }
 
-                // Step 1: prolog guard, before any parser sees the document.
-                if (PrologGuard.isHostile(bytes, limits.prologScanBytes)) {
-                    return ParseResult.Failed(ParseFailure.HOSTILE, "ENTITY declaration in the prolog")
-                }
-
                 // Bound start-tag work before the pull parser sees any tag (03 Limits and version
                 // policy): kxml2 grows its attribute and namespace arrays quadratically inside
                 // next(), so checking attributeCount after the event returns is already too late.
@@ -222,6 +221,13 @@ private class ParseSession(
                             ParseFailure.MALFORMED,
                             "encoding declaration the parser cannot decode",
                         )
+
+                // Step 1: prolog guard, before any parser sees the document. The decoded text is
+                // already in scope for TagBounds, so the ENTITY scan covers the entire prolog;
+                // prologScanBytes bounds only the declaration sniff/decode step (03 step 1).
+                if (PrologGuard.isHostileText(text)) {
+                    return ParseResult.Failed(ParseFailure.HOSTILE, "ENTITY declaration in the prolog")
+                }
                 try {
                     TagBounds.checkText(text, limits)
                 } catch (e: XmlPullParserException) {
@@ -239,13 +245,12 @@ private class ParseSession(
                     runCatching { Charset.forName(charsetOverride) }.getOrNull()
                         ?: return ParseResult.Failed(ParseFailure.MALFORMED, "unknown charset $charsetOverride")
                 // The override decoding can expose markup the sniffed view did not contain, so the
-                // guards run on the stream exactly as this pass decodes it: the prolog window is
-                // the same first bytes, decoded with the override.
-                val prolog = String(bytes, 0, minOf(bytes.size, limits.prologScanBytes), charset)
-                if (PrologGuard.isHostileText(prolog)) {
+                // guards run on the stream exactly as this pass decodes it: the ENTITY scan covers
+                // the entire decoded prolog, never a truncated window.
+                val text = String(bytes, charset)
+                if (PrologGuard.isHostileText(text)) {
                     return ParseResult.Failed(ParseFailure.HOSTILE, "ENTITY declaration in the prolog")
                 }
-                val text = String(bytes, charset)
                 try {
                     TagBounds.checkText(text, limits)
                 } catch (e: XmlPullParserException) {

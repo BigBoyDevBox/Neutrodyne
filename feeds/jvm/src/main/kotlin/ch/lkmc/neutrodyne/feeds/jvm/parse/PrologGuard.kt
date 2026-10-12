@@ -2,11 +2,12 @@
 package ch.lkmc.neutrodyne.feeds.jvm.parse
 
 /**
- * The prolog guard (03 Parser setup and charset step 1): the first 64 KiB are decoded with the
- * detected encoding, then walked through the real prolog constructs — whitespace, comments,
- * processing instructions and markup declarations — until the root element. `<!ENTITY` inside a
- * declaration means the document is hostile. `FEATURE_PROCESS_DOCDECL` stays off and no external
- * DTD is ever fetched (N9).
+ * The prolog guard (03 Parser setup and charset step 1): the whole document, decoded with the
+ * detected or override encoding, is walked through the real prolog constructs — whitespace,
+ * comments, processing instructions and markup declarations — until the root element. `<!ENTITY`
+ * inside a declaration means the document is hostile. The scan covers the entire prolog;
+ * `prologScanBytes` bounds only the declaration sniff/decode step, never this scan.
+ * `FEATURE_PROCESS_DOCDECL` stays off and no external DTD is ever fetched (N9).
  *
  * Declaration boundaries are cut exactly where relaxed kxml2 cuts them — `parseDoctype` honours
  * single quotes only and ends a declaration at the first unquoted `>` — so a `"`-quoted DOCTYPE
@@ -22,18 +23,7 @@ internal object PrologGuard {
     private const val PI_CLOSE = "?>"
     private const val DECL_OPEN = "<!"
 
-    /** Whether the prolog of [bytes] declares an entity, which would enable entity expansion. */
-    fun isHostile(
-        bytes: ByteArray,
-        scanLimit: Int,
-    ): Boolean {
-        // Decoding first makes the scan encoding-aware: a UTF-16 prolog cannot hide its DOCTYPE.
-        // A declaration the parser's own setInput cannot decode fails closed.
-        val text = EncodingSniff.decode(bytes.copyOf(minOf(bytes.size, scanLimit))) ?: return true
-        return isHostileText(text)
-    }
-
-    /** The same scan over an already-decoded view — the charset-override pass' prolog window. */
+    /** Whether the prolog of [text] declares an entity, which would enable entity expansion. */
     fun isHostileText(text: String): Boolean {
         var i = 0
         while (i < text.length) {

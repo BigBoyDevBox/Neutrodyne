@@ -7,9 +7,12 @@ import ch.lkmc.neutrodyne.feeds.parse.ParseLimits
 import ch.lkmc.neutrodyne.feeds.parse.ParseResult
 import okio.Buffer
 import org.junit.Test
+import java.io.IOException
 import java.nio.charset.Charset
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -164,6 +167,116 @@ class ParserGuardsTest {
         assertEquals(ParseFailure.TOO_LARGE, assertIs<ParseResult.Failed>(result).reason)
         // One segment's worth past the cap at most — never the whole stream.
         assertTrue(delivered.get() <= cap + SEGMENT, "source delivered ${delivered.get()} bytes")
+    }
+
+    /**
+     * FeedParser.parse: a throw from `open` or the buffering read is an I/O failure, not malformed
+     * input — the original exception propagates and `ParseFailure` deliberately has no reason for it.
+     */
+    @Test
+    fun openFailurePropagatesUnchanged() {
+        val boom = IOException("open boom")
+        val thrown =
+            assertFailsWith<IOException> {
+                XmlPullFeedParser.discovered().parse({ throw boom }, null, baseUrl)
+            }
+        assertEquals("open boom", thrown.message)
+    }
+
+    /** The bounded read propagates a source failure at every point of the fill, cap included. */
+    @Test
+    fun readFailuresPropagateAndClose() {
+        val parser = XmlPullFeedParser.discovered()
+        for (failAfter in listOf(0L, 63L, 64L)) {
+            val delivered = AtomicLong()
+            val closed = AtomicBoolean()
+            val failing =
+                object : okio.Source {
+                    override fun read(
+                        sink: Buffer,
+                        byteCount: Long,
+                    ): Long {
+                        val grant = minOf(byteCount, failAfter - delivered.get())
+                        if (grant <= 0L) throw IOException("read boom at $failAfter")
+                        sink.write(ByteArray(grant.toInt()) { 'x'.code.toByte() })
+                        delivered.addAndGet(grant)
+                        return grant
+                    }
+
+                    override fun timeout(): okio.Timeout = okio.Timeout.NONE
+
+                    override fun close() {
+                        closed.set(true)
+                    }
+                }
+            val thrown =
+                assertFailsWith<IOException> {
+                    parser.parse({ failing }, null, baseUrl, ParseLimits(maxDocumentBytes = 64))
+                }
+            assertEquals("read boom at $failAfter", thrown.message)
+            assertTrue(closed.get(), "source was not closed after the read failure")
+        }
+    }
+
+    /** `Long.MAX_VALUE` means "no effective bound": `cap + 1` must not wrap negative. */
+    @Test
+    fun maxDocumentBytesAtLongMaxValueParses() {
+        val xml = "<rss version=\"2.0\"><channel><title>T</title></channel></rss>"
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write(xml.encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxDocumentBytes = Long.MAX_VALUE),
+                )
+        assertIs<ParseResult.Ok>(result)
+    }
+
+    /**
+     * `prologScanBytes` bounds only the declaration sniff/decode step — the `<!ENTITY` scan covers
+     * the whole prolog (03 step 1), so a comment past the window cannot hide the DOCTYPE.
+     */
+    @Test
+    fun entityDeclarationBeyondTheSniffWindowIsHostile() {
+        for (padding in listOf(65_520, 70_000)) {
+            val xml =
+                "<!--" + "x".repeat(padding) + "-->" +
+                    "<!DOCTYPE rss [<!ENTITY x 'boom'>]>" +
+                    "<rss version='2.0'><channel><title>T</title></channel></rss>"
+            assertEquals(ParseFailure.HOSTILE, failedOf(xml).reason)
+        }
+    }
+
+    /** The whole-prolog scan holds in non-UTF-8 encodings too — here UTF-16 with a BOM. */
+    @Test
+    fun entityDeclarationBeyondWindowIsHostileUtf16() {
+        val xml =
+            "<!--" + "x".repeat(70_000) + "-->" +
+                "<!DOCTYPE rss [<!ENTITY x 'boom'>]>" +
+                "<rss version='2.0'><channel><title>T</title></channel></rss>"
+        val bytes = xml.toByteArray(Charsets.UTF_16)
+        assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(parse(bytes)).reason)
+    }
+
+    /** A caller-narrowed window likewise cannot hide a later DOCTYPE from the scan. */
+    @Test
+    fun entityScanIsNotBoundedByCallerSniffWindow() {
+        val xml =
+            "<!--" + "x".repeat(2_000) + "-->" +
+                "<!DOCTYPE rss [<!ENTITY x 'boom'>]>" +
+                "<rss version='2.0'><channel><title>T</title></channel></rss>"
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write(xml.encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(prologScanBytes = 16),
+                )
+        assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(result).reason)
     }
 
     /** A finite document over the cap fails `TOO_LARGE`; exactly the cap still reaches the parser. */
