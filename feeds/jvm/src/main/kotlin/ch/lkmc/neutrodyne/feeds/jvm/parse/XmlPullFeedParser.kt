@@ -207,7 +207,7 @@ private class ParseSession(
                 // declaration's raw bytes and decodes only the remainder with the declared encoding.
                 // A declaration its own setInput cannot decode (no `>` in reach, a bad encoding
                 // name) fails the same way here.
-                (EncodingSniff.view(bytes) as? EncodingSniff.View.Rejected)?.let {
+                (EncodingSniff.view(bytes, limits.prologScanBytes) as? EncodingSniff.View.Rejected)?.let {
                     return ParseResult.Failed(ParseFailure.MALFORMED, it.detail)
                 }
 
@@ -216,7 +216,7 @@ private class ParseSession(
                 // next(), so checking attributeCount after the event returns is already too late.
                 // A document its own setInput cannot decode yields no view for the check.
                 val text =
-                    EncodingSniff.decode(bytes)
+                    EncodingSniff.decode(bytes, limits.prologScanBytes)
                         ?: return ParseResult.Failed(
                             ParseFailure.MALFORMED,
                             "encoding declaration the parser cannot decode",
@@ -239,7 +239,7 @@ private class ParseSession(
                 // kxml2 reports null for inputEncoding right after setInput; the document encoding
                 // is decided only once the declaration is processed, so it is sniffed here with the
                 // same precedence (BOM, XML declaration, UTF-8 default).
-                detectedEncoding = EncodingSniff.sniff(bytes).name()
+                detectedEncoding = EncodingSniff.sniff(bytes, limits.prologScanBytes).name()
             } else {
                 val charset =
                     runCatching { Charset.forName(charsetOverride) }.getOrNull()

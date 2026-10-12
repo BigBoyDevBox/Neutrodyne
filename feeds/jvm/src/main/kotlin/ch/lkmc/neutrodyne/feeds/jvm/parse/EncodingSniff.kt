@@ -30,9 +30,6 @@ internal object EncodingSniff {
     private const val UTF16_BOM_BYTES = 2
     private const val UTF8_BOM_BYTES = 3
 
-    /** kxml2's store buffer capacity: a declaration whose `>` lies beyond it fails `setInput`. */
-    private const val DECL_SCAN_CAPACITY = 8192
-
     /**
      * The document exactly as the pull parser will read it: [Decoded.prefix] is the text kxml2 keeps
      * buffered as raw bytes-as-chars, [Decoded.dataStart] the byte offset [Decoded.charset] applies
@@ -52,14 +49,20 @@ internal object EncodingSniff {
     }
 
     /** The charset [bytes] decodes with after the kept bytes; UTF-8 when nothing matches. */
-    fun sniff(bytes: ByteArray): Charset = (view(bytes) as? View.Decoded)?.charset ?: Charsets.UTF_8
+    fun sniff(
+        bytes: ByteArray,
+        scanLimit: Int,
+    ): Charset = (view(bytes, scanLimit) as? View.Decoded)?.charset ?: Charsets.UTF_8
 
     /**
      * [bytes] as the pull parser will read them — the kept bytes as raw chars, then the remainder in
-     * the detected charset — or null when the parser's own `setInput` would fail the document.
+     * the detected charset — or null when the declaration is rejected at [scanLimit].
      */
-    fun decode(bytes: ByteArray): String? =
-        when (val view = view(bytes)) {
+    fun decode(
+        bytes: ByteArray,
+        scanLimit: Int,
+    ): String? =
+        when (val view = view(bytes, scanLimit)) {
             is View.Rejected -> {
                 null
             }
@@ -69,8 +72,17 @@ internal object EncodingSniff {
             }
         }
 
-    /** The decoding boundary of `KXmlParser.setInput(InputStream, null)`, reproduced one-to-one. */
-    fun view(bytes: ByteArray): View {
+    /**
+     * The decoding boundary of `KXmlParser.setInput(InputStream, null)`, reproduced one-to-one —
+     * except that the declaration-acceptance bound is the caller's [scanLimit]
+     * (`ParseLimits.prologScanBytes`) rather than the parser's fixed buffer capacity. A
+     * declaration the parser's own buffer would reject is rejected here at the caller's bound;
+     * past it, the parser still enforces its real capacity inside `setInput`.
+     */
+    fun view(
+        bytes: ByteArray,
+        scanLimit: Int,
+    ): View {
         // kxml2 buffers what it sniffed as raw chars; short input stays buffered, decoded UTF-8.
         if (bytes.size < SNIFF_BYTES) {
             return View.Decoded(rawChars(bytes, 0, bytes.size), bytes.size, Charsets.UTF_8)
@@ -105,7 +117,7 @@ internal object EncodingSniff {
             }
 
             b0 == LT && b1 == QM && b2 == XC && b3 == MC -> {
-                declaredView(bytes)
+                declaredView(bytes, scanLimit)
             }
 
             b0 == 0xFE && b1 == 0xFF -> {
@@ -128,14 +140,18 @@ internal object EncodingSniff {
 
     /**
      * `<?xm`: the declaration bytes up to `>` stay buffered as raw chars; the `encoding` name — the
-     * first `encoding` occurrence, scanned to its closing quote — decodes only the remainder. Any
-     * shape that makes kxml2's own `setInput` throw is [View.Rejected].
+     * first `encoding` occurrence, scanned to its closing quote — decodes only the remainder. A
+     * declaration whose `>` lies at or past [scanLimit] is [View.Rejected], the same way kxml2's
+     * own bounded buffer rejects a declaration that outgrows it.
      */
-    private fun declaredView(bytes: ByteArray): View {
+    private fun declaredView(
+        bytes: ByteArray,
+        scanLimit: Int,
+    ): View {
         val declEnd = bytes.indexOf(GT.toByte())
         if (declEnd < 0) return View.Rejected("XML declaration has no >")
-        if (declEnd >= DECL_SCAN_CAPACITY) {
-            return View.Rejected("XML declaration over $DECL_SCAN_CAPACITY bytes")
+        if (declEnd >= scanLimit) {
+            return View.Rejected("XML declaration over $scanLimit bytes")
         }
         val prefix = rawChars(bytes, 0, declEnd + 1)
         var nameStart = prefix.indexOf(ENCODING_TOKEN)

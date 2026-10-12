@@ -74,7 +74,11 @@ public data class ParseLimits(
     val maxTextChars: Int = 512 * 1024,
     val maxUrlChars: Int = 4_096,
     val maxTagAttributes: Int = 1_000,
-    /** Bounds only the declaration sniff/decode step — the `<!ENTITY` scan covers the whole prolog. */
+    /**
+     * Bounds only the declaration sniff/decode step: an `<?xml` declaration whose `>` lies at or
+     * past this byte count is rejected the way the parser's own bounded buffer would reject it.
+     * The `<!ENTITY` prolog scan covers the whole prolog and is never truncated by this limit.
+     */
     val prologScanBytes: Int = 64 * 1024,
     /** Whole-document bound, counted while `parse` buffers the source; matches the fetch body cap. */
     val maxDocumentBytes: Long = 32L * 1024 * 1024,
