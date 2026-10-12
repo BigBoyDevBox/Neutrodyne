@@ -1256,8 +1256,13 @@ class DatabaseOpenerTest {
                     override var pendingQuarantine: String?
                         get() {
                             if (deny) {
+                                // The oversized path code comes first and a real SQLITE_FULL
+                                // code after it: classification must skip the overflow and still
+                                // reach code 13, not fall back to UNKNOWN.
                                 throw AccessDeniedException(
                                     dir.resolve("code2147483648/quarantine-pending").toString(),
+                                    null,
+                                    "write failed (code 13)",
                                 )
                             }
                             return factory.pendingQuarantine
@@ -1270,6 +1275,7 @@ class DatabaseOpenerTest {
             val error = assertThrows { o.awaitOpen() }
 
             assertIs<DatabaseOpenException>(error)
+            assertEquals(DatabaseOpenException.Reason.DISK_FULL, error.reason)
             assertIs<AccessDeniedException>(error.cause)
             assertSame(error, assertIs<DatabaseOpenState.Failed>(o.openState.value).exception)
 
