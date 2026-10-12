@@ -44,9 +44,9 @@ import androidx.navigation3.scene.SceneStrategyScope
 import androidx.navigation3.ui.LocalNavAnimatedContentScope
 import androidx.navigationevent.NavigationEventDispatcher
 import androidx.navigationevent.NavigationEventDispatcherOwner
-import androidx.navigationevent.NavigationEventTransitionState
 import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneMotion
+import ch.lkmc.neutrodyne.core.navigation.FeedsKey
 import ch.lkmc.neutrodyne.core.navigation.NdSceneMetadata
 import ch.lkmc.neutrodyne.core.navigation.TopLevelKey
 
@@ -63,30 +63,34 @@ internal class PaneSceneStrategy(
     private var activeKey by mutableStateOf<PaneSceneKey?>(null)
     private var selectedTab: TopLevelKey? = null
     private var paneAnimations: Map<String, Any> = emptyMap()
-    private var completedGesture: NavigationEventTransitionState.InProgress? = null
+    internal val currentTab: TopLevelKey get() = navigation.selectedTab
+    internal val canGoBack: Boolean get() = currentTab != FeedsKey || navigation.stack(currentTab).size > 1
 
-    /** A bound Material handler can repeat an obsolete count after its history changed. */
-    internal fun onBack(transition: NavigationEventTransitionState?) {
-        val gesture = transition as? NavigationEventTransitionState.InProgress
-        if (gesture == null) {
-            navigation.pop()
-            return
-        }
-        if (completedGesture === gesture) return
-        completedGesture = gesture
-
-        val live =
-            navigation.visibleTabs().flatMap { tab ->
-                navigation.stack(tab).map { entryProvider(it, tab) }
-            }
+    /** The event handler supplies the originating tab, even before selection recomposes. */
+    internal fun completeBack(origin: TopLevelKey) {
+        if (origin != currentTab) return
+        val live = liveEntries()
         val scene = with(adaptive) { SceneStrategyScope<NavKey>().calculateScene(live) }
         val internalBack = scene?.previousEntries?.lastOrNull() in scene?.entries.orEmpty()
         val target = if (internalBack) requireNotNull(scene).previousEntries else live.dropLast(1)
 
-        // The processor retains this gesture object throughout the synchronous completion.
-        // Apply the live plan once, not once per callback from the departing scaffold.
+        // This method is called once per dispatched event, not once per Material repeat callback.
         repeat(live.size - target.size) { navigation.pop() }
     }
+
+    internal fun isCurrentEntry(contentKey: Any): Boolean {
+        val live = liveEntries()
+        val scene = with(adaptive) { SceneStrategyScope<NavKey>().calculateScene(live) }
+        if (scene == null) return live.lastOrNull()?.contentKey == contentKey
+        return PaneRole.entries.any { role ->
+            scene.entries.lastOrNull { paneRole(it) == role }?.contentKey == contentKey
+        }
+    }
+
+    private fun liveEntries(): List<NavEntry<NavKey>> =
+        navigation.visibleTabs().flatMap { tab ->
+            navigation.stack(tab).map { entryProvider(it, tab) }
+        }
 
     /** Only actual stack emissions advance anchors; predictive prefixes merely query them. */
     internal fun updateCurrent(
@@ -290,7 +294,7 @@ private class PaneScene(
         SideEffect { owner?.navigationEventDispatcher?.isEnabled = active }
         val exiting = !active && LocalNavAnimatedContentScope.current.transition.targetState == EnterExitState.PostExit
 
-        // Disable new input to exit scenes; already-bound completion is guarded by onBack.
+        // These dispatchers seek native preview only; real completion is owned outside NavDisplay.
         Box(Modifier.fillMaxSize().then(if (exiting) Modifier.clearAndSetSemantics {} else Modifier)) {
             // A committed exit is no longer an accessible screen; a cancellable source remains active.
             CompositionLocalProvider(LocalPaneSceneMotion provides PaneSceneMotion(key, enteringRoles)) {
@@ -348,7 +352,7 @@ private fun PaneFocusContent(entry: NavEntry<NavKey>) {
                 focused = it.hasFocus
                 if (it.hasFocus) requester.saveFocusedChild()
             }.focusGroup(),
-    ) { entry.Content() }
+    ) { EntryBackDispatch(entry) { entry.Content() } }
 
     LaunchedEffect(scene) {
         if (restore) {

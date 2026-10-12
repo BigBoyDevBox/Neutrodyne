@@ -31,7 +31,6 @@ import androidx.navigation3.ui.NavDisplay
 import androidx.navigation3.ui.defaultPopTransitionSpec
 import androidx.navigation3.ui.defaultPredictivePopTransitionSpec
 import androidx.navigation3.ui.defaultTransitionSpec
-import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneMotion
 import ch.lkmc.neutrodyne.core.navigation.EntryProviderInstaller
@@ -94,40 +93,41 @@ public fun NeutrodyneNavHost(
 
     // The scene transitions share the pane-swap spec so reduced motion snaps both (see 08).
     val motionSpec = NeutrodyneMotion.navigation<IntOffset>()
-    val events = LocalNavigationEventDispatcherOwner.current?.navigationEventDispatcher
 
     SharedTransitionLayout {
-        NavDisplay(
-            entries = entries,
-            modifier = modifier,
-            onBack = { panes.onBack(events?.transitionState?.value) },
-            sceneStrategies =
-                listOf(
-                    rememberNdBottomSheetSceneStrategy(),
-                    rememberNdDialogSceneStrategy(),
-                    panes,
-                ),
-            transitionSpec = {
-                transformFor(classifyTransition(initialState, targetState), motionSpec) {
-                    defaultTransitionSpec<NavKey>().invoke(this)
-                }
-            },
-            popTransitionSpec = {
-                transformFor(
-                    classifyPopTransition(initialState, targetState, state.lastChangeWasPop),
-                    motionSpec,
-                ) {
-                    defaultPopTransitionSpec<NavKey>().invoke(this)
-                }
-            },
-            predictivePopTransitionSpec = { swipeEdge ->
-                transformFor(classifyPredictivePopTransition(initialState, targetState), motionSpec) {
-                    defaultPredictivePopTransitionSpec<NavKey>().invoke(this, swipeEdge)
-                }
-            },
-            // Expanded panes share movable entries, not whole-entry animated bounds.
-            sharedTransitionScope = if (directive.maxHorizontalPartitions == 1) this else null,
-        )
+        NavigationBackDispatch(panes) {
+            NavDisplay(
+                entries = entries,
+                modifier = modifier,
+                onBack = { state.pop() },
+                sceneStrategies =
+                    listOf(
+                        rememberNdBottomSheetSceneStrategy(),
+                        rememberNdDialogSceneStrategy(),
+                        panes,
+                    ),
+                transitionSpec = {
+                    transformFor(classifyTransition(initialState, targetState), motionSpec) {
+                        defaultTransitionSpec<NavKey>().invoke(this)
+                    }
+                },
+                popTransitionSpec = {
+                    transformFor(
+                        classifyPopTransition(initialState, targetState, state.lastChangeWasPop),
+                        motionSpec,
+                    ) {
+                        defaultPopTransitionSpec<NavKey>().invoke(this)
+                    }
+                },
+                predictivePopTransitionSpec = { swipeEdge ->
+                    transformFor(classifyPredictivePopTransition(initialState, targetState), motionSpec) {
+                        defaultPredictivePopTransitionSpec<NavKey>().invoke(this, swipeEdge)
+                    }
+                },
+                // Expanded panes share movable entries, not whole-entry animated bounds.
+                sharedTransitionScope = if (directive.maxHorizontalPartitions == 1) this else null,
+            )
+        }
     }
 }
 
