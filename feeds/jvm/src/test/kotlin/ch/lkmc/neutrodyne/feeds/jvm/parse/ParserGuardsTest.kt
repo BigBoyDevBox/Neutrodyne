@@ -1,0 +1,706 @@
+// SPDX-License-Identifier: Unlicense
+package ch.lkmc.neutrodyne.feeds.jvm.parse
+
+import ch.lkmc.neutrodyne.feeds.model.WarningCode
+import ch.lkmc.neutrodyne.feeds.parse.ParseFailure
+import ch.lkmc.neutrodyne.feeds.parse.ParseLimits
+import ch.lkmc.neutrodyne.feeds.parse.ParseResult
+import okio.Buffer
+import org.junit.Test
+import java.io.IOException
+import java.nio.charset.Charset
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
+
+/**
+ * The pre-parse guards decide the document encoding exactly as the pull parser does — a BOM or a
+ * byte signature the parser's `setInput` supports, or the leading XML declaration, never text inside
+ * a comment (03 Parser setup and charset step 1). A disagreement lets an attribute flood or an
+ * `ENTITY` declaration slip past `TagBounds`/`PrologGuard`.
+ */
+class ParserGuardsTest {
+    private val baseUrl = "https://example.com/feed.xml"
+
+    private companion object {
+        /** Okio reads through one 8 KiB segment at a time: the bounded read may overshoot the cap by one. */
+        const val SEGMENT = 8 * 1024L
+        const val ENTITY_DOCTYPE = "<!DOCTYPE rss [<!ENTITY x 'boom'>]>"
+        const val RSS_FEED = "<rss version='2.0'><channel><title>Café</title></channel></rss>"
+        val UTF8_BOM = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
+        val UTF16LE_BOM = byteArrayOf(0xFF.toByte(), 0xFE.toByte())
+        val UTF16BE_BOM = byteArrayOf(0xFE.toByte(), 0xFF.toByte())
+        val UTF32LE_BOM = byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 0x00, 0x00)
+        val UTF32BE_BOM = byteArrayOf(0x00, 0x00, 0xFE.toByte(), 0xFF.toByte())
+    }
+
+    private fun parse(bytes: ByteArray): ParseResult =
+        XmlPullFeedParser.discovered().parse({ Buffer().write(bytes) }, null, baseUrl)
+
+    private fun failedOf(xml: String): ParseResult.Failed = assertIs(resultOf(xml))
+
+    private fun resultOf(xml: String): ParseResult = parse(xml.encodeToByteArray())
+
+    /** `encoding=` inside a comment must not steer detection: the parser never sees it. */
+    @Test
+    fun encodingNamedInACommentIsNotHonoured() {
+        // Decoded as UTF-16 the guards see garbage and the flood tag reaches the pull parser.
+        val flood = (1..1_001).joinToString(" ") { "a$it=\"v\"" }
+        val xml = "<!-- encoding=\"UTF-16LE\" --><rss version=\"2.0\" $flood><channel/></rss>"
+        assertEquals(ParseFailure.MALFORMED, failedOf(xml).reason)
+    }
+
+    @Test
+    fun commentDoesNotHideAnEntityDeclaration() {
+        val xml =
+            "<!-- encoding=\"UTF-16LE\" --><!DOCTYPE rss [<!ENTITY x \"boom\">]>" +
+                "<rss version=\"2.0\"><channel/></rss>"
+        assertEquals(ParseFailure.HOSTILE, failedOf(xml).reason)
+    }
+
+    /** kxml2 detects BOM-less UTF-32 from `<` padding; the guards must scan it in the same encoding. */
+    @Test
+    fun bomlessUtf32LeUsesTheParserSignature() {
+        val xml = "<!DOCTYPE rss [<!ENTITY x \"boom\">]><rss version=\"2.0\"><channel/></rss>"
+        val bytes = xml.toByteArray(Charsets.UTF_32LE)
+        assertEquals(Charsets.UTF_32LE, EncodingSniff.sniff(bytes, ParseLimits().prologScanBytes))
+        assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(parse(bytes)).reason)
+    }
+
+    @Test
+    fun bomlessUtf32LeDocumentParses() {
+        val xml = "<rss version=\"2.0\"><channel><title>U32</title></channel></rss>"
+        val bytes = xml.toByteArray(Charsets.UTF_32LE)
+        val feed = assertIs<ParseResult.Ok>(parse(bytes)).feed
+        assertEquals("U32", feed.title)
+    }
+
+    /** kxml2 only sniffs BOM-less UTF-16 when the document starts with `<?`: `<r` is UTF-8 to it. */
+    @Test
+    fun bomlessUtf16WithoutDeclarationIsNotDetected() {
+        val bytes = "<rss/>".toByteArray(Charsets.UTF_16LE)
+        assertEquals(Charsets.UTF_8, EncodingSniff.sniff(bytes, ParseLimits().prologScanBytes))
+    }
+
+    /** A comment or PI inside the DOCTYPE internal subset keeps its own delimiters. */
+    @Test
+    fun commentInsideSubsetDoesNotHideTheRootTag() {
+        val flood = (1..1_001).joinToString(" ") { "a$it=\"v\"" }
+        val xml = "<!DOCTYPE rss [<!-- \" -->]><rss version=\"2.0\" $flood><channel/></rss>"
+        assertEquals(ParseFailure.MALFORMED, failedOf(xml).reason)
+    }
+
+    @Test
+    fun entityAfterCommentInsideSubsetIsHostile() {
+        val xml =
+            "<!DOCTYPE rss [<!-- \" --><!ENTITY x \"boom\">]>" +
+                "<rss version=\"2.0\"><channel/></rss>"
+        assertEquals(ParseFailure.HOSTILE, failedOf(xml).reason)
+    }
+
+    @Test
+    fun entityAfterPiInsideSubsetIsHostile() {
+        // The `"` inside the PI would open a quoted literal if PIs were not skipped wholesale.
+        val xml =
+            "<!DOCTYPE rss [<?p \" ?><!ENTITY y \"boom\">]>" +
+                "<rss version=\"2.0\"><channel/></rss>"
+        assertEquals(ParseFailure.HOSTILE, failedOf(xml).reason)
+    }
+
+    /**
+     * kxml2 keeps an ASCII declaration's raw bytes and decodes only the remainder with the declared
+     * encoding. Decoding the whole stream that way instead pairs the body's first byte with the
+     * declaration's last when the declaration is odd, phase-shifting every tag out of the guards'
+     * view while the pull parser still sees a genuine UTF-16 document.
+     */
+    @Test
+    fun declaredEncodingCannotPhaseShiftAnEntityPastTheGuard() {
+        // 41 ASCII bytes: odd, so a whole-stream UTF-16LE decode misaligns the body.
+        val declaration = "<?xml version=\"1.0\" encoding=\"utf-16le\"?>"
+        assertEquals(41, declaration.length)
+        val body = "<!DOCTYPE rss [<!ENTITY x \"boom\">]><rss version=\"2.0\"><channel/></rss>"
+        val bytes = declaration.toByteArray(Charsets.US_ASCII) + body.toByteArray(Charsets.UTF_16LE)
+        assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(parse(bytes)).reason)
+    }
+
+    /** Same phase shift against the attribute bound: the flood must not reach the pull parser. */
+    @Test
+    fun declaredEncodingCannotPhaseShiftAnAttributeFlood() {
+        val declaration = "<?xml version=\"1.0\" encoding=\"utf-16le\"?>"
+        val flood = (1..1_001).joinToString(" ") { "a$it=\"v\"" }
+        val body = "<rss version=\"2.0\" $flood><channel/></rss>"
+        val bytes = declaration.toByteArray(Charsets.US_ASCII) + body.toByteArray(Charsets.UTF_16LE)
+        assertEquals(ParseFailure.MALFORMED, assertIs<ParseResult.Failed>(parse(bytes)).reason)
+    }
+
+    /** The boundary also works forward: a declaration naming UTF-16 with a real UTF-16 body parses. */
+    @Test
+    fun declaredUtf16BodyStillParses() {
+        val declaration = "<?xml version=\"1.0\" encoding=\"utf-16le\"?>"
+        val body = "<rss version=\"2.0\"><channel><title>Enc</title></channel></rss>"
+        val bytes = declaration.toByteArray(Charsets.US_ASCII) + body.toByteArray(Charsets.UTF_16LE)
+        assertEquals("Enc", assertIs<ParseResult.Ok>(parse(bytes)).feed.title)
+    }
+
+    /**
+     * `maxDocumentBytes` is enforced incrementally during the read: a source that never ends must
+     * fail `TOO_LARGE` after delivering only about the cap — without the bound, `readByteArray()`
+     * drains it until the heap dies.
+     */
+    @Test
+    fun endlessSourceFailsBoundedWithoutDraining() {
+        val cap = 64L
+        val parser = XmlPullFeedParser.discovered()
+        val delivered = AtomicLong()
+        val endless =
+            object : okio.Source {
+                override fun read(
+                    sink: Buffer,
+                    byteCount: Long,
+                ): Long {
+                    delivered.addAndGet(byteCount)
+                    sink.write(ByteArray(byteCount.toInt()) { 'x'.code.toByte() })
+                    return byteCount
+                }
+
+                override fun timeout(): okio.Timeout = okio.Timeout.NONE
+
+                override fun close() {}
+            }
+        val result = parser.parse({ endless }, null, baseUrl, ParseLimits(maxDocumentBytes = cap))
+        assertEquals(ParseFailure.TOO_LARGE, assertIs<ParseResult.Failed>(result).reason)
+        // One segment's worth past the cap at most — never the whole stream.
+        assertTrue(delivered.get() <= cap + SEGMENT, "source delivered ${delivered.get()} bytes")
+    }
+
+    /**
+     * FeedParser.parse: a throw from `open` or the buffering read is an I/O failure, not malformed
+     * input — the original exception propagates and `ParseFailure` deliberately has no reason for it.
+     */
+    @Test
+    fun openFailurePropagatesUnchanged() {
+        val boom = IOException("open boom")
+        val thrown =
+            assertFailsWith<IOException> {
+                XmlPullFeedParser.discovered().parse({ throw boom }, null, baseUrl)
+            }
+        assertEquals("open boom", thrown.message)
+    }
+
+    /** The bounded read propagates a source failure at every point of the fill, cap included. */
+    @Test
+    fun readFailuresPropagateAndClose() {
+        val parser = XmlPullFeedParser.discovered()
+        for (failAfter in listOf(0L, 63L, 64L)) {
+            val delivered = AtomicLong()
+            val closed = AtomicBoolean()
+            val failing =
+                object : okio.Source {
+                    override fun read(
+                        sink: Buffer,
+                        byteCount: Long,
+                    ): Long {
+                        val grant = minOf(byteCount, failAfter - delivered.get())
+                        if (grant <= 0L) throw IOException("read boom at $failAfter")
+                        sink.write(ByteArray(grant.toInt()) { 'x'.code.toByte() })
+                        delivered.addAndGet(grant)
+                        return grant
+                    }
+
+                    override fun timeout(): okio.Timeout = okio.Timeout.NONE
+
+                    override fun close() {
+                        closed.set(true)
+                    }
+                }
+            val thrown =
+                assertFailsWith<IOException> {
+                    parser.parse({ failing }, null, baseUrl, ParseLimits(maxDocumentBytes = 64))
+                }
+            assertEquals("read boom at $failAfter", thrown.message)
+            assertTrue(closed.get(), "source was not closed after the read failure")
+        }
+    }
+
+    /** `Long.MAX_VALUE` means "no effective bound": `cap + 1` must not wrap negative. */
+    @Test
+    fun maxDocumentBytesAtLongMaxValueParses() {
+        val xml = "<rss version=\"2.0\"><channel><title>T</title></channel></rss>"
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write(xml.encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxDocumentBytes = Long.MAX_VALUE),
+                )
+        assertIs<ParseResult.Ok>(result)
+    }
+
+    /**
+     * `prologScanBytes` bounds only the declaration sniff/decode step — the `<!ENTITY` scan covers
+     * the whole prolog (03 step 1), so a comment past the window cannot hide the DOCTYPE.
+     */
+    @Test
+    fun entityDeclarationBeyondTheSniffWindowIsHostile() {
+        for (padding in listOf(65_520, 70_000)) {
+            val xml =
+                "<!--" + "x".repeat(padding) + "-->" +
+                    "<!DOCTYPE rss [<!ENTITY x 'boom'>]>" +
+                    "<rss version='2.0'><channel><title>T</title></channel></rss>"
+            assertEquals(ParseFailure.HOSTILE, failedOf(xml).reason)
+        }
+    }
+
+    /** The whole-prolog scan holds in non-UTF-8 encodings too — here UTF-16 with a BOM. */
+    @Test
+    fun entityDeclarationBeyondWindowIsHostileUtf16() {
+        val xml =
+            "<!--" + "x".repeat(70_000) + "-->" +
+                "<!DOCTYPE rss [<!ENTITY x 'boom'>]>" +
+                "<rss version='2.0'><channel><title>T</title></channel></rss>"
+        val bytes = xml.toByteArray(Charsets.UTF_16)
+        assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(parse(bytes)).reason)
+    }
+
+    /** A caller-narrowed window likewise cannot hide a later DOCTYPE from the scan. */
+    @Test
+    fun entityScanIsNotBoundedByCallerSniffWindow() {
+        val xml =
+            "<!--" + "x".repeat(2_000) + "-->" +
+                "<!DOCTYPE rss [<!ENTITY x 'boom'>]>" +
+                "<rss version='2.0'><channel><title>T</title></channel></rss>"
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write(xml.encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(prologScanBytes = 16),
+                )
+        assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(result).reason)
+    }
+
+    /**
+     * Relaxed kxml2 ends an `<?xml` declaration on `?` plus the next consumed char — the same
+     * attribute-lexer boundary `TagBounds` models — not on the next literal `?>`. A fake
+     * terminator therefore cannot hide the DOCTYPE behind it, in any byte signature.
+     */
+    @Test
+    fun xmlDeclarationBadTerminatorCannotHideTheDoctype() {
+        val xml = "<?xml version='1.0' ?Z$ENTITY_DOCTYPE$RSS_FEED"
+        val utf8 = xml.toByteArray(Charsets.UTF_8)
+        val variants =
+            listOf(
+                utf8,
+                UTF8_BOM + utf8,
+                UTF16LE_BOM + xml.toByteArray(Charsets.UTF_16LE),
+                UTF16BE_BOM + xml.toByteArray(Charsets.UTF_16BE),
+                xml.toByteArray(Charsets.UTF_32LE),
+                xml.toByteArray(Charsets.UTF_32BE),
+                UTF32LE_BOM + xml.toByteArray(Charsets.UTF_32LE),
+                UTF32BE_BOM + xml.toByteArray(Charsets.UTF_32BE),
+            )
+        for (bytes in variants) {
+            assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(parse(bytes)).reason)
+        }
+    }
+
+    /** The override pass decodes with the caller charset and applies the same boundary. */
+    @Test
+    fun xmlDeclarationBadTerminatorIsHostileOnCharsetReparse() {
+        val xml = "<?xml version='1.0' ?Z$ENTITY_DOCTYPE$RSS_FEED"
+        val bytes = xml.toByteArray(Charset.forName("windows-1252"))
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse({ Buffer().write(bytes) }, "windows-1252", baseUrl, ParseLimits())
+        assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(result).reason)
+    }
+
+    /** `<?xml` with no pseudo-attributes still ends on `?` plus one char, not a literal `?>`. */
+    @Test
+    fun xmlDeclarationWithoutAttributesEndsOnTheTerminator() {
+        assertEquals(ParseFailure.HOSTILE, failedOf("<?xml ?Z$ENTITY_DOCTYPE$RSS_FEED").reason)
+    }
+
+    /** A delayed DOCTYPE behind the fake terminator is still found — uppercase and BOM variants. */
+    @Test
+    fun xmlDeclarationBadTerminatorCannotHideADelayedDoctype() {
+        for (prefix in listOf("<?XML version='1.0' ?Z", "\ufeff<?xml version='1.0' ?Z")) {
+            val xml = prefix + "<!--" + "x".repeat(70_000) + "-->" + ENTITY_DOCTYPE + RSS_FEED
+            assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(resultOf(xml)).reason)
+        }
+    }
+
+    /** A `?>` inside a quoted pseudo-attribute value does not end the declaration early. */
+    @Test
+    fun quotedTerminatorInsideTheDeclarationCannotEndItEarly() {
+        for (
+        declaration in
+        listOf(
+            "<?xml version='1.0' junk='?> <r/>' ?>",
+            "<?xml version='1.0 ?> <r/>' ?>",
+        )
+        ) {
+            assertEquals(ParseFailure.HOSTILE, failedOf(declaration + ENTITY_DOCTYPE + RSS_FEED).reason)
+        }
+    }
+
+    /** CDATA content is text even before the root — relaxed kxml2 yields CDSECT, not a decl. */
+    @Test
+    fun cdataBeforeTheRootIsNotAnEntityDeclaration() {
+        assertIs<ParseResult.Ok>(resultOf("<![CDATA[<!ENTITY x 'boom'>]]>$RSS_FEED"))
+    }
+
+    @Test
+    fun cdataBeforeTheRootAfterALongCommentIsNotAnEntityDeclaration() {
+        val xml = "<!--" + "x".repeat(70_000) + "--><![CDATA[<!ENTITY x 'boom'>]]>" + RSS_FEED
+        assertIs<ParseResult.Ok>(resultOf(xml))
+    }
+
+    /** The skipped CDATA payload cannot hide markup: a following declaration still scans. */
+    @Test
+    fun cdataBeforeTheRootDoesNotHideAFollowingEntityDeclaration() {
+        assertEquals(ParseFailure.HOSTILE, failedOf("<![CDATA[<r/>]]>$ENTITY_DOCTYPE$RSS_FEED").reason)
+    }
+
+    /** The marker check covers the declaration's own opener, not only constructs nested inside. */
+    @Test
+    fun standaloneEntityDeclarationIsHostile() {
+        assertEquals(ParseFailure.HOSTILE, failedOf("<!ENTITY x 'boom'>$RSS_FEED").reason)
+        assertEquals(ParseFailure.HOSTILE, failedOf("<!ENTITY x 'boom'>").reason)
+    }
+
+    /**
+     * The caller's bound is the declaration-acceptance window: an `<?xml` declaration whose `>`
+     * lies past `prologScanBytes` is rejected the way the parser's own buffer would reject it.
+     * The `<!ENTITY` scan still covers the whole prolog (03 step 1).
+     */
+    @Test
+    fun prologScanBytesBoundsDeclarationAcceptance() {
+        val xml = "<?xml version='1.0' encoding='windows-1252'?>$RSS_FEED"
+        assertEquals(44, xml.indexOf('>'))
+        val parser = XmlPullFeedParser.discovered()
+        for (tooSmall in listOf(0, 1, 4, 16, 44)) {
+            val result =
+                parser.parse(
+                    { Buffer().write(xml.toByteArray(Charsets.UTF_8)) },
+                    null,
+                    baseUrl,
+                    ParseLimits(prologScanBytes = tooSmall),
+                )
+            assertEquals(ParseFailure.MALFORMED, assertIs<ParseResult.Failed>(result).reason, "limit $tooSmall")
+        }
+        for (enough in listOf(45, 65_536)) {
+            val result =
+                parser.parse(
+                    { Buffer().write(xml.toByteArray(Charsets.UTF_8)) },
+                    null,
+                    baseUrl,
+                    ParseLimits(prologScanBytes = enough),
+                )
+            assertIs<ParseResult.Ok>(result)
+        }
+    }
+
+    /** A finite document over the cap fails `TOO_LARGE`; exactly the cap still reaches the parser. */
+    @Test
+    fun documentOverMaxBytesFailsTooLarge() {
+        val parser = XmlPullFeedParser.discovered()
+        val limits = ParseLimits(maxDocumentBytes = 64)
+        val oversized = ByteArray(65) { 'x'.code.toByte() }
+        assertEquals(
+            ParseFailure.TOO_LARGE,
+            assertIs<ParseResult.Failed>(parser.parse({ Buffer().write(oversized) }, null, baseUrl, limits)).reason,
+        )
+        // Exactly at the cap the read succeeds and the document reaches the parser — here it parses.
+        val exact = "<rss version=\"2.0\"><channel><title>abcde</title></channel></rss>"
+        assertEquals(64, exact.encodeToByteArray().size)
+        val result = parser.parse({ Buffer().write(exact.encodeToByteArray()) }, null, baseUrl, limits)
+        assertIs<ParseResult.Ok>(result)
+    }
+
+    /**
+     * X2: kxml2's `parseDoctype` ignores `"` — only `'` quotes — and stops the DOCTYPE at the first
+     * unquoted `>`. A `"…"` region therefore does not hide markup from the pull parser, and the tag
+     * bound must see the same boundary or the embedded flood reaches it uncounted.
+     */
+    @Test
+    fun doctypeDoubleQuoteCannotHideAnAttributeFlood() {
+        val flood = (1..1_001).joinToString(" ") { "a$it=\"v\"" }
+        val xml =
+            "<!DOCTYPE rss SYSTEM \"><rss $flood><channel><title>Hidden</title></channel></rss>\">" +
+                "<rss><channel/></rss>"
+        assertEquals(ParseFailure.MALFORMED, failedOf(xml).reason)
+    }
+
+    /**
+     * Review round 5: relaxed kxml2 ends an end tag after its name, whitespace and exactly one more
+     * character (`</x !` closes `x`), so the guard must not skip to the next `>` past the start tag
+     * that follows.
+     */
+    @Test
+    fun malformedEndTagCannotHideAnAttributeFlood() {
+        val flood = (1..1_001).joinToString(" ") { "a$it=\"1\"" }
+        val xml = "<rss><channel><x></x !<item $flood/></channel></rss>"
+        assertEquals(ParseFailure.MALFORMED, failedOf(xml).reason)
+    }
+
+    /** X2: relaxed kxml2 accepts a name starting with a digit; its attributes still get bounded. */
+    @Test
+    fun digitNamedTagIsBounded() {
+        val flood = (1..1_001).joinToString(" ") { "a$it=\"v\"" }
+        val xml = "<rss><channel><0 $flood/></channel></rss>"
+        assertEquals(ParseFailure.MALFORMED, failedOf(xml).reason)
+    }
+
+    /** X2: an `<?xml ` declaration is processed by kxml2's attribute loop too — bound it as well. */
+    @Test
+    fun xmlDeclarationAttributesAreBounded() {
+        val flood = (1..1_001).joinToString(" ") { "a$it=\"v\"" }
+        val xml = "<?xml version=\"1.0\" $flood ?><rss><channel/></rss>"
+        assertEquals(ParseFailure.MALFORMED, failedOf(xml).reason)
+    }
+
+    /**
+     * X3: the charset-override pass runs the guards on the stream as that pass decodes it. Here the
+     * oversized start tag exists only in the IBM037 view; before the fix the second pass ran
+     * unguarded and won the heuristic (title null, CHARSET_REPARSED). Guarded, the pass fails and
+     * the first pass' result stands.
+     */
+    @Test
+    fun charsetOverridePassIsCheckedByTagBounds() {
+        val flood = (1..1_001).joinToString(" ") { "a$it=\"v\"" }
+        val bytes =
+            "<rss><channel><title>Clean ".encodeToByteArray() +
+                "<rss $flood><channel/></rss>".toByteArray(Charset.forName("IBM037")) +
+                "</title></channel></rss>".encodeToByteArray()
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse({ Buffer().write(bytes) }, "IBM037", baseUrl)
+        val feed = assertIs<ParseResult.Ok>(result).feed
+        assertTrue(feed.title?.startsWith("Clean ") == true)
+        assertTrue(feed.warnings.none { it.code == WarningCode.CHARSET_REPARSED })
+    }
+
+    /** X3: a `<!ENTITY` that exists only in the override decoding is still hostile there. */
+    @Test
+    fun charsetOverridePassIsCheckedByPrologGuard() {
+        val bytes =
+            "<rss><channel><title>Clean ".encodeToByteArray() +
+                "<!DOCTYPE r [<!ENTITY x \"b\">]><r/>".toByteArray(Charset.forName("IBM037")) +
+                "</title></channel></rss>".encodeToByteArray()
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse({ Buffer().write(bytes) }, "IBM037", baseUrl)
+        val feed = assertIs<ParseResult.Ok>(result).feed
+        assertTrue(feed.title?.startsWith("Clean ") == true)
+        assertTrue(feed.warnings.none { it.code == WarningCode.CHARSET_REPARSED })
+    }
+
+    /** `setInput` fails when the declaration's `>` never comes: so does the parse. */
+    @Test
+    fun declarationWithoutCloseIsRejected() {
+        assertIs<EncodingSniff.View.Rejected>(
+            EncodingSniff.view("<?xml".toByteArray(), ParseLimits().prologScanBytes),
+        )
+        assertEquals(
+            ParseFailure.MALFORMED,
+            assertIs<ParseResult.Failed>(parse("<?xml".toByteArray())).reason,
+        )
+    }
+
+    /** The caller's `prologScanBytes` is the declaration-acceptance bound; past it the view rejects. */
+    @Test
+    fun declarationClosingBeyondTheScanBoundIsRejected() {
+        val bytes = ("<?xml " + "a".repeat(8_192) + ">").toByteArray()
+        assertIs<EncodingSniff.View.Rejected>(EncodingSniff.view(bytes, 8_192))
+        assertIs<EncodingSniff.View.Decoded>(EncodingSniff.view(bytes, ParseLimits().prologScanBytes))
+    }
+
+    @Test
+    fun unsupportedDeclaredEncodingIsRejected() {
+        val bytes = "<?xml version=\"1.0\" encoding=\"utf-99\"?>".toByteArray()
+        assertIs<EncodingSniff.View.Rejected>(EncodingSniff.view(bytes, ParseLimits().prologScanBytes))
+        assertEquals(ParseFailure.MALFORMED, assertIs<ParseResult.Failed>(parse(bytes)).reason)
+    }
+
+    /** The declaration bytes stay raw even when the body decodes in the declared charset. */
+    @Test
+    fun declaredEncodingDecodesOnlyTheRemainder() {
+        val declaration = "<?xml version=\"1.0\" encoding=\"utf-16le\"?>"
+        val body = "<r>x</r>"
+        val bytes = declaration.toByteArray(Charsets.US_ASCII) + body.toByteArray(Charsets.UTF_16LE)
+        val view =
+            assertIs<EncodingSniff.View.Decoded>(EncodingSniff.view(bytes, ParseLimits().prologScanBytes))
+        assertEquals(declaration, view.prefix)
+        assertEquals(declaration.length, view.dataStart)
+        assertEquals(declaration + body, EncodingSniff.decode(bytes, ParseLimits().prologScanBytes))
+    }
+
+    // ---------------------------------------------------------------------------
+    // kxml2 2.3.0 lexer parity (differential review)
+    // ---------------------------------------------------------------------------
+
+    /**
+     * `parseLegacy` consumes the required keyword region character by character before the
+     * payload scan — seven chars for a `<!` that is not a comment or CDATA — so `''><!--` is
+     * swallowed wholesale and the payload scan starts inside the following comment, where the
+     * real `<!ENTITY` marker sits. kxml2 emits a DOCDECL carrying the entity; the guard must too.
+     */
+    @Test
+    fun doctypeRequiredRegionCannotHideAnEntityDeclaration() {
+        for (lead in listOf("<!''>", "<!>-", "<!x'y'>")) {
+            assertEquals(
+                ParseFailure.HOSTILE,
+                failedOf(lead + "<!-- <!ENTITY e 'v'> -->" + RSS_FEED).reason,
+                "lead $lead",
+            )
+        }
+    }
+
+    /** The required-region desynchronisation holds across every byte signature the guards decode. */
+    @Test
+    fun doctypeRequiredRegionCannotHideAnEntityInAnyEncoding() {
+        val xml = "<!''><!-- <!ENTITY e 'v'> -->$RSS_FEED"
+        val utf8 = xml.toByteArray(Charsets.UTF_8)
+        val variants =
+            listOf(
+                utf8,
+                UTF8_BOM + utf8,
+                UTF16LE_BOM + xml.toByteArray(Charsets.UTF_16LE),
+                UTF16BE_BOM + xml.toByteArray(Charsets.UTF_16BE),
+                xml.toByteArray(Charsets.UTF_32LE),
+                xml.toByteArray(Charsets.UTF_32BE),
+                UTF32LE_BOM + xml.toByteArray(Charsets.UTF_32LE),
+                UTF32BE_BOM + xml.toByteArray(Charsets.UTF_32BE),
+            )
+        for (bytes in variants) {
+            assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(parse(bytes)).reason)
+        }
+    }
+
+    /**
+     * Dispatch peeks one char after `<!`: `-` selects the comment path whose required `--` is
+     * consumed blindly, so `<!-'-->` ends at the `-->` and the tag behind it reaches kxml2 with
+     * all its attributes. `TagBounds` must see the same tag or `maxTagAttributes` never engages.
+     */
+    @Test
+    fun partialCommentCannotHideAnAttributeFlood() {
+        val flood = (0..1_000).joinToString(" ") { "a$it='v'" }
+        assertEquals(ParseFailure.MALFORMED, failedOf("<!-'--><rss $flood><channel/></rss>").reason)
+    }
+
+    /** The same for `[`: one peeked char selects CDATA and six required chars are consumed. */
+    @Test
+    fun partialCdataCannotHideAnAttributeFlood() {
+        val flood = (0..9).joinToString(" ") { "a$it='v'" }
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write("<![xy']]>]]><rss $flood><channel/></rss>".encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxTagAttributes = 8),
+                )
+        assertEquals(ParseFailure.MALFORMED, assertIs<ParseResult.Failed>(result).reason)
+    }
+
+    /**
+     * In relaxed mode kxml2's `pushEntity` consumes and pushes a non-`;` terminator, so `&<` or
+     * `&x<` eats the `<` that opens the next construct. The following `!--` is then plain text
+     * and the DOCTYPE behind it is a real token — the guard must desynchronise the same way.
+     */
+    @Test
+    fun entityReferenceEatingTheOpenAngleCannotHideTheDoctype() {
+        for (prefix in listOf("&<", "&x<", "&#")) {
+            assertEquals(
+                ParseFailure.HOSTILE,
+                failedOf(prefix + "!--$ENTITY_DOCTYPE$RSS_FEED").reason,
+                "prefix $prefix",
+            )
+        }
+    }
+
+    /** A PI opener eaten the same way leaves a standalone entity declaration behind. */
+    @Test
+    fun entityReferenceEatingPiOpenLeavesTheDeclarationBehind() {
+        assertEquals(ParseFailure.HOSTILE, failedOf("&<?p <!ENTITY e 'v' ?>$RSS_FEED").reason)
+    }
+
+    /** And the tag the eaten `<` would have hidden still counts against the attribute bound. */
+    @Test
+    fun entityReferenceEatingTheAngleCannotHideAnAttributeFlood() {
+        val flood = (0..9).joinToString(" ") { "a$it='v'" }
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write("&x<!--<rss $flood><channel/></rss>".encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxTagAttributes = 8),
+                )
+        assertEquals(ParseFailure.MALFORMED, assertIs<ParseResult.Failed>(result).reason)
+    }
+
+    /**
+     * A `?>` that begins at the PI scan position is already consumed — it can never close the
+     * PI. kxml2 reads `<??>` to EOF, so the tag behind it is PI payload, not a start tag.
+     */
+    @Test
+    fun piTerminatorAtTheScanPositionDoesNotCloseIt() {
+        val flood = (0..9).joinToString(" ") { "a$it='v'" }
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write("<??><r $flood>".encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxTagAttributes = 8),
+                )
+        assertEquals(ParseFailure.NOT_A_FEED, assertIs<ParseResult.Failed>(result).reason)
+    }
+
+    /** A `<![` opener whose required region eats the `]]>` runs to EOF as CDSECT — no tag. */
+    @Test
+    fun cdataRunningToEofCannotSpawnAnAttributeFlood() {
+        val flood = (0..9).joinToString(" ") { "a$it='v'" }
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write("<![x'v']]><r $flood>".encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxTagAttributes = 8),
+                )
+        assertEquals(ParseFailure.NOT_A_FEED, assertIs<ParseResult.Failed>(result).reason)
+    }
+
+    /** `&x<` turns the would-be tag into entity text plus plain text — kxml2 never emits it. */
+    @Test
+    fun entityReferenceEatingTheAngleLeavesText() {
+        val flood = (0..9).joinToString(" ") { "a$it='v'" }
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write("&x<r $flood>".encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxTagAttributes = 8),
+                )
+        assertEquals(ParseFailure.NOT_A_FEED, assertIs<ParseResult.Failed>(result).reason)
+    }
+}

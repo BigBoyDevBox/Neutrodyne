@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: Unlicense
+package ch.lkmc.neutrodyne.feeds.jvm.parse
+
+import ch.lkmc.neutrodyne.feeds.model.ParsedFeed
+import ch.lkmc.neutrodyne.feeds.model.WarningCode
+import ch.lkmc.neutrodyne.feeds.parse.ParseResult
+import okio.Buffer
+import org.junit.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
+
+/**
+ * iTunes, `content:encoded`, Dublin Core and PSC extension elements inside an Atom `entry` dispatch
+ * through the same item handlers as in an RSS `item` (03 Field mapping).
+ */
+class AtomEntryExtensionsTest {
+    private fun feedOf(xml: String): ParsedFeed =
+        XmlPullFeedParser
+            .discovered()
+            .parse({ Buffer().write(xml.encodeToByteArray()) }, null, "https://feeds.test/feed.xml")
+            .let { assertIs<ParseResult.Ok>(it).feed }
+
+    @Test
+    fun entryChildrenInExtensionNamespacesAreRead() {
+        val feed =
+            feedOf(
+                "<feed xmlns=\"http://www.w3.org/2005/Atom\" " +
+                    "xmlns:content=\"http://purl.org/rss/1.0/modules/content/\" " +
+                    "xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\" " +
+                    "xmlns:dc=\"http://purl.org/dc/elements/1.1/\" " +
+                    "xmlns:psc=\"http://podlove.org/simple-chapters\">" +
+                    "<entry><id>e1</id><title>Episode</title>" +
+                    "<content:encoded><![CDATA[<p>Full <b>notes</b></p>]]></content:encoded>" +
+                    "<summary>fallback</summary>" +
+                    "<itunes:duration>60</itunes:duration>" +
+                    "<itunes:season>2</itunes:season>" +
+                    "<dc:date>2026-10-01T12:00:00Z</dc:date>" +
+                    "<psc:chapters><psc:chapter start=\"0:00\" title=\"intro\"/></psc:chapters>" +
+                    "</entry></feed>",
+            )
+        val item = feed.items.single()
+        // content:encoded outranks the Atom summary (03 Field mapping).
+        assertEquals("<p>Full <b>notes</b></p>", item.descriptionHtml)
+        assertEquals(60_000L, item.durationMs)
+        assertEquals(2, item.season)
+        assertEquals("2026-10-01T12:00:00Z", item.rawPubDate)
+        assertEquals(1_790_856_000_000L, item.pubDate)
+        assertEquals(listOf("intro"), item.inlineChapters.map { it.title })
+    }
+
+    /** A repeated `atom:id` keeps the first value, like the sibling handlers do. */
+    @Test
+    fun duplicateAtomIdKeepsTheFirst() {
+        val feed =
+            feedOf(
+                "<feed xmlns=\"http://www.w3.org/2005/Atom\">" +
+                    "<entry><id>first</id><id>second</id><title>t</title></entry></feed>",
+            )
+        assertEquals("first", feed.items.single().guid)
+    }
+
+    /** Item-level `atom:link rel="alternate"` is first-wins, like the channel-level one. */
+    @Test
+    fun duplicateAlternateLinkKeepsTheFirst() {
+        val feed =
+            feedOf(
+                "<feed xmlns=\"http://www.w3.org/2005/Atom\">" +
+                    "<entry><id>e1</id><title>Ep</title>" +
+                    "<link rel=\"alternate\" href=\"https://first.test/ep\"/>" +
+                    "<link rel=\"alternate\" href=\"https://second.test/mirror\"/>" +
+                    "</entry></feed>",
+            )
+        assertEquals("https://first.test/ep", feed.items.single().link)
+    }
+
+    @Test
+    fun pscChapterWithAnUnparsableStartWarnsAndSkips() {
+        val feed =
+            feedOf(
+                "<feed xmlns=\"http://www.w3.org/2005/Atom\" " +
+                    "xmlns:psc=\"http://podlove.org/simple-chapters\">" +
+                    "<entry><id>e1</id><title>Ep</title>" +
+                    "<psc:chapters><psc:chapter start=\"soon\" title=\"intro\"/>" +
+                    "<psc:chapter start=\"0:30\" title=\"keep\"/></psc:chapters>" +
+                    "</entry></feed>",
+            )
+        val item = feed.items.single()
+        assertEquals(1, item.inlineChapters.size)
+        assertEquals("keep", item.inlineChapters.single().title)
+        assertTrue(feed.warnings.any { it.code == WarningCode.BAD_DURATION }, feed.warnings.toString())
+    }
+
+    @Test
+    fun duplicateItunesSummaryAndContentEncodedKeepTheFirst() {
+        val feed =
+            feedOf(
+                "<rss version=\"2.0\" xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\" " +
+                    "xmlns:content=\"http://purl.org/rss/1.0/modules/content/\">" +
+                    "<channel><item>" +
+                    "<itunes:summary>one</itunes:summary><itunes:summary>two</itunes:summary>" +
+                    "<content:encoded><![CDATA[<p>a</p>]]></content:encoded>" +
+                    "<content:encoded><![CDATA[<p>b</p>]]></content:encoded>" +
+                    "</item></channel></rss>",
+            )
+        // content:encoded outranks itunes:summary, so its first value is the description.
+        assertEquals("<p>a</p>", feed.items.single().descriptionHtml)
+    }
+}

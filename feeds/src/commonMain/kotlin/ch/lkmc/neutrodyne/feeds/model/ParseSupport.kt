@@ -23,7 +23,7 @@ public enum class WarningCode {
     /** A date could not be parsed; `pubDate` is null and `rawPubDate` keeps the original. */
     UNKNOWN_DATE,
 
-    /** `itunes:duration` was not a recognised duration. */
+    /** An `itunes:duration`-style duration or `psc:chapter@start` position was not recognised. */
     BAD_DURATION,
 
     /** A URL was over 4,096 chars or not resolvable to absolute http(s); it was dropped. */
