@@ -287,6 +287,13 @@ line two</pre>
         assertThat(quote.blocks).hasSize(1_999)
     }
 
+    /** `<p><br></p>` emits no block; an empty or break-only quote must not either. */
+    @Test
+    fun emptyBlockquoteEmitsNoBlock() {
+        assertThat(blocksOf("<blockquote></blockquote><p>x</p>")).hasSize(1)
+        assertThat(blocksOf("<blockquote><br></blockquote><p>x</p>")).hasSize(1)
+    }
+
     /** C11: HTML-flagged text without tags takes the plain-text path after normalisation. */
     @Test
     fun htmlFlaggedTaglessInputGetsPlainTextHandling() {

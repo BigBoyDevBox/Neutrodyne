@@ -135,10 +135,11 @@ internal object InnerXml {
                 }
 
                 XmlPullParser.CDSECT -> {
-                    // CDATA carries the literal HTML payload; it must not be re-escaped.
-                    val text = parser.text
+                    // CDATA carries the literal HTML payload; it must not be re-escaped. The marker
+                    // strip applies once, so onText observes what the output carries (TEXT parity).
+                    val text = stripRelaxedError(parser.text)
                     onText(text)
-                    sink.append(stripRelaxedError(text))
+                    sink.append(text)
                     parser.nextToken()
                 }
 

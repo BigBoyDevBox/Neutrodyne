@@ -48,7 +48,8 @@ internal object Namespaces {
     /**
      * URIs also accepted for their key: case variants, `http`/`https` swaps and trailing-slash drift
      * (03 Namespace registry table), including the Podcasting 2.0 GitHub-alias URI the spec says must be
-     * treated as identical to the canonical one.
+     * treated as identical to the canonical one. The compare is already case-insensitive, so spelling
+     * out letter-case variants would be dead entries.
      */
     private val acceptedUris: Map<Key, List<String>> =
         mapOf(
@@ -66,7 +67,6 @@ internal object Namespaces {
                     "http://podcastindex.org/namespace/1.0",
                     "http://podcastindex.org/namespace/1.0/",
                     "https://github.com/podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
-                    "https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
                 ),
             Key.MEDIA to
                 listOf(
@@ -77,6 +77,24 @@ internal object Namespaces {
                 listOf(
                     "http://podlove.org/simple-chapters",
                     "http://podlove.org/simple-chapters/",
+                ),
+            Key.CONTENT to
+                listOf(
+                    "http://purl.org/rss/1.0/modules/content",
+                    "https://purl.org/rss/1.0/modules/content",
+                    "https://purl.org/rss/1.0/modules/content/",
+                ),
+            Key.DC to
+                listOf(
+                    "http://purl.org/dc/elements/1.1",
+                    "https://purl.org/dc/elements/1.1",
+                    "https://purl.org/dc/elements/1.1/",
+                ),
+            Key.SY to
+                listOf(
+                    "http://purl.org/rss/1.0/modules/syndication",
+                    "https://purl.org/rss/1.0/modules/syndication",
+                    "https://purl.org/rss/1.0/modules/syndication/",
                 ),
         )
 

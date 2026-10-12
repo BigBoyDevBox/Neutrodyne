@@ -46,4 +46,32 @@ class AtomEntryExtensionsTest {
         assertEquals(1_790_856_000_000L, item.pubDate)
         assertEquals(listOf("intro"), item.inlineChapters.map { it.title })
     }
+
+    /** A repeated `atom:id` keeps the first value, like the sibling handlers do. */
+    @Test
+    fun duplicateAtomIdKeepsTheFirst() {
+        val feed =
+            feedOf(
+                "<feed xmlns=\"http://www.w3.org/2005/Atom\">" +
+                    "<entry><id>first</id><id>second</id><title>t</title></entry></feed>",
+            )
+        assertEquals("first", feed.items.single().guid)
+    }
+
+    /** Duplicate text slots are first-wins everywhere, not only under Atom (03 Field mapping). */
+    @Test
+    fun duplicateItunesSummaryAndContentEncodedKeepTheFirst() {
+        val feed =
+            feedOf(
+                "<rss version=\"2.0\" xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\" " +
+                    "xmlns:content=\"http://purl.org/rss/1.0/modules/content/\">" +
+                    "<channel><item>" +
+                    "<itunes:summary>one</itunes:summary><itunes:summary>two</itunes:summary>" +
+                    "<content:encoded><![CDATA[<p>a</p>]]></content:encoded>" +
+                    "<content:encoded><![CDATA[<p>b</p>]]></content:encoded>" +
+                    "</item></channel></rss>",
+            )
+        // content:encoded outranks itunes:summary, so its first value is the description.
+        assertEquals("<p>a</p>", feed.items.single().descriptionHtml)
+    }
 }

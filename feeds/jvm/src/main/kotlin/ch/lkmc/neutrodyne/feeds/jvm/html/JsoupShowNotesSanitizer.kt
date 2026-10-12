@@ -338,7 +338,8 @@ public class JsoupShowNotesSanitizer : ShowNotesSanitizer {
                     if (takeBlock()) {
                         val inner = mutableListOf<NoteBlock>()
                         runContainer(node, inner, ::paragraph, sink.listDepth, sink.contextStyle, inheritedLink)
-                        sink.target.add(NoteBlock.Quote(inner))
+                        // An empty or break-only quote emits nothing, like `<p><br></p>`.
+                        if (inner.isNotEmpty()) sink.target.add(NoteBlock.Quote(inner))
                     }
                 }
 
@@ -777,7 +778,7 @@ public class JsoupShowNotesSanitizer : ShowNotesSanitizer {
 
             // Re-split the unstyled text at the segment's style boundaries.
             val end = position + span.text.length
-            while (position < end) {
+            while (position < end && pieceIndex < segment.size) {
                 val piece = segment[pieceIndex]
                 val take = minOf(piece.text.length - pieceOffset, end - position)
                 out.add(NoteSpan.Text(whole.substring(position, position + take), piece.style))
@@ -927,6 +928,8 @@ public class JsoupShowNotesSanitizer : ShowNotesSanitizer {
         /** The attributes jsoup resolves while cleaning — the same 4,096-char bound as feed URLs. */
         const val MAX_URL_CHARS = 4_096
         val URL_ATTRIBUTES = setOf("href", "src", "cite", "srcset")
-        val URL_ATTR_SELECTOR = "[href], [src], [cite], [srcset]"
+
+        // Derived, not restated: the selector must always cover exactly the bounded attributes.
+        val URL_ATTR_SELECTOR = URL_ATTRIBUTES.joinToString(", ") { "[$it]" }
     }
 }

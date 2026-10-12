@@ -12,11 +12,12 @@ package ch.lkmc.neutrodyne.feeds.jvm.parse
  * Every boundary comes from [PrologLexer], the tokenizer [TagBounds] walks, so a `<?xml`
  * declaration ends where the parser ends it (`?` plus one char through the attribute lexer, not a
  * literal `?>`), a `<![CDATA[` payload is text and not a declaration, and a DOCTYPE's internal
- * subset is scanned construct by construct. The entity marker is checked over the declaration
+ * subset is covered by one flat span check. The entity marker is checked over the declaration
  * span the lexer returns — including its own `<!ENTITY` opener — and conservatively also inside
  * quoted literals and DTD-internal comments, where a real entity cannot hide anyway. The prolog
  * ends at the first `</`-`-`/`!`-`?`-less `<x`: relaxed kxml2 accepts any name-start character
- * there (digits included).
+ * there (digits included). A DOCTYPE's internal subset is not re-walked construct by construct —
+ * it is covered by the declaration-span marker check, which is the stronger position anyway.
  */
 internal object PrologGuard {
     private const val ENTITY_MARKER = "<!entity"
@@ -26,7 +27,8 @@ internal object PrologGuard {
         var i = 0
         while (i < text.length) {
             when {
-                text[i].isWhitespace() -> {
+                // kxml2's skip() treats every char `<= ' '` as tag whitespace, not Unicode's rule.
+                text[i] <= ' ' -> {
                     i++
                 }
 

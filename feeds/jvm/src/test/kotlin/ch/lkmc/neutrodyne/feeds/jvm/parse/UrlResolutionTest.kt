@@ -365,4 +365,42 @@ class UrlResolutionTest {
         assertEquals("https://cdn.test/small.jpg", artwork.url)
         assertEquals(600, artwork.width)
     }
+
+    /**
+     * The Podcasting 2.0 spec carries `podcast:image`'s URL in `href` — `url` was the draft
+     * spelling and stays accepted. A spec-conformant feed must not lose its artwork.
+     */
+    @Test
+    fun podcastImageHrefIsReadAtChannelAndItem() {
+        val feed =
+            feedOf(
+                "<rss version=\"2.0\" xmlns:podcast=\"https://podcastindex.org/namespace/1.0\">" +
+                    "<channel>" +
+                    "<podcast:image href=\"https://cdn.test/cover.png\" purpose=\"artwork\" aspect-ratio=\"1/1\"/>" +
+                    "<item><podcast:image href=\"https://cdn.test/ep.png\"/></item>" +
+                    "</channel></rss>",
+            )
+        assertEquals("https://cdn.test/cover.png", feed.artwork.single().url)
+        assertEquals(
+            "https://cdn.test/ep.png",
+            feed.items
+                .single()
+                .artwork
+                .single()
+                .url,
+        )
+    }
+
+    /** The spec spells the aspect attribute `aspect-ratio`; the draft's `aspect` still works. */
+    @Test
+    fun podcastImageBannerAcceptsAspectRatio() {
+        val feed =
+            feedOf(
+                "<rss version=\"2.0\" xmlns:podcast=\"https://podcastindex.org/namespace/1.0\">" +
+                    "<channel>" +
+                    "<podcast:image href=\"https://cdn.test/banner.png\" purpose=\"banner\" aspect-ratio=\"16/9\"/>" +
+                    "</channel></rss>",
+            )
+        assertEquals("https://cdn.test/banner.png", feed.bannerUrl)
+    }
 }

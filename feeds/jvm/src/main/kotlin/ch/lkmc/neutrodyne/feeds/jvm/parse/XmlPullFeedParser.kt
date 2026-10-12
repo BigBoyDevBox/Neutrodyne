@@ -1163,7 +1163,11 @@ private class ParseSession(
             }
 
             key == Namespaces.Key.CONTENT && name.equals("encoded", true) -> {
-                item.slotContentEncoded = htmlText(parser, item.index)
+                if (item.slotContentEncoded == null) {
+                    item.slotContentEncoded = htmlText(parser, item.index)
+                } else {
+                    skipElement(parser)
+                }
             }
 
             key == Namespaces.Key.ATOM -> {
@@ -1251,7 +1255,11 @@ private class ParseSession(
             }
 
             "summary" -> {
-                item.slotItunesSummary = htmlText(parser, item.index)
+                if (item.slotItunesSummary == null) {
+                    item.slotItunesSummary = htmlText(parser, item.index)
+                } else {
+                    skipElement(parser)
+                }
             }
 
             "season" -> {
@@ -1343,11 +1351,11 @@ private class ParseSession(
             }
 
             "image" -> {
-                // Item-level podcast:image carries its URL in the `url` attribute like the channel
-                // form (03 Artwork candidates), through the shared resolve/validate path.
+                // Item-level podcast:image reads `url` (draft) or the spec's `href` like the
+                // channel form (03 Artwork candidates), through the shared resolve/validate path.
                 addArtwork(
                     item.artwork,
-                    urlOrNull(attr(parser, "url"), baseOf(parser, item.base), item.index),
+                    urlOrNull(attr(parser, "url") ?: attr(parser, "href"), baseOf(parser, item.base), item.index),
                     ArtworkSource.PODCAST_IMAGE,
                     widthOf(parser),
                     heightOf(parser),
@@ -1715,15 +1723,17 @@ private class ParseSession(
 
     /**
      * `podcast:image`: banner when its purpose is banner/canvas with aspect 16/9; artwork for purpose
-     * artwork (or absent) with a square or absent aspect; the URL sits in the `url` attribute.
+     * artwork (or absent) with a square or absent aspect. The URL sits in `href` per the live spec;
+     * `url` was the draft spelling and `aspect` its `aspect-ratio`.
      */
     private fun parsePodcastImage(
         parser: XmlPullParser,
         channel: ChannelBuilder,
     ) {
         val purpose = attr(parser, "purpose")?.lowercase().orEmpty()
-        val aspect = attr(parser, "aspect")?.trim().orEmpty()
-        val url = urlOrNull(attr(parser, "url"), baseOf(parser, channel.base))
+        // The live spec spells them `href` and `aspect-ratio`; `url`/`aspect` were the draft.
+        val aspect = (attr(parser, "aspect") ?: attr(parser, "aspect-ratio"))?.trim().orEmpty()
+        val url = urlOrNull(attr(parser, "url") ?: attr(parser, "href"), baseOf(parser, channel.base))
         if (url != null) {
             if ((purpose.contains("banner") || purpose.contains("canvas")) && aspect == BANNER_ASPECT) {
                 channel.bannerUrl = url
@@ -1796,7 +1806,11 @@ private class ParseSession(
             }
 
             key == Namespaces.Key.CONTENT && name.equals("encoded", true) -> {
-                item.slotContentEncoded = htmlText(parser, item.index)
+                if (item.slotContentEncoded == null) {
+                    item.slotContentEncoded = htmlText(parser, item.index)
+                } else {
+                    skipElement(parser)
+                }
             }
 
             key == Namespaces.Key.DC && name == "date" -> {
@@ -1831,7 +1845,11 @@ private class ParseSession(
             }
 
             name == "id" -> {
-                item.guid = plainText(parser, item.index).trim().takeIf { it.isNotEmpty() }
+                if (item.guid == null) {
+                    item.guid = plainText(parser, item.index).trim().takeIf { it.isNotEmpty() }
+                } else {
+                    skipElement(parser)
+                }
             }
 
             name == "title" -> {
