@@ -125,6 +125,10 @@ public object UrlNormalizer {
             return parseIpv4NumberHost(decoded)
         }
         val ascii = decoded.lowercase().idnaToAsciiOrNull() ?: return null
+        // IDNA can produce a numeric tail the check above never saw: fullwidth digits and the
+        // ideographic full stop map to ASCII ("\uFF11\uFF12\uFF17.\uFF11" -> "127.1"), which the
+        // fetcher then resolves as an IPv4 address.
+        if (hasNumericTail(ascii)) return parseIpv4NumberHost(ascii)
         // toASCII runs without UseSTD3ASCIIRules, so characters like '/' and '$' pass through
         // and "." strips to empty: either would collide or forge identities. LDH, dots and
         // '_' are the only characters a valid post-IDNA host can contain.
