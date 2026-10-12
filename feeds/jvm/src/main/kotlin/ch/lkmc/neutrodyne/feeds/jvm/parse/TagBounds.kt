@@ -29,15 +29,20 @@ internal object TagBounds {
         var i = 0
         while (i < text.length) {
             when {
+                text[i] == '&' -> {
+                    // pushEntity eats one terminator: `&x<` swallows the would-be tag opener.
+                    i = PrologLexer.entityRefEnd(text, i)
+                }
+
                 text[i] != '<' -> {
                     i++
                 }
 
-                text.startsWith(PrologLexer.COMMENT_OPEN, i) -> {
+                PrologLexer.isCommentStart(text, i) -> {
                     i = PrologLexer.commentEnd(text, i)
                 }
 
-                text.startsWith(PrologLexer.CDATA_OPEN, i) -> {
+                PrologLexer.isCdataStart(text, i) -> {
                     i = PrologLexer.cdataEnd(text, i)
                 }
 

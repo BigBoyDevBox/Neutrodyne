@@ -17,13 +17,6 @@ package ch.lkmc.neutrodyne.feeds.jvm.parse
  * costs one index probe and no copy.
  */
 internal object SupplementaryRefs {
-    private const val COMMENT_OPEN = "<!--"
-    private const val COMMENT_CLOSE = "-->"
-    private const val CDATA_OPEN = "<![CDATA["
-    private const val CDATA_CLOSE = "]]>"
-    private const val PI_OPEN = "<?"
-    private const val PI_CLOSE = "?>"
-    private const val XML_DECL_NAME = "xml"
     private const val REPLACEMENT_PREFIX = "&#"
     private const val MAX_CODE_POINT = 0x10FFFF
     private const val SUPPLEMENTARY_FLOOR = 0xFFFF
@@ -37,7 +30,7 @@ internal object SupplementaryRefs {
         while (i < text.length) {
             when (text[i]) {
                 '&' -> {
-                    val end = referenceEnd(text, i)
+                    val end = PrologLexer.entityRefEnd(text, i)
                     val codePoint = supplementaryOf(text, i, end)
                     if (codePoint != null) {
                         (edits ?: ArrayList<Triple<Int, Int, Int>>().also { edits = it })
@@ -69,21 +62,6 @@ internal object SupplementaryRefs {
     }
 
     /**
-     * The index just past an `&…` reference at [amp]: the name chars `[0-9a-zA-Z_#-]` and anything
-     * `>= 0x80`, then one terminator char — `;` for a well-formed reference, or whatever char ended
-     * the name otherwise (kxml2's `pushEntity` consumes it into the value either way). This is the
-     * same boundary [TagBounds] counts with, so both scans agree on where values end.
-     */
-    fun referenceEnd(
-        text: String,
-        amp: Int,
-    ): Int {
-        var i = amp + 1
-        while (i < text.length && isRefChar(text[i])) i++
-        return if (i < text.length) i + 1 else i
-    }
-
-    /**
      * The code point of a `;`-terminated numeric reference spanning `&#…;`, when it is a supplementary
      * character. Decimal digits or lowercase-`x` hex — kxml2 accepts only `#x`, a `#X` fails its
      * `parseInt` the same way it fails ours, and the verbatim bytes then crash the parser identically.
@@ -105,102 +83,45 @@ internal object SupplementaryRefs {
         return codePoint.takeIf { it > SUPPLEMENTARY_FLOOR && it <= MAX_CODE_POINT }
     }
 
-    /** Past the markup construct at `&lt;`-position [lt]; attribute values inside still get scanned. */
+    /**
+     * Past the markup construct at `&lt;`-position [lt]; attribute values inside still get
+     * scanned. Every boundary is [PrologLexer]'s, so this walk desynchronises exactly the way
+     * the pull parser — and the prolog guards — do.
+     */
     private fun skipMarkup(
         text: String,
         lt: Int,
         edits: MutableList<Triple<Int, Int, Int>>,
     ): Int =
         when {
-            text.startsWith(COMMENT_OPEN, lt) -> {
-                endAt(text, COMMENT_CLOSE, lt + COMMENT_OPEN.length)
+            PrologLexer.isCommentStart(text, lt) -> {
+                PrologLexer.commentEnd(text, lt)
             }
 
-            text.startsWith(CDATA_OPEN, lt) -> {
-                endAt(text, CDATA_CLOSE, lt + CDATA_OPEN.length)
+            PrologLexer.isCdataStart(text, lt) -> {
+                PrologLexer.cdataEnd(text, lt)
             }
 
-            text.startsWith(PI_OPEN, lt) -> {
-                if (isXmlDecl(text, lt)) {
-                    scanTag(text, lt + PI_OPEN.length, edits, xmlDecl = true)
+            text.startsWith(PrologLexer.PI_OPEN, lt) -> {
+                if (PrologLexer.isXmlDeclAt(text, lt)) {
+                    scanTag(text, lt + PrologLexer.PI_OPEN.length, edits, xmlDecl = true)
                 } else {
-                    endAt(text, PI_CLOSE, lt + PI_OPEN.length)
+                    PrologLexer.piEnd(text, lt, Int.MAX_VALUE)
                 }
             }
 
             lt + 1 < text.length && text[lt + 1] == '/' -> {
-                endTagEnd(text, lt + 2)
+                PrologLexer.endTagEnd(text, lt)
             }
 
-            text.startsWith("<!", lt) -> {
-                markupDeclEnd(text, lt + 2)
+            text.startsWith(PrologLexer.DECL_OPEN, lt) -> {
+                PrologLexer.markupDeclEnd(text, lt)
             }
 
             else -> {
                 scanTag(text, lt + 1, edits, xmlDecl = false)
             }
         }
-
-    /** `<?xml` followed by whitespace (or EOF) takes kxml2's xmldecl attribute loop, not the PI one. */
-    private fun isXmlDecl(
-        text: String,
-        lt: Int,
-    ): Boolean {
-        val nameStart = lt + PI_OPEN.length
-        if (!text.regionMatches(nameStart, XML_DECL_NAME, 0, XML_DECL_NAME.length, ignoreCase = true)) {
-            return false
-        }
-        val afterName = nameStart + XML_DECL_NAME.length
-        return afterName >= text.length || text[afterName] <= ' '
-    }
-
-    private fun endAt(
-        text: String,
-        marker: String,
-        from: Int,
-    ): Int {
-        val close = text.indexOf(marker, from)
-        return if (close < 0) text.length else close + marker.length
-    }
-
-    /**
-     * An end tag is `</` + name + whitespace + one char in kxml2 (`read('>')` consumes whatever it
-     * finds); nothing inside is entity-decoded.
-     */
-    private fun endTagEnd(
-        text: String,
-        start: Int,
-    ): Int = minOf(skipWhitespace(text, nameEnd(text, start)) + 1, text.length)
-
-    /** `<!…>` as kxml2's `parseDoctype` sees it: `'` quotes, unquoted `<` nests, unquoted `>` ends. */
-    private fun markupDeclEnd(
-        text: String,
-        start: Int,
-    ): Int {
-        var i = start
-        var depth = 1
-        var quoted = false
-        while (i < text.length) {
-            when (text[i]) {
-                '\'' -> {
-                    quoted = !quoted
-                }
-
-                '<' -> {
-                    if (!quoted) depth++
-                }
-
-                '>' -> {
-                    if (!quoted) {
-                        depth--
-                        if (depth == 0) return i + 1
-                    }
-                }
-            }
-            i++
-        }
-        return text.length
-    }
 
     /**
      * The tag starting at [nameStart], entity-decoding inside attribute values like the parser does.
@@ -212,9 +133,9 @@ internal object SupplementaryRefs {
         edits: MutableList<Triple<Int, Int, Int>>,
         xmlDecl: Boolean,
     ): Int {
-        var i = nameEnd(text, nameStart)
+        var i = PrologLexer.nameEnd(text, nameStart)
         while (i < text.length) {
-            i = skipWhitespace(text, i)
+            i = PrologLexer.skipTagWhitespace(text, i)
             if (i >= text.length) return text.length
             val c = text[i]
             when {
@@ -227,13 +148,13 @@ internal object SupplementaryRefs {
                 }
 
                 !xmlDecl && c == '/' -> {
-                    return minOf(skipWhitespace(text, i + 1) + 1, text.length)
+                    return minOf(PrologLexer.skipTagWhitespace(text, i + 1) + 1, text.length)
                 }
 
                 else -> {
-                    i = skipWhitespace(text, nameEnd(text, i))
+                    i = PrologLexer.skipTagWhitespace(text, PrologLexer.nameEnd(text, i))
                     if (i < text.length && text[i] == '=') {
-                        i = skipWhitespace(text, i + 1)
+                        i = PrologLexer.skipTagWhitespace(text, i + 1)
                         if (i < text.length) {
                             val q = text[i]
                             i =
@@ -262,7 +183,7 @@ internal object SupplementaryRefs {
             val c = text[i]
             when {
                 c == '&' -> {
-                    val end = referenceEnd(text, i)
+                    val end = PrologLexer.entityRefEnd(text, i)
                     supplementaryOf(text, i, end)?.let { edits.add(Triple(i, end, it)) }
                     i = end
                 }
@@ -282,32 +203,4 @@ internal object SupplementaryRefs {
         }
         return i
     }
-
-    private fun skipWhitespace(
-        text: String,
-        start: Int,
-    ): Int {
-        var i = start
-        while (i < text.length && text[i] <= ' ') i++
-        return i
-    }
-
-    /** Relaxed `readName`: any first char, then letters, digits, `_`, `-`, `:`, `.`, `>= 0xB7`. */
-    private fun nameEnd(
-        text: String,
-        start: Int,
-    ): Int {
-        var i = start
-        if (i < text.length) i++
-        while (i < text.length && isNameChar(text[i])) i++
-        return i
-    }
-
-    private fun isNameChar(c: Char): Boolean =
-        c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' ||
-            c == '_' || c == '-' || c == ':' || c == '.' || c.code >= 0xB7
-
-    /** The char set `pushEntity` collects before its terminator: letters, digits, `_`, `#`, `-`, `>= 0x80`. */
-    private fun isRefChar(c: Char): Boolean =
-        c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '_' || c == '#' || c == '-' || c.code >= 0x80
 }

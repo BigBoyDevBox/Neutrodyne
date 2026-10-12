@@ -41,6 +41,12 @@ internal class DepthLimitExceeded(
 ) : RuntimeException("element nesting over $limit")
 
 /**
+ * Thrown when the pull parser's own prolog token stream reports a DOCDECL that still carries an
+ * entity declaration — defense in depth behind [PrologGuard]; becomes `Failed(HOSTILE)`.
+ */
+internal class HostileEntityDeclaration : RuntimeException("entity declaration inside the DOCTYPE")
+
+/**
  * The streaming feed parser (03 Parser): one hand-written walk over `XmlPullParser` mapping RSS 2.0,
  * Atom, RSS 1.0/RDF, iTunes, Podcasting 2.0, Media RSS and Podlove Simple Chapters onto one normalised
  * model. Runs with either platform parser through [PullParserFactory]; never throws for malformed
@@ -275,6 +281,8 @@ private class ParseSession(
             Pass(feed, counters.textChars, counters.replacementChars, detectedEncoding)
         } catch (e: DepthLimitExceeded) {
             ParseResult.Failed(ParseFailure.TOO_DEEP, "element nesting over ${limits.maxDepth}")
+        } catch (e: HostileEntityDeclaration) {
+            ParseResult.Failed(ParseFailure.HOSTILE, "ENTITY declaration in the prolog")
         } catch (e: XmlPullParserException) {
             ParseResult.Failed(ParseFailure.MALFORMED, "line ${e.lineNumber}: ${e.message.orEmpty()}")
         } catch (e: StackOverflowError) {
@@ -294,7 +302,16 @@ private class ParseSession(
     ): ParsedFeed? {
         var event = parser.eventType
         while (event != XmlPullParser.START_TAG && event != XmlPullParser.END_DOCUMENT) {
-            event = nextEvent(parser)
+            // nextToken, not next(): the folded stream never reports DOCDECL. Defense in depth
+            // behind PrologGuard — a DOCDECL the real lexer materialises whose text still
+            // carries an entity declaration is hostile even if the guard's model desynchronised.
+            event = parser.nextToken()
+            if (event == XmlPullParser.DOCDECL &&
+                parser.text.orEmpty().contains("<!entity", ignoreCase = true)
+            ) {
+                throw HostileEntityDeclaration()
+            }
+            if (parser.depth > limits.maxDepth) throw DepthLimitExceeded(limits.maxDepth)
         }
         if (event == XmlPullParser.END_DOCUMENT) return null
 

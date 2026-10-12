@@ -545,4 +545,162 @@ class ParserGuardsTest {
         assertEquals(declaration.length, view.dataStart)
         assertEquals(declaration + body, EncodingSniff.decode(bytes, ParseLimits().prologScanBytes))
     }
+
+    // ---------------------------------------------------------------------------
+    // kxml2 2.3.0 lexer parity (differential review)
+    // ---------------------------------------------------------------------------
+
+    /**
+     * `parseLegacy` consumes the required keyword region character by character before the
+     * payload scan — seven chars for a `<!` that is not a comment or CDATA — so `''><!--` is
+     * swallowed wholesale and the payload scan starts inside the following comment, where the
+     * real `<!ENTITY` marker sits. kxml2 emits a DOCDECL carrying the entity; the guard must too.
+     */
+    @Test
+    fun doctypeRequiredRegionCannotHideAnEntityDeclaration() {
+        for (lead in listOf("<!''>", "<!>-", "<!x'y'>")) {
+            assertEquals(
+                ParseFailure.HOSTILE,
+                failedOf(lead + "<!-- <!ENTITY e 'v'> -->" + RSS_FEED).reason,
+                "lead $lead",
+            )
+        }
+    }
+
+    /** The required-region desynchronisation holds across every byte signature the guards decode. */
+    @Test
+    fun doctypeRequiredRegionCannotHideAnEntityInAnyEncoding() {
+        val xml = "<!''><!-- <!ENTITY e 'v'> -->$RSS_FEED"
+        val utf8 = xml.toByteArray(Charsets.UTF_8)
+        val variants =
+            listOf(
+                utf8,
+                UTF8_BOM + utf8,
+                UTF16LE_BOM + xml.toByteArray(Charsets.UTF_16LE),
+                UTF16BE_BOM + xml.toByteArray(Charsets.UTF_16BE),
+                xml.toByteArray(Charsets.UTF_32LE),
+                xml.toByteArray(Charsets.UTF_32BE),
+                UTF32LE_BOM + xml.toByteArray(Charsets.UTF_32LE),
+                UTF32BE_BOM + xml.toByteArray(Charsets.UTF_32BE),
+            )
+        for (bytes in variants) {
+            assertEquals(ParseFailure.HOSTILE, assertIs<ParseResult.Failed>(parse(bytes)).reason)
+        }
+    }
+
+    /**
+     * Dispatch peeks one char after `<!`: `-` selects the comment path whose required `--` is
+     * consumed blindly, so `<!-'-->` ends at the `-->` and the tag behind it reaches kxml2 with
+     * all its attributes. `TagBounds` must see the same tag or `maxTagAttributes` never engages.
+     */
+    @Test
+    fun partialCommentCannotHideAnAttributeFlood() {
+        val flood = (0..1_000).joinToString(" ") { "a$it='v'" }
+        assertEquals(ParseFailure.MALFORMED, failedOf("<!-'--><rss $flood><channel/></rss>").reason)
+    }
+
+    /** The same for `[`: one peeked char selects CDATA and six required chars are consumed. */
+    @Test
+    fun partialCdataCannotHideAnAttributeFlood() {
+        val flood = (0..9).joinToString(" ") { "a$it='v'" }
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write("<![xy']]>]]><rss $flood><channel/></rss>".encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxTagAttributes = 8),
+                )
+        assertEquals(ParseFailure.MALFORMED, assertIs<ParseResult.Failed>(result).reason)
+    }
+
+    /**
+     * In relaxed mode kxml2's `pushEntity` consumes and pushes a non-`;` terminator, so `&<` or
+     * `&x<` eats the `<` that opens the next construct. The following `!--` is then plain text
+     * and the DOCTYPE behind it is a real token — the guard must desynchronise the same way.
+     */
+    @Test
+    fun entityReferenceEatingTheOpenAngleCannotHideTheDoctype() {
+        for (prefix in listOf("&<", "&x<", "&#")) {
+            assertEquals(
+                ParseFailure.HOSTILE,
+                failedOf(prefix + "!--$ENTITY_DOCTYPE$RSS_FEED").reason,
+                "prefix $prefix",
+            )
+        }
+    }
+
+    /** A PI opener eaten the same way leaves a standalone entity declaration behind. */
+    @Test
+    fun entityReferenceEatingPiOpenLeavesTheDeclarationBehind() {
+        assertEquals(ParseFailure.HOSTILE, failedOf("&<?p <!ENTITY e 'v' ?>$RSS_FEED").reason)
+    }
+
+    /** And the tag the eaten `<` would have hidden still counts against the attribute bound. */
+    @Test
+    fun entityReferenceEatingTheAngleCannotHideAnAttributeFlood() {
+        val flood = (0..9).joinToString(" ") { "a$it='v'" }
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write("&x<!--<rss $flood><channel/></rss>".encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxTagAttributes = 8),
+                )
+        assertEquals(ParseFailure.MALFORMED, assertIs<ParseResult.Failed>(result).reason)
+    }
+
+    /**
+     * A `?>` that begins at the PI scan position is already consumed — it can never close the
+     * PI. kxml2 reads `<??>` to EOF, so the tag behind it is PI payload, not a start tag.
+     */
+    @Test
+    fun piTerminatorAtTheScanPositionDoesNotCloseIt() {
+        val flood = (0..9).joinToString(" ") { "a$it='v'" }
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write("<??><r $flood>".encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxTagAttributes = 8),
+                )
+        assertEquals(ParseFailure.NOT_A_FEED, assertIs<ParseResult.Failed>(result).reason)
+    }
+
+    /** A `<![` opener whose required region eats the `]]>` runs to EOF as CDSECT — no tag. */
+    @Test
+    fun cdataRunningToEofCannotSpawnAnAttributeFlood() {
+        val flood = (0..9).joinToString(" ") { "a$it='v'" }
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write("<![x'v']]><r $flood>".encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxTagAttributes = 8),
+                )
+        assertEquals(ParseFailure.NOT_A_FEED, assertIs<ParseResult.Failed>(result).reason)
+    }
+
+    /** `&x<` turns the would-be tag into entity text plus plain text — kxml2 never emits it. */
+    @Test
+    fun entityReferenceEatingTheAngleLeavesText() {
+        val flood = (0..9).joinToString(" ") { "a$it='v'" }
+        val result =
+            XmlPullFeedParser
+                .discovered()
+                .parse(
+                    { Buffer().write("&x<r $flood>".encodeToByteArray()) },
+                    null,
+                    baseUrl,
+                    ParseLimits(maxTagAttributes = 8),
+                )
+        assertEquals(ParseFailure.NOT_A_FEED, assertIs<ParseResult.Failed>(result).reason)
+    }
 }

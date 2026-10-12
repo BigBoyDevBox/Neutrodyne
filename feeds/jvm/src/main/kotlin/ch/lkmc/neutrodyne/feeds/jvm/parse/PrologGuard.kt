@@ -30,11 +30,16 @@ internal object PrologGuard {
                     i++
                 }
 
-                text.startsWith(PrologLexer.COMMENT_OPEN, i) -> {
+                text[i] == '&' -> {
+                    // pushEntity eats one terminator: `&<` swallows the construct opener after it.
+                    i = PrologLexer.entityRefEnd(text, i)
+                }
+
+                PrologLexer.isCommentStart(text, i) -> {
                     i = PrologLexer.commentEnd(text, i)
                 }
 
-                text.startsWith(PrologLexer.CDATA_OPEN, i) -> {
+                PrologLexer.isCdataStart(text, i) -> {
                     i = PrologLexer.cdataEnd(text, i)
                 }
 
