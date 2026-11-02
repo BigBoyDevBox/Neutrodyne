@@ -18,6 +18,7 @@ object AllSettingKeys {
     val list: List<SettingKey<*>> =
         AppearanceSettingKeys.ALL +
             FeedsSettingKeys.ALL +
+            DiscoverSettingKeys.ALL +
             GroupsSettingKeys.ALL +
             PlaybackSettingKeys.ALL +
             BackupSettingKeys.ALL +
@@ -37,7 +38,8 @@ object AllSettingKeys {
     ): Boolean =
         acceptsStoredType(key, value) &&
             PlaybackSettingKeys.acceptsRange(key, value) &&
-            UpdateSettingKeys.acceptsRange(key, value)
+            UpdateSettingKeys.acceptsRange(key, value) &&
+            DiscoverSettingKeys.acceptsValue(key, value)
 }
 
 /** The stored-type half of [AllSettingKeys.acceptsValue]; one branch per [SettingKey] subclass. */
@@ -83,6 +85,7 @@ internal val NO_SYNC_PREFIXES: Set<String> =
         "ui.",
         "desktop.",
         "updates.",
+        "discover.",
         "downloads.",
         "sync.",
     )
