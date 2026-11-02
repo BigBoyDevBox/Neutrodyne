@@ -21,6 +21,7 @@ object AllSettingKeys {
             DiscoverSettingKeys.ALL +
             GroupsSettingKeys.ALL +
             PlaybackSettingKeys.ALL +
+            DownloadSettingKeys.ALL +
             BackupSettingKeys.ALL +
             DesktopSettingKeys.ALL +
             UpdateSettingKeys.ALL
