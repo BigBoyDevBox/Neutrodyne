@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Unlicense
+"""Host-only release evidence: seed, finish instrumentation, reboot, inspect offline, tap online."""
+import argparse
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import json
+from pathlib import Path
+import re
+import subprocess
+import threading
+import time
+
+
+class RangeHandler(SimpleHTTPRequestHandler):
+    """ExoPlayer seeks through byte ranges; the stock handler ignores them."""
+
+    def send_head(self):
+        match = re.fullmatch(r"bytes=(\d+)-(\d*)", self.headers.get("Range", ""))
+        if not match:
+            return super().send_head()
+        path = Path(self.translate_path(self.path))
+        if not path.is_file():
+            return super().send_head()
+        start = int(match[1])
+        size = path.stat().st_size
+        end = min(int(match[2]), size - 1) if match[2] else size - 1
+        if start > end:
+            self.send_error(416)
+            return None
+        self.send_response(206)
+        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.end_headers()
+        # The handler copies this body after returning and then closes it, so the reader owns the file.
+        body = path.open("rb")
+        body.seek(start)
+        return _SliceReader(body, end - start + 1)
+
+
+class _SliceReader:
+    def __init__(self, body, remaining):
+        self.body = body
+        self.remaining = remaining
+
+    def read(self, size=-1):
+        if self.remaining <= 0:
+            return b""
+        data = self.body.read(min(self.remaining, 8192 if size < 0 else size))
+        self.remaining -= len(data)
+        return data
+
+    def close(self):
+        self.body.close()
+
+
+CLASS = "ch.lkmc.neutrodyne.playback.impl.RebootResumptionTest"
+SYSTEM_UI_DUMP = ("shell", "dumpsys", "activity", "service", "com.android.systemui/.SystemUIService")
+SYSTEM_UI_SETTLE_SECONDS = 20
+# android.media.session.PlaybackState: STATE_PLAYING and STATE_BUFFERING.
+AUTOPLAY_STATES = (3, 6)
+PHASES = (
+    "seedPausedEpisodeWithLocalArtwork",
+    "offlineSystemUiCardHasLocalArtworkWithoutAutoplay",
+    "tapSystemUiCardResumesSavedPosition",
+)
+
+
+def require_one_pass(output):
+    if not re.search(r"OK \(1 test\)", output) or re.search(r"INSTRUMENTATION_STATUS_CODE: -(?:2|3|4)", output):
+        raise ValueError("Expected exactly one passing, non-skipped host phase")
+
+
+def media_lines(dump):
+    """System UI's dump runs to many megabytes; the evidence only needs its media sections."""
+    return "".join(line for line in dump.splitlines(keepends=True) if "media" in line.lower() or "resum" in line.lower())
+
+
+def require_no_autoplay(sessions, package):
+    """After reboot the app has no session, or one that is neither playing nor buffering toward play."""
+    for block in sessions.split(f"package={package}\n")[1:]:
+        state = re.search(r"state=PlaybackState \{state=(?:\w+\()?(\d+)", block.split("package=", 1)[0])
+        if state and int(state[1]) in AUTOPLAY_STATES:
+            raise ValueError(f"The app started playback by itself after reboot: state {state[1]}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--hardening", action="store_true")
+    parser.add_argument("--package", default="ch.lkmc.neutrodyne")
+    parser.add_argument("--output", type=Path, default=Path("app/build/reports/playback-reboot"))
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parents[2]
+    args.output.mkdir(parents=True, exist_ok=True)
+
+    def adb(*command, timeout=90):
+        return subprocess.run(["adb", *command], check=True, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=timeout).stdout
+
+    package = adb("shell", "dumpsys", "package", args.package)
+    if "DEBUGGABLE" in package or "versionCode=" not in package:
+        raise ValueError("Install the optimized release app and its test APK first")
+    (args.output / "package.txt").write_text(package)
+    apk_path = adb("shell", "pm", "path", args.package).splitlines()[0].removeprefix("package:").strip()
+    media = args.output / "media"
+    media.mkdir(exist_ok=True)
+    (media / "episode.mp3").write_bytes(
+        (root / "playback/impl/src/test/resources/media/cbr_128k_2s.mp3").read_bytes() * 60)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(RangeHandler, directory=str(media)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = str(server.server_port)
+    runner = f"{args.package}.test/ch.lkmc.neutrodyne.NeutrodyneTestRunner"
+    record = {"sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+              "image": adb("shell", "getprop", "ro.build.fingerprint").strip(),
+              "package": args.package, "buildType": "release",
+              "abi": adb("shell", "getprop", "ro.product.cpu.abi").strip(),
+              "apkSha256": adb("shell", "sha256sum", apk_path).split()[0],
+              "passed": [], "durations": {}, "skips": 0}
+
+    def phase(name):
+        started = time.monotonic()
+        result = adb("shell", "am", "instrument", "-w", "-r", "-e", "class", f"{CLASS}#{name}",
+                     "-e", "hostReboot", "true", "-e", "sourceUrl", f"http://127.0.0.1:{port}/episode.mp3",
+                     runner, timeout=180)
+        (args.output / f"{name}.txt").write_text(result)
+        require_one_pass(result)
+        record["passed"].append(name)
+        record["durations"][name] = time.monotonic() - started
+
+    try:
+        adb("shell", "settings", "put", "secure", "qs_media_resumption", "1")
+        adb("reverse", f"tcp:{port}", f"tcp:{port}")
+        phase(PHASES[0])
+        adb("reverse", "--remove", f"tcp:{port}")
+        adb("shell", "cmd", "connectivity", "airplane-mode", "enable")
+        adb("shell", "svc", "wifi", "disable")
+        adb("shell", "svc", "data", "disable")
+        # The instrumentation process has exited normally before this host reboot.
+        adb("reboot")
+        adb("wait-for-device", timeout=180)
+        deadline = time.monotonic() + 300
+        while adb("shell", "getprop", "sys.boot_completed").strip() != "1":
+            if time.monotonic() > deadline:
+                raise TimeoutError("Device did not finish reboot")
+            time.sleep(2)
+        adb("shell", "input", "keyevent", "KEYCODE_WAKEUP")
+        adb("shell", "wm", "dismiss-keyguard")
+        if args.hardening:
+            adb("shell", "cmd", "audio", "set-enable-hardening", "throw")
+        if adb("shell", "settings", "get", "global", "airplane_mode_on").strip() != "1":
+            raise ValueError("Offline card phase requires airplane mode after reboot")
+        # System UI loads resumption cards after boot; its own view separates a card it never built
+        # from one this phase cannot find.
+        time.sleep(SYSTEM_UI_SETTLE_SECONDS)
+        (args.output / "system-ui-after-boot.txt").write_text(media_lines(adb(*SYSTEM_UI_DUMP, timeout=120)))
+        # am instrument restarts the app, which would hide playback the boot itself started.
+        sessions = adb("shell", "dumpsys", "media_session")
+        (args.output / "media-session-after-boot.txt").write_text(sessions)
+        require_no_autoplay(sessions, args.package)
+        phase(PHASES[1])
+        adb("shell", "cmd", "connectivity", "airplane-mode", "disable")
+        adb("shell", "svc", "wifi", "enable")
+        adb("shell", "svc", "data", "enable")
+        adb("reverse", f"tcp:{port}", f"tcp:{port}")
+        phase(PHASES[2])
+        if args.hardening:
+            hardening = adb("logcat", "-d", "-s", "AudioHardening")
+            (args.output / "audio-hardening.txt").write_text(hardening)
+            if args.package in hardening:
+                raise ValueError("Audio hardening reported the application")
+    finally:
+        record["tests"] = len(record["passed"])
+        (args.output / "evidence.json").write_text(json.dumps(record, indent=2) + "\n")
+
+        # Best effort: a failed cleanup step must not hide the phase failure or skip the others.
+        # For example, `reverse --remove` fails when a failed phase left no forward in place.
+        def best_effort(*command):
+            try:
+                return adb(*command)
+            except (subprocess.SubprocessError, OSError) as failure:
+                print(f"Cleanup step failed: {' '.join(command)}: {failure}")
+                return None
+
+        final_dump = best_effort(*SYSTEM_UI_DUMP)
+        if final_dump is not None:
+            (args.output / "system-ui-final.txt").write_text(media_lines(final_dump))
+        for name, command in {
+            "logcat.txt": ("logcat", "-d", "-v", "threadtime"),
+            "media-session.txt": ("shell", "dumpsys", "media_session"),
+            "connectivity.txt": ("shell", "dumpsys", "connectivity"),
+        }.items():
+            output = best_effort(*command)
+            if output is not None:
+                (args.output / name).write_text(output)
+        best_effort("pull", f"/sdcard/Android/data/{args.package}/files/m5-reboot", str(args.output))
+        server.shutdown()
+        server.server_close()
+        best_effort("shell", "cmd", "connectivity", "airplane-mode", "disable")
+        best_effort("shell", "svc", "wifi", "enable")
+        best_effort("shell", "svc", "data", "enable")
+        best_effort("reverse", "--remove", f"tcp:{port}")
+        if args.hardening:
+            best_effort("shell", "cmd", "audio", "set-enable-hardening", "enable")
+
+
+if __name__ == "__main__":
+    main()
