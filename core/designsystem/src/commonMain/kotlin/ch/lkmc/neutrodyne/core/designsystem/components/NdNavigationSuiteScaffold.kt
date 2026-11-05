@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -46,6 +47,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.traversalIndex
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 /**
@@ -148,7 +150,14 @@ private fun NdRail(
                     icon = {
                         NavigationIcon(item, index == selected)
                     },
-                    label = { Text(item.label) },
+                    label = {
+                        // Use the available rail width, including fractional glyph advances at 200 %.
+                        Text(
+                            item.label,
+                            modifier = if (railExpanded) Modifier else Modifier.fillMaxWidth(),
+                            textAlign = if (railExpanded) TextAlign.Start else TextAlign.Center,
+                        )
+                    },
                     railExpanded = railExpanded,
                     modifier = itemModifier(item),
                 )

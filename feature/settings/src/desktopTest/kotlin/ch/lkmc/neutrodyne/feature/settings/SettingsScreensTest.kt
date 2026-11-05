@@ -2,8 +2,16 @@
 
 package ch.lkmc.neutrodyne.feature.settings
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.ComposeUiTest
@@ -68,6 +76,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -111,22 +120,37 @@ class SettingsScreensTest {
             openSettings()
             onNodeWithText("Licences").performScrollTo().assertIsDisplayed()
             waitForIdle()
+            val target = onNodeWithText("Licences")
+            val visible = target.fetchSemanticsNode().boundsInRoot
+            val minimum = with(target.fetchSemanticsNode().layoutInfo.density) { 48.dp.toPx() }
+            assertTrue(visible.width >= minimum && visible.height >= minimum, "Licences is clipped: $visible")
             onAllNodes(hasClickAction(), useUnmergedTree = true)
                 .fetchSemanticsNodes()
-                // Scrolled-out rows have empty clipped bounds and cannot be tapped; a row clipped
-                // to a sliver at the scroll edge is not a visible target either.
-                .filter {
-                    !it.boundsInRoot.isEmpty &&
-                        it.boundsInRoot.width + 0.5f >= it.layoutInfo.width &&
-                        it.boundsInRoot.height + 0.5f >= it.layoutInfo.height
-                }.forEach { node ->
-                    val bounds = node.boundsInRoot
-                    val minimum = with(node.layoutInfo.density) { 48.dp.toPx() }
-                    assertTrue(
-                        bounds.width >= minimum && bounds.height >= minimum,
-                        "bounds=$bounds role=${node.config.getOrNull(SemanticsProperties.Role)} minimum=${minimum}px",
-                    )
+                .filter { !it.boundsInRoot.isEmpty }
+                .forEach(::assertMinimumClickableLayout)
+            target.performClick()
+        }
+
+    @Test
+    fun viewportClippingDoesNotMakeAProperLayoutUndersized() =
+        runDesktopComposeUiTest(width = 80, height = 80) {
+            setContent {
+                Box(Modifier.size(80.dp, 32.dp).verticalScroll(rememberScrollState())) {
+                    Box(Modifier.size(64.dp).clickable(role = Role.Button) {})
                 }
+            }
+            val node = onNode(hasClickAction()).fetchSemanticsNode()
+            val minimum = with(node.layoutInfo.density) { 48.dp.toPx() }
+            assertTrue(node.boundsInRoot.height < minimum, "The fixture must reproduce viewport clipping")
+            assertMinimumClickableLayout(node)
+        }
+
+    @Test
+    fun anActuallyUndersizedClickableStillFailsTheLayoutGate() =
+        runDesktopComposeUiTest(width = 80, height = 80) {
+            setContent { Box(Modifier.size(40.dp).clickable(role = Role.Button) {}) }
+            val node = onNode(hasClickAction()).fetchSemanticsNode()
+            assertFailsWith<AssertionError> { assertMinimumClickableLayout(node) }
         }
 
     @Test
@@ -310,6 +334,23 @@ class SettingsScreensTest {
             waitForIdle()
 
             assertEquals(false, runBlocking { settings.get(AppearanceSettingKeys.DYNAMIC_COLOR) })
+        }
+
+    @Test fun artworkAndBlackSwitchesPersistAndReportFailedWrites() =
+        runComposeUiTest {
+            val settings = FakeSettingsRepository()
+            setSettingsRoot(settingsRepository = settings)
+            openSettings()
+            onAllNodesWithText("Appearance").onFirst().performClick()
+            onNodeWithText("Use artwork colours").performClick()
+            onNodeWithText("Pure black").performClick()
+            waitForIdle()
+            assertEquals(false, runBlocking { settings.get(AppearanceSettingKeys.ARTWORK_TINT) })
+            assertEquals(true, runBlocking { settings.get(AppearanceSettingKeys.PURE_BLACK) })
+            settings.failNextSet = SettingsError.WriteFailed
+            onNodeWithText("Pure black").performClick()
+            onNodeWithText("Couldn’t save the setting").assertIsDisplayed()
+            assertEquals(true, runBlocking { settings.get(AppearanceSettingKeys.PURE_BLACK) })
         }
 
     private fun ComposeUiTest.openSettings() {
@@ -499,4 +540,14 @@ private val StubInstallers: Set<EntryProviderInstaller> =
 private fun TopBarStub(tab: TopLevelKey) {
     val title = if (tab == FeedsKey) stringResource(Res.string.nav_feeds) else tab.toString()
     NdTopAppBar(title = title, actions = { SettingsGearButton() })
+}
+
+/** A scroll viewport clips drawing, while the clickable's measured layout stays unchanged. */
+private fun assertMinimumClickableLayout(node: SemanticsNode) {
+    val minimum = with(node.layoutInfo.density) { 48.dp.toPx() }
+    assertTrue(
+        node.size.width >= minimum && node.size.height >= minimum,
+        "layout=${node.size} visible=${node.boundsInRoot} " +
+            "role=${node.config.getOrNull(SemanticsProperties.Role)} minimum=${minimum}px",
+    )
 }

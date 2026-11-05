@@ -8,9 +8,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -32,11 +34,14 @@ import ch.lkmc.neutrodyne.core.database.DatabaseOpenState
 import ch.lkmc.neutrodyne.core.database.DatabaseOpener
 import ch.lkmc.neutrodyne.core.designsystem.components.DesktopScrollbars
 import ch.lkmc.neutrodyne.core.designsystem.components.LocalScrollbars
+import ch.lkmc.neutrodyne.core.designsystem.theme.AppearancePrefs
+import ch.lkmc.neutrodyne.core.designsystem.theme.BrandColors
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.domain.SettingsRepository
 import ch.lkmc.neutrodyne.core.domain.update.AppUpdateChecker
 import ch.lkmc.neutrodyne.core.domain.update.UpdateNotices
 import ch.lkmc.neutrodyne.core.model.BuildInfo
+import ch.lkmc.neutrodyne.core.model.settings.ThemeMode
 import ch.lkmc.neutrodyne.core.navigation.EntryProviderInstaller
 import ch.lkmc.neutrodyne.core.navigation.LocalAppNavigator
 import ch.lkmc.neutrodyne.core.navigation.SettingsHomeKey
@@ -61,12 +66,14 @@ import ch.lkmc.neutrodyne.desktop.resources.window_title
 import ch.lkmc.neutrodyne.feature.importexport.importResumeBanner
 import ch.lkmc.neutrodyne.feature.player.PlayerRoute
 import ch.lkmc.neutrodyne.feature.queue.PlayerUpNextRoute
+import ch.lkmc.neutrodyne.feature.settings.observeAppearance
 import ch.lkmc.neutrodyne.feature.settings.rememberUpdateRootPresentation
 import ch.lkmc.neutrodyne.playback.api.PlaybackController
 import ch.lkmc.neutrodyne.playback.api.PlaybackStateSource
 import dev.zacsweers.metrox.viewmodel.LocalMetroViewModelFactory
 import dev.zacsweers.metrox.viewmodel.MetroViewModelFactory
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
@@ -114,6 +121,22 @@ internal fun ApplicationScope.NeutrodyneWindow(
     var hidden by remember { mutableStateOf(false) }
     val openState by databaseOpener.openState.collectAsState()
 
+    val appearance by produceState<AppearancePrefs?>(null, settings) {
+        launch {
+            delay(APPEARANCE_GATE_MS)
+            if (value == null) value = AppearancePrefs()
+        }
+        if (settings == null) value = AppearancePrefs() else settings.observeAppearance().collect { value = it }
+    }
+    val osDark = isSystemInDarkTheme()
+    val prefs = appearance ?: AppearancePrefs()
+    val dark =
+        when (prefs.theme) {
+            ThemeMode.SYSTEM -> osDark
+            ThemeMode.DARK -> true
+            ThemeMode.LIGHT -> false
+        }
+
     // The Compose-side `hidden` owns visibility; a hand-off reveal clears it first, so the
     // activator's direct `isVisible` never fights the next recomposition.
     DisposableEffect(activator) {
@@ -124,16 +147,28 @@ internal fun ApplicationScope.NeutrodyneWindow(
     Window(
         onCloseRequest = { requestClose(onQuitRequest) { hidden = it } },
         state = state,
-        visible = !hidden,
+        visible = !hidden && appearance != null,
         title = stringResource(Res.string.window_title),
         icon = icon,
         onKeyEvent = { event -> windowShortcut(event) { requestClose(onQuitRequest) { hidden = it } } },
     ) {
+        // Set the AWT background during apply, before Window's visibility side effect.
+        DisposableEffect(window, dark, prefs.pureBlack) {
+            val argb =
+                if (dark && prefs.pureBlack) {
+                    0xFF000000.toInt()
+                } else {
+                    BrandColors.scheme(dark, 0.0).background.toArgb()
+                }
+            window.background = java.awt.Color(argb, true)
+            onDispose { }
+        }
         WindowEffects(activator = activator, background = background)
         DesktopMenuBar(menuActions, enabled = openState is DatabaseOpenState.Opened)
         DesktopApplicationMenu(menuActions = menuActions, onQuit = onQuitRequest)
         val content: @Composable () -> Unit = {
             NeutrodyneWindowContent(
+                prefs = prefs,
                 installers = installers,
                 menuActions = menuActions,
                 banners = banners,
@@ -301,6 +336,7 @@ internal fun NeutrodyneWindowContent(
     viewModelFactory: MetroViewModelFactory,
     playbackController: PlaybackController,
     playbackState: PlaybackStateSource,
+    prefs: AppearancePrefs = AppearancePrefs(),
     banners: DesktopBannerNotifier? = null,
     startup: StartupGateState = StartupGateState.Ready,
     onRetryStartup: () -> Unit = {},
@@ -314,6 +350,10 @@ internal fun NeutrodyneWindowContent(
     val systemUi = SystemUiState.DEFAULT.copy(dark = isSystemInDarkTheme())
     val platformActions = rememberDesktopPlatformActions()
     val nowPlaying by playbackState.nowPlaying.collectAsState()
+    val panelHidden by (
+        settings?.observe(ch.lkmc.neutrodyne.core.model.settings.AppearanceSettingKeys.PLAYER_PANEL_HIDDEN)
+            ?: kotlinx.coroutines.flow.flowOf(false)
+    ).collectAsState(initial = false)
     val updates =
         if (updateChecker != null && updateNotices != null && settings != null) {
             rememberUpdateRootPresentation(updateChecker, updateNotices, settings)
@@ -371,6 +411,7 @@ internal fun NeutrodyneWindowContent(
                 RootUiState.READY.copy(
                     startup = startup,
                     hasNowPlaying = nowPlaying != null,
+                    playerPanelHidden = panelHidden,
                     settingsBadge = updates?.badge ?: false,
                     notice = updates?.notice,
                 ),
@@ -378,7 +419,10 @@ internal fun NeutrodyneWindowContent(
             slots = slots,
             installers = installers,
             systemUi = systemUi,
+            prefs = prefs,
             platform = BuildInfo.Platform.DESKTOP,
         )
     }
 }
+
+private const val APPEARANCE_GATE_MS = 1_000L
