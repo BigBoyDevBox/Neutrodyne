@@ -643,6 +643,7 @@
     <string name="chapter_number">Kapitel %1$d</string>
     <string name="chapter_seek">Zu %1$s springen</string>
     <string name="settings_update_available">Einstellungen, Update verfügbar</string>
+    <string name="setting_not_supported">Für YouTube-Kanäle nicht verfügbar</string>
 
     <!-- Owner radio home design, 2026-11-04. -->
     <string name="radio_menu">Menü</string>
