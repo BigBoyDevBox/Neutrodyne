@@ -62,7 +62,11 @@ if [ -n "$IMG" ]; then
         fi
     done
     [ -n "$RT" ] || { echo "no runtime directory under $IMG" >&2; exit 2; }
-    modules="$(grep -E '^MODULES=' "$RT/release" | cut -d'"' -f2)"
+    # A jpackage .app's runtime home sits one level deeper (Contents/Home);
+    # Linux and Windows runtime roots are flat already.
+    RTH="$RT"
+    [ -f "$RTH/release" ] || RTH="$RT/Contents/Home"
+    modules="$(grep -E '^MODULES=' "$RTH/release" | cut -d'"' -f2 || true)"
 else
     modules="$(
         awk '/JLINK_MODULES *=/{in_list=1} in_list{print} in_list&&/\)/{exit}' \

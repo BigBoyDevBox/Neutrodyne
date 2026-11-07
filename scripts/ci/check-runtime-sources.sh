@@ -255,13 +255,28 @@ locate_jdk() {
     fi
 }
 
+# The runtime *home* under a runtime root: flat on Linux and Windows, one level
+# deeper inside a jpackage .app (Contents/runtime is the JDK bundle root and its
+# release/legal/lib live in Contents/Home).
+runtime_home() {
+    if [ -f "$1/release" ]; then
+        echo "$1"
+    else
+        echo "$1/Contents/Home"
+    fi
+}
+
 if [ "$MODE" = image ]; then
     rt="$(runtime_dir "$DIR" || true)"
     if [ -z "$rt" ]; then
         fail "no runtime directory in image (lib/runtime or Contents/runtime)"
     else
-        image_check_release_file "$rt"
-        image_check_legal "$rt"
+        # release/legal/MODULES live under the home; the native-file comparison
+        # keeps rt as its root so its rel paths pair with the pinned tree's
+        # Contents/Home entries.
+        rthome="$(runtime_home "$rt")"
+        image_check_release_file "$rthome"
+        image_check_legal "$rthome"
         image_check_smoke "$DIR"
         jdk="$(locate_jdk || true)"
         if [ -z "$jdk" ]; then

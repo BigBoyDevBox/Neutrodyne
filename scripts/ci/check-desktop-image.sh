@@ -8,8 +8,9 @@
 # nightly.yml's desktop-matrix and in release.yml's desktop job on every target.
 #
 #   <dir>      a jpackage app image (Neutrodyne/ or Neutrodyne.app): every rule
-#   <file>     a release package: .deb, .rpm, .msi, .zip, .tar.gz — the package's own
-#              rules plus the directory rules on its extracted contents
+#   <file>     a release package: .deb, .rpm, .msi, .zip, .tar.gz, .dmg — the
+#              package's own rules plus the directory rules on its extracted or
+#              read-only-mounted contents
 #   --no-engine  additionally asserts that no Python tree, yt-dlp file or
 #              :youtube:ytdlp-desktop JAR is present (emergency build, 01)
 #
@@ -55,6 +56,25 @@ fail() {
     FAILURES=$((FAILURES + 1))
 }
 note() { echo "note: $1"; }
+
+# DMG payloads are scanned from a read-only mount (hdiutil attach -nobrowse
+# -readonly — nothing is browsed or opened). Every successful attach is recorded
+# so the EXIT trap still detaches it when a check aborts the script mid-scan; a
+# failed detach is reported by the caller.
+DMG_MOUNTS=()
+dmg_detach_all() {
+    local m rc=0
+    # bash 3.2-safe iteration over a possibly empty array under set -u.
+    for m in ${DMG_MOUNTS[@]+"${DMG_MOUNTS[@]}"}; do
+        if ! hdiutil detach "$m" -quiet >/dev/null 2>&1 \
+            && ! hdiutil detach "$m" -force -quiet >/dev/null 2>&1; then
+            rc=1
+        fi
+    done
+    DMG_MOUNTS=()
+    return $rc
+}
+trap dmg_detach_all EXIT
 
 lock_prop() { grep -E "^$2=" "$1" | tail -1 | cut -d= -f2-; }
 
@@ -157,22 +177,34 @@ runtime_dir() {
     return 1
 }
 
+# The runtime *home* under a runtime root: flat on Linux and Windows, one level
+# deeper inside a jpackage .app (Contents/runtime is the JDK bundle root and its
+# release/legal/lib live in Contents/Home).
+runtime_home() {
+    if [ -f "$1/release" ]; then
+        echo "$1"
+    else
+        echo "$1/Contents/Home"
+    fi
+}
+
 check_runtime_layout() {
-    local img="$1" rt
+    local img="$1" rt rthome
     if ! rt="$(runtime_dir "$img")"; then
         fail "no bundled runtime directory in image (expected lib/runtime or Contents/runtime)"
         return
     fi
-    if [ ! -d "$rt/legal" ] || [ -z "$(ls -A "$rt/legal" 2>/dev/null)" ]; then
+    rthome="$(runtime_home "$rt")"
+    if [ ! -d "$rthome/legal" ] || [ -z "$(ls -A "$rthome/legal" 2>/dev/null)" ]; then
         fail "runtime/legal/ missing or empty in image (11 Keep the notices)"
     fi
-    if [ ! -f "$rt/release" ]; then
+    if [ ! -f "$rthome/release" ]; then
         fail "runtime/release missing in image"
         return
     fi
     local want got
     want="$(lock_prop "$RUNTIME_LOCK" javaVersion)"
-    got="$(grep -E '^JAVA_VERSION=' "$rt/release" | tail -1 | cut -d'"' -f2)"
+    got="$(grep -E '^JAVA_VERSION=' "$rthome/release" | tail -1 | cut -d'"' -f2 || true)"
     if [ "$got" != "$want" ]; then
         fail "runtime/release JAVA_VERSION '$got' != runtime.lock javaVersion '$want'"
     fi
@@ -198,14 +230,34 @@ check_ffmpeg() {
 }
 
 # --- rule 4: every JAR is on the Licensee-checked runtime classpath -------------
-# Compose renames every jar to <name>-<md5>.jar where the md5 is rendered per byte
-# with %x (leading zeros dropped: md5 ...b2 03 3e... renders ...b233e...). An image
-# jar proves its identity when its md5 — in either rendering — matches its suffix
-# and <name>.jar is on the manifest (the Licensee-checked list written by
-# :desktopApp:writeDesktopRuntimeClasspath). A jar without a matching suffix must
-# hash-identically match its manifest row.
+# The manifest's name column is the image name itself: Compose mangles every
+# classpath jar to <name>-<md5>.jar when it fills the app dir (the md5 rendered
+# per byte with %x — leading zeros dropped: md5 ...b2 03 3e... renders
+# ...b233e...), and writeDesktopRuntimeClasspath records `sha256  <image name>`.
+# Membership is the jar's own basename; the row's sha256 is its identity. The
+# name's md5 stamp stays a sanity on the mangling. Two image jars sit outside
+# the manifest by construction (11 Two image JARs are outside that manifest):
+# the jlink runtime's own jars (jrt-fs.jar under */runtime/), and the
+# skiko-awt-runtime-<os>-<arch>-<md5>.jar stub Compose writes in place of the
+# classpath jar — acceptable only while the manifest itself carries the same
+# os-arch skiko-awt-runtime row.
+skiko_stub_ok() {
+    local base="$1" manifest="$2" rest os arch
+    case "$base" in
+        skiko-awt-runtime-*-*-*.jar) ;;
+        *) return 1 ;;
+    esac
+    rest="${base#skiko-awt-runtime-}"
+    os="${rest%%-*}"
+    arch="${rest#"$os"-}"
+    arch="${arch%%-*}"
+    WANT="skiko-awt-runtime-${os}-${arch}-" \
+        awk 'index($2, ENVIRON["WANT"]) == 1 && substr($2, length($2) - 3) == ".jar" { found = 1 }
+            END { exit(found ? 0 : 1) }' "$manifest"
+}
+
 check_jars() {
-    local img="$1" manifest="$2" path hash base want padded unpadded i byte
+    local img="$1" manifest="$2" path hash base padded unpadded i byte stamped
     if [ ! -f "$manifest" ]; then
         fail "runtime-classpath manifest missing: $manifest (run :desktopApp:createDistributable first)"
         return
@@ -222,15 +274,22 @@ check_jars() {
             unpadded+="${byte#0}"
         done
         case "$base" in
-            *-"$unpadded".jar) want="${base%-"$unpadded".jar}.jar" ;;
-            *-"$padded".jar) want="${base%-"$padded".jar}.jar" ;;
-            *) want="$base" ;;
+            *-"$unpadded".jar|*-"$padded".jar) stamped=true ;;
+            *) stamped=false ;;
         esac
-        hash="$(grep -E "  $(printf '%s' "$want" | sed 's/[].[^$*\/]/\\&/g')\$" "$manifest" | cut -d' ' -f1)"
-        if [ -z "$hash" ]; then
+        # Field-exact lookup (awk misses return empty, never nonzero): the
+        # mangled names carry regex-hostile characters.
+        hash="$(WANT="$base" awk '$2 == ENVIRON["WANT"] { print $1 }' "$manifest")"
+        if [ -n "$hash" ]; then
+            if [ "$(sha256 "$path")" != "$hash" ]; then
+                fail "JAR differs from the Licensee-checked classpath artifact: ${path#"$img"/}"
+            elif [ "$stamped" = false ]; then
+                fail "manifest JAR name is not the file's own md5 stamp: ${path#"$img"/}"
+            fi
+        elif [ "$stamped" = true ] && skiko_stub_ok "$base" "$manifest"; then
+            note "skiko stub JAR accepted via the manifest's skiko entry: ${path#"$img"/}"
+        else
             fail "JAR not on the Licensee-checked runtime classpath: ${path#"$img"/}"
-        elif [ "$want" = "$base" ] && [ "$(sha256 "$path")" != "$hash" ]; then
-            fail "JAR differs from the Licensee-checked classpath artifact: ${path#"$img"/}"
         fi
     done < <(find "$img" -name '*.jar' -print0)
 }
@@ -504,7 +563,7 @@ scan_dir() {
 }
 
 extract_and_scan() {
-    local pkg="$1" fmt="$2" tmp
+    local pkg="$1" fmt="$2" tmp mnt=""
     tmp="$(mktemp -d)"
     case "$fmt" in
         tar.gz) tar -xzf "$pkg" -C "$tmp" ;;
@@ -518,6 +577,20 @@ extract_and_scan() {
                 rm -rf "$tmp"
                 return
             fi ;;
+        dmg)
+            if ! command -v hdiutil >/dev/null 2>&1; then
+                fail "scanning a DMG needs hdiutil (macOS)"
+                rm -rf "$tmp"
+                return
+            fi
+            if ! hdiutil attach -nobrowse -readonly -mountpoint "$tmp" "$pkg" >/dev/null; then
+                fail "hdiutil could not attach $pkg read-only"
+                rm -rf "$tmp"
+                return
+            fi
+            mnt="$tmp"
+            DMG_MOUNTS+=("$mnt")
+            ;;
     esac
     local roots=() d
     while IFS= read -r d; do roots+=("$d"); done \
@@ -533,7 +606,13 @@ extract_and_scan() {
             scan_dir "$d"
         fi
     done
-    rm -rf "$tmp"
+    if [ -n "$mnt" ]; then
+        # The mount leaves on the normal path too; the EXIT trap covers aborts.
+        dmg_detach_all || fail "the DMG mount did not detach: $mnt"
+        rm -rf "$tmp" 2>/dev/null || true
+    else
+        rm -rf "$tmp"
+    fi
 }
 
 for input in "${INPUTS[@]}"; do
@@ -547,6 +626,7 @@ for input in "${INPUTS[@]}"; do
         *.msi) check_msi "$input" ;;
         *.zip) extract_and_scan "$input" zip ;;
         *.tar.gz) extract_and_scan "$input" tar.gz ;;
+        *.dmg) extract_and_scan "$input" dmg ;;
         *)
             if [ -d "$input" ]; then
                 scan_dir "$input"
