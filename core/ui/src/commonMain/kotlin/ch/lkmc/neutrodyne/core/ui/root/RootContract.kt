@@ -86,6 +86,10 @@ public data class PlayerSlotState(
     val hidePanel: () -> Unit = {},
     /** The sheet hides navigation only after settling over it. */
     val onExpandedSettled: (Boolean) -> Unit = {},
+    val windowWidthDp: Int = 360,
+    val posture: ch.lkmc.neutrodyne.core.model.WindowPosture =
+        ch.lkmc.neutrodyne.core.model
+            .WindowPosture(),
 )
 
 /** Root-level key chords dispatched to the shell's playback actions (08 Keyboard and mouse). */
