@@ -1037,6 +1037,13 @@ On an explicit Quit, `ShutdownCoordinator` gives one push a 2-s budget when the 
 4. The gate re-classifies at each round and on every network change, because split-horizon DNS gives the same name a LAN address at home and a public one outside, and the same address is local on Wi-Fi but not through a VPN: a missing or revoked permission blocks only rounds whose server classifies as local (`LocalNetworkPermissionDenied`), and the help offers the permission again. A server reached through a VPN (Tailscale's `100.64.0.0/10` on its VPN interface) is therefore not local and needs no permission.
 5. **Safety net** for a classification that misses (an unusual route set, a definition change in a later Android release): on API 37+ without the grant, when two consecutive rounds end in a connect timeout to the sync server while the active network is Wi-Fi or Ethernet without VPN, Settings › Sync and the problem banner offer "Your server may be on this network — allow local network access" instead of only `Unreachable`; granting it sets `syncAllowed` for this server. The NDK's `android_getnetworkblockedreason(sockFd)` (returns `ANDROID_NETWORK_BLOCKED_REASON_LNP`, [local network permission](https://developer.android.com/privacy-and-security/local-network-permission)) would identify the cause exactly but needs the socket descriptor beneath OkHttp and a JNI shim; not used in v1.0.
 
+**Implementation note (2026-11-04, MS2).** `LocalNetworkPermissionGate`
+classifies `.local` names and the IPv4/IPv6 private, link-local, CGNAT,
+multicast and broadcast ranges; the active-network route check (a global
+IPv6 address on a directly-connected route) and the connect-timeout safety
+net are not implemented yet. The `SYNC` client bypasses the LAN guard only
+while the gate has set `LocalNetworkAccess.syncAllowed`.
+
 **Desktop.** No platform rule on Windows and Linux. macOS may show its Local Network privacy prompt for a LAN server ([TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)); the bundle declares `NSLocalNetworkUsageDescription` (11 owns the `Info.plist`), and because the ad-hoc identity changes with every update the prompt may return after an update (Unverified with ad-hoc identity, S17). A denied prompt shows as connection failures; the help names the System Settings switch.
 
 ### Error handling and backoff
@@ -1167,6 +1174,15 @@ stateDiagram-v2
 4. Finish seeding `sync_clock.raw` and its field clocks for every matched/applied record as above, with the received clocks for server-won fields and the frozen historical stamps for local-won fields; set `enabled = 1`, `cursor` = the last pulled cursor, `hlc = max(own, every clock seen, now)`.
 5. Capture only fields the server lacks or the local side won, using the frozen `onApplied` inputs and their pre-merge timestamps: podcast presence from `subscribedAt`, user fields/overrides from their local change time, groups from `updatedAt`, members/Up next from `addedAt`, episodes from state/position timestamps and the session from `play_session.updatedAt`. `captureAt` takes the literal value too. Server-won fields are never re-stamped. Server-only Up next items appended in step 3 get fresh order keys/clocks for the deliberately merged order; settings the account lacked use literal `v` captures at now. Write `linkedAt` in the completing transaction.
 6. Push in rounds of 1,000; the server's field merge keeps whichever side is newer.
+
+**Implementation note (2026-11-04, MS2).** The base branch has no
+`LibraryMerger` implementation (05's `RestoreMerger` refuses the `LINK_*`
+policies), so `FirstLinkMerger` seeds this device's rows into `sync_clock`
+with their own row timestamps (counter 0, this node) and reuses the
+engine's field merge instead of `mergeStaged`. The rules are the same
+timestamp-LWW comparison (a local June `playedAt` loses to a server
+October "unplayed"); the staging-file resume of step 1 is not implemented
+yet and a crash mid-merge restarts the pull.
 
 Step 5's `captureAt` receives the frozen value as well as its pre-merge timestamp for played/position/session fields. Field winners come from 05's `onApplied(MergedRecord)` callback; `MergeSummary` carries counts only. Settings the server lacked use literal `v` captures. It never reads a post-merge projection at push time; an interrupted first link resumes from the saved raw inputs without turning an applied server value into a new local action.
 
@@ -1793,13 +1809,18 @@ and both native image architectures still require their CI execution evidence.
 
 Serves R6.7, R7.8, N8, N12, N13. Delivered in M0b (JAR skeleton), MS1 (image, compose, systemd, README section), M11b (final guidance). Honours [D95](../PLAN.md#3-key-decisions), [D3](../PLAN.md#3-key-decisions), [D63](../PLAN.md#3-key-decisions), [D79](../PLAN.md#3-key-decisions). Release jobs: [09 `release.yml`](09-quality-and-release.md#releaseyml); channels: [09 Distribution channels](09-quality-and-release.md#distribution-channels).
 
-Every tag `vX.Y.Z` publishes `neutrodyne-server-{v}.jar` on the GitHub release and `ghcr.io/{owner}/neutrodyne-server:{v}` (then `{X.Y}` and `latest`, only after the release is published) for `linux/amd64` and `linux/arm64`; GHCR counts as GitHub ([PO-2](../PLAN.md#po-2-distribution-channels)). Files in `sync/server/deploy/`: `compose.yaml`, `Caddyfile`, `nginx.conf.example`, `neutrodyne-server.service`, `Dockerfile`.
+Every tag `vX.Y.Z` publishes `neutrodyne-server-{v}.jar` on the GitHub release and `ghcr.io/{owner}/neutrodyne-server:{v}` (then `{X.Y}` and `latest`, only after the release is published) for `linux/amd64` and `linux/arm64`; GHCR counts as GitHub ([PO-2](../PLAN.md#po-2-distribution-channels)). Files in `sync/server/deploy/`: `compose.yaml`, `Caddyfile`, `nginx.conf.example`, `neutrodyne-server.service.example`, `Dockerfile`.
 
 ### JAR on Java 21 or later
 
-The administrator installs any Java 21+ runtime (distribution package or Temurin) and the JAR, for example in `/opt/neutrodyne-server/`. Reference systemd unit `neutrodyne-server.service`:
+The administrator installs any Java 21+ runtime (distribution package or Temurin) and the JAR, for example in `/opt/neutrodyne-server/`. Reference systemd unit `neutrodyne-server.service.example` (copy it to `neutrodyne-server.service`, set `NEUTRODYNE_SERVER_PUBLIC_URL`, then enable):
 
 ```ini
+# Reference unit. Copy to neutrodyne-server.service, set
+# NEUTRODYNE_SERVER_PUBLIC_URL to your public HTTPS URL and adjust the JAR
+# path if needed, then enable it. Do not enable this file unedited: the
+# example.org URL is a placeholder and the server refuses non-loopback
+# listeners without an https:// public URL.
 [Unit]
 Description=Neutrodyne Sync server
 After=network-online.target
@@ -1823,9 +1844,13 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
 LockPersonality=yes
 SystemCallArchitectures=native
 MemoryMax=320M
@@ -1835,7 +1860,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-- `DynamicUser=yes` puts the state directory under `/var/lib/private/` behind a symlink and implies `ProtectSystem=strict` and `NoNewPrivileges` ([systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)). `MemoryDenyWriteExecute` is deliberately absent (the JVM's JIT needs writable executable memory).
+- `DynamicUser=yes` puts the state directory under `/var/lib/private/` behind a symlink, implies `ProtectSystem=strict` and `NoNewPrivileges`, and keeps the state directory writable under `ProtectSystem=strict` (so no `ReadWritePaths=` is needed) ([systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)). `CapabilityBoundingSet=` drops every capability (the JVM needs none as an unprivileged user on an unprivileged port) and `MemoryDenyWriteExecute` is deliberately absent (the JVM's JIT needs writable executable memory).
 - A web server (Caddy or nginx) on the same host terminates TLS and proxies to `127.0.0.1:8787` ([Reverse proxy with Caddy](#reverse-proxy-with-caddy), [nginx](#nginx)).
 - Account administration normally happens in the web UI. CLI commands must run as the service's user; with `DynamicUser` that is `sudo systemd-run --pty --wait -p DynamicUser=yes -p User=neutrodyne-server -p StateDirectory=neutrodyne-server -E NEUTRODYNE_SERVER_DATA=/var/lib/neutrodyne-server /usr/bin/java -jar /opt/neutrodyne-server/neutrodyne-server.jar user list`. systemd keeps one dynamic user per name, shared by every unit that names it while any of them runs ([`dynamic-user.c`](https://github.com/systemd/systemd/blob/main/src/core/dynamic-user.c)), and derives its UID from a hash of the name, so the transient unit gets the service's UID and the state directory's ownership does not change; MS1 still runs the command against a live service. A static user created by a `sysusers.d` snippet also works (systemd then uses it, [systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)), with `sudo -u neutrodyne-server` for the CLI.
 
@@ -1858,13 +1883,14 @@ LABEL org.opencontainers.image.source="https://github.com/{owner}/Neutrodyne" \
       org.opencontainers.image.licenses="Unlicense" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.description="Neutrodyne Sync server"
-HEALTHCHECK --interval=30s --timeout=5s CMD ["/usr/bin/java", "-Xmx32m", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1", "-Xss512k", "-cp", "/app/neutrodyne-server.jar", "ch.lkmc.neutrodyne.sync.server.HealthCheck"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s CMD ["/usr/bin/java", "-Xmx32m", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1", "-Xss512k", "-cp", "/app/neutrodyne-server.jar", "ch.lkmc.neutrodyne.sync.server.HealthCheck"]
 ENTRYPOINT ["/usr/bin/java", "-Xmx96m", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1", "-Xss512k", "-jar", "/app/neutrodyne-server.jar"]
 CMD ["serve"]
 ```
 
 - The base contains Temurin OpenJDK 25 and its dependencies, and its default entry point is the equivalent of `java -jar` ([distroless Java](https://github.com/GoogleContainerTools/distroless/blob/main/java/README.md)); there is no shell, so the health check and the CLI run through `java`. `data/` is an empty directory in the build context, copied with the non-root owner so a new named volume starts writable.
 - **Implementation note (2026-11-02, MS1).** The `HEALTHCHECK` probe JVM is bounded (`-Xmx32m` and the serve flags) because it runs inside the same 320 MiB cgroup as `serve`. Separately, the probe pins `HttpClient.Version.HTTP_1_1`: with the default HTTP/2 preference the JDK client sends an h2c `Upgrade` header, the server's bounded request-body read then waits on the upgrade stream, and the probe timed out against a healthy CIO server (CI run 41381036782, server job: `HttpTimeoutException`; reproduced locally with the packaged JAR — HTTP/2 times out, HTTP/1.1 answers 200). `HealthCheckTest` now runs the probe against a real CIO server. The CI image check and the compose smoke run every exec'd probe/CLI JVM with the same bounded flags.
+- **Implementation note (2026-11-04).** The `HEALTHCHECK` gained `--start-period=30s`: the container reports healthy in about a second on developer hardware, and thirty seconds gives Raspberry-Pi-class hosts headroom before failed probes count toward `unhealthy`.
 - The image ships OpenJDK and the base image's GPL and LGPL components (glibc, the GCC runtime) under [D3](../PLAN.md#3-key-decisions)'s runtime exception ([Image sources and the runtime exception](#image-sources-and-the-runtime-exception)).
 
 ### Reverse proxy with Caddy
@@ -1878,7 +1904,7 @@ services:
     restart: unless-stopped
     environment:
       NEUTRODYNE_SERVER_PUBLIC_URL: https://sync.example.org
-      NEUTRODYNE_SERVER_TRUSTED_PROXIES: 172.31.87.0/24
+      NEUTRODYNE_SERVER_TRUSTED_PROXIES: ${SYNC_SUBNET:-172.31.87.0/24}
     volumes:
       - neutrodyne-data:/data
     networks: [sync]
@@ -1898,12 +1924,19 @@ services:
 networks:
   sync:
     ipam:
-      config: [{subnet: 172.31.87.0/24}]
+      config: [{subnet: "${SYNC_SUBNET:-172.31.87.0/24}"}]
 volumes:
   neutrodyne-data: {}
   caddy-data: {}
   caddy-config: {}
 ```
+
+`SYNC_SUBNET` names the compose network's subnet and, through the same variable,
+the CIDR the server trusts `X-Forwarded-*` from, so the two cannot drift apart.
+The default `172.31.87.0/24` sits inside `172.16.0.0/12` and can collide with
+routes the host already has (an AWS default VPC is `172.31.0.0/16`); set
+`SYNC_SUBNET` to a free range on such a host. The shipped `compose.yaml` pins
+the Caddy image by digest because the `caddy:2` tag is mutable.
 
 ```text
 # Caddyfile
@@ -1919,7 +1952,12 @@ Caddy obtains certificates automatically ([Automatic HTTPS](https://caddyserver.
 
 `nginx.conf.example` for administrators who already run nginx:
 
-```text
+```nginx
+# Included inside the existing TLS server block.
+client_max_body_size 2m;
+# HSTS is the proxy's job; the app sends the other security headers itself.
+# add_header is inherited only by locations that set none of their own.
+add_header Strict-Transport-Security "max-age=31536000" always;
 location /api/v1/events {
     proxy_pass http://127.0.0.1:8787;
     proxy_http_version 1.1;
@@ -1933,11 +1971,11 @@ location /api/v1/events {
 }
 location / {
     proxy_pass http://127.0.0.1:8787;
-    client_max_body_size 2m;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    add_header Strict-Transport-Security "max-age=31536000" always;
 }
 ```
 

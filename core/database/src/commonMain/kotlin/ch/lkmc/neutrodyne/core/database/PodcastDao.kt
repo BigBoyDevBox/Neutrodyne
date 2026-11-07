@@ -90,6 +90,10 @@ abstract class PodcastDao(
     @Query("SELECT * FROM podcast WHERE feedKey = :feedKey")
     abstract suspend fun byFeedKey(feedKey: String): PodcastEntity?
 
+    /** 10's `ChangeBuilder`/`SyncApplier`: the sync record ID is `podcast.syncId`. */
+    @Query("SELECT * FROM podcast WHERE syncId = :syncId")
+    abstract suspend fun bySyncId(syncId: String): PodcastEntity?
+
     @Delete
     abstract suspend fun deleteAliases(rows: List<PodcastUrlAliasEntity>)
 
@@ -428,6 +432,10 @@ abstract class PodcastDao(
      */
     @Update(entity = PodcastEntity::class)
     abstract suspend fun updateFetchStates(rows: List<PodcastFetchState>)
+
+    /** All channel subscriptions, including blocked rows, for whole-library outage accounting. */
+    @Query("SELECT id FROM podcast WHERE sourceType = 'YOUTUBE_CHANNEL' ORDER BY id")
+    abstract suspend fun youtubeChannelIds(): List<Long>
 
     /** Car library order uses displayed titles, including custom titles, with stable ties. */
     @Query(

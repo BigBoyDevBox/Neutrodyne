@@ -52,6 +52,35 @@ class DbusDesktopPortalTest {
     }
 
     @Test(timeout = TEST_TIMEOUT_MS)
+    fun aCompletedPickRemovesTheResponseMatch() {
+        val address = busAddress()
+        runBlocking {
+            // The portal's own connection is held by the test, so the match rules it
+            // installs are inspectable through AbstractConnectionBase.handledSignals
+            // (dbus-java keeps no public match count).
+            val bus = DBusConnectionBuilder.forAddress(address).build()
+            try {
+                FakePortal(address).use { portal ->
+                    DbusDesktopPortal({ bus }).use { underTest ->
+                        val pending = async(Dispatchers.IO) { underTest.chooseDirectory(TITLE, null) }
+                        await("OpenFile call") { portal.openCalls.size == 1 }
+                        assertThat(bus.responseMatches()).isEqualTo(1)
+
+                        portal.respond(portal.openCalls.single().handleToken, RESPONSE_OK, listOf(folderUri))
+                        assertThat(withTimeout(AWAIT_MS) { pending.await() })
+                            .isEqualTo(DirectoryChoice.Chosen(folderPath))
+
+                        // A pick that answered is finished: its match must not linger.
+                        assertThat(bus.responseMatches()).isEqualTo(0)
+                    }
+                }
+            } finally {
+                runCatching { bus.close() }
+            }
+        }
+    }
+
+    @Test(timeout = TEST_TIMEOUT_MS)
     fun aDismissedDialogIsCancelledNotAFallback() {
         val address = busAddress()
         runBlocking {
@@ -65,6 +94,54 @@ class DbusDesktopPortalTest {
                     assertThat(withTimeout(AWAIT_MS) { pending.await() })
                         .isEqualTo(DirectoryChoice.Cancelled)
                 }
+            }
+        }
+    }
+
+    @Test(timeout = TEST_TIMEOUT_MS)
+    fun aWrongHandleAnswerClosesTheResponseMatch() {
+        val address = busAddress()
+        runBlocking {
+            val bus = DBusConnectionBuilder.forAddress(address).build()
+            try {
+                FakePortal(address).use { portal ->
+                    portal.misdirect = true
+                    DbusDesktopPortal({ bus }).use { underTest ->
+                        assertThat(withTimeout(AWAIT_MS) { underTest.chooseDirectory(TITLE, null) })
+                            .isEqualTo(DirectoryChoice.Unavailable)
+
+                        // The error path is an outcome too: its match must not linger.
+                        assertThat(bus.responseMatches()).isEqualTo(0)
+                    }
+                }
+            } finally {
+                runCatching { bus.close() }
+            }
+        }
+    }
+
+    @Test(timeout = TEST_TIMEOUT_MS)
+    fun aResponseSignalledWhileTheHandleIsWrongResumesExactlyOnce() {
+        val address = busAddress()
+        runBlocking {
+            // The fake emits the Response for the predictable path *and* answers the
+            // call with a path the match rule does not cover, so the signal thread and
+            // the error path both reach the outcome gate.
+            val bus = DBusConnectionBuilder.forAddress(address).build()
+            try {
+                FakePortal(address).use { portal ->
+                    portal.misdirect = true
+                    portal.misdirectUris = listOf(folderUri)
+                    DbusDesktopPortal({ bus }).use { underTest ->
+                        val outcome = withTimeout(AWAIT_MS) { underTest.chooseDirectory(TITLE, null) }
+
+                        // Exactly one of the two outcomes won the gate; the match is gone.
+                        assertThat(outcome).isAnyOf(DirectoryChoice.Chosen(folderPath), DirectoryChoice.Unavailable)
+                        assertThat(bus.responseMatches()).isEqualTo(0)
+                    }
+                }
+            } finally {
+                runCatching { bus.close() }
             }
         }
     }
@@ -131,6 +208,16 @@ class DbusDesktopPortalTest {
     private val folderPath = Path.of(System.getProperty("java.io.tmpdir")).toString()
     private val folderUri = Path.of(folderPath).toUri().toASCIIString()
 
+    /** The `member='Response'` match rules still installed on this connection. */
+    private fun DBusConnection.responseMatches(): Int {
+        val field =
+            org.freedesktop.dbus.connections.base.AbstractConnectionBase::class.java
+                .getDeclaredField("handledSignals")
+        field.isAccessible = true
+        val rules = (field.get(this) as Map<*, *>).keys
+        return rules.count { "member='Response'" in it.toString() }
+    }
+
     private fun busAddress(): String {
         val address = System.getenv("DBUS_SESSION_BUS_ADDRESS")
         assumeTrue(
@@ -168,6 +255,12 @@ class DbusDesktopPortalTest {
         val openCalls = ConcurrentLinkedQueue<OpenCall>()
         val closedTokens = ConcurrentLinkedQueue<String>()
 
+        /** When set, [OpenFile] answers with a path the match rule does not cover. */
+        var misdirect: Boolean = false
+
+        /** When non-null, the wrong handle is answered with a Response for these uris. */
+        var misdirectUris: List<String>? = null
+
         private val fileChooser =
             object : PortalFileChooser {
                 override fun getObjectPath() = PortalNames.PATH
@@ -183,6 +276,18 @@ class DbusDesktopPortalTest {
                     requests[token] = path
                     bus.exportObject(path, FakeRequest(token, closedTokens))
                     openCalls += OpenCall(title, options, token)
+                    if (misdirect) {
+                        misdirectUris?.let { uris ->
+                            bus.sendMessage(
+                                PortalRequest.Response(
+                                    path,
+                                    UInt32(RESPONSE_OK),
+                                    mapOf("uris" to Variant(uris, "as")),
+                                ),
+                            )
+                        }
+                        return DBusPath("${PortalNames.PATH}/request/wrong/path")
+                    }
                     return DBusPath(path)
                 }
             }
