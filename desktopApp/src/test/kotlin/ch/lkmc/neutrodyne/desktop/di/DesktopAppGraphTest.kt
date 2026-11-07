@@ -274,7 +274,12 @@ class DesktopAppGraphTest {
         }
         assertThat(
             graph.idleSleepInhibitor::class.simpleName,
-        ).isAnyOf("LinuxIdleSleepInhibitor", "PendingIdleSleepInhibitor")
+        ).isAnyOf(
+            "LinuxIdleSleepInhibitor",
+            "MacIdleSleepInhibitor",
+            "WindowsIdleSleepInhibitor",
+            "PendingIdleSleepInhibitor",
+        )
         assertThat(graph.osSurfaces).isSameInstanceAs(graph.osSurfaces)
 
         val orders =
