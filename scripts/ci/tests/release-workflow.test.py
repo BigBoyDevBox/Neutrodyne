@@ -71,7 +71,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
 
     def test_publish_verifies_before_it_creates_the_draft(self):
         publish = self.text.split("  publish:", 1)[1].split("  image-tags:", 1)[0]
-        verify = publish.index("Verify the image and its exact sources before publication")
+        verify = publish.index("Verify the image and exact sources before publication")
         runtime = publish.index("Runtime exception checks")
         assets = publish.index("Compare the asset set with verify-tag's expected list")
         draft = publish.index('gh release create "$TAG"')
@@ -91,9 +91,20 @@ class ReleaseWorkflowTest(unittest.TestCase):
 
     def test_publish_downloads_every_build_artifact(self):
         publish = self.text.split("  publish:", 1)[1].split("  image-tags:", 1)[0]
-        for artifact in ("android", "desktop-*", "sources", "server-jar", "server-sources"):
+        # main's artifact names: release-android, release-server,
+        # release-server-sources, desktop-<target> and sources.
+        for pattern in ("release-*", "desktop-*", "sources"):
+            with self.subTest(pattern=pattern):
+                self.assertIn(f"pattern: {pattern}", publish.split("steps:", 1)[1])
+        for artifact in (
+            "name: release-android\n",
+            "name: release-server\n",
+            "name: release-server-sources\n",
+            "name: desktop-${{ matrix.target }}\n",
+            "name: sources\n",
+        ):
             with self.subTest(artifact=artifact):
-                self.assertIn(artifact, publish.split("steps:", 1)[1])
+                self.assertIn(artifact, self.text)
         manifest = self.text.split("  server-image-manifest:", 1)[1].split("  publish:", 1)[0]
         self.assertIn("server-digest-*", manifest)
 
