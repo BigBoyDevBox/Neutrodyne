@@ -77,6 +77,8 @@ def normalize_thin_macho(b):
             return b, 0
         cmds.append((cmd, csz, off))
         if cmd == 0x1D:
+            if csz != 16:
+                return b, 0
             dataoff, datasize = u32(b, off + 8, be), u32(b, off + 12, be)
             if dataoff + datasize > len(b):
                 return b, 0
@@ -84,6 +86,8 @@ def normalize_thin_macho(b):
         off += csz
     # The commands must exactly cover the declared command region.
     if off != hdr + sizeofcmds:
+        return b, 0
+    if len(blobs) > 1:
         return b, 0
     csz_sum = sum(c[1] for c in cmds if c[0] == 0x1D)
     if csz_sum > sizeofcmds:
@@ -101,9 +105,9 @@ def normalize_thin_macho(b):
         vmsize, foff, fsize = u32(b, link_off + 28, be), u32(b, link_off + 32, be), u32(b, link_off + 36, be)
     if foff + fsize > len(b):
         return b, 0
-    # Every signature blob must lie inside the segment's file range before it is masked.
+    # A single terminal blob keeps all preceding linkedit data bound.
     for dataoff, datasize in blobs:
-        if dataoff < foff or dataoff + datasize > foff + fsize:
+        if dataoff < foff or dataoff + datasize != foff + fsize:
             return b, 0
     inside = sum(d for _, d in blobs)
     if inside > fsize:
@@ -210,7 +214,8 @@ def canonical_sha256(path):
         seen = set()
         for info in infos:
             name = info.filename
-            validate_name(name)
+            # ZipInfo can truncate NULs or normalize Windows separators.
+            validate_name(info.orig_filename)
             key = name.lower()
             if key in seen:
                 fail(f"duplicate ZIP entry name: {name!r}")
