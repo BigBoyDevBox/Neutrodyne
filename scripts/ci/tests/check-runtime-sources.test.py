@@ -156,6 +156,27 @@ class RuntimeSourcesGateTest(unittest.TestCase):
             fx.write(f"{rel}/Contents/Home/{rel_path}", data)
         return str(self.root / rel)
 
+    def test_automatic_smoke_requires_a_successful_launcher(self):
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        script = self.root / "scripts/desktop/smoke-start.sh"
+        script.parent.mkdir(parents=True)
+        (script.parent / "smoke.txt").write_text(smoke_line(self.root))
+        for code in (0, 1):
+            with self.subTest(code=code):
+                script.write_text(
+                    '#!/bin/sh\ncat "$(dirname "$0")/smoke.txt"\n'
+                    f'exit {code}\n'
+                )
+                script.chmod(0o755)
+                result = self.fx.run(
+                    self.root / "scripts/ci/check-runtime-sources.sh",
+                    "--image", app, "--jdk", jdk,
+                )
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                if code:
+                    self.assertIn("smoke launcher failed", result.stderr)
+
     # ----- symlink binding and enumeration failures ---------------------------
 
     def symlink(self, path: str, target: str):

@@ -157,7 +157,10 @@ image_check_smoke() {
             fail "no --smoke file and scripts/desktop/smoke-start.sh is missing"
             return
         fi
-        line="$("$SMOKE_START" "$img" || true)"
+        if ! line="$("$SMOKE_START" "$img")"; then
+            fail "packaged smoke launcher failed"
+            return
+        fi
     fi
     if [ -z "$line" ]; then
         fail "no SMOKE line from the packaged app (smoke mode is where vendor and version come from)"
