@@ -15,11 +15,12 @@
 #              :youtube:ytdlp-desktop JAR is present (emergency build, 01)
 #
 # Inputs besides the image: desktopApp/runtime.lock, desktopApp/wix.lock,
-# desktopApp/packaging/deb/control, desktopApp/packaging/rpm/template.spec, the
+# desktopApp/packaging/deb/control, desktopApp/packaging/rpm/neutrodyne.spec, the
 # Licensee-checked runtime-classpath manifest
 # (desktopApp/build/desktop-packaging/runtime-classpath.txt, written by
-# :desktopApp:writeDesktopRuntimeClasspath) and, once the engine ships
-# (MD3), desktopApp/python-components.lock.
+# :desktopApp:writeDesktopRuntimeClasspath), the derived skiko stub manifest
+# (desktopApp/build/desktop-packaging/runtime-classpath-stubs.txt, same task) and,
+# once the engine ships (MD3), desktopApp/python-components.lock.
 #
 # Exit 0 = all checks pass; 1 = at least one violation (all violations are printed);
 # 2 = usage error. Prints the installed and package sizes for PB27 at the end.
@@ -31,7 +32,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." >/dev/null 2>&1 && pwd -P)"
 RUNTIME_LOCK="$REPO_ROOT/desktopApp/runtime.lock"
 WIX_LOCK="$REPO_ROOT/desktopApp/wix.lock"
 DEB_CONTROL="$REPO_ROOT/desktopApp/packaging/deb/control"
-RPM_SPEC="$REPO_ROOT/desktopApp/packaging/rpm/template.spec"
+RPM_SPEC="$REPO_ROOT/desktopApp/packaging/rpm/neutrodyne.spec"
 PY_LOCK="$REPO_ROOT/youtube/ytdlp-desktop/python-components.lock"
 CLASSPATH_MANIFEST="$REPO_ROOT/desktopApp/build/desktop-packaging/runtime-classpath.txt"
 
@@ -234,33 +235,50 @@ check_ffmpeg() {
 # the name is Compose's mangled <base>-<md5>.jar, the hash canonical jar content
 # (entry name + uncompressed content SHA-256, sorted by name) -- packaging
 # recompresses and re-signs image jars, so raw bytes and the md5 stamp change.
-# Membership is the jar's basename, never a recomputed md5; the skiko stub is
-# bounded by the manifest's os-arch-version skiko row.
-skiko_stub_ok() {
-    local base="$1" manifest="$2" rest os arch version
+# Membership is the jar's basename. The skiko stub is a repacked derivative whose image
+# name the build cannot predict, so it is bound by the stub manifest
+# (runtime-classpath-stubs.txt): `<expected stub hash>  <source name>
+# <extracted file>=<hash>,…`, derived from the Licensee-checked source artifact and the
+# target extraction rule at build time -- never from the image. A name prefix or a
+# matching version row alone is not acceptance.
+skiko_stub_record() {
+    local base="$1" stub_manifest="$2" rest os arch version stamp src
     case "$base" in
         skiko-awt-runtime-*-*-*-*.jar) ;;
         *) return 1 ;;
     esac
+    # The image name is the source name with Compose's content md5 inserted before
+    # ".jar"; parse from the right so a version may itself contain dashes.
+    stamp="${base%.jar}"
+    stamp="${stamp##*-}"
     rest="${base#skiko-awt-runtime-}"
     os="${rest%%-*}"
     rest="${rest#"$os"-}"
     arch="${rest%%-*}"
     rest="${rest#"$arch"-}"
-    version="${rest%%-*}"
-    # The stub's own content hash can never equal the classpath row's name; the
-    # bound is the same os-arch-version row in the trusted manifest.
-    WANT="skiko-awt-runtime-${os}-${arch}-${version}-" \
-        awk 'index($2, ENVIRON["WANT"]) == 1 && substr($2, length($2) - 3) == ".jar" { found = 1 }
-            END { exit(found ? 0 : 1) }' "$manifest"
+    version="${rest%-*}"
+    # The stamp is Compose's unpadded lowercase hex md5: reject names whose suffix is
+    # not a plausible mangled stamp (an ambiguous or hand-written name).
+    [ -n "$stamp" ] || return 1
+    case "$stamp" in
+        *[!0-9a-f]*) return 1 ;;
+    esac
+    src="skiko-awt-runtime-${os}-${arch}-${version}.jar"
+    [ -f "$stub_manifest" ] || return 1
+    awk -v want="$src" '$2 == want { print; found = 1 }
+        END { exit(found ? 0 : 1) }' "$stub_manifest"
 }
 
 jar_content_hash() {
     python3 "$REPO_ROOT/scripts/ci/canonical-jar-hash.py" "$1"
 }
 
+content_hash() {
+    python3 "$REPO_ROOT/scripts/ci/canonical-jar-hash.py" --content "$1"
+}
+
 check_jars() {
-    local img="$1" manifest="$2" path hash base
+    local img="$1" manifest="$2" path hash base record want_hash rest src_name specs actual seen="|" spec appdir name chash file
     if [ ! -f "$manifest" ]; then
         fail "runtime-classpath manifest missing: $manifest (run :desktopApp:createDistributable first)"
         return
@@ -269,6 +287,7 @@ check_jars() {
         fail "the JAR classpath binding needs python3 (canonical-jar-hash.py)"
         return
     fi
+    local stub_manifest="${manifest%/*}/runtime-classpath-stubs.txt"
     while IFS= read -r -d '' path; do
         case "$path" in
             */runtime/*) continue ;; # the JDK's own jars (jrt-fs.jar) are not classpath jars
@@ -278,11 +297,48 @@ check_jars() {
         # mangled names carry regex-hostile characters.
         hash="$(WANT="$base" awk '$2 == ENVIRON["WANT"] { print $1 }' "$manifest")"
         if [ -n "$hash" ]; then
-            if [ "$(jar_content_hash "$path")" != "$hash" ]; then
+            actual="$(jar_content_hash "$path" 2>/dev/null || true)"
+            if [ -z "$actual" ]; then
+                fail "cannot read JAR content: ${path#"$img"/}"
+            elif [ "$actual" != "$hash" ]; then
                 fail "JAR differs from the Licensee-checked classpath artifact: ${path#"$img"/}"
             fi
-        elif skiko_stub_ok "$base" "$manifest"; then
-            note "skiko stub JAR accepted via the manifest's skiko entry: ${path#"$img"/}"
+        elif record="$(skiko_stub_record "$base" "$stub_manifest")"; then
+            want_hash="${record%%  *}"
+            rest="${record#"$want_hash"  }"
+            src_name="${rest%%  *}"
+            specs="${rest#"$src_name"  }"
+            case "$seen" in
+                *"|${src_name}|"*) fail "duplicate skiko stub JAR: ${path#"$img"/}" ;;
+            esac
+            seen="${seen}${src_name}|"
+            actual="$(jar_content_hash "$path" 2>/dev/null || true)"
+            if [ -z "$actual" ]; then
+                fail "cannot read skiko stub content: ${path#"$img"/}"
+            elif [ "$actual" != "$want_hash" ]; then
+                fail "skiko stub content differs from the Licensee-checked source artifact: ${path#"$img"/}"
+            else
+                appdir="$(dirname -- "$path")"
+                if [ -n "$specs" ]; then
+                    IFS=',' read -r -a spec_arr <<<"$specs"
+                    for spec in "${spec_arr[@]}"; do
+                        name="${spec%%=*}"
+                        chash="${spec#*=}"
+                        file="$appdir/$name"
+                        if [ ! -f "$file" ]; then
+                            fail "skiko extracted native missing from the image: ${file#"$img"/}"
+                        else
+                            actual="$(content_hash "$file" 2>/dev/null || true)"
+                            if [ -z "$actual" ]; then
+                                fail "cannot read skiko extracted native: ${file#"$img"/}"
+                            elif [ "$actual" != "$chash" ]; then
+                                fail "skiko extracted native differs from the Licensee-checked source artifact: ${file#"$img"/}"
+                            fi
+                        fi
+                    done
+                fi
+                note "skiko stub JAR bound to the Licensee-checked source artifact: ${path#"$img"/}"
+            fi
         else
             fail "JAR not on the Licensee-checked runtime classpath: ${path#"$img"/}"
         fi

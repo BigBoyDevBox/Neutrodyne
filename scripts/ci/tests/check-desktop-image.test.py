@@ -10,9 +10,9 @@ the real code paths run against fixture images:
 
   * I1 — image JARs are members of the Licensee-checked classpath under their
     *mangled* image names (<base>-<md5>.jar, what the manifest records) and
-    identical to the row's sha256. The documented out-of-manifest case is the
-    skiko stub, accepted only while the manifest carries the same
-    skiko-awt-runtime-<os>-<arch>-*.jar entry — no blanket allowlist.
+    identical to the row's sha256. The skiko stub is Compose's repacked derivative
+    of the source runtime jar; it is bound by the stub manifest's source-derived
+    expected hash and extracted natives — never by a name prefix or version row.
   * I2 — a jpackage .app keeps the runtime home at
     Contents/runtime/Contents/Home, not at Contents/runtime; release/legal/
     MODULES resolve under the home while the native-file comparison keeps the
@@ -77,7 +77,7 @@ class Fixture:
             "desktopApp/runtime.lock",
             "desktopApp/wix.lock",
             "desktopApp/packaging/deb/control",
-            "desktopApp/packaging/rpm/template.spec",
+            "desktopApp/packaging/rpm/neutrodyne.spec",
             "youtube/ytdlp-desktop/python-components.lock",
         ):
             (root / lock).parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +89,7 @@ class Fixture:
             "PATH": str(root / "fakebin") + os.pathsep + os.environ["PATH"],
         }
         self.manifest_rows = {}
+        self.stub_rows = {}
 
     def canonical_hash(self, data: bytes) -> str:
         """The shipped checker's canonical identity (canonical-jar-hash.py)."""
@@ -99,6 +100,20 @@ class Fixture:
         path.write_bytes(data)
         r = subprocess.run(["python3", str(self.root / "scripts/ci/canonical-jar-hash.py"), str(path)],
                            capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            raise AssertionError(r.stderr)
+        return r.stdout.strip()
+
+    def canonical_content_hash(self, name: str, data: bytes) -> str:
+        """The canonical hash of a standalone file's normalized content (the
+        '--content' mode): Mach-O signatures are masked, other bytes bound."""
+        path = self.root / "tmp/content-input" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        r = subprocess.run(
+            ["python3", str(self.root / "scripts/ci/canonical-jar-hash.py"), "--content", str(path)],
+            capture_output=True, text=True, timeout=60,
+        )
         if r.returncode != 0:
             raise AssertionError(r.stderr)
         return r.stdout.strip()
@@ -115,6 +130,10 @@ class Fixture:
         text = "".join(f"{h}  {n}\n" for n, h in sorted(self.manifest_rows.items()))
         (self.root / "desktopApp/build/desktop-packaging/runtime-classpath.txt").write_text(
             text, encoding="utf-8"
+        )
+        stubs = "".join(f"{row}\n" for _, row in sorted(self.stub_rows.items()))
+        (self.root / "desktopApp/build/desktop-packaging/runtime-classpath-stubs.txt").write_text(
+            stubs, encoding="utf-8"
         )
 
     def write(self, rel: str, data: bytes):
@@ -135,6 +154,85 @@ class Fixture:
             self.root / "scripts/ci/check-desktop-image.sh", *inputs,
             env_extra=env_extra,
         )
+
+    # ----- skiko runtime jar / Compose stub derivation -----------------------
+
+    @staticmethod
+    def _skiko_base(name: str) -> str:
+        """Compose's extraction rule: an entry is extracted when its name with any
+        '.sha256' suffix removed is in the target's native set."""
+        return name[:-len(".sha256")] if name.endswith(".sha256") else name
+
+    @staticmethod
+    def skiko_extraction(os_arch: str) -> set:
+        """The native entries compose-gradle-plugin 1.12.1 extracts for the target
+        (AbstractJPackageTaskKt.unpackSkikoForCurrentOS)."""
+        os_name, arch = os_arch.split("-")
+        if os_name == "macos":
+            return {f"libskiko-macos-{arch}.dylib"}
+        if os_name == "linux":
+            return {f"libskiko-linux-{arch}.so"}
+        return {f"skiko-windows-{arch}.dll", "icudtl.dat"}
+
+    @staticmethod
+    def default_skiko_entries(os_arch: str) -> list:
+        """A source runtime jar: META-INF, the target native pair, and another arch's
+        native that stays in the repacked stub (the real macos-arm64 jar carries both)."""
+        os_name, arch = os_arch.split("-")
+        ext = {"macos": "dylib", "linux": "so", "windows": "dll"}[os_name]
+        other_arch = "x64" if arch == "arm64" else "arm64"
+        if os_name == "windows":
+            native = f"skiko-windows-{arch}.dll"
+            other = f"skiko-windows-{other_arch}.dll"
+        else:
+            native = f"libskiko-{os_name}-{arch}.{ext}"
+            other = f"libskiko-{os_name}-{other_arch}.{ext}"
+        entries = [
+            ("META-INF/", b""),
+            ("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n"),
+            (native, b"NATIVE-" + os_arch.encode()),
+            (native + ".sha256", b"0" * 64),
+            (other, b"NATIVE-OTHER"),
+        ]
+        if os_name == "windows":
+            entries.append(("icudtl.dat", b"ICU"))
+        return entries
+
+    def skiko_source(self, os_arch="linux-x64", version="0.9.30", entries=None) -> list:
+        """Record the Licensee-checked source jar (regular row) and derive its stub
+        manifest row from the source artifact and the target extraction rule."""
+        entries = entries if entries is not None else self.default_skiko_entries(os_arch)
+        stem = f"skiko-awt-runtime-{os_arch}-{version}"
+        self.manifest(stem, zip_bytes(entries))
+        extracted = self.skiko_extraction(os_arch)
+        remaining = [(n, d) for n, d in entries if self._skiko_base(n) not in extracted]
+        specs = ",".join(
+            f"{n.rsplit('/', 1)[-1]}={self.canonical_content_hash(n, d)}"
+            for n, d in entries
+            if self._skiko_base(n) in extracted
+        )
+        self.stub_rows[f"{stem}.jar"] = (
+            f"{self.canonical_hash(zip_bytes(remaining))}  {stem}.jar  {specs}"
+        )
+        return entries
+
+    def skiko_stub(self, img, os_arch="linux-x64", version="0.9.30", entries=None,
+                  mutate=None, stamp=None, write_extracted=True) -> str:
+        """Write the derived stub jar (and its extracted natives) into the image."""
+        entries = entries if entries is not None else self.default_skiko_entries(os_arch)
+        extracted = self.skiko_extraction(os_arch)
+        remaining = [(n, d) for n, d in entries if self._skiko_base(n) not in extracted]
+        data = zip_bytes(remaining)
+        if mutate is not None:
+            data = mutate(data)
+        stamp = stamp if stamp is not None else unpadded_md5(data)
+        name = f"skiko-awt-runtime-{os_arch}-{version}-{stamp}.jar"
+        self.write(f"{img}/lib/app/{name}", data)
+        if write_extracted:
+            for n, d in entries:
+                if self._skiko_base(n) in extracted:
+                    self.write(f"{img}/lib/app/{n.rsplit('/', 1)[-1]}", d)
+        return name
 
 
 def release_file(modules="java.base java.desktop") -> bytes:
@@ -227,20 +325,9 @@ class DesktopImageGatesTest(unittest.TestCase):
         for stem, data in (("core", b"CORE"), ("util", b"UTIL")):
             fx.write(f"{img}/lib/app/{fx.manifest(stem, data)}", data)
         if manifest_skiko:
-            # The Licensee-checked classpath entry for the real skiko jar.
-            fx.manifest(
-                "skiko-awt-runtime-linux-x64-0.9.30",
-                b"SKIKO-REAL",
-                name=mangled("skiko-awt-runtime-linux-x64-0.9.30", b"SKIKO-REAL"),
-            )
+            # The Licensee-checked source runtime jar and its derived stub record.
+            self.fx.skiko_source("linux-x64", "0.9.30")
         return f"{img}"
-
-    def skiko_stub(self, img, os_arch="linux-x64", version="0.9.30"):
-        """Compose's stub jar: name carries the stub's own content hash."""
-        data = b"SKIKO-STUB-" + os_arch.encode()
-        name = f"skiko-awt-runtime-{os_arch}-{version}-{unpadded_md5(data)}.jar"
-        self.fx.write(f"{img}/lib/app/{name}", data)
-        return name
 
     def mac_app(self, root_dir="imgs/Neutrodyne.app", jars=(("app", b"APP"),)):
         """A jpackage .app: runtime home at Contents/runtime/Contents/Home."""
@@ -318,10 +405,10 @@ esac
     # ----- I1: JAR classpath membership --------------------------------------
 
     def test_flat_image_passes(self):
-        """Mangled-name jars matching the manifest's name+sha256, the stamped
-        skiko stub accepted via the manifest's same-os-arch skiko row."""
+        """Mangled-name jars matching the manifest's name+sha256, and the derived
+        skiko stub bound to the source artifact's expected stub hash."""
         img = self.flat_image()
-        self.skiko_stub(img)
+        self.fx.skiko_stub(img)
         self.fx.write_manifest()
         r = self.fx.image_check(img)
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
@@ -354,23 +441,186 @@ esac
         self.assertNotEqual(0, r.returncode)
         self.assertIn("not on the Licensee-checked runtime classpath", r.stderr)
 
-    def test_skiko_stub_needs_the_manifest_skiko_entry(self):
-        """No blanket allowlist: a stamped skiko stub fails when the manifest
-        carries no skiko-awt-runtime-<os>-<arch>-*.jar row."""
+    def test_unchecked_class_in_skiko_stub_fails(self):
+        """Root's confirmed bypass: an arbitrary ZIP carrying org/unchecked/Surprise.class
+        passes the prefix/version stub exception while the manifest holds a matching
+        os/arch/version skiko row. The stub's content must be bound, not its name."""
+        img = self.flat_image()
+        data = zip_bytes([("org/unchecked/Surprise.class", b"UNCHECKED-CODE")])
+        name = mangled("skiko-awt-runtime-linux-x64-0.9.30", data)
+        self.fx.write(f"{img}/lib/app/{name}", data)
+        self.fx.write_manifest()
+        r = self.fx.image_check(img)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("skiko", r.stderr)
+
+    def test_skiko_stub_needs_the_stub_manifest_entry(self):
+        """No blanket allowlist: a stamped skiko stub fails when the stub manifest
+        carries no row for its source artifact."""
         img = self.flat_image(manifest_skiko=False)
-        self.skiko_stub(img)
+        self.fx.skiko_stub(img)
         self.fx.write_manifest()
         r = self.fx.image_check(img)
         self.assertNotEqual(0, r.returncode)
         self.assertIn("skiko-awt-runtime-linux-x64", r.stderr)
 
     def test_skiko_stub_needs_the_same_os_arch(self):
-        img = self.flat_image()  # manifest skiko row is linux-x64
-        self.skiko_stub(img, os_arch="windows-x64")
+        img = self.flat_image()  # stub manifest source is linux-x64
+        self.fx.skiko_stub(img, os_arch="windows-x64")
         self.fx.write_manifest()
         r = self.fx.image_check(img)
         self.assertNotEqual(0, r.returncode)
         self.assertIn("skiko-awt-runtime-windows-x64", r.stderr)
+
+    def test_skiko_stub_rejects_a_false_version(self):
+        """A stub whose version segment matches no source row is rejected even
+        though a same-os-arch row exists."""
+        img = self.flat_image()  # stub manifest source is 0.9.30
+        self.fx.skiko_stub(img, version="0.9.31")
+        self.fx.write_manifest()
+        r = self.fx.image_check(img)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("skiko-awt-runtime-linux-x64-0.9.31", r.stderr)
+
+    def test_skiko_source_jar_keeps_its_regular_membership(self):
+        """The source artifact's ordinary manifest row still binds an unstubbed
+        source jar under its mangled name."""
+        img = self.flat_image()
+        data = zip_bytes(self.fx.default_skiko_entries("linux-x64"))
+        self.fx.write(
+            f"{img}/lib/app/{mangled('skiko-awt-runtime-linux-x64-0.9.30', data)}", data
+        )
+        self.fx.write_manifest()
+        r = self.fx.image_check(img)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+
+    # ----- skiko stub content binding (root's confirmed bypass) --------------
+
+    def skiko_stub_with_entries(self, img, entries):
+        self.fx.skiko_stub(img, entries=entries)
+        self.fx.write_manifest()
+        return self.fx.image_check(img)
+
+    def test_skiko_stub_added_resource_fails(self):
+        img = self.flat_image()
+        entries = self.fx.default_skiko_entries("linux-x64") + [("resource.txt", b"DATA")]
+        r = self.skiko_stub_with_entries(img, entries)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("skiko stub content differs", r.stderr)
+
+    def test_skiko_stub_mutated_native_fails(self):
+        """A native payload left in the stub is bound, not just classes."""
+        img = self.flat_image()
+        entries = [
+            (n, b"NATIVE-EVIL" if n == "libskiko-linux-arm64.so" else d)
+            for n, d in self.fx.default_skiko_entries("linux-x64")
+        ]
+        r = self.skiko_stub_with_entries(img, entries)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("skiko stub content differs", r.stderr)
+
+    def test_skiko_stub_extra_native_fails(self):
+        img = self.flat_image()
+        entries = self.fx.default_skiko_entries("linux-x64") + [
+            ("libskiko-linux-x64.so.1", b"EXTRA-NATIVE")
+        ]
+        r = self.skiko_stub_with_entries(img, entries)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("skiko stub content differs", r.stderr)
+
+    def test_skiko_stub_entry_rename_fails(self):
+        img = self.flat_image()
+        entries = [
+            ("META-INF/OTHER.MF" if n == "META-INF/MANIFEST.MF" else n, d)
+            for n, d in self.fx.default_skiko_entries("linux-x64")
+        ]
+        r = self.skiko_stub_with_entries(img, entries)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("skiko stub content differs", r.stderr)
+
+    def test_skiko_stub_entry_removal_fails(self):
+        img = self.flat_image()
+        entries = [
+            (n, d) for n, d in self.fx.default_skiko_entries("linux-x64")
+            if n != "META-INF/MANIFEST.MF"
+        ]
+        r = self.skiko_stub_with_entries(img, entries)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("skiko stub content differs", r.stderr)
+
+    def test_skiko_stub_duplicate_entry_fails(self):
+        img = self.flat_image()
+        entries = self.fx.default_skiko_entries("linux-x64") + [
+            ("META-INF/MANIFEST.MF", b"DUPLICATE")
+        ]
+        r = self.skiko_stub_with_entries(img, entries)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("cannot read skiko stub content", r.stderr)
+
+    def test_skiko_stub_duplicate_jar_fails(self):
+        """Two stubs for one source are ambiguous, however each is stamped."""
+        img = self.flat_image()
+        self.fx.skiko_stub(img, stamp="aaaa")
+        self.fx.skiko_stub(img, stamp="bbbb")
+        self.fx.write_manifest()
+        r = self.fx.image_check(img)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("duplicate skiko stub JAR", r.stderr)
+
+    def test_skiko_stub_non_hex_stamp_fails(self):
+        """A name whose suffix is not Compose's hex md5 stamp is ambiguous."""
+        img = self.flat_image()
+        self.fx.skiko_stub(img, stamp="zzzz")
+        self.fx.write_manifest()
+        r = self.fx.image_check(img)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("not on the Licensee-checked runtime classpath", r.stderr)
+
+    def test_skiko_stub_false_expected_hash_fails(self):
+        """A stub manifest row whose expected hash does not match the source-derived
+        stub is rejected even though the name and version match."""
+        img = self.flat_image()
+        self.fx.stub_rows["skiko-awt-runtime-linux-x64-0.9.30.jar"] = (
+            "0" * 64 + "  skiko-awt-runtime-linux-x64-0.9.30.jar  "
+        )
+        self.fx.skiko_stub(img)
+        self.fx.write_manifest()
+        r = self.fx.image_check(img)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("skiko stub content differs", r.stderr)
+
+    def test_skiko_stub_missing_extracted_native_fails(self):
+        img = self.flat_image()
+        self.fx.skiko_stub(img, write_extracted=False)
+        self.fx.write_manifest()
+        r = self.fx.image_check(img)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("skiko extracted native missing", r.stderr)
+
+    def test_skiko_stub_mutated_extracted_native_fails(self):
+        img = self.flat_image()
+        self.fx.skiko_stub(img)
+        self.fx.write(f"{img}/lib/app/libskiko-linux-x64.so", b"NATIVE-EVIL")
+        self.fx.write_manifest()
+        r = self.fx.image_check(img)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("skiko extracted native differs", r.stderr)
+
+    def test_skiko_stub_extracted_native_resigned_passes(self):
+        """The extracted native is bound by normalized content, so a re-signed
+        (post-jpackage/ad-hoc) Mach-O still matches the source artifact."""
+        img = self.flat_image()
+        native = "libskiko-linux-x64.so"
+        entries = [
+            (n, thin_macho() if n == native else d)
+            for n, d in self.fx.default_skiko_entries("linux-x64")
+        ]
+        self.fx.skiko_source("linux-x64", "0.9.30", entries=entries)
+        self.fx.skiko_stub(img, entries=entries)
+        self.fx.write(f"{img}/lib/app/{native}", thin_macho(sig=b"OTHER"))
+        self.fx.write_manifest()
+        r = self.fx.image_check(img)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
 
     # ----- I2: the macOS runtime home is Contents/runtime/Contents/Home -------
 
@@ -518,7 +768,11 @@ esac
     def assertJarFails(self, data, mutated):
         r = self.zjar(self.flat_image(), "zcore", data, mutate=lambda _: mutated)
         self.assertNotEqual(0, r.returncode)
-        self.assertIn("differs from the Licensee-checked", r.stderr)
+        self.assertTrue(
+            "differs from the Licensee-checked" in r.stderr
+            or "cannot read JAR content" in r.stderr,
+            r.stderr,
+        )
 
     def test_canonical_jar_identity(self):
         """Recompression/reordering is stable; content, entry-set, duplicate and
@@ -531,7 +785,10 @@ esac
         simple = zip_bytes([("A.class", b"CODE-A")])
         self.assertJarFails(simple, zip_bytes([("A.class", b"CODE-B")]))
         self.assertJarFails(simple, zip_bytes([("A.class", b"CODE-A"), ("B.class", b"CODE-B")]))
-        self.assertJarFails(simple, duplicate_zip_bytes())
+        # Duplicate entry names are ambiguous: the canonical reader refuses them.
+        r = self.zjar(self.flat_image(), "zcore", simple, mutate=lambda _: duplicate_zip_bytes())
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("cannot read JAR content", r.stderr)
         self.assertJarFails(simple, zip_bytes([("../evil.class", b"CODE")]))
         self.assertEqual(sha256(b"NOT-A-ZIP"), self.fx.canonical_hash(b"NOT-A-ZIP"))
 
@@ -545,10 +802,10 @@ esac
         self.assertJarFails(data, zip_bytes([("lib.dylib", thin_macho(sig=b"A" * 16, dataoff=0x400, total=0x2000))]))
 
     def test_skiko_stub_does_not_require_its_own_md5_stamp(self):
-        """Membership is the manifest row's trusted name; the stub's md5 stamp is
+        """Membership is the stub manifest's source row; the stub's md5 stamp is
         not recomputed (packaging changes the stub bytes)."""
         img = self.flat_image()
-        self.fx.write(f"{img}/lib/app/skiko-awt-runtime-linux-x64-0.9.30-deadbeef.jar", b"SKIKO-STUB")
+        self.fx.skiko_stub(img, stamp="deadbeef")
         self.fx.write_manifest()
         r = self.fx.image_check(img)
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
