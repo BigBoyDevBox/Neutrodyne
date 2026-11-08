@@ -503,15 +503,16 @@ internal object CanonicalJarHash {
             } else {
                 0x1000L
             }
-        val linkedits =
-            cmds
-                .filter { it[0] == LC_SEGMENT || it[0] == LC_SEGMENT_64 }
-                .map { it[2].toInt() }
-                .filter { isLinkeditName(b, it) }
+        val segments = cmds.filter { it[0] == LC_SEGMENT || it[0] == LC_SEGMENT_64 }
+        val segmentKind = if (is64) LC_SEGMENT_64 else LC_SEGMENT
+        val segmentHeaderSize = if (is64) 72L else 56L
+        if (segments.any { it[0] != segmentKind || it[1] < segmentHeaderSize }) return ThinResult(b, 0)
+        val linkedits = segments.map { it[2].toInt() }.filter { isLinkeditName(b, it) }
         if (linkedits.size != 1) return ThinResult(b, 0)
         val linkOff = linkedits[0]
         val linkSize = cmds.first { it[2] == linkOff.toLong() }[1].toInt()
-        if (linkOff + linkSize > b.size) return ThinResult(b, 0)
+        if (linkSize.toLong() != segmentHeaderSize) return ThinResult(b, 0)
+        if (u32(b, linkOff + if (is64) 64 else 48, be) != 0L) return ThinResult(b, 0)
         val linkBytes = b.copyOfRange(linkOff, linkOff + linkSize)
         val vmsize: Long
         val foff: Long
@@ -525,7 +526,20 @@ internal object CanonicalJarHash {
             foff = u32(linkBytes, 32, be)
             fsize = u32(linkBytes, 36, be)
         }
-        if (foff + fsize > b.size) return ThinResult(b, 0)
+        // Only a final, disjoint linkedit range may contain masked signature bytes.
+        // Check subtraction bounds before addition: u64 values may decode as signed longs.
+        if (foff < off || foff > b.size || fsize < 0 || fsize > b.size - foff) return ThinResult(b, 0)
+        if (foff + fsize != b.size.toLong()) return ThinResult(b, 0)
+        for (segment in segments) {
+            if (segment[2] == linkOff.toLong()) continue
+            val co = segment[2].toInt()
+            val otherOff = if (is64) u64(b, co + 40, be) else u32(b, co + 32, be)
+            val otherSize = if (is64) u64(b, co + 48, be) else u32(b, co + 36, be)
+            if (otherOff < 0 || otherOff > b.size || otherSize < 0 || otherSize > b.size - otherOff) {
+                return ThinResult(b, 0)
+            }
+            if (otherSize > 0 && otherOff < foff + fsize && foff < otherOff + otherSize) return ThinResult(b, 0)
+        }
         // A single terminal blob keeps all preceding linkedit data bound.
         for (blob in blobs) {
             if (blob[0] < foff || blob[0] + blob[1] != foff + fsize) return ThinResult(b, 0)
@@ -582,10 +596,7 @@ internal object CanonicalJarHash {
     private fun isLinkeditName(
         b: ByteArray,
         cmdOff: Int,
-    ): Boolean {
-        val name = b.copyOfRange(cmdOff + 8, cmdOff + 24).takeWhile { it != 0.toByte() }.toByteArray()
-        return name.toString(Charsets.US_ASCII) == "__LINKEDIT"
-    }
+    ): Boolean = b.copyOfRange(cmdOff + 8, cmdOff + 24).contentEquals(LINKEDIT_SEGMENT_NAME)
 
     private fun isZero(
         b: ByteArray,
@@ -652,6 +663,7 @@ internal object CanonicalJarHash {
     private const val CPU_TYPE_ARM64 = 0x0100000CL
     private const val CPU_TYPE_ARM64_32 = 0x0200000CL
     private val ZERO4 = ByteArray(4)
+    private val LINKEDIT_SEGMENT_NAME = "__LINKEDIT".toByteArray(Charsets.US_ASCII).copyOf(16)
 }
 
 /**

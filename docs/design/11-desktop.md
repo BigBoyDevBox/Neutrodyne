@@ -1714,7 +1714,9 @@ canonical JAR content hashes. Each hash binds the sorted entry names and their
 uncompressed content; ZIP recompression does not change the identity. Only
 validated Mach-O signing metadata and signature blobs are normalized. A signature
 is normalized only through a single 16-byte command whose blob ends its linkedit
-segment; other layouts stay bound as raw bytes. Archive names are validated before
+segment. That segment must follow the load commands, end at the slice's file end,
+and stay disjoint from every other segment's file range; other layouts stay bound
+as raw bytes. Archive names are validated before
 the ZIP reader can normalize them. Class, resource, executable-code and other data
 changes remain bound. The Kotlin
 writer and `scripts/ci/canonical-jar-hash.py` share fixture vectors. The release
