@@ -1,0 +1,507 @@
+// SPDX-License-Identifier: Unlicense
+
+package ch.lkmc.neutrodyne.sync.impl
+
+import androidx.room3.withWriteTransaction
+import ch.lkmc.neutrodyne.core.database.NeutrodyneDatabase
+import ch.lkmc.neutrodyne.core.database.SyncCaptureKind
+import ch.lkmc.neutrodyne.core.database.SyncClockEntity
+import ch.lkmc.neutrodyne.core.database.SyncOutboxEntity
+import ch.lkmc.neutrodyne.core.database.SyncStateEntity
+import ch.lkmc.neutrodyne.core.domain.SettingsSyncPort
+import ch.lkmc.neutrodyne.core.domain.SettingsWriteCoordinator
+import ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys
+import ch.lkmc.neutrodyne.core.model.settings.SettingKey
+import ch.lkmc.neutrodyne.core.testing.FakeSettingsSyncPort
+import ch.lkmc.neutrodyne.sync.protocol.FieldState
+import ch.lkmc.neutrodyne.sync.protocol.Hlc
+import ch.lkmc.neutrodyne.sync.protocol.NodeId
+import ch.lkmc.neutrodyne.sync.protocol.RecordState
+import ch.lkmc.neutrodyne.sync.protocol.SyncCollection
+import ch.lkmc.neutrodyne.sync.protocol.SyncJson
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonPrimitive
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFails
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+/** 10 Settings capture: the durable local-write boundary, recovery and lifecycle gates. */
+abstract class SettingsCaptureTestBase {
+    private val now = 1_800_000_000_000L
+    private val remote = NodeId("0000000000000002")
+    private val localNode = NodeId("0000000000000001")
+
+    @Test
+    fun aRecorderFailurePropagatesAndDataStoreStaysUntouched() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                capture(db, port).install()
+                // A Room write failure surfaces through recordLocal, before any DataStore write:
+                // the repository contract is "record first, write only on success".
+                db.close()
+                assertFails {
+                    port.recordLocal(PlaybackSettingKeys.SKIP_BACK_MS, 20_000L)
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anUnmaterializedCommittedIntentReplaysWithItsOriginalClock() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                capture(db, port).install()
+
+                // The Room intent commits; the DataStore write never lands (crash or failure —
+                // emitLocal is never called).
+                port.recordLocal(PlaybackSettingKeys.SKIP_BACK_MS, 20_000L)
+                val intent = db.syncOutboxDao().get("setting", PlaybackSettingKeys.SKIP_BACK_MS.name, "v")
+                assertNotNull(intent)
+
+                // The next start reconciles through a fresh capture instance.
+                capture(db, port).reconcile()
+
+                // The committed literal is re-materialized, and the outbox row keeps the complete
+                // original clock — recovery never takes a fresh tick.
+                assertEquals(1, port.applied.size)
+                assertEquals(PlaybackSettingKeys.SKIP_BACK_MS, port.applied.single().first)
+                assertEquals("20000", port.applied.single().second)
+                val row = db.syncOutboxDao().get("setting", PlaybackSettingKeys.SKIP_BACK_MS.name, "v")
+                assertNotNull(row, "the recovered intent stays queued for upload")
+                assertEquals(intent.hlc, row.hlc)
+                assertEquals(intent.nodeId, row.nodeId)
+                val baseline = baselineOf(db, PlaybackSettingKeys.SKIP_BACK_MS)
+                assertEquals(Hlc(intent.hlc, NodeId(intent.nodeId)).toString(), baseline?.clock)
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anAlreadyMaterializedIntentOnlyAdvancesTheBaseline() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                capture(db, port).install()
+
+                // The intent commits AND its DataStore write lands before the crash.
+                port.recordLocal(PlaybackSettingKeys.SKIP_BACK_MS, 20_000L)
+                port.emitLocal(PlaybackSettingKeys.SKIP_BACK_MS, 20_000L, now)
+                port.current[PlaybackSettingKeys.SKIP_BACK_MS.name] = "20000"
+                val intent =
+                    db.syncOutboxDao().get("setting", PlaybackSettingKeys.SKIP_BACK_MS.name, "v")
+                assertNotNull(intent)
+                port.applied.clear()
+
+                capture(db, port).reconcile()
+
+                assertTrue(port.applied.isEmpty(), "a landed intent must not be re-applied")
+                val baseline = baselineOf(db, PlaybackSettingKeys.SKIP_BACK_MS)
+                assertEquals(Hlc(intent.hlc, NodeId(intent.nodeId)).toString(), baseline?.clock)
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aReplayKindIntentMaterializesOverTheStoredValue() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                port.current[key.name] = "5000"
+                val clock = Hlc.of(now, 7, remote)
+                db.syncOutboxDao().upsert(
+                    SyncOutboxEntity(
+                        coll = SyncCollection.SETTING.wire,
+                        rid = key.name,
+                        field = "v",
+                        hlc = clock.packed,
+                        nodeId = clock.nodeId.value,
+                        captureKind = SyncCaptureKind.REPLAY,
+                        value = "15000",
+                    ),
+                )
+
+                capture(db, port).reconcile()
+
+                assertEquals(key, port.applied.single().first)
+                assertEquals("15000", port.applied.single().second)
+                val baseline = baselineOf(db, key)
+                assertEquals(clock.toString(), baseline?.clock)
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aNewerRemoteMarkerDrainsInsteadOfTheOlderIntent() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val coordinator = TestSettingsWriteCoordinator()
+                val capture = SettingsCapture(db, port, coordinator) { true }
+                capture.install()
+
+                port.recordLocal(key, 20_000L)
+                val intent = db.syncOutboxDao().get("setting", key.name, "v")
+                assertNotNull(intent)
+                // A pending remote effect newer than the committed intent.
+                val remoteClock =
+                    Hlc.of(now, 1, remote).let { Hlc(it.packed + 1L shl 16, it.nodeId) }
+                seedPending(db, key, "15000", remoteClock)
+
+                // The start ordering: recovery first, then the remote drain — the remote value
+                // wins, the intent stays queued, and the older intent was never materialized.
+                SyncApplyEffects(db, port, coordinator) { true }.drainAtStart(capture)
+
+                assertEquals(key, port.applied.single().first)
+                assertEquals("15000", port.applied.single().second)
+                assertNull(pendingOf(db, key))
+                val row = db.syncOutboxDao().get("setting", key.name, "v")
+                assertEquals("20000", row?.value)
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aNewerLocalIntentBeatsAnOlderPendingRemoteMarker() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val coordinator = TestSettingsWriteCoordinator()
+                val capture = SettingsCapture(db, port, coordinator) { true }
+                capture.install()
+
+                // The capture tick must raise the local clock past the seeded remote one.
+                val remoteClock = Hlc.of(now - 10_000L, 1, remote)
+                db.syncStateDao().upsert(db.syncStateDao().get()!!.copy(hlc = remoteClock.packed))
+                port.recordLocal(key, 20_000L)
+                seedPending(db, key, "15000", remoteClock)
+
+                SyncApplyEffects(db, port, coordinator) { true }.drainAtStart(capture)
+
+                // Recovery materialized the local intent; the drain cleared the superseded marker
+                // without applying it.
+                assertEquals(key, port.applied.single().first)
+                assertEquals("20000", port.applied.single().second)
+                assertNull(pendingOf(db, key))
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * The MS2 regression: a committed but unmaterialized intent, then the switch off, then a
+     * newer local set while off. Recovery must not roll the off-switch edit back to the older
+     * intent — the intent retires as bookkeeping and the surviving value re-captures on the
+     * next enable, under a normal capture tick (never an invented wall clock).
+     */
+    @Test
+    fun anOffSwitchEditIsNotRolledBackByTheOlderIntent() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                var switchOn = true
+                val coordinator = TestSettingsWriteCoordinator()
+                val capture = SettingsCapture(db, port, coordinator) { switchOn }
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                capture.install()
+
+                // 1. Committed intent, never materialized (no emitLocal).
+                port.recordLocal(key, 15_000L)
+                val intent = db.syncOutboxDao().get("setting", key.name, "v")
+                assertNotNull(intent)
+
+                // 2. The switch turns off: the recorder goes inert.
+                switchOn = false
+                capture.reconcile()
+
+                // 3. A newer local set while off: nothing is captured, but the successful write
+                //    still baselines clocklessly through the materialized listener.
+                port.recordLocal(key, 25_000L)
+                port.emitLocal(key, 25_000L, now)
+                port.current[key.name] = "25000"
+                assertEquals(
+                    "15000",
+                    db.syncOutboxDao().get("setting", key.name, "v")?.value,
+                    "no new capture while the switch is off",
+                )
+
+                // 4. The switch turns on again; the same reconcile runs recovery.
+                switchOn = true
+                capture.reconcile()
+
+                // The older intent never materialized: the off-switch value survived and is the
+                // intent now queued for upload.
+                assertTrue(
+                    port.applied.none { it.second == "15000" },
+                    "the off-switch edit must not be rolled back to the older intent",
+                )
+                val row = db.syncOutboxDao().get("setting", key.name, "v")
+                assertNotNull(row, "the surviving value re-captures as a fresh intent")
+                assertEquals("25000", row.value)
+                assertEquals(localNode.value, row.nodeId)
+                assertTrue(
+                    row.hlc != intent.hlc || row.nodeId != intent.nodeId,
+                    "the re-capture is a new tick, not the retired intent's clock",
+                )
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aRemoteMarkerStaysPendingWhileTheSwitchIsOff() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                var switchOn = false
+                val coordinator = TestSettingsWriteCoordinator()
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                seedPending(db, key, "15000", Hlc.of(now, 1, remote))
+
+                // Off: neither recovery nor the drain runs the remote write.
+                SyncApplyEffects(db, port, coordinator) { switchOn }
+                    .drainAtStart(SettingsCapture(db, port, coordinator) { switchOn })
+                assertTrue(port.applied.isEmpty())
+                assertEquals("15000", pendingOf(db, key)?.value)
+
+                // On: the server-wins drain applies it.
+                switchOn = true
+                SyncApplyEffects(db, port, coordinator) { switchOn }
+                    .drainAtStart(SettingsCapture(db, port, coordinator) { switchOn })
+                assertEquals(key, port.applied.single().first)
+                assertEquals("15000", port.applied.single().second)
+                assertNull(pendingOf(db, key))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anUnlinkedCaptureStaysInert() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val capture = capture(db, port)
+                capture.install()
+
+                db.withWriteTransaction { db.syncStateDao().unlink() }
+                capture.reconcile()
+
+                port.recordLocal(key, 20_000L)
+                port.emitLocal(key, 20_000L, now)
+                assertNull(
+                    db.syncOutboxDao().get("setting", key.name, "v"),
+                    "nothing captures while unlinked",
+                )
+                assertNull(
+                    baselineOf(db, key),
+                    "an unlinked materialized write baselines nothing",
+                )
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anAccountAbsentKeyCapturesItsStoredValueOnInstall() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                port.current[key.name] = "7000"
+
+                capture(db, port).reconcile()
+
+                val row = db.syncOutboxDao().get("setting", key.name, "v")
+                assertNotNull(row, "a key the account does not carry uploads its stored value")
+                assertEquals("7000", row.value)
+                assertTrue(port.applied.isEmpty())
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anAckedSettingDoesNotRecaptureOnRestart() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                // The ack merged the sent value into raw state; the outbox row is gone.
+                db.syncClockDao().upsert(
+                    SyncClockEntity(
+                        SyncCollection.SETTING.wire,
+                        key.name,
+                        SyncJson.encodeToString(
+                            RawSyncRecord(
+                                state =
+                                    RecordState(
+                                        coll = SyncCollection.SETTING,
+                                        fields =
+                                            mapOf(
+                                                "v" to
+                                                    FieldState(
+                                                        JsonPrimitive("15000"),
+                                                        Hlc.of(now, 1, remote),
+                                                    ),
+                                            ),
+                                    ),
+                                settingHash =
+                                    SettingBaseline(
+                                        settingBaselineHash("15000"),
+                                        Hlc.of(now, 1, remote).toString(),
+                                    ),
+                            ),
+                        ),
+                    ),
+                )
+                port.current[key.name] = "15000"
+
+                capture(db, port).reconcile()
+
+                assertNull(
+                    db.syncOutboxDao().get("setting", key.name, "v"),
+                    "an acknowledged value must not re-capture or echo",
+                )
+                assertTrue(port.applied.isEmpty())
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aLocalMaterializedWriteAdvancesTheBaselineToTheIntentClock() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                capture(db, port).install()
+
+                port.recordLocal(key, 20_000L)
+                val intent = db.syncOutboxDao().get("setting", key.name, "v")
+                assertNotNull(intent)
+                port.emitLocal(key, 20_000L, now)
+
+                val baseline = baselineOf(db, key)
+                assertEquals(settingBaselineHash("20000"), baseline?.hash)
+                assertEquals(Hlc(intent.hlc, NodeId(intent.nodeId)).toString(), baseline?.clock)
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun theBaselineHashIsCanonicalAcrossSetOrder() =
+        runTest {
+            val ordered = settingBaselineHash("""["a","b","c"]""")
+            val shuffled = settingBaselineHash("""["c","a","b"]""")
+            assertEquals(ordered, shuffled)
+            assertEquals(settingBaselineHash("null"), settingBaselineHash("null"))
+        }
+
+    /** The linked fixture: `enabled` plus `linkedAt`, as `SyncStateDao.enableLinked` writes. */
+    private suspend fun link(db: NeutrodyneDatabase) {
+        db.withWriteTransaction {
+            db
+                .syncStateDao()
+                .upsert(
+                    SyncStateEntity(
+                        enabled = true,
+                        nodeId = localNode.value,
+                        hlc = 1L shl 16,
+                        linkedAt = 1L,
+                    ),
+                )
+        }
+    }
+
+    private fun capture(
+        db: NeutrodyneDatabase,
+        port: SettingsSyncPort,
+        coordinator: SettingsWriteCoordinator = TestSettingsWriteCoordinator(),
+        settingsSyncEnabled: suspend () -> Boolean = { true },
+    ): SettingsCapture = SettingsCapture(db, port, coordinator, settingsSyncEnabled)
+
+    private suspend fun baselineOf(
+        db: NeutrodyneDatabase,
+        key: SettingKey<*>,
+    ): SettingBaseline? = rawOf(db, key)?.settingHash
+
+    private suspend fun pendingOf(
+        db: NeutrodyneDatabase,
+        key: SettingKey<*>,
+    ): PendingSetting? = rawOf(db, key)?.pendingSetting
+
+    private suspend fun rawOf(
+        db: NeutrodyneDatabase,
+        key: SettingKey<*>,
+    ): RawSyncRecord? {
+        val row = db.syncClockDao().get(SyncCollection.SETTING.wire, key.name) ?: return null
+        return runCatching { SyncJson.decodeFromString<RawSyncRecord>(row.clocks) }.getOrNull()
+    }
+
+    private suspend fun seedPending(
+        db: NeutrodyneDatabase,
+        key: SettingKey<*>,
+        value: String,
+        clock: Hlc,
+    ) {
+        db.syncClockDao().upsert(
+            SyncClockEntity(
+                SyncCollection.SETTING.wire,
+                key.name,
+                SyncJson.encodeToString(
+                    RawSyncRecord(
+                        state =
+                            RecordState(
+                                coll = SyncCollection.SETTING,
+                                fields = mapOf("v" to FieldState(JsonPrimitive(value), clock)),
+                            ),
+                        pendingSetting = PendingSetting(value, clock.toString()),
+                    ),
+                ),
+            ),
+        )
+    }
+
+    /** The host's real in-memory Room database; the Android host supplies a Robolectric context. */
+    protected abstract fun newTestDb(): NeutrodyneDatabase
+}

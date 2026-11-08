@@ -84,6 +84,9 @@ interface DesktopAppGraph {
     /** 10's sync application service (Settings › Sync, the shell banners). */
     val syncController: ch.lkmc.neutrodyne.sync.api.SyncController
 
+    /** 10 Settings capture: the shared port the recorder installs into while linked. */
+    val settingsSyncPort: ch.lkmc.neutrodyne.core.domain.SettingsSyncPort
+
     /** The link state machine; `null` while no link runs. */
     val linkFlow: ch.lkmc.neutrodyne.sync.impl.LinkFlowImpl
 

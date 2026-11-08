@@ -38,6 +38,14 @@ interface SettingsSyncPort {
     fun registerRecorder(recorder: (suspend (key: SettingKey<*>, json: String) -> Unit)?)
 
     /**
+     * Installs the listener `SettingsCapture` uses to record that a local synced write reached
+     * DataStore (its materialization baseline); `null` clears it. Called from [emitLocal], after
+     * every successful local write of a synced key — captured or not — so an uncaptured write
+     * (the switch off) is still distinguishable from a never-materialized committed intent.
+     */
+    fun registerMaterialized(listener: (suspend (key: SettingKey<*>, json: String) -> Unit)?)
+
+    /**
      * Encodes [value] under [key]'s JSON shape; `"null"` for a reset, `null` when the value is
      * not valid for the key.
      */
@@ -45,6 +53,14 @@ interface SettingsSyncPort {
         key: SettingKey<*>,
         value: Any?,
     ): String?
+
+    /**
+     * The key's current stored value in the same JSON shape [encode] produces (its default when
+     * never written); `null` when it cannot be read or encoded. Recovery compares this against
+     * the committed intent and the baseline to tell an unmaterialized intent from a later
+     * uncaptured edit.
+     */
+    suspend fun currentJson(key: SettingKey<*>): String?
 
     /**
      * Persists the local intent for a synced key before its DataStore write. A recorder failure
@@ -55,8 +71,11 @@ interface SettingsSyncPort {
         value: Any?,
     )
 
-    /** Emits [LocalSyncedSetting] after a successful local DataStore write of a synced key. */
-    fun emitLocal(
+    /**
+     * Runs the materialized listener, then emits [LocalSyncedSetting] after a successful local
+     * DataStore write of a synced key.
+     */
+    suspend fun emitLocal(
         key: SettingKey<*>,
         value: Any?,
         atMs: Long,

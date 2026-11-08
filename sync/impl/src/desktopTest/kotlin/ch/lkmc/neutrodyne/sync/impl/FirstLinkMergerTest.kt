@@ -878,8 +878,8 @@ class FirstLinkMergerTest {
                         ),
                     )
                 val port = StoringSettingsSyncPort()
-                SettingsCapture(db, port).install()
                 val coordinator = TestSettingsWriteCoordinator()
+                SettingsCapture(db, port, coordinator) { true }.install()
                 val applyReached = CompletableDeferred<Unit>()
                 val releaseApply = CompletableDeferred<Unit>()
                 port.applyReached = applyReached
@@ -975,8 +975,8 @@ class FirstLinkMergerTest {
                         ),
                     )
                 val port = StoringSettingsSyncPort()
-                SettingsCapture(db, port).install()
                 val coordinator = TestSettingsWriteCoordinator()
+                SettingsCapture(db, port, coordinator) { true }.install()
                 // The local set precedes the merge, sequenced like the repository's
                 // local write: the Room intent first, then the DataStore write.
                 coordinator.withLock(key) {

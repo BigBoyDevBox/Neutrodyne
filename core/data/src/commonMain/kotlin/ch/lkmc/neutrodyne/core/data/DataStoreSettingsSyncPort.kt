@@ -40,6 +40,9 @@ internal class DataStoreSettingsSyncPort(
 ) : SettingsSyncPort {
     @Volatile
     private var recorderRef: suspend (SettingKey<*>, String) -> Unit = { _, _ -> }
+
+    @Volatile
+    private var materializedRef: suspend (SettingKey<*>, String) -> Unit = { _, _ -> }
     private val local = MutableSharedFlow<LocalSyncedSetting>(extraBufferCapacity = 16)
     override val localSyncedChanges: Flow<LocalSyncedSetting> = local
 
@@ -58,6 +61,14 @@ internal class DataStoreSettingsSyncPort(
     override fun registerRecorder(recorder: (suspend (key: SettingKey<*>, json: String) -> Unit)?) {
         recorderRef = recorder ?: { _, _ -> }
     }
+
+    override fun registerMaterialized(listener: (suspend (SettingKey<*>, String) -> Unit)?) {
+        materializedRef = listener ?: { _, _ -> }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun currentJson(key: SettingKey<*>): String? =
+        suspendRunCatching { encode(key, settingsStore.get(key as SettingKey<Any>)) }.getOrNull()
 
     override fun encode(
         key: SettingKey<*>,
@@ -87,13 +98,14 @@ internal class DataStoreSettingsSyncPort(
         recorderRef.invoke(key, json)
     }
 
-    override fun emitLocal(
+    override suspend fun emitLocal(
         key: SettingKey<*>,
         value: Any?,
         atMs: Long,
     ) {
         if (!key.synced) return
         val json = encode(key, value) ?: return
+        materializedRef(key, json)
         local.tryEmit(LocalSyncedSetting(key, json, atMs))
     }
 

@@ -64,6 +64,7 @@ abstract class SyncEngineEffectsDrainTestBase {
         val address: FakeSyncServerAddress,
         val engine: SyncEngine,
         val effects: SyncApplyEffects,
+        val capture: SettingsCapture,
     )
 
     private fun harness(
@@ -75,8 +76,13 @@ abstract class SyncEngineEffectsDrainTestBase {
         val address = FakeSyncServerAddress(serverUrl = "https://sync.example")
         address.updateSyncPlaybackSettings(switch)
         val clock = TestClock(now)
+        val writeLocks = TestSettingsWriteCoordinator()
         val effects =
-            SyncApplyEffects(db, port, TestSettingsWriteCoordinator()) {
+            SyncApplyEffects(db, port, writeLocks) {
+                address.syncPlaybackSettings()
+            }
+        val capture =
+            SettingsCapture(db, port, writeLocks) {
                 address.syncPlaybackSettings()
             }
         val engine =
@@ -96,7 +102,7 @@ abstract class SyncEngineEffectsDrainTestBase {
                 gate = FakeLocalNetworkGate(),
                 effects = effects,
             )
-        return DrainHarness(db, port, address, engine, effects)
+        return DrainHarness(db, port, address, engine, effects, capture)
     }
 
     @Test
@@ -344,7 +350,10 @@ abstract class SyncEngineEffectsDrainTestBase {
                 )
                 val h = harness(db, scriptedClient(syncRecords = emptyList()), port)
                 val initializer =
-                    SyncStartupDrainInitializer(dev.zacsweers.metro.Provider { h.effects })
+                    SyncStartupDrainInitializer(
+                        dev.zacsweers.metro.Provider { h.effects },
+                        dev.zacsweers.metro.Provider { h.capture },
+                    )
 
                 assertEquals(true, initializer.order in 101..199, "the drain belongs to the data band")
                 initializer.run()
