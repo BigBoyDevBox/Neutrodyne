@@ -221,6 +221,49 @@ class DesktopPackagingTest {
     fun `overlapping signature commands cannot splice data`() =
         assertSignatureMutationBound(SignatureMutation.OVERLAPPING)
 
+    @Test
+    fun overlappingTextSegmentBytesStayBound() = assertUnsupportedLayoutRaw("overlap_code_a")
+
+    @Test
+    fun changedBytesInAnOverlappingTextSegmentStayBound() = assertUnsupportedLayoutRaw("overlap_code_b")
+
+    @Test
+    fun embeddedNulSegmentNamesStayBound() = assertUnsupportedLayoutRaw("embedded_nul")
+
+    @Test
+    fun shortSegmentCommandsStayBoundWithoutThrowing() = assertUnsupportedLayoutRaw("short_segment")
+
+    @Test
+    fun unsignedSegmentOffsetsCannotWrapIntoTheFile() = assertUnsupportedLayoutRaw("unsigned_offset")
+
+    private fun assertUnsupportedLayoutRaw(label: String) {
+        val vectors = File(repoRoot(), "scripts/ci/tests/fixtures/malformed-macho-vectors.txt")
+        val hex = vectors.readLines().single { it.startsWith("$label=") }.substringAfter('=')
+        val data = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val root = Files.createTempDirectory("unsupported-macho").toFile()
+        try {
+            val file = writeJar(root, "input.jar", zipBytes(listOf("lib.dylib" to data)))
+            val rawFingerprint = sha256Hex("lib.dylib\u0000${sha256Hex(data)}\n".toByteArray())
+            assertEquals(rawFingerprint, CanonicalJarHash.of(file), label)
+            val process =
+                ProcessBuilder(
+                    "python3",
+                    File(repoRoot(), "scripts/ci/canonical-jar-hash.py").absolutePath,
+                    file.absolutePath,
+                ).redirectErrorStream(true)
+                    .start()
+            val output =
+                process.inputStream
+                    .bufferedReader()
+                    .use { it.readText() }
+                    .trim()
+            assertEquals(0, process.waitFor(), output)
+            assertEquals(rawFingerprint, output, "Kotlin/Python raw fallback: $label")
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     private enum class SignatureMutation { NON_TERMINAL, EXTENDED_COMMAND, OVERLAPPING }
 
     private fun assertSignatureMutationBound(mutation: SignatureMutation) {

@@ -41,7 +41,7 @@ def is_zero(b, start, length):
 
 
 def is_linkedit_name(b, cmd_off):
-    return b[cmd_off + 8:cmd_off + 24].rstrip(b"\0") == b"__LINKEDIT"
+    return b[cmd_off + 8:cmd_off + 24] == b"__LINKEDIT".ljust(16, b"\0")
 
 
 def normalize_thin_macho(b):
@@ -93,18 +93,32 @@ def normalize_thin_macho(b):
     if csz_sum > sizeofcmds:
         return b, 0
     page = 0x4000 if u32(b, 4, be) in (0x0100000C, 0x0200000C) else 0x1000
-    link_cmds = [c for c in cmds if c[0] in (0x1, 0x19) and is_linkedit_name(b, c[2])]
+    segments = [c for c in cmds if c[0] in (0x1, 0x19)]
+    segment_kind, segment_header_size = (0x19, 72) if is64 else (0x1, 56)
+    if any(c[0] != segment_kind or c[1] < segment_header_size for c in segments):
+        return b, 0
+    link_cmds = [c for c in segments if is_linkedit_name(b, c[2])]
     if len(link_cmds) != 1:
         return b, 0
     _, link_size, link_off = link_cmds[0]
-    if link_off + link_size > len(b):
+    if link_size != segment_header_size or u32(b, link_off + (64 if is64 else 48), be) != 0:
         return b, 0
     if is64:
         vmsize, foff, fsize = u64(b, link_off + 32, be), u64(b, link_off + 40, be), u64(b, link_off + 48, be)
     else:
         vmsize, foff, fsize = u32(b, link_off + 28, be), u32(b, link_off + 32, be), u32(b, link_off + 36, be)
-    if foff + fsize > len(b):
+    # Only a final, disjoint linkedit range may contain masked signature bytes.
+    if foff < off or foff > len(b) or fsize > len(b) - foff or foff + fsize != len(b):
         return b, 0
+    for _, _, co in segments:
+        if co == link_off:
+            continue
+        other_off = u64(b, co + 40, be) if is64 else u32(b, co + 32, be)
+        other_size = u64(b, co + 48, be) if is64 else u32(b, co + 36, be)
+        if other_off > len(b) or other_size > len(b) - other_off:
+            return b, 0
+        if other_size and other_off < foff + fsize and foff < other_off + other_size:
+            return b, 0
     # A single terminal blob keeps all preceding linkedit data bound.
     for dataoff, datasize in blobs:
         if dataoff < foff or dataoff + datasize != foff + fsize:

@@ -54,6 +54,16 @@ class OriginalEntryNameTest(unittest.TestCase):
             "non-signature data changes must change the fingerprint",
         )
 
+    def test_unsupported_segment_layouts_stay_bound_as_raw_bytes(self):
+        vectors = Path(__file__).with_name("fixtures") / "malformed-macho-vectors.txt"
+        for line in vectors.read_text().splitlines():
+            if not line or line.startswith("#"):
+                continue
+            label, value = line.split("=", 1)
+            payload = bytes.fromhex(value)
+            with self.subTest(layout=label):
+                self.assertEqual(payload, canonical.normalize_thin_macho(payload)[0])
+
     def test_a_nonterminal_signature_cannot_hide_linkedit_data(self):
         changed = bytearray(signed_native())
         struct.pack_into("<I", changed, 112, 256)
