@@ -107,7 +107,9 @@ sys.exit(behavior.get("exit", 0))
 # The real boundary regression's probe: a valid SMOKE line only when the smoke
 # property is true and a second JAVA_TOOL_OPTIONS property arrived.
 PROBE_SOURCE = '''public class SmokeProbe {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
+        String marker = System.getProperty("neutrodyne.probe.marker");
+        if (marker != null) java.nio.file.Files.writeString(java.nio.file.Path.of(marker), "launched");
         String smoke = System.getProperty("neutrodyne.smoke");
         String probe = System.getProperty("neutrodyne.probe");
         if (!"true".equals(smoke) || !"env-options".equals(probe)) {
@@ -453,12 +455,33 @@ class SmokeStartGateTest(unittest.TestCase):
         self.assert_unchanged(cfg, CFG_PREEXISTING, 0o640)
 
     def test_crlf_cfg_is_parsed(self):
-        img, cfg = self.make_image(CFG_CRLF_PREEXISTING, 0o640)
+        original = CFG_ABSENT_NEWLINE.replace(b"\n", b"\r\n")
+        img, cfg = self.make_image(original, 0o640)
         self.behave(lines=[VALID_SMOKE], exit_code=0, record_env=True)
         rc, out, err = self.run_script(img, 60, self.env(cfg))
         self.assertEqual(0, rc, err)
         self.assertEqual(VALID_SMOKE + "\n", out)
-        self.assert_unchanged(cfg, CFG_CRLF_PREEXISTING, 0o640)
+        self.assert_unchanged(cfg, original, 0o640)
+
+    def test_ignored_section_cannot_mask_a_conflicting_smoke_option(self):
+        original = CFG_CONFLICTING + b"[Ignored]\njava-options=-Dneutrodyne.smoke=true\n"
+        img, cfg = self.make_image(original)
+        self.behave(lines=[VALID_SMOKE], ran_marker=True)
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertNotEqual(0, rc)
+        self.assertEqual("", out)
+        self.assert_not_launched()
+        self.assert_unchanged(cfg, original, 0o640)
+
+    def test_trailing_value_whitespace_prevents_launch(self):
+        original = CFG_ABSENT_NEWLINE + b"java-options=-Dneutrodyne.smoke=true \n"
+        img, cfg = self.make_image(original)
+        self.behave(lines=[VALID_SMOKE], ran_marker=True)
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertNotEqual(0, rc)
+        self.assertEqual("", out)
+        self.assert_not_launched()
+        self.assert_unchanged(cfg, original, 0o640)
 
     def test_conflicting_cfg_false_prevents_launch(self):
         img, cfg = self.make_image(CFG_CONFLICTING, 0o640)
@@ -694,6 +717,35 @@ class RealJPackageSmokeTest(unittest.TestCase):
         self.assertEqual("skipped-headless", report.get("window"))
         self.assertEqual(original, cfg.read_bytes(), "the real launcher's .cfg changed")
         self.assertEqual(0o444, stat.S_IMODE(cfg.stat().st_mode))
+
+        # Admission must fail before main: the real app's ordinary main would
+        # otherwise open user AppDirs before its missing SMOKE report is noticed.
+        suffixes = {
+            "ignored-decoy": b"\njava-options=-Dneutrodyne.smoke=false\n[Ignored]\njava-options=-Dneutrodyne.smoke=true\n",
+            "trailing-space": b"\njava-options=-Dneutrodyne.smoke=true \n",
+        }
+        if os.name == "posix":
+            # The POSIX jpackage reader preserves CR in the JVM option value.
+            suffixes["crlf-true"] = b"\njava-options=-Dneutrodyne.smoke=true\r\n"
+        for name, suffix in suffixes.items():
+            with self.subTest(name=name):
+                marker = work / f"{name}.launched"
+                cfg.chmod(0o644)
+                cfg.write_bytes(original + suffix)
+                cfg.chmod(0o444)
+                env["JAVA_TOOL_OPTIONS"] = (
+                    '-Dneutrodyne.probe=env-options '
+                    f'-Dneutrodyne.probe.marker="{marker.as_posix()}"'
+                )
+                proc = subprocess.run(
+                    ["bash", str(SMOKE_START), str(image), "--timeout=60"],
+                    capture_output=True, text=True, env=env, timeout=RUN_BOUND,
+                )
+                self.assertNotEqual(0, proc.returncode, proc.stderr)
+                self.assertFalse(marker.exists(), f"ordinary main ran: {proc.stderr}")
+                self.assertEqual("", proc.stdout)
+                self.assertEqual(original + suffix, cfg.read_bytes())
+                self.assertEqual(0o444, stat.S_IMODE(cfg.stat().st_mode))
 
 
 if __name__ == "__main__":

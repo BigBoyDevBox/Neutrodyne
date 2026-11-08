@@ -200,26 +200,30 @@ try:
 except ValueError as error:
     fail(f"invalid quoting in JAVA_TOOL_OPTIONS or _JAVA_OPTIONS: {error}")
 
-# The .cfg's java-options are individual JVM arguments; the last one that sets
-# the smoke property wins. `splitlines` handles CRLF, CR and an absent final
-# newline, so a pre-existing true option is recognised in every shape.
-cfg_value = None
+# Reject every conflicting declaration, including in an unknown section. A
+# later, ignored section must not mask an earlier active false value. Preserve
+# option-value whitespace: POSIX jpackage passes a trailing CR/space to the JVM,
+# where "true\r" and "true " do not enable the application's smoke mode.
 text = data.decode("utf-8", errors="replace")
-for line in text.splitlines():
-    stripped = line.strip()
-    if not stripped.startswith("java-options="):
+for line in text.split("\n"):
+    if os.name == "nt":
+        line = line.removesuffix("\r")  # Windows text-mode CRLF translation
+    key, separator, option = line.partition("=")
+    if not separator or key.strip().lower() != "java-options":
         continue
-    option = stripped[len("java-options="):].strip()
+    option = option.lstrip()
     if option == PREFIX:
         cfg_value = ""
     elif option.startswith(PREFIX + "="):
         cfg_value = option[len(PREFIX) + 1:]
+    else:
+        continue
+    if cfg_value != "true":
+        fail(f"{cfg_path} declares -D{SMOKE_PROP}={cfg_value!r}, not true")
 
 underscore_value = smoke_value(underscore_tokens)
 if underscore_value is not None and underscore_value != "true":
     fail(f"_JAVA_OPTIONS sets -D{SMOKE_PROP}={underscore_value!r}, not true")
-if cfg_value is not None and cfg_value != "true":
-    fail(f"{cfg_path} sets -D{SMOKE_PROP}={cfg_value!r}, not true")
 
 # The last -D wins within JAVA_TOOL_OPTIONS, so our true overrides an earlier
 # false there; unrelated options are preserved.
