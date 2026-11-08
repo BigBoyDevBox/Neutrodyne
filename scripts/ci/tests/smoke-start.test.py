@@ -16,11 +16,17 @@ The contracts exercised:
     line, or a `failed` field fails with diagnostics on stderr;
   * the watchdog bounds a hung launcher on every platform (Python 3 stdlib, not
     GNU timeout) and kills only the launched process tree on timeout or cancel;
-  * the .cfg is restored byte-for-byte after success, failure and timeout —
-    original bytes and mode, including a pre-existing smoke option and an absent
-    final newline;
+  * smoke mode rides in through JAVA_TOOL_OPTIONS: the child sees
+    `-Dneutrodyne.smoke=true` appended to the pre-existing options, while the
+    .cfg is never written and stays byte-for-byte and mode-for-mode identical;
+  * a conflicting .cfg option or `_JAVA_OPTIONS` value prevents the launch;
+  * another process's .cfg mutation (bytes, mode or type) fails the gate without
+    a SMOKE line and is never repaired;
   * stdout carries exactly the SMOKE line on success, which is what
     check-runtime-sources.sh and the release checkers consume.
+
+A separate real boundary regression builds a tiny jpackage app-image from a
+generated Java probe and runs the shipped script against that real launcher.
 
 Run: python3 scripts/ci/tests/smoke-start.test.py
 Exit 0 = every contract holds; 1 = at least one regression.
@@ -29,10 +35,10 @@ Exit 0 = every contract holds; 1 = at least one regression.
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 import unittest
@@ -51,15 +57,32 @@ import time
 with open(os.environ["FAKE_LAUNCHER_BEHAVIOR"], "r", encoding="utf-8") as handle:
     behavior = json.load(handle)
 
+if behavior.get("ran_marker"):
+    with open(behavior["ran_marker"], "w", encoding="utf-8") as handle:
+        handle.write("ran")
+
+if behavior.get("record_env"):
+    with open(behavior["record_env"], "w", encoding="utf-8") as handle:
+        handle.write(os.environ.get("JAVA_TOOL_OPTIONS", ""))
+
+cfg_action = behavior.get("cfg_action")
+cfg_path = os.environ["FAKE_LAUNCHER_CFG"]
+if cfg_action == "chmod":
+    os.chmod(cfg_path, behavior.get("cfg_mode", 0o400))
+elif cfg_action == "replace":
+    os.unlink(cfg_path)
+    with open(cfg_path, "w") as handle:
+        handle.write("replacement")
+    os.chmod(cfg_path, 0o600)
+elif cfg_action == "mkdir":
+    os.unlink(cfg_path)
+    os.mkdir(cfg_path)
+    with open(os.path.join(cfg_path, "blocked"), "w") as handle:
+        handle.write("directory prevents writes")
+
 for line in behavior.get("lines", []):
     sys.stdout.write(line + "\\n")
 sys.stdout.flush()
-
-if behavior.get("record_cfg"):
-    with open(os.environ["FAKE_LAUNCHER_CFG"], "r", encoding="utf-8", errors="replace") as handle:
-        recorded = handle.read()
-    with open(behavior["record_cfg"], "w", encoding="utf-8") as handle:
-        handle.write(recorded)
 
 child = None
 if behavior.get("spawn_child"):
@@ -81,6 +104,28 @@ if child is not None and behavior.get("wait_child"):
 sys.exit(behavior.get("exit", 0))
 '''
 
+# The real boundary regression's probe: a valid SMOKE line only when the smoke
+# property is true and a second JAVA_TOOL_OPTIONS property arrived.
+PROBE_SOURCE = '''public class SmokeProbe {
+    public static void main(String[] args) {
+        String smoke = System.getProperty("neutrodyne.smoke");
+        String probe = System.getProperty("neutrodyne.probe");
+        if (!"true".equals(smoke) || !"env-options".equals(probe)) {
+            System.out.println("SMOKE {\\"failed\\":\\"probe\\",\\"smoke\\":\\"" + smoke
+                + "\\",\\"probe\\":\\"" + probe + "\\"}");
+            System.exit(1);
+        }
+        System.out.println("SMOKE {\\"versionName\\":\\"0.1.0\\",\\"versionCode\\":1,"
+            + "\\"installKind\\":\\"dev\\",\\"javaVendor\\":\\""
+            + System.getProperty("java.vendor") + "\\",\\"javaVendorVersion\\":\\""
+            + System.getProperty("java.vendor.version") + "\\",\\"javaRuntimeVersion\\":\\""
+            + System.getProperty("java.runtime.version") + "\\",\\"steps\\":{\\"probe\\":1},"
+            + "\\"window\\":\\"skipped-headless\\",\\"pending\\":\\"database\\"}");
+        System.exit(0);
+    }
+}
+'''
+
 # Mirrors smokeJson's shape (11 Smoke mode): a success line carries "window" but
 # no "failed" key; a failed run's line carries "failed" (and no "window").
 VALID_SMOKE = (
@@ -98,8 +143,7 @@ FAILED_SMOKE = (
     '"failed":"initializers"}'
 )
 
-# A pre-existing smoke option, no final newline, and a non-default mode: the
-# old restore deleted the option it did not add and rewrote the file's mode.
+# A pre-existing smoke option, no final newline, and a non-default mode.
 CFG_PREEXISTING = (
     b"[JavaOptions]\n"
     b"java-options=-Xmx512m\n"
@@ -107,6 +151,16 @@ CFG_PREEXISTING = (
 )
 CFG_ABSENT = b"[JavaOptions]\njava-options=-Xmx512m"
 CFG_ABSENT_NEWLINE = b"[JavaOptions]\njava-options=-Xmx512m\n"
+CFG_CONFLICTING = (
+    b"[JavaOptions]\n"
+    b"java-options=-Xmx512m\n"
+    b"java-options=-Dneutrodyne.smoke=false\n"
+)
+CFG_CRLF_PREEXISTING = (
+    b"[JavaOptions]\r\n"
+    b"java-options=-Xmx512m\r\n"
+    b"java-options=-Dneutrodyne.smoke=true\r\n"
+)
 
 RUN_BOUND = 30  # the fixture's own bound; the script's watchdog is 1 s in the timeout case
 
@@ -138,8 +192,11 @@ class SmokeStartGateTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
+        self.run_tmp = self.root / "run-tmp"
+        self.run_tmp.mkdir()
         self.behavior = self.root / "behavior.json"
-        self.record = self.root / "cfg.recorded"
+        self.env_record = self.root / "env.recorded"
+        self.ran_marker = self.root / "launcher.ran"
         self.child_pid = self.root / "child.pid"
 
     def tearDown(self):
@@ -147,7 +204,7 @@ class SmokeStartGateTest(unittest.TestCase):
 
     # --- fixture plumbing -------------------------------------------------------
 
-    def make_image(self, cfg_bytes: bytes, cfg_mode: int = 0o640):
+    def make_image(self, cfg_bytes: bytes, cfg_mode: int = 0o640, image_mode: int = 0o755):
         img = self.root / "img"
         (img / "bin").mkdir(parents=True)
         (img / "lib" / "app").mkdir(parents=True)
@@ -157,10 +214,14 @@ class SmokeStartGateTest(unittest.TestCase):
         launcher = img / "bin" / "Neutrodyne"
         launcher.write_text(LAUNCHER_SOURCE, encoding="utf-8")
         launcher.chmod(0o755)
+        if image_mode != 0o755:
+            for directory in (img, img / "bin", img / "lib", img / "lib" / "app"):
+                directory.chmod(image_mode)
         return img, cfg
 
     def behave(self, *, lines=(), exit_code=0, sleep=0.0, spawn_child=False,
-               record_cfg=False, wait_child=False):
+               wait_child=False, cfg_action=None, cfg_mode=0o400,
+               record_env=False, ran_marker=False):
         self.behavior.write_text(
             json.dumps(
                 {
@@ -168,18 +229,24 @@ class SmokeStartGateTest(unittest.TestCase):
                     "exit": exit_code,
                     "sleep": sleep,
                     "spawn_child": spawn_child,
-                    "record_cfg": str(self.record) if record_cfg else None,
                     "child_pid_file": str(self.child_pid) if spawn_child else None,
                     "wait_child": wait_child,
+                    "cfg_action": cfg_action,
+                    "cfg_mode": cfg_mode,
+                    "record_env": str(self.env_record) if record_env else None,
+                    "ran_marker": str(self.ran_marker) if ran_marker else None,
                 }
             ),
             encoding="utf-8",
         )
 
-    def env(self, cfg: Path):
+    def env(self, cfg: Path, *, java_tool_options="", underscore_java_options=""):
         return {
             "FAKE_LAUNCHER_BEHAVIOR": str(self.behavior),
             "FAKE_LAUNCHER_CFG": str(cfg),
+            "TMPDIR": str(self.run_tmp),
+            "JAVA_TOOL_OPTIONS": java_tool_options,
+            "_JAVA_OPTIONS": underscore_java_options,
         }
 
     def run_script(self, img: Path, timeout: int, env: dict):
@@ -215,9 +282,9 @@ class SmokeStartGateTest(unittest.TestCase):
             except (ProcessLookupError, PermissionError, ValueError):
                 pass
 
-    def assert_restored(self, cfg: Path, original: bytes, mode: int):
-        self.assertEqual(original, cfg.read_bytes(), ".cfg bytes were not restored")
-        self.assertEqual(mode, stat.S_IMODE(cfg.stat().st_mode), ".cfg mode was not restored")
+    def assert_unchanged(self, cfg: Path, original: bytes, mode: int):
+        self.assertEqual(original, cfg.read_bytes(), ".cfg bytes changed")
+        self.assertEqual(mode, stat.S_IMODE(cfg.stat().st_mode), ".cfg mode changed")
 
     def assert_child_dead(self):
         self.assertTrue(self.child_pid.exists(), "fixture launcher spawned no child")
@@ -227,27 +294,30 @@ class SmokeStartGateTest(unittest.TestCase):
             time.sleep(0.05)
         self.assertFalse(pid_alive(pid), f"fake child {pid} survived the watchdog")
 
+    def assert_not_launched(self):
+        self.assertFalse(self.ran_marker.exists(), "the launcher ran despite a conflict")
+
     # --- verdict contracts ------------------------------------------------------
 
     def test_failed_smoke_with_exit_1_fails(self):
         img, cfg = self.make_image(CFG_PREEXISTING, 0o640)
-        self.behave(lines=[FAILED_SMOKE], exit_code=1, record_cfg=True)
+        self.behave(lines=[FAILED_SMOKE], exit_code=1, record_env=True)
         rc, out, err = self.run_script(img, 60, self.env(cfg))
         self.assertNotEqual(0, rc)
         self.assertEqual("", out)
         self.assertIn("failed", err)
-        self.assert_restored(cfg, CFG_PREEXISTING, 0o640)
-        self.assertIn("java-options=-Dneutrodyne.smoke=true", self.record.read_text())
+        self.assert_unchanged(cfg, CFG_PREEXISTING, 0o640)
+        self.assertIn("-Dneutrodyne.smoke=true", self.env_record.read_text())
 
     def test_failed_smoke_with_exit_0_fails(self):
         img, cfg = self.make_image(CFG_ABSENT, 0o640)
-        self.behave(lines=[FAILED_SMOKE], exit_code=0, record_cfg=True)
+        self.behave(lines=[FAILED_SMOKE], exit_code=0, record_env=True)
         rc, out, err = self.run_script(img, 60, self.env(cfg))
         self.assertNotEqual(0, rc)
         self.assertEqual("", out)
         self.assertIn("failed", err)
-        self.assert_restored(cfg, CFG_ABSENT, 0o640)
-        self.assertIn("java-options=-Dneutrodyne.smoke=true", self.record.read_text())
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
+        self.assertIn("-Dneutrodyne.smoke=true", self.env_record.read_text())
 
     def test_malformed_smoke_json_fails(self):
         img, cfg = self.make_image(CFG_ABSENT_NEWLINE, 0o640)
@@ -256,7 +326,7 @@ class SmokeStartGateTest(unittest.TestCase):
         self.assertNotEqual(0, rc)
         self.assertEqual("", out)
         self.assertIn("JSON", err)
-        self.assert_restored(cfg, CFG_ABSENT_NEWLINE, 0o640)
+        self.assert_unchanged(cfg, CFG_ABSENT_NEWLINE, 0o640)
 
     def test_non_object_smoke_json_fails(self):
         img, cfg = self.make_image(CFG_ABSENT, 0o640)
@@ -264,7 +334,7 @@ class SmokeStartGateTest(unittest.TestCase):
         rc, out, err = self.run_script(img, 60, self.env(cfg))
         self.assertNotEqual(0, rc)
         self.assertIn("object", err)
-        self.assert_restored(cfg, CFG_ABSENT, 0o640)
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
 
     def test_failed_null_field_fails(self):
         img, cfg = self.make_image(CFG_ABSENT, 0o640)
@@ -272,7 +342,7 @@ class SmokeStartGateTest(unittest.TestCase):
         rc, out, err = self.run_script(img, 60, self.env(cfg))
         self.assertNotEqual(0, rc)
         self.assertIn("failed", err)
-        self.assert_restored(cfg, CFG_ABSENT, 0o640)
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
 
     def test_nonzero_exit_without_smoke_fails(self):
         img, cfg = self.make_image(CFG_ABSENT, 0o640)
@@ -281,7 +351,7 @@ class SmokeStartGateTest(unittest.TestCase):
         self.assertNotEqual(0, rc)
         self.assertEqual("", out)
         self.assertIn("1", err)
-        self.assert_restored(cfg, CFG_ABSENT, 0o640)
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
 
     def test_missing_smoke_line_fails(self):
         img, cfg = self.make_image(CFG_ABSENT, 0o640)
@@ -290,7 +360,7 @@ class SmokeStartGateTest(unittest.TestCase):
         self.assertNotEqual(0, rc)
         self.assertEqual("", out)
         self.assertIn("no SMOKE line", err)
-        self.assert_restored(cfg, CFG_ABSENT, 0o640)
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
 
     # --- watchdog contracts -----------------------------------------------------
 
@@ -305,7 +375,7 @@ class SmokeStartGateTest(unittest.TestCase):
         self.assertIn("watchdog", err)
         self.assertLess(elapsed, 15, "the watchdog did not bound the run")
         self.assert_child_dead()
-        self.assert_restored(cfg, CFG_PREEXISTING, 0o640)
+        self.assert_unchanged(cfg, CFG_PREEXISTING, 0o640)
 
     def test_cancel_fails_and_kills_tree(self):
         img, cfg = self.make_image(CFG_PREEXISTING, 0o640)
@@ -334,27 +404,170 @@ class SmokeStartGateTest(unittest.TestCase):
         self.assertNotEqual(0, proc.returncode)
         self.assertEqual("", out)
         self.assert_child_dead()
-        self.assert_restored(cfg, CFG_PREEXISTING, 0o640)
+        self.assert_unchanged(cfg, CFG_PREEXISTING, 0o640)
 
-    # --- success and restore contracts -----------------------------------------
+    # --- environment and read-only contracts ------------------------------------
 
-    def test_valid_success_passes_and_restores_cfg(self):
+    def test_valid_success_passes_and_keeps_cfg(self):
         img, cfg = self.make_image(CFG_PREEXISTING, 0o640)
-        self.behave(lines=[VALID_SMOKE], exit_code=0, record_cfg=True)
+        self.behave(lines=[VALID_SMOKE], exit_code=0, record_env=True)
         rc, out, err = self.run_script(img, 60, self.env(cfg))
         self.assertEqual(0, rc, err)
         self.assertEqual(VALID_SMOKE + "\n", out)
-        self.assert_restored(cfg, CFG_PREEXISTING, 0o640)
-        self.assertIn("java-options=-Dneutrodyne.smoke=true", self.record.read_text())
+        self.assert_unchanged(cfg, CFG_PREEXISTING, 0o640)
+        self.assertIn("-Dneutrodyne.smoke=true", self.env_record.read_text())
 
-    def test_valid_success_without_preexisting_option_restores_cfg(self):
+    def test_valid_success_without_preexisting_option_keeps_cfg(self):
         img, cfg = self.make_image(CFG_ABSENT, 0o600)
-        self.behave(lines=[VALID_SMOKE], exit_code=0, record_cfg=True)
+        self.behave(lines=[VALID_SMOKE], exit_code=0, record_env=True)
         rc, out, err = self.run_script(img, 60, self.env(cfg))
         self.assertEqual(0, rc, err)
         self.assertEqual(VALID_SMOKE + "\n", out)
-        self.assert_restored(cfg, CFG_ABSENT, 0o600)
-        self.assertIn("java-options=-Dneutrodyne.smoke=true", self.record.read_text())
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o600)
+        self.assertIn("-Dneutrodyne.smoke=true", self.env_record.read_text())
+
+    def test_readonly_cfg_image_succeeds(self):
+        img, cfg = self.make_image(CFG_ABSENT, 0o444, image_mode=0o555)
+        self.behave(lines=[VALID_SMOKE], exit_code=0, record_env=True)
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertEqual(0, rc, err)
+        self.assertEqual(VALID_SMOKE + "\n", out)
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o444)
+        self.assertIn("-Dneutrodyne.smoke=true", self.env_record.read_text())
+
+    def test_absent_final_newline_is_kept_unchanged(self):
+        img, cfg = self.make_image(CFG_ABSENT, 0o640)
+        self.behave(lines=[VALID_SMOKE], exit_code=0, record_env=True)
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertEqual(0, rc, err)
+        self.assertEqual(VALID_SMOKE + "\n", out)
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
+        self.assertIn("-Dneutrodyne.smoke=true", self.env_record.read_text())
+
+    def test_preexisting_true_cfg_is_accepted(self):
+        img, cfg = self.make_image(CFG_PREEXISTING, 0o640)
+        self.behave(lines=[VALID_SMOKE], exit_code=0, record_env=True)
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertEqual(0, rc, err)
+        self.assertEqual(VALID_SMOKE + "\n", out)
+        self.assert_unchanged(cfg, CFG_PREEXISTING, 0o640)
+
+    def test_crlf_cfg_is_parsed(self):
+        img, cfg = self.make_image(CFG_CRLF_PREEXISTING, 0o640)
+        self.behave(lines=[VALID_SMOKE], exit_code=0, record_env=True)
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertEqual(0, rc, err)
+        self.assertEqual(VALID_SMOKE + "\n", out)
+        self.assert_unchanged(cfg, CFG_CRLF_PREEXISTING, 0o640)
+
+    def test_conflicting_cfg_false_prevents_launch(self):
+        img, cfg = self.make_image(CFG_CONFLICTING, 0o640)
+        self.behave(lines=[VALID_SMOKE], ran_marker=True)
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertNotEqual(0, rc)
+        self.assertEqual("", out)
+        self.assertIn("not true", err)
+        self.assert_not_launched()
+        self.assert_unchanged(cfg, CFG_CONFLICTING, 0o640)
+
+    def test_conflicting_underscore_java_options_false_prevents_launch(self):
+        img, cfg = self.make_image(CFG_ABSENT, 0o640)
+        self.behave(lines=[VALID_SMOKE], ran_marker=True)
+        env = self.env(cfg, underscore_java_options="-Dneutrodyne.smoke=false")
+        rc, out, err = self.run_script(img, 60, env)
+        self.assertNotEqual(0, rc)
+        self.assertEqual("", out)
+        self.assertIn("not true", err)
+        self.assert_not_launched()
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
+
+    def test_preexisting_java_tool_options_preserved_and_true_overrides_false(self):
+        img, cfg = self.make_image(CFG_ABSENT, 0o640)
+        self.behave(lines=[VALID_SMOKE], exit_code=0, record_env=True)
+        env = self.env(
+            cfg,
+            java_tool_options="-Xmx256m -Dneutrodyne.smoke=false",
+        )
+        rc, out, err = self.run_script(img, 60, env)
+        self.assertEqual(0, rc, err)
+        self.assertEqual(VALID_SMOKE + "\n", out)
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
+        recorded = self.env_record.read_text()
+        self.assertIn("-Xmx256m", recorded)
+        self.assertIn("-Dneutrodyne.smoke=false", recorded)
+        self.assertTrue(recorded.endswith("-Dneutrodyne.smoke=true"))
+        self.assertLess(
+            recorded.index("-Dneutrodyne.smoke=false"),
+            recorded.index("-Dneutrodyne.smoke=true"),
+            "our true must come after the pre-existing false",
+        )
+
+    def test_invalid_quoting_in_java_tool_options_fails_closed(self):
+        img, cfg = self.make_image(CFG_ABSENT, 0o640)
+        self.behave(lines=[VALID_SMOKE], ran_marker=True)
+        env = self.env(cfg, java_tool_options='-Dneutrodyne.smoke="true')
+        rc, out, err = self.run_script(img, 60, env)
+        self.assertNotEqual(0, rc)
+        self.assertEqual("", out)
+        self.assertIn("quote", err)
+        self.assert_not_launched()
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
+
+    def test_invalid_quoting_in_underscore_java_options_fails_closed(self):
+        img, cfg = self.make_image(CFG_ABSENT, 0o640)
+        self.behave(lines=[VALID_SMOKE], ran_marker=True)
+        env = self.env(cfg, underscore_java_options="-Dneutrodyne.smoke='true")
+        rc, out, err = self.run_script(img, 60, env)
+        self.assertNotEqual(0, rc)
+        self.assertEqual("", out)
+        self.assertIn("quote", err)
+        self.assert_not_launched()
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
+
+    # --- child mutation contracts -----------------------------------------------
+
+    def test_child_cfg_mode_change_fails_without_smoke(self):
+        img, cfg = self.make_image(CFG_ABSENT, 0o640)
+        self.behave(lines=[VALID_SMOKE], cfg_action="chmod", cfg_mode=0o400)
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertNotEqual(0, rc)
+        self.assertEqual("", out)
+        self.assertIn("changed", err)
+        self.assertEqual(0o400, stat.S_IMODE(cfg.stat().st_mode), "the child's mutation was repaired")
+
+    def test_child_cfg_replacement_fails_without_smoke(self):
+        img, cfg = self.make_image(CFG_ABSENT, 0o640)
+        self.behave(lines=[VALID_SMOKE], cfg_action="replace")
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertNotEqual(0, rc)
+        self.assertEqual("", out)
+        self.assertIn("changed", err)
+        self.assertEqual(b"replacement", cfg.read_bytes(), "the child's mutation was repaired")
+        self.assertEqual(0o600, stat.S_IMODE(cfg.stat().st_mode))
+
+    def test_child_cfg_type_change_fails_without_smoke(self):
+        img, cfg = self.make_image(CFG_ABSENT, 0o640)
+        self.behave(lines=[VALID_SMOKE], cfg_action="mkdir")
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertNotEqual(0, rc)
+        self.assertEqual("", out)
+        self.assertIn("regular file", err)
+        self.assertTrue(cfg.is_dir(), "the child's mutation was repaired")
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root bypasses read permissions")
+    def test_unreadable_cfg_fails_before_launch_without_writing(self):
+        img, cfg = self.make_image(CFG_ABSENT, 0o200)
+        self.behave(lines=[VALID_SMOKE], ran_marker=True)
+        rc, out, err = self.run_script(img, 60, self.env(cfg))
+        self.assertNotEqual(0, rc)
+        self.assertEqual("", out)
+        self.assertIn("cannot read", err)
+        self.assert_not_launched()
+        self.assertEqual(0o200, stat.S_IMODE(cfg.stat().st_mode))
+        cfg.chmod(0o640)
+        self.assertEqual(CFG_ABSENT, cfg.read_bytes())
+
+    # --- success and verdict contracts -----------------------------------------
 
     def test_stdout_carries_only_the_smoke_line(self):
         img, cfg = self.make_image(CFG_ABSENT_NEWLINE, 0o644)
@@ -362,7 +575,7 @@ class SmokeStartGateTest(unittest.TestCase):
         rc, out, err = self.run_script(img, 60, self.env(cfg))
         self.assertEqual(0, rc, err)
         self.assertEqual(VALID_SMOKE + "\n", out)
-        self.assert_restored(cfg, CFG_ABSENT_NEWLINE, 0o644)
+        self.assert_unchanged(cfg, CFG_ABSENT_NEWLINE, 0o644)
 
     def test_final_smoke_line_is_the_verdict(self):
         img, cfg = self.make_image(CFG_ABSENT, 0o640)
@@ -370,25 +583,117 @@ class SmokeStartGateTest(unittest.TestCase):
         rc, out, _ = self.run_script(img, 60, self.env(cfg))
         self.assertEqual(0, rc)
         self.assertEqual(VALID_SMOKE + "\n", out)
-        self.assert_restored(cfg, CFG_ABSENT, 0o640)
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
 
         self.behave(lines=[VALID_SMOKE, FAILED_SMOKE], exit_code=0)
         rc, out, err = self.run_script(img, 60, self.env(cfg))
         self.assertNotEqual(0, rc)
         self.assertEqual("", out)
         self.assertIn("failed", err)
-        self.assert_restored(cfg, CFG_ABSENT, 0o640)
+        self.assert_unchanged(cfg, CFG_ABSENT, 0o640)
 
-    def test_absent_final_newline_is_restored_after_append(self):
-        # The append must put the option on its own line; the restore must put
-        # the file's missing final newline back.
-        img, cfg = self.make_image(CFG_ABSENT, 0o640)
-        self.behave(lines=[VALID_SMOKE], exit_code=0, record_cfg=True)
-        rc, out, err = self.run_script(img, 60, self.env(cfg))
-        self.assertEqual(0, rc, err)
-        self.assert_restored(cfg, CFG_ABSENT, 0o640)
-        recorded = self.record.read_text()
-        self.assertIn("\njava-options=-Dneutrodyne.smoke=true\n", recorded)
+
+class RealJPackageSmokeTest(unittest.TestCase):
+    """The real boundary: a tiny jpackage app-image and the shipped script.
+
+    A Python fake can certify the wrong JVM injection; this regression builds a
+    real launcher from a generated Java probe and runs the shipped script against
+    it with a read-only .cfg and a pre-existing JAVA_TOOL_OPTIONS flag.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _jdk_home():
+        """JAVA_HOME first, then the known local JDK 21, then CI's JDK 21 env."""
+        candidates = []
+        java_home = os.environ.get("JAVA_HOME")
+        if java_home:
+            candidates.append(Path(java_home))
+        for key, value in sorted(os.environ.items()):
+            if key.startswith("JAVA_HOME_21") and value:
+                candidates.append(Path(value))
+        candidates.append(Path.home() / ".local/jdks/jdk21/Contents/Home")
+        candidates.append(Path.home() / ".local/jdks/jdk21")
+        for candidate in candidates:
+            if (candidate / "bin/javac").is_file() and (candidate / "bin/jpackage").is_file():
+                return candidate
+        return None
+
+    def test_real_jpackage_launcher_smoke(self):
+        jdk = self._jdk_home()
+        if jdk is None:
+            self.skipTest("no JDK 21+ with jpackage found via JAVA_HOME or ~/.local/jdks/jdk21")
+
+        work = self.root / "build"
+        input_dir = work / "input"
+        dest = work / "dest"
+        input_dir.mkdir(parents=True)
+        dest.mkdir()
+
+        source = work / "SmokeProbe.java"
+        source.write_text(PROBE_SOURCE, encoding="utf-8")
+        subprocess.run(
+            [str(jdk / "bin/javac"), "SmokeProbe.java"],
+            cwd=work, check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            [str(jdk / "bin/jar"), "cfe", "probe.jar", "SmokeProbe", "SmokeProbe.class"],
+            cwd=work, check=True, capture_output=True, text=True,
+        )
+        shutil.copy2(work / "probe.jar", input_dir / "probe.jar")
+        subprocess.run(
+            [
+                str(jdk / "bin/jpackage"),
+                "--type", "app-image",
+                "--name", "Neutrodyne",
+                "--input", str(input_dir),
+                "--main-jar", "probe.jar",
+                "--main-class", "SmokeProbe",
+                "--add-modules", "java.base",
+                "--dest", str(dest),
+            ],
+            check=True, capture_output=True, text=True,
+        )
+
+        image = dest / "Neutrodyne.app"
+        if not image.exists():
+            image = dest / "Neutrodyne"
+        cfg = None
+        for candidate in (
+            image / "Contents/app/Neutrodyne.cfg",
+            image / "lib/app/Neutrodyne.cfg",
+            image / "app/Neutrodyne.cfg",
+        ):
+            if candidate.is_file():
+                cfg = candidate
+                break
+        self.assertIsNotNone(cfg, f"no Neutrodyne.cfg under {image}")
+
+        original = cfg.read_bytes()
+        cfg.chmod(0o444)
+
+        env = {
+            **os.environ,
+            "JAVA_TOOL_OPTIONS": "-Dneutrodyne.probe=env-options",
+            "_JAVA_OPTIONS": "",
+        }
+        proc = subprocess.run(
+            ["bash", str(SMOKE_START), str(image), "--timeout=60"],
+            capture_output=True, text=True, env=env, timeout=RUN_BOUND,
+        )
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertTrue(proc.stdout.startswith("SMOKE "), proc.stdout)
+        report = json.loads(proc.stdout[len("SMOKE "):].strip())
+        self.assertNotIn("failed", report)
+        self.assertEqual("skipped-headless", report.get("window"))
+        self.assertEqual(original, cfg.read_bytes(), "the real launcher's .cfg changed")
+        self.assertEqual(0o444, stat.S_IMODE(cfg.stat().st_mode))
 
 
 if __name__ == "__main__":

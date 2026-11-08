@@ -7,21 +7,25 @@
 # line (11 Smoke mode). Used by check-runtime-sources.sh --image and the desktop
 # release gates.
 #
-# A jpackage launcher takes JVM options only from its generated .cfg: the launcher's
-# [JavaOptions] entries map to the `java-options=` lines, and -D arguments passed on
-# the command line land in main()'s argv instead of the JVM. Smoke mode therefore
-# rides in through a temporary `java-options=-Dneutrodyne.smoke=true` line appended
-# to the image's .cfg. The .cfg is restored byte-for-byte afterwards — original
-# bytes and mode, including a pre-existing smoke option and an absent final newline.
+# A jpackage launcher takes JVM options from its generated .cfg and from the
+# environment. Smoke mode rides in through JAVA_TOOL_OPTIONS: the script appends
+# `-Dneutrodyne.smoke=true` to the child's JAVA_TOOL_OPTIONS, preserving any
+# existing options, and never writes the .cfg. It fails before launch when the
+# image's .cfg or `_JAVA_OPTIONS` would override the property with a non-true
+# value. The .cfg is snapshotted read-only before the run and compared after it;
+# any byte, mode or type change fails the gate without a SMOKE line, and the
+# tool never repairs another process's writes. A read-only .cfg and image are
+# valid because nothing here writes them.
 #
 # <image dir> is a jpackage app image: `Neutrodyne/` (Windows and Linux), or
 # `Neutrodyne.app` (macOS). Exit 0 = the launcher exited 0 and its final SMOKE
 # line is a JSON object with no `failed` field; 1 = the launcher exited nonzero,
 # printed no SMOKE line, printed a malformed or non-object SMOKE line, reported a
-# failed step, or hit the watchdog (60 s by default, Smoke mode's budget). The
-# final SMOKE line is the verdict: smoke mode prints it and then exits 1 when a
-# step failed, so a SMOKE line alone is not success. Diagnostics go to stderr;
-# stdout carries only the SMOKE line on success.
+# failed step, hit the watchdog (60 s by default, Smoke mode's budget), or the
+# .cfg changed during the run. The final SMOKE line is the verdict: smoke mode
+# prints it and then exits 1 when a step failed, so a SMOKE line alone is not
+# success. Diagnostics go to stderr; stdout carries only the SMOKE line on
+# success.
 #
 # The watchdog is a Python 3 stdlib helper (present on every runner) so the bound
 # holds on Windows too, where GNU timeout and Windows timeout.exe are different
@@ -81,26 +85,18 @@ if [ -z "$LAUNCHER" ] || [ -z "$CFG" ]; then
     exit 1
 fi
 
-SMOKE_OPT='java-options=-Dneutrodyne.smoke=true'
-
 RUN_DIR="$(mktemp -d)" || exit 1
 CANCEL_FILE="$RUN_DIR/cancel"
 OUT="$RUN_DIR/launcher.out"
-CFG_BACKUP="$RUN_DIR/Neutrodyne.cfg.orig"
+SNAPSHOT="$RUN_DIR/cfg.before"
+VERDICT="$RUN_DIR/verdict"
 WATCHDOG_PID=""
 
 # shellcheck disable=SC2329 # runs as the EXIT trap
-restore_cfg() {
-    # Restore the original bytes in place: the inode (and with it the mode) stays,
-    # a pre-existing smoke option and an absent final newline survive untouched.
-    if [ -f "$CFG_BACKUP" ]; then
-        cat "$CFG_BACKUP" >"$CFG" || echo "smoke-start: could not restore $CFG" >&2
-    fi
-}
-# shellcheck disable=SC2329 # runs as the EXIT trap
 cleanup() {
-    restore_cfg
-    rm -rf "$RUN_DIR"
+    if [ -n "$RUN_DIR" ]; then
+        rm -rf "$RUN_DIR" || true
+    fi
 }
 trap cleanup EXIT
 
@@ -114,16 +110,123 @@ request_cancel() {
 }
 trap request_cancel INT TERM
 
-# Back up the .cfg before touching it, so the restore is byte-for-byte.
-cat "$CFG" >"$CFG_BACKUP"
-if ! grep -qxF "$SMOKE_OPT" "$CFG"; then
-    # Appending to a file without a final newline would merge the option into the
-    # last line; put it on its own line first. The backup undoes both writes.
-    if [ -s "$CFG" ] && [ -n "$(tail -c 1 "$CFG")" ]; then
-        printf '\n' >>"$CFG"
-    fi
-    printf '%s\n' "$SMOKE_OPT" >>"$CFG"
-fi
+# Snapshot the .cfg read-only and compute the child's JAVA_TOOL_OPTIONS. The
+# .cfg's java-options are command-line options and override JAVA_TOOL_OPTIONS;
+# `_JAVA_OPTIONS` overrides both. A conflicting value fails before launch.
+JAVA_TOOL_OPTIONS="$(python3 - "$CFG" "$SNAPSHOT" "${JAVA_TOOL_OPTIONS-}" "${_JAVA_OPTIONS-}" <<'PY'
+import hashlib
+import os
+import stat
+import sys
+
+cfg_path, snapshot_path, jto, underscore = sys.argv[1:5]
+SMOKE_PROP = "neutrodyne.smoke"
+SMOKE_OPT = "-Dneutrodyne.smoke=true"
+WHITESPACE = " \t\r\n"
+PREFIX = "-D" + SMOKE_PROP
+
+
+def fail(message):
+    print(f"smoke-start: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def tokenize(value):
+    """Split a JVM environment variable into options the way the JVM does:
+    single and double quotes group text and are removed, backslash is literal,
+    and an unmatched quote is an error."""
+    tokens = []
+    index = 0
+    length = len(value)
+    while index < length:
+        while index < length and value[index] in WHITESPACE:
+            index += 1
+        if index >= length:
+            break
+        token = []
+        quote = None
+        while index < length:
+            char = value[index]
+            if quote is not None:
+                if char == quote:
+                    quote = None
+                else:
+                    token.append(char)
+                index += 1
+            elif char in "'\"":
+                quote = char
+                index += 1
+            elif char in WHITESPACE:
+                break
+            else:
+                token.append(char)
+                index += 1
+        if quote is not None:
+            raise ValueError("unmatched quote")
+        tokens.append("".join(token))
+    return tokens
+
+
+def smoke_value(tokens):
+    """The effective smoke property value (last -D wins), or None."""
+    value = None
+    for token in tokens:
+        if token == PREFIX:
+            value = ""
+        elif token.startswith(PREFIX + "="):
+            value = token[len(PREFIX) + 1:]
+    return value
+
+
+try:
+    info = os.lstat(cfg_path)
+except OSError as error:
+    fail(f"cannot inspect {cfg_path}: {error}")
+if not stat.S_ISREG(info.st_mode):
+    fail(f"configuration {cfg_path} is not a regular file")
+try:
+    with open(cfg_path, "rb") as handle:
+        data = handle.read()
+except OSError as error:
+    fail(f"cannot read {cfg_path}: {error}")
+mode = stat.S_IMODE(info.st_mode)
+digest = hashlib.sha256(data).hexdigest()
+with open(snapshot_path, "w", encoding="ascii") as handle:
+    handle.write(f"{stat.S_IFMT(info.st_mode):o} {mode:o} {digest}\n")
+
+try:
+    jto_tokens = tokenize(jto)
+    underscore_tokens = tokenize(underscore)
+except ValueError as error:
+    fail(f"invalid quoting in JAVA_TOOL_OPTIONS or _JAVA_OPTIONS: {error}")
+
+# The .cfg's java-options are individual JVM arguments; the last one that sets
+# the smoke property wins. `splitlines` handles CRLF, CR and an absent final
+# newline, so a pre-existing true option is recognised in every shape.
+cfg_value = None
+text = data.decode("utf-8", errors="replace")
+for line in text.splitlines():
+    stripped = line.strip()
+    if not stripped.startswith("java-options="):
+        continue
+    option = stripped[len("java-options="):].strip()
+    if option == PREFIX:
+        cfg_value = ""
+    elif option.startswith(PREFIX + "="):
+        cfg_value = option[len(PREFIX) + 1:]
+
+underscore_value = smoke_value(underscore_tokens)
+if underscore_value is not None and underscore_value != "true":
+    fail(f"_JAVA_OPTIONS sets -D{SMOKE_PROP}={underscore_value!r}, not true")
+if cfg_value is not None and cfg_value != "true":
+    fail(f"{cfg_path} sets -D{SMOKE_PROP}={cfg_value!r}, not true")
+
+# The last -D wins within JAVA_TOOL_OPTIONS, so our true overrides an earlier
+# false there; unrelated options are preserved.
+print(f"{jto} {SMOKE_OPT}".strip() if jto.strip() else SMOKE_OPT)
+PY
+)" || exit 1
+export JAVA_TOOL_OPTIONS
 
 # The watchdog runs the launcher in its own session/process group so a timeout or
 # cancel can kill exactly that tree. Paths travel as argv, never as code.
@@ -228,6 +331,53 @@ dump_output() {
     fi
 }
 
+# The .cfg must be exactly as it was before the run: the tool never writes it,
+# so any change is another process's mutation and no verdict is trusted.
+if ! python3 - "$CFG" "$SNAPSHOT" <<'PY'
+import hashlib
+import os
+import stat
+import sys
+
+cfg_path, snapshot_path = sys.argv[1:3]
+try:
+    with open(snapshot_path, "r", encoding="ascii") as handle:
+        expected_type, expected_mode, expected_digest = handle.read().split()
+except (OSError, ValueError):
+    print("smoke-start: missing configuration snapshot", file=sys.stderr)
+    sys.exit(1)
+try:
+    info = os.lstat(cfg_path)
+except OSError as error:
+    print(f"smoke-start: configuration {cfg_path} is gone: {error}", file=sys.stderr)
+    sys.exit(1)
+if not stat.S_ISREG(info.st_mode):
+    print(f"smoke-start: configuration {cfg_path} is no longer a regular file", file=sys.stderr)
+    sys.exit(1)
+try:
+    with open(cfg_path, "rb") as handle:
+        data = handle.read()
+except OSError as error:
+    print(f"smoke-start: configuration {cfg_path} is unreadable: {error}", file=sys.stderr)
+    sys.exit(1)
+actual_type = f"{stat.S_IFMT(info.st_mode):o}"
+actual_mode = f"{stat.S_IMODE(info.st_mode):o}"
+actual_digest = hashlib.sha256(data).hexdigest()
+if (actual_type, actual_mode, actual_digest) != (expected_type, expected_mode, expected_digest):
+    print(
+        "smoke-start: configuration changed during the run "
+        f"(type {expected_type}->{actual_type}, mode {expected_mode}->{actual_mode}, "
+        f"sha256 {expected_digest[:12]}->{actual_digest[:12]}); no verdict is trusted",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY
+then
+    echo "smoke-start: configuration integrity check failed" >&2
+    dump_output
+    exit 1
+fi
+
 # The launcher's own output is diagnostics, never the script's stdout contract.
 if [ "$rc" -eq 124 ]; then
     echo "smoke-start: launcher exceeded the ${TIMEOUT_S}s watchdog; killed its process tree" >&2
@@ -252,7 +402,7 @@ fi
 
 # The final SMOKE line is the verdict: a JSON object, no `failed` field. stdout
 # carries exactly that line on success.
-if ! python3 - "$OUT" <<'PY'
+if ! python3 - "$OUT" >"$VERDICT" <<'PY'
 import json
 import sys
 
@@ -291,4 +441,5 @@ if [ -f "$CANCEL_FILE" ]; then
     echo "smoke-start: cancelled" >&2
     exit 1
 fi
+printf '%s\n' "$(cat "$VERDICT")"
 exit 0
