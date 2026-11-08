@@ -232,10 +232,64 @@ image_compare_file() {
     return 0
 }
 
+# Validate one symlink under the runtime root. A symlink is safe only when it
+# resolves to a regular file inside the runtime root: a broken link, a link to
+# a directory, or a link that escapes the root would otherwise hide or bind
+# arbitrary content from the pinned-tree comparison.
+image_check_symlink() {
+    local path="$1" rt_real="$2" jdk="$3" rel="$4" target ref
+    if ! target="$(readlink -f -- "$path" 2>/dev/null)" || [ ! -e "$target" ]; then
+        fail "runtime symlink is broken: $rel"
+        return 0
+    fi
+    if [ -d "$target" ]; then
+        fail "runtime symlink points at a directory: $rel"
+        return 0
+    fi
+    if [ ! -f "$target" ]; then
+        fail "runtime symlink does not resolve to a regular file: $rel"
+        return 0
+    fi
+    case "$target" in
+        "$rt_real"/*) ;;
+        *) fail "runtime symlink escapes the runtime root: $rel -> $target"; return 0 ;;
+    esac
+    ref="$jdk/$rel"
+    if [ ! -e "$ref" ]; then
+        fail "runtime file has no counterpart in the pinned Temurin archive: $rel"
+        return 0
+    fi
+    if is_elf "$ref" || is_macho "$ref" || is_pe "$ref"; then
+        image_compare_file "$path" "$ref" "$rel"
+    elif ! cmp -s "$path" "$ref"; then
+        fail "runtime file differs from the pinned Temurin archive: $rel"
+    fi
+    return 0
+}
+
 image_check_native_files() {
-    local rt="$1" img="$2" jdk="$3" path rel ref
+    local rt="$1" img="$2" jdk="$3" path rel ref enum rt_real
+    if [ -L "$rt" ]; then
+        fail "runtime root is a symlink: $rt (refusing to bind an external tree)"
+        return 0
+    fi
+    if ! rt_real="$(readlink -f -- "$rt" 2>/dev/null)"; then
+        fail "runtime root cannot be resolved: $rt"
+        return 0
+    fi
+    enum="$(mktemp)"
+    # Enumerate regular files and symlinks without following links: a symlink is
+    # itself an entry the gate must bind (a symlinked native has to compare
+    # against the pinned copy), and find's own failure must be observed.
+    if ! find "$rt" \( -type f -o -type l \) -print0 >"$enum"; then
+        fail "runtime enumeration failed under $rt (find could not read every entry)"
+    fi
     while IFS= read -r -d '' path; do
         rel="${path#"$rt"/}"
+        if [ -L "$path" ]; then
+            image_check_symlink "$path" "$rt_real" "$jdk" "$rel"
+            continue
+        fi
         ref="$jdk/$rel"
         if [ ! -e "$ref" ]; then
             fail "runtime file has no counterpart in the pinned Temurin archive: $rel"
@@ -244,7 +298,8 @@ image_check_native_files() {
         if is_elf "$ref" || is_macho "$ref" || is_pe "$ref"; then
             image_compare_file "$path" "$ref" "$rel"
         fi
-    done < <(find "$rt" -type f -print0)
+    done <"$enum"
+    rm -f "$enum"
 }
 
 locate_jdk() {

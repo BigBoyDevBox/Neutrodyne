@@ -25,6 +25,7 @@ jpackage .app's runtime tree plus the pinned JDK counterpart):
     pass/fail pair under real signatures.
 """
 
+import os
 import shutil
 import struct
 import subprocess
@@ -36,7 +37,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 CI = REPO / "scripts/ci"
 
-JAVA_VERSION = "25.0.4.1"  # fixture runtime.lock mirrors the real one's shape
+# Read the lock's javaVersion rather than pinning a copy: a Renovate runtime
+# bump changes the lock and would otherwise desynchronize the fixture.
+JAVA_VERSION = next(
+    line.split("=", 1)[1]
+    for line in reversed(
+        (REPO / "desktopApp/runtime.lock").read_text(encoding="utf-8").splitlines()
+    )
+    if line.startswith("javaVersion=")
+)
 
 
 def release_file(modules="java.base java.desktop") -> bytes:
@@ -103,10 +112,10 @@ class Fixture:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
 
-    def run(self, *args) -> subprocess.CompletedProcess:
+    def run(self, *args, env=None) -> subprocess.CompletedProcess:
         return subprocess.run(
             ["bash", *map(str, args)],
-            cwd=self.root, capture_output=True, text=True, timeout=120,
+            cwd=self.root, capture_output=True, text=True, timeout=120, env=env,
         )
 
 
@@ -124,7 +133,7 @@ class RuntimeSourcesGateTest(unittest.TestCase):
     def mac_app(self, root_dir="imgs/Neutrodyne.app"):
         """A jpackage .app: runtime home at Contents/runtime/Contents/Home."""
         fx = self.fx
-        app = root_dir
+        app = str(self.root / root_dir)
         fx.write(f"{app}/Contents/MacOS/Neutrodyne", b"MACHO-LAUNCHER")
         fx.write(f"{app}/Contents/runtime/Contents/Home/release", release_file())
         fx.write(f"{app}/Contents/runtime/Contents/Home/legal/LICENSE", b"GPL-2.0\n")
@@ -145,7 +154,169 @@ class RuntimeSourcesGateTest(unittest.TestCase):
             ("lib/server/libjvm.dylib", MACHO),
         ):
             fx.write(f"{rel}/Contents/Home/{rel_path}", data)
-        return rel
+        return str(self.root / rel)
+
+    # ----- symlink binding and enumeration failures ---------------------------
+
+    def symlink(self, path: str, target: str):
+        """Create a real symlink, skipping where the platform cannot."""
+        try:
+            os.symlink(target, path)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not supported on this platform")
+
+    def test_symlinked_native_escaping_target_fails(self):
+        """A native at a symlinked path must bind: a link to an external file
+        with different content is not skipped (the pre-fix gate said OK)."""
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        home = f"{app}/Contents/runtime/Contents/Home"
+        native = f"{home}/lib/server/libjvm.dylib"
+        os.unlink(native)
+        self.fx.write("evil.dylib", thin_macho(code=b"EVIL", sig=b"ADHOC-1"))
+        self.symlink(native, str(self.root / "evil.dylib"))
+        r = self.runtime_sources(app, jdk)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("escapes the runtime root", r.stderr)
+
+    def test_symlinked_native_internal_target_passes(self):
+        """A native symlink that resolves inside the runtime root and matches
+        the pinned counterpart is retained (the real image's legal/ links are
+        the same shape)."""
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        home = f"{app}/Contents/runtime/Contents/Home"
+        self.fx.write(f"{home}/lib/libjvm.dylib", MACHO)
+        self.fx.write(f"{jdk}/Contents/Home/lib/libjvm.dylib", MACHO)
+        native = f"{home}/lib/server/libjvm.dylib"
+        os.unlink(native)
+        self.symlink(native, "../libjvm.dylib")
+        r = self.runtime_sources(app, jdk)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+
+    def test_symlinked_native_internal_tamper_fails(self):
+        """A symlink that resolves inside the root but carries different bytes
+        than the pinned counterpart at its path still fails closed."""
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        home = f"{app}/Contents/runtime/Contents/Home"
+        evil = thin_macho(code=b"EVIL", sig=b"ADHOC-1")
+        self.fx.write(f"{home}/lib/libjvm.dylib", evil)
+        self.fx.write(f"{jdk}/Contents/Home/lib/libjvm.dylib", evil)
+        native = f"{home}/lib/server/libjvm.dylib"
+        os.unlink(native)
+        self.symlink(native, "../libjvm.dylib")
+        r = self.runtime_sources(app, jdk)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("differs from the pinned Temurin archive", r.stderr)
+
+    def test_nested_symlinked_native_passes(self):
+        """A chain of native symlinks is resolved to its final target and bound
+        against the pinned counterpart at each link's own path."""
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        home = f"{app}/Contents/runtime/Contents/Home"
+        self.fx.write(f"{home}/lib/libjvm.dylib", MACHO)
+        self.fx.write(f"{jdk}/Contents/Home/lib/libjvm.dylib", MACHO)
+        native = f"{home}/lib/server/libjvm.dylib"
+        os.unlink(native)
+        self.symlink(native, "../libjvm.dylib")
+        self.symlink(f"{home}/lib/server/alias.dylib", "libjvm.dylib")
+        self.fx.write(f"{jdk}/Contents/Home/lib/server/alias.dylib", MACHO)
+        r = self.runtime_sources(app, jdk)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+
+    def test_broken_symlink_fails(self):
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        home = f"{app}/Contents/runtime/Contents/Home"
+        native = f"{home}/lib/server/libjvm.dylib"
+        os.unlink(native)
+        self.symlink(native, "../does-not-exist.dylib")
+        r = self.runtime_sources(app, jdk)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("broken", r.stderr)
+
+    def test_symlink_to_non_regular_file_fails(self):
+        """A symlink to a FIFO is rejected before any comparison could block
+        on it (a comparison opens and reads the target)."""
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("mkfifo is not supported on this platform")
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        home = f"{app}/Contents/runtime/Contents/Home"
+        native = f"{home}/lib/server/libjvm.dylib"
+        os.unlink(native)
+        fifo = self.root / "probe.fifo"
+        os.mkfifo(fifo)
+        self.symlink(native, str(fifo))
+        r = self.runtime_sources(app, jdk)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("does not resolve to a regular file", r.stderr)
+
+    def test_symlinked_directory_fails(self):
+        """A symlink to a directory is not descended silently: it is rejected
+        so files under it cannot escape the pinned comparison."""
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        home = f"{app}/Contents/runtime/Contents/Home"
+        self.fx.write(f"{home}/lib/real-dir/probe.txt", b"PROBE")
+        self.fx.write(f"{jdk}/Contents/Home/lib/real-dir/probe.txt", b"PROBE")
+        self.symlink(f"{home}/lib/link-dir", "real-dir")
+        r = self.runtime_sources(app, jdk)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("points at a directory", r.stderr)
+
+    def test_symlinked_runtime_root_fails(self):
+        """A symlinked runtime root is not enumerated through: the gate refuses
+        to bind an external tree (the pre-fix find counted nothing and said OK)."""
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        rt = f"{app}/Contents/runtime"
+        external = self.root / "external-runtime"
+        shutil.move(rt, external)
+        self.symlink(rt, str(external))
+        r = self.runtime_sources(app, jdk)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("runtime root is a symlink", r.stderr)
+
+    def test_legal_symlinks_are_retained(self):
+        """The real image's legal/ symlinks (relative links to a sibling
+        module's notices) stay green while their counterparts are validated."""
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        home = f"{app}/Contents/runtime/Contents/Home"
+        jdk_home = f"{jdk}/Contents/Home"
+        self.fx.write(f"{home}/legal/java.base/LICENSE", b"GPL-2.0\n")
+        self.fx.write(f"{jdk_home}/legal/java.base/LICENSE", b"GPL-2.0\n")
+        os.unlink(f"{home}/legal/LICENSE")
+        self.symlink(f"{home}/legal/LICENSE", "java.base/LICENSE")
+        self.fx.write(f"{jdk_home}/legal/LICENSE", b"GPL-2.0\n")
+        r = self.runtime_sources(app, jdk)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+
+    def test_enumeration_failure_fails_closed(self):
+        """A find that cannot read the tree is an observed failure, not a
+        silently empty enumeration (the pre-fix process substitution discarded
+        find's exit status and said OK)."""
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        self.fx.write("smoke.txt", smoke_line(self.root).encode())
+        fakebin = self.root / "fakebin"
+        fakebin.mkdir()
+        fake_find = fakebin / "find"
+        fake_find.write_text(
+            "#!/bin/sh\necho 'find: injected enumeration failure' >&2\nexit 1\n"
+        )
+        fake_find.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = f"{fakebin}{os.pathsep}{env['PATH']}"
+        r = self.fx.run(
+            self.root / "scripts/ci/check-runtime-sources.sh",
+            "--image", app, "--jdk", jdk, "--smoke", "smoke.txt", env=env,
+        )
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("enumeration failed", r.stderr)
 
     # ----- re-signed Mach-O natives under check-runtime-sources ---------------
 
