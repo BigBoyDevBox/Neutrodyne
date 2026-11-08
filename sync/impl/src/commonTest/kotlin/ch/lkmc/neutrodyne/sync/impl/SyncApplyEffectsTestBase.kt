@@ -70,7 +70,7 @@ abstract class SyncApplyEffectsTestBase {
                 val pending = pendingSetting(db, PlaybackSettingKeys.SKIP_BACK_MS.name)
                 assertEquals("15000", pending)
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertEquals(1, port.applied.size)
                 assertEquals(PlaybackSettingKeys.SKIP_BACK_MS, port.applied.single().first)
                 assertNull(pendingSetting(db, PlaybackSettingKeys.SKIP_BACK_MS.name))
@@ -93,11 +93,11 @@ abstract class SyncApplyEffectsTestBase {
                 )
 
                 port.remoteResult = false
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertEquals("15000", pendingSetting(db, PlaybackSettingKeys.SKIP_BACK_MS.name))
 
                 port.remoteResult = true
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertNull(pendingSetting(db, PlaybackSettingKeys.SKIP_BACK_MS.name))
             } finally {
                 db.close()
@@ -146,7 +146,7 @@ abstract class SyncApplyEffectsTestBase {
 
                 port.recordLocal(key, 20_000L)
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
 
                 assertTrue(
                     port.applied.isEmpty(),
@@ -186,7 +186,7 @@ abstract class SyncApplyEffectsTestBase {
 
                 port.recordLocal(key, null)
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
 
                 assertTrue(
                     port.applied.isEmpty(),
@@ -227,7 +227,7 @@ abstract class SyncApplyEffectsTestBase {
 
                 port.recordLocal(key, 20_000L)
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertTrue(
                     port.applied.isEmpty(),
                     "the newer local set must win over the stale remote marker",
@@ -242,7 +242,7 @@ abstract class SyncApplyEffectsTestBase {
 
                 // The next drain runs before the server's echo page; with no marker left it must
                 // not re-apply the stale remote value.
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertTrue(
                     port.applied.isEmpty(),
                     "the stale remote value must not be re-applied after the upload ack",
@@ -275,7 +275,7 @@ abstract class SyncApplyEffectsTestBase {
 
                 port.recordLocal(key, null)
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertTrue(
                     port.applied.isEmpty(),
                     "the newer local reset must win over the stale remote marker",
@@ -288,7 +288,7 @@ abstract class SyncApplyEffectsTestBase {
                 deleteAckedUploadedOutbox(db, key)
                 assertNull(db.syncOutboxDao().get("setting", key.name, "v"))
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertTrue(
                     port.applied.isEmpty(),
                     "the stale remote value must not be re-applied after the upload ack",
@@ -327,7 +327,7 @@ abstract class SyncApplyEffectsTestBase {
 
                 val drainJob =
                     backgroundScope.launch {
-                        SyncApplyEffects(db, port, coordinator).drainSettings()
+                        effects(db, port, coordinator).drainSettings()
                     }
                 applyReached.await()
 
@@ -371,12 +371,12 @@ abstract class SyncApplyEffectsTestBase {
                 seedLocal(db, key, "15000", clock)
 
                 port.remoteResult = false
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertEquals("15000", pendingSetting(db, key.name))
                 assertEquals(1, port.applied.size)
 
                 port.remoteResult = true
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertNull(pendingSetting(db, key.name))
                 assertEquals(2, port.applied.size)
             } finally {
@@ -395,7 +395,7 @@ abstract class SyncApplyEffectsTestBase {
                 seedPending(db, key, "15000", Hlc.of(now, 1, NodeId("0000000000000002")))
                 seedLocal(db, key, "20000", Hlc.of(now, 1, NodeId("0000000000000003")))
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
 
                 assertTrue(port.applied.isEmpty())
             } finally {
@@ -414,7 +414,7 @@ abstract class SyncApplyEffectsTestBase {
                 seedPending(db, key, "15000", Hlc.of(now, 1, NodeId("0000000000000002")))
                 seedLocal(db, key, "20000", Hlc.of(now, 1, NodeId("0000000000000001")))
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
 
                 assertEquals(1, port.applied.size)
             } finally {
@@ -433,7 +433,7 @@ abstract class SyncApplyEffectsTestBase {
                 seedPending(db, key, "15000", Hlc.of(now, 1, NodeId("0000000000000003")))
                 seedLocal(db, key, "20000", Hlc.of(now + 1, 0, NodeId("0000000000000001")))
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
 
                 assertTrue(port.applied.isEmpty())
             } finally {
@@ -471,7 +471,7 @@ abstract class SyncApplyEffectsTestBase {
                     }
                 }
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
 
                 assertEquals(1, port.applied.size)
                 val row = db.syncClockDao().get("setting", key.name)!!
@@ -502,7 +502,7 @@ abstract class SyncApplyEffectsTestBase {
                 assertTrue(marker is JsonPrimitive && marker.isString)
                 assertEquals(value, marker.content)
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertEquals(listOf(key to expected), port.applied)
                 val applied = Json.parseToJsonElement(port.applied.single().second)
                 assertTrue(applied is JsonPrimitive && applied.isString)
@@ -531,7 +531,7 @@ abstract class SyncApplyEffectsTestBase {
                 assertTrue(marker is JsonPrimitive && marker.isString)
                 assertEquals(value.name, marker.content)
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertEquals(listOf(key to expected), port.applied)
                 val applied = Json.parseToJsonElement(port.applied.single().second)
                 assertTrue(applied is JsonPrimitive && applied.isString)
@@ -560,7 +560,7 @@ abstract class SyncApplyEffectsTestBase {
                 assertTrue(marker is JsonPrimitive && marker.isString)
                 assertEquals(value, marker.content)
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertEquals(listOf(key to expected), port.applied)
                 val applied = Json.parseToJsonElement(port.applied.single().second)
                 assertTrue(applied is JsonPrimitive && applied.isString)
@@ -585,10 +585,104 @@ abstract class SyncApplyEffectsTestBase {
                 assertEquals("null", pendingSetting(db, key.name))
                 assertTrue(Json.parseToJsonElement(checkNotNull(pendingSetting(db, key.name))) is JsonNull)
 
-                SyncApplyEffects(db, port, TestSettingsWriteCoordinator()).drainSettings()
+                effects(db, port).drainSettings()
                 assertEquals(listOf(key to "null"), port.applied)
                 assertTrue(Json.parseToJsonElement(port.applied.single().second) is JsonNull)
                 assertNull(pendingSetting(db, key.name))
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * 10 Pull and apply step 3: while the persisted "Sync playback settings" switch is off the
+     * markers stay pending — no drain applies them — and turning it on drains them.
+     */
+    @Test
+    fun aMarkerStaysPendingWhileTheSwitchIsOffAndDrainsOnceEnabled() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val port = FakeSettingsSyncPort()
+                val applier = applier(db, port)
+                applier.applyPage(
+                    settingPage(PlaybackSettingKeys.SKIP_BACK_MS.name, JsonPrimitive(15000L)),
+                    roundId = now,
+                )
+                val switch = mutableMapOf("on" to false)
+
+                effects(db, port, settingsSyncEnabled = { switch["on"] == true }).drainSettings()
+                assertTrue(port.applied.isEmpty(), "the disabled switch must leave the marker pending")
+                assertEquals("15000", pendingSetting(db, PlaybackSettingKeys.SKIP_BACK_MS.name))
+
+                switch["on"] = true
+                effects(db, port, settingsSyncEnabled = { switch["on"] == true }).drainSettings()
+                assertEquals(1, port.applied.size)
+                assertNull(pendingSetting(db, PlaybackSettingKeys.SKIP_BACK_MS.name))
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * 10 Durable apply effects: the at-each-start drain applies while linked, and an unlink —
+     * which empties the sync tables — never resurrects the old account's effects.
+     */
+    @Test
+    fun aStartDrainAppliesWhileLinkedAndNotAfterAnUnlink() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                db.withWriteTransaction {
+                    db.syncStateDao().upsert(
+                        db.syncStateDao().get()!!.copy(linkedAt = 1L),
+                    )
+                }
+                val port = FakeSettingsSyncPort()
+                val applier = applier(db, port)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                applier.applyPage(settingPage(key.name, JsonPrimitive(15000L)), roundId = now)
+
+                effects(db, port).drainAtStart()
+                assertEquals(1, port.applied.size)
+                assertNull(pendingSetting(db, key.name))
+
+                // A second marker of the same account, then the unlink clears it with the
+                // whole sync bookkeeping: a later start drain finds nothing to resurrect.
+                val secondClock = Hlc.of(now + 1L, 0, remote)
+                seedPending(db, key, "20000", secondClock)
+                db.withWriteTransaction { db.syncStateDao().unlink() }
+
+                effects(db, port).drainAtStart()
+                assertEquals(1, port.applied.size, "an unlinked device must not drain old account effects")
+                assertTrue(db.syncClockDao().all().isEmpty())
+            } finally {
+                db.close()
+            }
+        }
+
+    /** The start drain's link gate: a marker present while unlinked stays untouched. */
+    @Test
+    fun aStartDrainSkipsAMarkerWhileUnlinked() =
+        runTest {
+            val db = newTestDb()
+            try {
+                // Never linked: sync_state carries no link, but a stray marker exists.
+                db.withWriteTransaction {
+                    db.syncStateDao().upsert(
+                        SyncStateEntity(enabled = false, nodeId = "0000000000000001", hlc = 1L shl 16),
+                    )
+                }
+                val port = FakeSettingsSyncPort()
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                seedPending(db, key, "15000", Hlc.of(now, 1, remote))
+
+                effects(db, port).drainAtStart()
+
+                assertTrue(port.applied.isEmpty(), "the start drain must not run while unlinked")
+                assertEquals("15000", pendingSetting(db, key.name))
             } finally {
                 db.close()
             }
@@ -618,6 +712,15 @@ abstract class SyncApplyEffectsTestBase {
                 },
             sharePasswords = { false },
         )
+
+    /** The drainer fixture: the persisted-switch gate defaults to on, as the graph wires it. */
+    private fun effects(
+        db: ch.lkmc.neutrodyne.core.database.NeutrodyneDatabase,
+        port: SettingsSyncPort,
+        coordinator: ch.lkmc.neutrodyne.core.domain.SettingsWriteCoordinator =
+            TestSettingsWriteCoordinator(),
+        settingsSyncEnabled: suspend () -> Boolean = { true },
+    ): SyncApplyEffects = SyncApplyEffects(db, port, coordinator, settingsSyncEnabled)
 
     private suspend fun link(db: ch.lkmc.neutrodyne.core.database.NeutrodyneDatabase) {
         db.withWriteTransaction {
