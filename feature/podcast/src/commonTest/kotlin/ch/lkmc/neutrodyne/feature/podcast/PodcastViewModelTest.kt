@@ -86,6 +86,8 @@ class PodcastViewModelTest : MainDispatcherTest() {
     ) = PodcastViewModel(
         podcastId,
         podcasts,
+        ch.lkmc.neutrodyne.core.testing
+            .FakeYouTubeChannelRepository(),
         feeds,
         episodes,
         groups,
@@ -99,6 +101,12 @@ class PodcastViewModelTest : MainDispatcherTest() {
         liveSource,
         clock,
         downloadController = downloads,
+        externalOpenService =
+            ch.lkmc.neutrodyne.core.testing
+                .FakeYouTubeExternalOpen(),
+        capabilities =
+            ch.lkmc.neutrodyne.core.testing
+                .FakeYouTubeCapabilitiesSource(),
     )
 
     private fun TestScope.collect(viewModel: PodcastViewModel) {

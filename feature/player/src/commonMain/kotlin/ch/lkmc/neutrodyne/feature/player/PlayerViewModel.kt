@@ -9,9 +9,13 @@ import ch.lkmc.neutrodyne.core.common.Clock
 import ch.lkmc.neutrodyne.core.common.Outcome
 import ch.lkmc.neutrodyne.core.common.PlatformInfo
 import ch.lkmc.neutrodyne.core.common.suspendRunCatching
+import ch.lkmc.neutrodyne.core.domain.ArtworkRepository
 import ch.lkmc.neutrodyne.core.domain.ChapterRepository
 import ch.lkmc.neutrodyne.core.domain.QueueRepository
 import ch.lkmc.neutrodyne.core.domain.SettingsRepository
+import ch.lkmc.neutrodyne.core.domain.YouTubeExternalOpen
+import ch.lkmc.neutrodyne.core.domain.YouTubeOpenContext
+import ch.lkmc.neutrodyne.core.model.ArtworkColors
 import ch.lkmc.neutrodyne.core.model.CurrentChapter
 import ch.lkmc.neutrodyne.core.model.EffectivePlayback
 import ch.lkmc.neutrodyne.core.model.EpisodeChapter
@@ -23,6 +27,7 @@ import ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys
 import ch.lkmc.neutrodyne.core.model.settings.PlayerTimeDisplay
 import ch.lkmc.neutrodyne.core.model.settings.StreamOnMetered
 import ch.lkmc.neutrodyne.core.ui.AvailabilityText
+import ch.lkmc.neutrodyne.core.ui.ExternalOpenHandler
 import ch.lkmc.neutrodyne.core.ui.MeteredConsent
 import ch.lkmc.neutrodyne.core.ui.PlaybackActions
 import ch.lkmc.neutrodyne.core.ui.PlaybackMessageAction
@@ -52,6 +57,7 @@ import ch.lkmc.neutrodyne.playback.api.ScopeWriteResult
 import ch.lkmc.neutrodyne.playback.api.UnplayableReason
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.Provider
 import dev.zacsweers.metrox.viewmodel.ViewModelKey
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
@@ -88,6 +94,7 @@ internal data class PlayerUiState(
     val lastSleepMinutes: Int = PlaybackSettingKeys.SLEEP_LAST_MINUTES.default,
     val chapters: List<EpisodeChapter> = emptyList(),
     val currentChapter: CurrentChapter? = null,
+    val colors: ArtworkColors? = null,
 )
 
 /** Window-scoped presentation; starts and consent use the same policy as episode screens. */
@@ -102,8 +109,18 @@ internal class PlayerViewModel(
     platform: PlatformInfo,
     queue: QueueRepository,
     private val chapters: ChapterRepository,
+    private val artwork: Provider<ArtworkRepository>,
+    externalOpenService: YouTubeExternalOpen,
 ) : ViewModel() {
     private val messages = UserMessages()
+    val externalOpen =
+        ExternalOpenHandler(
+            viewModelScope,
+            messages,
+            mark = { externalOpenService.onOpened(it, YouTubeOpenContext.EXTERNAL_OR_UNPLAYABLE) },
+            undo = { externalOpenService.undo(it) },
+            onFailure = { writeFailed() },
+        )
     private val timeWrites = Mutex()
     private val playbackActions =
         PlaybackActions(
@@ -137,6 +154,22 @@ internal class PlayerViewModel(
                         .map { id to it }
                         .onStart { emit(id to emptyList()) }
                         .catch { emit(id to emptyList()) }
+                }
+            }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val artworkColors =
+        source.nowPlaying
+            .map { item -> item?.let { Triple(it.episodeId, it.artwork.key, it.podcastId) } }
+            .distinctUntilChanged()
+            .flatMapLatest { identity ->
+                if (identity == null) {
+                    flowOf(null to null)
+                } else {
+                    artwork()
+                        .observeColors(identity.second, identity.third)
+                        .map { identity to it }
+                        .onStart { emit(identity to null) }
                 }
             }
 
@@ -174,7 +207,15 @@ internal class PlayerViewModel(
             }.combine(source.currentChapter) { state, current ->
                 state.copy(currentChapter = current?.takeIf { it.episodeId == state.now?.episodeId })
             }.combine(messages.flow) { state, pending -> state.copy(messages = pending) }
-            .stateIn(viewModelScope, SHARING, PlayerUiState(now = source.nowPlaying.value))
+            .combine(artworkColors) { state, result ->
+                state.copy(
+                    colors =
+                        result.second.takeIf {
+                            result.first ==
+                                state.now?.let { Triple(it.episodeId, it.artwork.key, it.podcastId) }
+                        },
+                )
+            }.stateIn(viewModelScope, SHARING, PlayerUiState(now = source.nowPlaying.value))
 
     /** The visible scrubber interpolates these 1 Hz samples, never a frame-rate flow. */
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -223,6 +264,12 @@ internal class PlayerViewModel(
 
     fun retryPlayback() {
         playbackActions.play(null) { controller.play() }
+    }
+
+    fun setPanelHidden(hidden: Boolean) {
+        viewModelScope.launch {
+            if (settings.set(AppearanceSettingKeys.PLAYER_PANEL_HIDDEN, hidden) is Outcome.Failure) writeFailed()
+        }
     }
 
     fun skipBack() = controller.skipBack()
@@ -305,6 +352,7 @@ internal class PlayerViewModel(
     fun declineMobileData() = playbackActions.consentDismiss()
 
     fun onMessageShown(id: Long) {
+        externalOpen.shown(id)
         messages.shown(id)
         playbackActions.onMessageShown(id)
     }

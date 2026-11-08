@@ -8,6 +8,9 @@ import ch.lkmc.neutrodyne.youtube.api.ChannelResolution
 import ch.lkmc.neutrodyne.youtube.api.TransientKind
 
 interface YouTubeChannelRepository {
+    /** Canonical identity lookup for metadata-only Add duplicate previews. */
+    suspend fun subscribedPodcastId(channelId: String): Long?
+
     /** Nonzero subset of 1/2/4; UI keeps LONG_FORM. Refreshes after commit; Shorts hide immediately. */
     suspend fun setVariants(
         podcastId: Long,
@@ -89,6 +92,9 @@ enum class ChannelMetadataResult { UPDATED, FRESH, DEFERRED, FAILED }
  * Applies mark_played_on_open only for EXTERNAL_OR_UNPLAYABLE; playable overflow never marks.
  * Undo restores unplayed only, not position or Up next. Cancellation/no handler never call this. */
 interface YouTubeExternalOpen {
+    /** Undo only the played mark, preserving position and queue. */
+    suspend fun undo(episodeId: Long)
+
     suspend fun onOpened(
         episodeId: Long,
         context: YouTubeOpenContext,
