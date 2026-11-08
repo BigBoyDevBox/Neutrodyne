@@ -24,12 +24,15 @@ the real code paths run against fixture images:
 """
 
 import hashlib
+import io
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import tempfile
 import unittest
+import zipfile
 
 REPO = Path(__file__).resolve().parents[3]
 CI = REPO / "scripts/ci"
@@ -63,6 +66,7 @@ class Fixture:
             "check-desktop-image.sh",
             "check-runtime-sources.sh",
             "make-runtime-sources-md.sh",
+            "canonical-jar-hash.py",
         ):
             shutil.copy2(CI / script, root / "scripts/ci" / script)
         shutil.copy2(
@@ -86,11 +90,25 @@ class Fixture:
         }
         self.manifest_rows = {}
 
+    def canonical_hash(self, data: bytes) -> str:
+        """The shipped checker's canonical identity (canonical-jar-hash.py)."""
+        if not data.startswith(b"PK"):
+            return sha256(data)  # non-zip fallback binds the raw bytes
+        path = self.root / "tmp/canonical-input"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        r = subprocess.run(["python3", str(self.root / "scripts/ci/canonical-jar-hash.py"), str(path)],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            raise AssertionError(r.stderr)
+        return r.stdout.strip()
+
     def manifest(self, stem: str, data: bytes, name=None) -> str:
         """Record a classpath row like writeDesktopRuntimeClasspath writes:
-        'sha256  <mangled image name>' — the fixture's image jars then use it."""
+        '<canonical sha256>  <mangled image name>' — the fixture's image jars then
+        use it."""
         image_name = name or mangled(stem, data)
-        self.manifest_rows[image_name] = sha256(data)
+        self.manifest_rows[image_name] = self.canonical_hash(data)
         return image_name
 
     def write_manifest(self):
@@ -142,6 +160,51 @@ def smoke_line(root: Path) -> str:
 MACHO = bytes.fromhex("cffaedfe") + b"\x00" * 60
 
 
+# --- canonical JAR identity fixtures -------------------------------------------
+
+def zip_bytes(entries, compression=zipfile.ZIP_DEFLATED, extra=b""):
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", compression=compression) as z:
+        for name, data in entries:
+            info = zipfile.ZipInfo(name)
+            info.extra = extra
+            z.writestr(info, data)
+    return out.getvalue()
+
+
+def duplicate_zip_bytes():
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr("A.class", b"CODE-A")
+        z.writestr("A.class", b"CODE-B")
+    return out.getvalue()
+
+
+def thin_macho(sig=b"SIGNATURE", code=b"CODE", linkedit_extra=b"", dataoff=0x1800,
+               total=None, page=0x1000):
+    """A minimal 64-bit little-endian Mach-O: one __LINKEDIT segment and one
+    LC_CODE_SIGNATURE; re-signing keeps the blob's offset and extends it to EOF."""
+    hdr, seg, sig_cmd = 32, 72, 16
+    sizeofcmds = seg + sig_cmd
+    linkedit_off = page
+    if total is None:
+        total = dataoff + len(sig)
+    fsize = total - linkedit_off
+    vmsize = -(-fsize // page) * page
+    b = bytearray(total)
+    struct.pack_into("<IiiIIII", b, 0, 0xFEEDFACF, 0x01000007, 3, 2, 2, sizeofcmds, 0)
+    struct.pack_into("<I", b, 28, 0)
+    b[hdr:hdr + seg] = struct.pack(
+        "<II16sQQQQIIII", 0x19, seg, b"__LINKEDIT".ljust(16, b"\0"),
+        0, vmsize, linkedit_off, fsize, 5, 1, 0, 0)
+    b[hdr + seg:hdr + sizeofcmds] = struct.pack("<IIII", 0x1D, sig_cmd, dataoff, len(sig))
+    b[hdr + sizeofcmds:hdr + sizeofcmds + len(code)] = code
+    if linkedit_extra:
+        b[linkedit_off:linkedit_off + len(linkedit_extra)] = linkedit_extra
+    b[dataoff:dataoff + len(sig)] = sig
+    return bytes(b)
+
+
 class DesktopImageGatesTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -172,10 +235,10 @@ class DesktopImageGatesTest(unittest.TestCase):
             )
         return f"{img}"
 
-    def skiko_stub(self, img, os_arch="linux-x64"):
+    def skiko_stub(self, img, os_arch="linux-x64", version="0.9.30"):
         """Compose's stub jar: name carries the stub's own content hash."""
         data = b"SKIKO-STUB-" + os_arch.encode()
-        name = f"skiko-awt-runtime-{os_arch}-{unpadded_md5(data)}.jar"
+        name = f"skiko-awt-runtime-{os_arch}-{version}-{unpadded_md5(data)}.jar"
         self.fx.write(f"{img}/lib/app/{name}", data)
         return name
 
@@ -440,6 +503,55 @@ esac
         self.assertNotEqual(0, r.returncode)
         self.assertIn("attach", r.stderr)
 
+
+
+    # ----- canonical JAR identity (packaging recompression / re-signing) ------
+
+    def zjar(self, img, stem, data, mutate=None):
+        """Record a manifest row for data, write mutate(data) (or data) under the
+        row's mangled name, then run the image scan."""
+        name = self.fx.manifest(stem, data)
+        self.fx.write(f"{img}/lib/app/{name}", data if mutate is None else mutate(data))
+        self.fx.write_manifest()
+        return self.fx.image_check(img)
+
+    def assertJarFails(self, data, mutated):
+        r = self.zjar(self.flat_image(), "zcore", data, mutate=lambda _: mutated)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("differs from the Licensee-checked", r.stderr)
+
+    def test_canonical_jar_identity(self):
+        """Recompression/reordering is stable; content, entry-set, duplicate and
+        malformed-name mutations fail; a non-zip is its raw sha256."""
+        entries = [("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n"), ("A.class", b"CODE-A")]
+        r = self.zjar(self.flat_image(), "zcore", zip_bytes(entries),
+                      mutate=lambda _: zip_bytes(list(reversed(entries)),
+                                                 compression=zipfile.ZIP_STORED, extra=b"PAD"))
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+        simple = zip_bytes([("A.class", b"CODE-A")])
+        self.assertJarFails(simple, zip_bytes([("A.class", b"CODE-B")]))
+        self.assertJarFails(simple, zip_bytes([("A.class", b"CODE-A"), ("B.class", b"CODE-B")]))
+        self.assertJarFails(simple, duplicate_zip_bytes())
+        self.assertJarFails(simple, zip_bytes([("../evil.class", b"CODE")]))
+        self.assertEqual(sha256(b"NOT-A-ZIP"), self.fx.canonical_hash(b"NOT-A-ZIP"))
+
+    def test_macho_identity_rules(self):
+        """Re-signing is stable; code and out-of-segment signature mutations fail."""
+        data = zip_bytes([("lib.dylib", thin_macho())])
+        r = self.zjar(self.flat_image(), "zcore", data,
+                      mutate=lambda _: zip_bytes([("lib.dylib", thin_macho(sig=b"OTHER"))]))
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+        self.assertJarFails(data, zip_bytes([("lib.dylib", thin_macho(code=b"CODE-B"))]))
+        self.assertJarFails(data, zip_bytes([("lib.dylib", thin_macho(sig=b"A" * 16, dataoff=0x400, total=0x2000))]))
+
+    def test_skiko_stub_does_not_require_its_own_md5_stamp(self):
+        """Membership is the manifest row's trusted name; the stub's md5 stamp is
+        not recomputed (packaging changes the stub bytes)."""
+        img = self.flat_image()
+        self.fx.write(f"{img}/lib/app/skiko-awt-runtime-linux-x64-0.9.30-deadbeef.jar", b"SKIKO-STUB")
+        self.fx.write_manifest()
+        r = self.fx.image_check(img)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
 
 if __name__ == "__main__":
     unittest.main()

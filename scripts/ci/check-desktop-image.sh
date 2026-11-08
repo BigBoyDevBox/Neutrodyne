@@ -230,36 +230,43 @@ check_ffmpeg() {
 }
 
 # --- rule 4: every JAR is on the Licensee-checked runtime classpath -------------
-# The manifest's name column is the image name itself: Compose mangles every
-# classpath jar to <name>-<md5>.jar when it fills the app dir (the md5 rendered
-# per byte with %x — leading zeros dropped: md5 ...b2 03 3e... renders
-# ...b233e...), and writeDesktopRuntimeClasspath records `sha256  <image name>`.
-# Membership is the jar's own basename; the row's sha256 is its identity. The
-# name's md5 stamp stays a sanity on the mangling. Two image jars sit outside
-# the manifest by construction (11 Two image JARs are outside that manifest):
-# the jlink runtime's own jars (jrt-fs.jar under */runtime/), and the
-# skiko-awt-runtime-<os>-<arch>-<md5>.jar stub Compose writes in place of the
-# classpath jar — acceptable only while the manifest itself carries the same
-# os-arch skiko-awt-runtime row.
+# The manifest records `<canonical sha256>  <image name>` (writeDesktopRuntimeClasspath):
+# the name is Compose's mangled <base>-<md5>.jar, the hash canonical jar content
+# (entry name + uncompressed content SHA-256, sorted by name) -- packaging
+# recompresses and re-signs image jars, so raw bytes and the md5 stamp change.
+# Membership is the jar's basename, never a recomputed md5; the skiko stub is
+# bounded by the manifest's os-arch-version skiko row.
 skiko_stub_ok() {
-    local base="$1" manifest="$2" rest os arch
+    local base="$1" manifest="$2" rest os arch version
     case "$base" in
-        skiko-awt-runtime-*-*-*.jar) ;;
+        skiko-awt-runtime-*-*-*-*.jar) ;;
         *) return 1 ;;
     esac
     rest="${base#skiko-awt-runtime-}"
     os="${rest%%-*}"
-    arch="${rest#"$os"-}"
-    arch="${arch%%-*}"
-    WANT="skiko-awt-runtime-${os}-${arch}-" \
+    rest="${rest#"$os"-}"
+    arch="${rest%%-*}"
+    rest="${rest#"$arch"-}"
+    version="${rest%%-*}"
+    # The stub's own content hash can never equal the classpath row's name; the
+    # bound is the same os-arch-version row in the trusted manifest.
+    WANT="skiko-awt-runtime-${os}-${arch}-${version}-" \
         awk 'index($2, ENVIRON["WANT"]) == 1 && substr($2, length($2) - 3) == ".jar" { found = 1 }
             END { exit(found ? 0 : 1) }' "$manifest"
 }
 
+jar_content_hash() {
+    python3 "$REPO_ROOT/scripts/ci/canonical-jar-hash.py" "$1"
+}
+
 check_jars() {
-    local img="$1" manifest="$2" path hash base padded unpadded i byte stamped
+    local img="$1" manifest="$2" path hash base
     if [ ! -f "$manifest" ]; then
         fail "runtime-classpath manifest missing: $manifest (run :desktopApp:createDistributable first)"
+        return
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        fail "the JAR classpath binding needs python3 (canonical-jar-hash.py)"
         return
     fi
     while IFS= read -r -d '' path; do
@@ -267,26 +274,14 @@ check_jars() {
             */runtime/*) continue ;; # the JDK's own jars (jrt-fs.jar) are not classpath jars
         esac
         base="${path##*/}"
-        padded="$(md5_of "$path")"
-        unpadded=""
-        for ((i = 0; i < ${#padded}; i += 2)); do
-            byte="${padded:i:2}"
-            unpadded+="${byte#0}"
-        done
-        case "$base" in
-            *-"$unpadded".jar|*-"$padded".jar) stamped=true ;;
-            *) stamped=false ;;
-        esac
         # Field-exact lookup (awk misses return empty, never nonzero): the
         # mangled names carry regex-hostile characters.
         hash="$(WANT="$base" awk '$2 == ENVIRON["WANT"] { print $1 }' "$manifest")"
         if [ -n "$hash" ]; then
-            if [ "$(sha256 "$path")" != "$hash" ]; then
+            if [ "$(jar_content_hash "$path")" != "$hash" ]; then
                 fail "JAR differs from the Licensee-checked classpath artifact: ${path#"$img"/}"
-            elif [ "$stamped" = false ]; then
-                fail "manifest JAR name is not the file's own md5 stamp: ${path#"$img"/}"
             fi
-        elif [ "$stamped" = true ] && skiko_stub_ok "$base" "$manifest"; then
+        elif skiko_stub_ok "$base" "$manifest"; then
             note "skiko stub JAR accepted via the manifest's skiko entry: ${path#"$img"/}"
         else
             fail "JAR not on the Licensee-checked runtime classpath: ${path#"$img"/}"
