@@ -231,6 +231,76 @@ class DesktopPackagingTest {
         }
     }
 
+    @Test
+    fun `signature metadata cannot hide linkedit data`() = assertSignatureMutationBound(SignatureMutation.NON_TERMINAL)
+
+    @Test
+    fun `signature commands cannot hide header padding`() =
+        assertSignatureMutationBound(SignatureMutation.EXTENDED_COMMAND)
+
+    @Test
+    fun `overlapping signature commands cannot splice data`() =
+        assertSignatureMutationBound(SignatureMutation.OVERLAPPING)
+
+    private enum class SignatureMutation { NON_TERMINAL, EXTENDED_COMMAND, OVERLAPPING }
+
+    private fun assertSignatureMutationBound(mutation: SignatureMutation) {
+        val root = Files.createTempDirectory("signature-boundary").toFile()
+        try {
+            val original =
+                thinMacho(
+                    code = ByteArray(16),
+                    sig = ByteArray(128) { 0x53 },
+                    linkeditExtra = ByteArray(64) { 0x41 },
+                    dataoff = 0x1040,
+                )
+            val changed = original.copyOf()
+            val header = ByteBuffer.wrap(changed).order(ByteOrder.LITTLE_ENDIAN)
+            when (mutation) {
+                SignatureMutation.NON_TERMINAL -> {
+                    header.putInt(112, 0x1000)
+                    changed.fill(0x45, 0x1000, 0x1040)
+                    original.copyInto(changed, changed.size - 64, 0x1000, 0x1040)
+                }
+
+                SignatureMutation.EXTENDED_COMMAND -> {
+                    header.putInt(108, 32).putInt(20, 104)
+                    changed.fill(0x45, 120, 136)
+                }
+
+                SignatureMutation.OVERLAPPING -> {
+                    header.putInt(16, 3).putInt(20, 104).putInt(116, 64)
+                    header.position(120)
+                    header
+                        .putInt(0x1D)
+                        .putInt(16)
+                        .putInt(0x1040)
+                        .putInt(64)
+                    changed.fill(0x45, 0x1000, 0x1040)
+                    original.copyInto(changed, changed.size - 64, 0x1000, 0x1040)
+                }
+            }
+            val approved = writeJar(root, "approved.jar", zipBytes(listOf("lib.dylib" to original)))
+            val malformed = writeJar(root, "malformed.jar", zipBytes(listOf("lib.dylib" to changed)))
+            val hash = CanonicalJarHash.of(malformed)
+            assertTrue(CanonicalJarHash.of(approved) != hash, "non-signature data must stay bound: $mutation")
+            val script = File(repoRoot(), "scripts/ci/canonical-jar-hash.py")
+            val process =
+                ProcessBuilder("python3", script.absolutePath, malformed.absolutePath)
+                    .redirectErrorStream(true)
+                    .start()
+            val output =
+                process.inputStream
+                    .bufferedReader()
+                    .use { it.readText() }
+                    .trim()
+            assertEquals(0, process.waitFor(), output)
+            assertEquals(hash, output, "Kotlin/Python malformed-signature parity: $mutation")
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     // ----- canonical JAR identity (11 Image scan rules) ------------------------
 
     @Test

@@ -482,6 +482,7 @@ internal object CanonicalJarHash {
             if (csz < 8 || off + csz > b.size) return ThinResult(b, 0)
             cmds += longArrayOf(cmd, csz, off.toLong())
             if (cmd == LC_CODE_SIGNATURE) {
+                if (csz != 16L) return ThinResult(b, 0)
                 val dataoff = u32(b, off + 8, be)
                 val datasize = u32(b, off + 12, be)
                 if (dataoff + datasize > b.size) return ThinResult(b, 0)
@@ -491,6 +492,7 @@ internal object CanonicalJarHash {
         }
         // The commands must exactly cover the declared command region.
         if (off.toLong() != hdr + sizeofcmds) return ThinResult(b, 0)
+        if (blobs.size > 1) return ThinResult(b, 0)
         val cszSum = cmds.filter { it[0] == LC_CODE_SIGNATURE }.sumOf { it[1] }
         if (cszSum > sizeofcmds) return ThinResult(b, 0)
         // arm64/arm64_32 pages are 16K, other slices 4K — codesign rounds the
@@ -524,9 +526,9 @@ internal object CanonicalJarHash {
             fsize = u32(linkBytes, 36, be)
         }
         if (foff + fsize > b.size) return ThinResult(b, 0)
-        // Every signature blob must lie inside the segment's file range before it is masked.
+        // A single terminal blob keeps all preceding linkedit data bound.
         for (blob in blobs) {
-            if (blob[0] < foff || blob[0] + blob[1] > foff + fsize) return ThinResult(b, 0)
+            if (blob[0] < foff || blob[0] + blob[1] != foff + fsize) return ThinResult(b, 0)
         }
         val inside = blobs.sumOf { it[1] }
         if (inside > fsize) return ThinResult(b, 0)
