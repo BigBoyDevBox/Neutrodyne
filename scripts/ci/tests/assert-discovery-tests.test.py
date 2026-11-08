@@ -2,6 +2,10 @@
 # SPDX-License-Identifier: Unlicense
 """A green task with missing, duplicate, skipped or failed cases is not M7 evidence."""
 import importlib.util
+import re
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -123,6 +127,28 @@ class ExternalEvidenceTest(unittest.TestCase):
                 gate.verify_external(self.root, [device], "release")
             duplicate.unlink()
             path.unlink()
+
+    def test_release_smoke_workflow_accepts_release_evidence(self):
+        self.report("managedDevice/release/api36", gate.EXTERNAL_DEVICE)
+        workflow = Path(__file__).parents[3] / ".github/workflows/nightly.yml"
+        job = re.search(
+            r"^  release-build-smoke:\n(.*?)(?=^  [a-zA-Z0-9_-]+:|\Z)",
+            workflow.read_text(), re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(job, "the published-build smoke job must exist")
+        commands = [
+            shlex.split(line.strip())
+            for line in job.group(1).splitlines()
+            if line.strip().startswith("python3 scripts/ci/assert-discovery-tests.py ")
+            and "--external-youtube" in line
+        ]
+        self.assertEqual(1, len(commands), "the release smoke must require E8 evidence")
+        command = commands[0]
+        command[0] = sys.executable
+        command[1] = str(Path(__file__).parents[1] / "assert-discovery-tests.py")
+        command[2] = str(self.root)
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_external_host_needs_both_named_results(self):
         with self.assertRaises(ValueError):
