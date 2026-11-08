@@ -1155,6 +1155,37 @@ internal fun Project.registerDesktopPackagingTasks(
             }
         }
 
+    // --- AOT cache: one training launch writes $APPDIR/neutrodyne.aot into the image (PO-42) ---
+    // Every packaging invocation trains: package* tasks depend on the task, and
+    // createDistributable's finalizer covers the bare-image path (mac-zip.sh archives the
+    // image directly — no package task runs). The graph stays acyclic: train needs
+    // createDistributable's output, package* need the trained image, and createDistributable
+    // never depends on a package task.
+    val aotLayout = aotImageLayout(target.osWire)
+    val image = appImage
+    val trainAotCache =
+        tasks.register<TrainAotCacheTask>("trainAotCache") {
+            group = "distribution"
+            description =
+                "Runs one AOT training launch of the packaged app and leaves the archive in the image (PO-42, 11 AOT cache)."
+            dependsOn("createDistributable")
+            this.appImage.set(image)
+            launcher.set(image.map { it.file(aotLayout.launcher) })
+            launcherCfg.set(image.map { it.file(aotLayout.cfg) })
+            runtimeRelease.set(image.map { it.file(aotLayout.runtimeRelease) })
+            aotArchive.set(image.map { it.file("${aotLayout.appDir}/$AOT_CACHE_FILE") })
+            targetOs.set(target.osWire)
+            installKind.set(installKindProperty.orElse(""))
+            expectedInstallKinds.set(target.installKinds)
+            // No install kind means a dev/assemble image: no AOT flag in its .cfg either,
+            // so there is nothing to train and nothing missing — the task simply does not run.
+            onlyIf { installKind.get().isNotBlank() }
+        }
+    tasks.named("createDistributable") { finalizedBy(trainAotCache) }
+    tasks
+        .matching { it.name in AOT_CACHE_CONSUMERS }
+        .configureEach { dependsOn(trainAotCache) }
+
     // --- DEB: jpackage with our own control file and maintainer scripts -----------------------
     tasks.register<JPackageImageTask>("packageDeb") {
         group = "distribution"
