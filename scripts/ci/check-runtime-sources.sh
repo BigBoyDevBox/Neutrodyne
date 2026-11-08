@@ -17,10 +17,10 @@
 #     running scripts/desktop/smoke-start.sh on the image
 #   * every file under runtime/ exists in the pinned Temurin tree and every native
 #     file matches it: byte-identical; on Linux also byte-identical after applying
-#     the same `objcopy -g` jlink's --strip-debug applies (or, failing that, after
-#     `objcopy -O binary`, which compares the loadable segments); on macOS by
-#     canonical content (canonical-jar-hash.py's Mach-O normalization — jpackage
-#     re-signs the runtime with the bundle's ad-hoc signature).
+#     the same `objcopy -g` jlink's --strip-debug applies (no fallback that drops
+#     the ELF header, program headers or entry point); on macOS by canonical
+#     content (canonical-jar-hash.py's Mach-O normalization — jpackage re-signs
+#     the runtime with the bundle's ad-hoc signature).
 #     --jdk overrides the pinned tree; by default the single jdk/ under
 #     desktopApp/build/bundled-runtime/*/ is used.
 #
@@ -109,6 +109,10 @@ is_pe() {
     [ "$(od -An -j"$off" -tx1 -N4 "$1" 2>/dev/null | tr -d ' ')" = "50450000" ]
 }
 
+# Any native image format. The classification is by either side's magic: a
+# native file at a path whose pinned counterpart is a text file still binds.
+is_native() { is_elf "$1" || is_macho "$1" || is_pe "$1"; }
+
 runtime_dir() {
     local dir
     for dir in "$1/lib/runtime" "$1/Contents/runtime" "$1/runtime"; do
@@ -186,26 +190,20 @@ image_compare_file() {
     fi
     work="$(mktemp -d)"
     if is_elf "$ref_file"; then
-        # jlink's --strip-debug runs objcopy -g on native files (Linux). Compare the
-        # archive's copy after the same treatment; fall back to the loadable
-        # segments (-O binary) when the toolchains differ.
-        if command -v objcopy >/dev/null 2>&1; then
-            cp "$ref_file" "$work/ref"
-            objcopy -g "$work/ref" 2>/dev/null || true
-            if cmp -s "$img_file" "$work/ref"; then
-                rm -rf "$work"
-                return 0
-            fi
-            cp "$ref_file" "$work/ref2"
-            cp "$img_file" "$work/img2"
-            objcopy -O binary "$work/ref2" "$work/ref2.bin" 2>/dev/null || true
-            objcopy -O binary "$work/img2" "$work/img2.bin" 2>/dev/null || true
-            if [ -s "$work/ref2.bin" ] && cmp -s "$work/ref2.bin" "$work/img2.bin"; then
-                rm -rf "$work"
-                return 0
-            fi
-        else
+        # jlink's --strip-debug runs objcopy -g on native files (Linux). The image
+        # must be the exact pinned bytes or the pinned copy after the same strip;
+        # there is no fallback that drops the ELF header, program headers or
+        # e_entry. objcopy's exit status is checked so a failed or partially
+        # written strip is never accepted as a match.
+        if ! command -v objcopy >/dev/null 2>&1; then
+            rm -rf "$work"
             fail "objcopy unavailable for the ELF comparison of $rel"
+            return 0
+        fi
+        cp "$ref_file" "$work/ref"
+        if objcopy -g "$work/ref" 2>/dev/null && cmp -s "$img_file" "$work/ref"; then
+            rm -rf "$work"
+            return 0
         fi
     elif is_macho "$ref_file"; then
         # jpackage seals the bundle with an ad-hoc signature over Adoptium's, so the
@@ -262,7 +260,7 @@ image_check_symlink() {
         fail "runtime file has no counterpart in the pinned Temurin archive: $rel"
         return 0
     fi
-    if is_elf "$ref" || is_macho "$ref" || is_pe "$ref"; then
+    if is_native "$ref"; then
         image_compare_file "$path" "$ref" "$rel"
     elif ! cmp -s "$path" "$ref"; then
         fail "runtime file differs from the pinned Temurin archive: $rel"
@@ -298,7 +296,7 @@ image_check_native_files() {
             fail "runtime file has no counterpart in the pinned Temurin archive: $rel"
             continue
         fi
-        if is_elf "$ref" || is_macho "$ref" || is_pe "$ref"; then
+        if is_native "$path" || is_native "$ref"; then
             image_compare_file "$path" "$ref" "$rel"
         fi
     done <"$enum"
