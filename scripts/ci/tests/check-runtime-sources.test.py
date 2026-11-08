@@ -70,6 +70,13 @@ def smoke_line(root: Path) -> str:
 # runs image_compare_file; identical bytes pass the cmp -s leg without codesign.
 MACHO = bytes.fromhex("cffaedfe") + b"\x00" * 60
 
+# Synthetic native magics for the classification boundary: the gate must bind a
+# native image file even where the pinned counterpart is a text file, and a
+# text image at a pinned native path. Own bytes, not an OS binary.
+ELF = bytes.fromhex("7f454c46") + b"\x00" * 60
+PE = (b"MZ" + b"\x00" * 58 + struct.pack("<I", 0x40)
+      + bytes.fromhex("50450000") + b"\x00" * 20)
+
 
 def thin_macho(sig=b"SIGNATURE", code=b"CODE", linkedit_extra=b"", dataoff=0x1800,
                total=None, page=0x1000):
@@ -447,6 +454,169 @@ class RuntimeSourcesGateTest(unittest.TestCase):
         )
         self.fx.write(f"{jdk}/Contents/Home/lib/server/libjvm.dylib", ref)
         r = self.runtime_sources(app, jdk)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("differs from the pinned Temurin archive", r.stderr)
+
+    # ----- native classification by both sides --------------------------------
+
+    def test_native_image_at_text_ref_fails(self):
+        """A native image file at a path whose pinned counterpart is a text
+        file must still bind: the pre-fix gate classified by the ref's magic
+        only and said OK (the R2 hole). Own synthetic bytes for all three
+        formats."""
+        for fmt, blob in (("macho", MACHO), ("elf", ELF), ("pe", PE)):
+            with self.subTest(format=fmt):
+                app = self.mac_app()
+                jdk = self.mac_jdk()
+                self.fx.write(
+                    f"{app}/Contents/runtime/Contents/Home/lib/jrt-fs.jar", blob
+                )
+                r = self.runtime_sources(app, jdk)
+                self.assertNotEqual(0, r.returncode)
+                self.assertIn("differs from the pinned Temurin archive", r.stderr)
+
+    def test_text_image_at_native_ref_fails(self):
+        """The other side of the classification: a text image at a pinned native
+        path still binds (the behavior the both-sides test keeps)."""
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        self.fx.write(
+            f"{app}/Contents/runtime/Contents/Home/lib/server/libjvm.dylib", b"TEXT"
+        )
+        r = self.runtime_sources(app, jdk)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("differs from the pinned Temurin archive", r.stderr)
+
+    # ----- the real Linux ELF boundary ---------------------------------------
+
+    def require_elf_toolchain(self):
+        """The real ELF boundary needs the Linux C toolchain and binutils. On
+        another host the test is skipped; on Linux the tools are required — a
+        silent skip would hide a CI host that lost them."""
+        if sys.platform != "linux":
+            self.skipTest("the real ELF boundary needs the Linux cc + objcopy toolchain")
+        cc = shutil.which("cc") or shutil.which("gcc")
+        objcopy = shutil.which("objcopy")
+        missing = []
+        if cc is None:
+            missing.append("cc/gcc")
+        if objcopy is None:
+            missing.append("objcopy")
+        if missing:
+            self.fail("Linux ELF fixture tools unexpectedly absent: " + ", ".join(missing))
+        return cc, objcopy
+
+    def elf_shared(self, cc: str, tag: str) -> Path:
+        """Compile a real ELF shared object in the test's temp dir (a fixture
+        binary built here — not the shipped Neutrodyne artifact)."""
+        work = Path(self._tmp.name) / "elf" / tag
+        work.mkdir(parents=True, exist_ok=True)
+        src, lib = work / "probe.c", work / "probe.so"
+        src.write_text("int probe(void) { return 42; }\n")
+        subprocess.run(
+            [cc, "-g", "-shared", "-fPIC", "-o", str(lib), str(src)],
+            check=True, capture_output=True, text=True, timeout=60,
+        )
+        return lib
+
+    @staticmethod
+    def patch_pt_load_flags(data: bytes, flags: int) -> bytes:
+        """Set every PT_LOAD segment's p_flags in an ELF64 image."""
+        b = bytearray(data)
+        phoff = struct.unpack_from("<Q", b, 0x20)[0]
+        phentsize = struct.unpack_from("<H", b, 0x36)[0]
+        phnum = struct.unpack_from("<H", b, 0x38)[0]
+        changed = False
+        for index in range(phnum):
+            off = phoff + index * phentsize
+            if struct.unpack_from("<I", b, off)[0] == 1:  # PT_LOAD
+                struct.pack_into("<I", b, off + 4, flags)
+                changed = True
+        assert changed, "fixture ELF has no PT_LOAD segment"
+        return bytes(b)
+
+    def elf_fixture(self, app, jdk, ref: Path, img: bytes):
+        self.fx.write(
+            f"{app}/Contents/runtime/Contents/Home/lib/server/libjvm.so", img
+        )
+        self.fx.write(f"{jdk}/Contents/Home/lib/server/libjvm.so", ref.read_bytes())
+
+    def test_linux_elf_objcopy_strip_passes(self):
+        """The legitimate jlink --strip-debug case: the image is the pinned
+        file after the same `objcopy -g`, so the gate binds it and passes."""
+        cc, objcopy = self.require_elf_toolchain()
+        ref = self.elf_shared(cc, "strip")
+        img = ref.with_name("img.so")
+        subprocess.run(
+            [objcopy, "-g", str(ref), str(img)],
+            check=True, capture_output=True, text=True, timeout=60,
+        )
+        self.assertNotEqual(
+            ref.read_bytes(), img.read_bytes(),
+            "the fixture strip must change bytes or the test proves nothing",
+        )
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        self.elf_fixture(app, jdk, ref, img.read_bytes())
+        r = self.runtime_sources(app, jdk)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+
+    def test_linux_elf_entry_point_change_fails(self):
+        """A patched e_entry is not a debug-section change: the pre-fix
+        `objcopy -O binary` fallback dropped the ELF header and passed it."""
+        cc, _ = self.require_elf_toolchain()
+        ref = self.elf_shared(cc, "entry")
+        img = bytearray(ref.read_bytes())
+        struct.pack_into("<Q", img, 24, 0x1000)  # ELF64 e_entry
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        self.elf_fixture(app, jdk, ref, bytes(img))
+        r = self.runtime_sources(app, jdk)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("differs from the pinned Temurin archive", r.stderr)
+
+    def test_linux_elf_pt_load_flags_change_fails(self):
+        """A PT_LOAD p_flags change (RW -> RWX) is a program-header change the
+        pre-fix `objcopy -O binary` fallback dropped."""
+        cc, _ = self.require_elf_toolchain()
+        ref = self.elf_shared(cc, "flags")
+        img = self.patch_pt_load_flags(ref.read_bytes(), 7)
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        self.elf_fixture(app, jdk, ref, img)
+        r = self.runtime_sources(app, jdk)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("differs from the pinned Temurin archive", r.stderr)
+
+    def test_elf_failed_objcopy_is_fail_closed(self):
+        """A failed objcopy must not be accepted: the pre-fix `|| true` compared
+        whatever the failed tool left behind. The fake writes the image bytes
+        over the ref and exits 1, so only the exit-status check fails closed."""
+        app = self.mac_app()
+        jdk = self.mac_jdk()
+        img = ELF + b"TAMPER"
+        self.fx.write(f"{app}/Contents/runtime/Contents/Home/lib/server/libjvm.so", img)
+        self.fx.write(f"{jdk}/Contents/Home/lib/server/libjvm.so", ELF)
+        payload = self.root / "payload.bin"
+        payload.write_bytes(img)
+        fakebin = self.root / "fakebin"
+        fakebin.mkdir()
+        fake = fakebin / "objcopy"
+        fake.write_text(
+            "#!/bin/sh\n"
+            "# in-place: objcopy -g <file>; output: objcopy -O binary <in> <out>\n"
+            'if [ "$#" -eq 2 ]; then out="$2"; else out="$4"; fi\n'
+            f'cp "{payload}" "$out"\n'
+            "exit 1\n"
+        )
+        fake.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = f"{fakebin}{os.pathsep}{env['PATH']}"
+        self.fx.write("smoke.txt", smoke_line(self.root).encode())
+        r = self.fx.run(
+            self.root / "scripts/ci/check-runtime-sources.sh",
+            "--image", app, "--jdk", jdk, "--smoke", "smoke.txt", env=env,
+        )
         self.assertNotEqual(0, r.returncode)
         self.assertIn("differs from the pinned Temurin archive", r.stderr)
 
