@@ -625,6 +625,79 @@ abstract class SyncApplyEffectsTestBase {
             }
         }
 
+    @Test
+    fun disablingTheSwitchBetweenKeysLeavesLaterEffectsPending() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val keys = listOf(PlaybackSettingKeys.SKIP_BACK_MS, PlaybackSettingKeys.SKIP_FORWARD_MS)
+                keys.forEach { seedPending(db, it, "15000", Hlc(now shl 16, remote)) }
+                var enabled = true
+                val delegate = FakeSettingsSyncPort()
+                val port =
+                    object : SettingsSyncPort by delegate {
+                        override suspend fun applyRemote(
+                            key: SettingKey<*>,
+                            json: String,
+                        ): Boolean {
+                            val applied = delegate.applyRemote(key, json)
+                            enabled = false
+                            return applied
+                        }
+                    }
+
+                effects(db, port, settingsSyncEnabled = { enabled }).drainSettings()
+
+                assertEquals(1, delegate.applied.size, "a disabled switch must stop later key writes")
+                assertEquals(1, keys.count { pendingSetting(db, it.name) != null })
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun disablingTheSwitchWhileAKeyLockIsHeldKeepsItsEffectPending() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                seedPending(db, key, "15000", Hlc(now shl 16, remote))
+                val port = FakeSettingsSyncPort()
+                val coordinator = TestSettingsWriteCoordinator()
+                val lockHeld = CompletableDeferred<Unit>()
+                val release = CompletableDeferred<Unit>()
+                val gateRead = CompletableDeferred<Unit>()
+                var enabled = true
+                val holder =
+                    launch {
+                        coordinator.withLock(key) {
+                            lockHeld.complete(Unit)
+                            release.await()
+                        }
+                    }
+                lockHeld.await()
+                val drain =
+                    launch {
+                        effects(db, port, coordinator) {
+                            gateRead.complete(Unit)
+                            enabled
+                        }.drainSettings()
+                    }
+                gateRead.await()
+                enabled = false
+                release.complete(Unit)
+                holder.join()
+                drain.join()
+
+                assertTrue(port.applied.isEmpty(), "a waiting drain must recheck the persisted switch")
+                assertEquals("15000", pendingSetting(db, key.name))
+            } finally {
+                db.close()
+            }
+        }
+
     /**
      * 10 Durable apply effects: the at-each-start drain applies while linked, and an unlink —
      * which empties the sync tables — never resurrects the old account's effects.

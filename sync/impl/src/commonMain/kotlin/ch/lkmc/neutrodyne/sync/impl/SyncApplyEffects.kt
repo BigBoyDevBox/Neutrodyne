@@ -69,6 +69,9 @@ class SyncApplyEffects(
 
     private suspend fun drainSetting(key: SettingKey<*>) {
         writeLocks.withLock(key) {
+            // A previous key or local writer may have held this drain while sync was disabled.
+            // Admit each key under its write lock; later keys stay pending once the switch is off.
+            if (!settingsSyncEnabled()) return@withLock
             val row = db.syncClockDao().get(SyncCollection.SETTING.wire, key.name) ?: return@withLock
             val raw = decode(row.clocks) ?: return@withLock
             val pending = raw.pendingSetting ?: return@withLock

@@ -1236,9 +1236,11 @@ completed link deletes it. Deviations the current code forces:
   any push; and enabling "Sync playback settings" drains what the
   switch held pending. Every drain reads the persisted switch live
   (`SyncServerAddress.syncPlaybackSettings()`), never `SyncFlags`'
-  late cache, so markers stay pending while it is off and an unlink —
-  which empties `sync_clock` — cannot resurrect an old account's
-  effects. Still pending: the credential half (`pendingAuth`,
+  late cache, and checks again after acquiring each key's write lock.
+  A key already being written can complete; waiting and later keys
+  stay pending once the switch is off. Unlink clears `sync_clock`,
+  so the startup drain cannot resurrect effects from an old account.
+  Still pending: the credential half (`pendingAuth`,
   `CredentialCommitCoordinator`) and `SettingsCapture.install`'s
   production wiring (the capture side, next slice).
 - The local seed now covers groups, members and Up next too, so an empty
