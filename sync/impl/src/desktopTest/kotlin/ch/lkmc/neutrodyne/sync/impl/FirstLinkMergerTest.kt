@@ -12,6 +12,7 @@ import ch.lkmc.neutrodyne.core.domain.NoPlaybackSync
 import ch.lkmc.neutrodyne.core.domain.SyncIngestHook
 import ch.lkmc.neutrodyne.core.model.MergePolicy
 import ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys
+import ch.lkmc.neutrodyne.core.testing.FakeCredentialCommitCoordinator
 import ch.lkmc.neutrodyne.core.testing.FakeLibraryMerger
 import ch.lkmc.neutrodyne.core.testing.FakeSecretStore
 import ch.lkmc.neutrodyne.core.testing.FakeSettingsSyncPort
@@ -1086,6 +1087,8 @@ class FirstLinkMergerTest {
                             newEffects(db),
                         clock = TestClock(now),
                         activity = activity,
+                        secrets = FakeSecretStore(),
+                        coordinator = FakeCredentialCommitCoordinator(),
                     )
                 val resyncResult = merger.resync()
                 assertTrue(resyncResult is FirstLinkResult.Completed)
@@ -1140,6 +1143,8 @@ class FirstLinkMergerTest {
                             newEffects(db),
                         clock = TestClock(now),
                         activity = activity,
+                        secrets = FakeSecretStore(),
+                        coordinator = FakeCredentialCommitCoordinator(),
                     )
                 val job = launch { merger.merge(FirstLinkChoice.MERGE) }
                 withTimeoutOrNull(1_000) { activity.count.first { it > 0 } }
@@ -1212,6 +1217,8 @@ class FirstLinkMergerTest {
                             newEffects(db),
                         clock = TestClock(now),
                         activity = activity,
+                        secrets = FakeSecretStore(),
+                        coordinator = FakeCredentialCommitCoordinator(),
                     )
                 val job = launch { merger.merge(FirstLinkChoice.MERGE) }
                 withTimeoutOrNull(1_000) { activity.count.first { it > 0 } }
@@ -1249,6 +1256,8 @@ class FirstLinkMergerTest {
                             newEffects(db),
                         clock = TestClock(now),
                         activity = activity,
+                        secrets = FakeSecretStore(),
+                        coordinator = FakeCredentialCommitCoordinator(),
                     )
                 val result = merger.merge(FirstLinkChoice.MERGE)
                 assertTrue(result is FirstLinkResult.Failed)
@@ -1283,6 +1292,8 @@ class FirstLinkMergerTest {
                             newEffects(db),
                         clock = TestClock(now),
                         activity = activity,
+                        secrets = FakeSecretStore(),
+                        coordinator = FakeCredentialCommitCoordinator(),
                     )
                 assertFailsWith<CancellationException> { merger.merge(FirstLinkChoice.MERGE) }
                 assertEquals(0, activity.count.value, "a cancelled merge must clear the activity flag")
@@ -1388,6 +1399,8 @@ class FirstLinkMergerTest {
                             newEffects(db),
                         clock = TestClock(now),
                         activity = activity,
+                        secrets = FakeSecretStore(),
+                        coordinator = FakeCredentialCommitCoordinator(),
                     )
                 val job = launch { merger.resync() }
                 withTimeoutOrNull(1_000) { activity.count.first { it > 0 } }
@@ -1420,6 +1433,8 @@ class FirstLinkMergerTest {
                             newEffects(db),
                         clock = TestClock(now),
                         activity = activity,
+                        secrets = FakeSecretStore(),
+                        coordinator = FakeCredentialCommitCoordinator(),
                     )
                 val result = merger.resync()
                 assertTrue(result is FirstLinkResult.Failed)
@@ -1454,6 +1469,8 @@ class FirstLinkMergerTest {
                             newEffects(db),
                         clock = TestClock(now),
                         activity = activity,
+                        secrets = FakeSecretStore(),
+                        coordinator = FakeCredentialCommitCoordinator(),
                     )
                 assertFailsWith<CancellationException> { merger.resync() }
                 assertEquals(0, activity.count.value, "a cancelled resync must clear the activity flag")
@@ -1482,6 +1499,8 @@ class FirstLinkMergerTest {
             effects = effects,
             clock = TestClock(now),
             activity = activity,
+            secrets = FakeSecretStore(),
+            coordinator = FakeCredentialCommitCoordinator(),
         )
 
     /**
@@ -1494,7 +1513,18 @@ class FirstLinkMergerTest {
         port: ch.lkmc.neutrodyne.core.domain.SettingsSyncPort = FakeSettingsSyncPort(),
         coordinator: ch.lkmc.neutrodyne.core.domain.SettingsWriteCoordinator =
             TestSettingsWriteCoordinator(),
-    ): SyncApplyEffects = SyncApplyEffects(db, port, coordinator) { true }
+        secrets: FakeSecretStore = FakeSecretStore(),
+        credentials: FakeCredentialCommitCoordinator = FakeCredentialCommitCoordinator(),
+    ): SyncApplyEffects =
+        SyncApplyEffects(
+            db,
+            port,
+            coordinator,
+            { true },
+            secrets,
+            credentials,
+            paths.cacheDir.toPath(),
+        )
 
     private suspend fun link(
         db: ch.lkmc.neutrodyne.core.database.NeutrodyneDatabase,
@@ -1620,6 +1650,7 @@ class FirstLinkMergerTest {
                 ch.lkmc.neutrodyne.core.testing
                     .FakeLocalNetworkGate(),
             effects = newEffects(db),
+            notices = SyncNoticeBus(),
         )
     }
 
@@ -1643,6 +1674,7 @@ class FirstLinkMergerTest {
                     override suspend fun onDeleted(uuid: String) = Unit
                 },
             sharePasswords = { false },
+            coordinator = FakeCredentialCommitCoordinator(),
         )
 
     private fun podcastRecordFor(

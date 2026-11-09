@@ -28,6 +28,8 @@ class ChangeBuilder(
     private val secrets: SecretStore,
     private val sharePasswords: () -> Boolean,
 ) {
+    private val clockStore = SyncClockStore(db)
+
     suspend fun build(rows: List<SyncOutboxEntity>): List<ChangeDto> {
         val source = SourceReader(db, secrets, sharePasswords)
         return rows
@@ -113,7 +115,32 @@ class ChangeBuilder(
 
             "auth" -> {
                 if (sharePasswords()) {
-                    source.authField(rid)?.let { fields["auth"] = it.withClock(clock) }
+                    // 10 Passwords: the pushed value is the protected snapshot the raw
+                    // reference points at — the staging copy or the credential at its
+                    // origin — hydrated at the row's own complete clock. A local row with
+                    // no reference yet reads the live credential; a pending remote
+                    // snapshot is never pushed under a local clock.
+                    val reference = clockStore.get(collection.wire, rid)?.authReference
+                    val hydrated =
+                        when {
+                            reference == null -> {
+                                null
+                            }
+
+                            row.captureKind == ch.lkmc.neutrodyne.core.database.SyncCaptureKind.REPLAY -> {
+                                secrets.get(reference.storeKey)
+                            }
+
+                            reference.storeKey.startsWith(PENDING_AUTH_PREFIX) -> {
+                                null
+                            }
+
+                            else -> {
+                                secrets.get(reference.storeKey)
+                            }
+                        }
+                    val value = hydrated?.let(::authValue) ?: source.authField(rid)?.v
+                    value?.let { fields["auth"] = FieldValue(it, clock.toString()) }
                 }
             }
 
@@ -173,6 +200,15 @@ class ChangeBuilder(
             ch.lkmc.neutrodyne.sync.protocol.SyncJson
                 .parseToJsonElement(text)
         }.getOrNull()
+
+    /** The `{u,p}` wire value of a protected-store entry. */
+    private fun authValue(stored: ch.lkmc.neutrodyne.core.domain.StoredSecret): JsonObject =
+        JsonObject(
+            buildMap {
+                put("u", JsonPrimitive(stored.username))
+                put("p", JsonPrimitive(stored.secret.concatToString()))
+            },
+        )
 
     private suspend fun hintsFor(
         source: SourceReader,

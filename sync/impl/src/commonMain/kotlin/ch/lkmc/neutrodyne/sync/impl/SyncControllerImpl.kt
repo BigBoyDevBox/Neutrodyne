@@ -52,6 +52,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -105,6 +106,9 @@ class SyncControllerImpl(
     private val gate: LocalNetworkGate,
     private val errors: NetErrorClassifier,
     private val scheduler: SyncScheduler,
+    private val noticeBus: SyncNoticeBus,
+    private val secrets: ch.lkmc.neutrodyne.core.domain.SecretStore,
+    private val credentials: ch.lkmc.neutrodyne.core.domain.CredentialCommitCoordinator,
     @Dispatcher(NeutrodyneDispatchers.IO) private val io: CoroutineDispatcher,
     @ch.lkmc.neutrodyne.core.common.ApplicationScope private val scope: CoroutineScope,
 ) : SyncController {
@@ -133,7 +137,9 @@ class SyncControllerImpl(
     override val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
 
     private val _notices = MutableSharedFlow<SyncNotice>(extraBufferCapacity = 16)
-    override val notices: Flow<SyncNotice> = _notices
+
+    /** The controller's own notices plus the pull-side ones the engine posts on the bus. */
+    override val notices: Flow<SyncNotice> = merge(_notices, noticeBus.notices)
 
     /** The running flow's cancellation handle and the answers the flow waits for. */
     private var linkJob: Job? = null
@@ -418,6 +424,9 @@ class SyncControllerImpl(
         address.serverUrl()?.let { url -> runCatching { client.logout() } }
         db.syncStateDao().unlink()
         address.serverUrl()?.let { tokenStore.clear(hostOf(it)) }
+        // 10 Passwords: the account's staged auth snapshots leave with the link — under the
+        // coordinator, like every credential delete.
+        credentials.withCredentialCommit { secrets.dropStagedAuthSnapshots() }
         // 10 Scheduling: unlinking cancels every sync work name before the state refresh.
         scheduler.onUnlinked()
         lastRoundProblem.value = null
@@ -433,6 +442,7 @@ class SyncControllerImpl(
             client.reset(DELETE_CONFIRMATION, RESET_MODE_PURGE, null)
             db.syncStateDao().unlink()
             tokenStore.clear(hostOf(url))
+            credentials.withCredentialCommit { secrets.dropStagedAuthSnapshots() }
             scheduler.onUnlinked()
             lastRoundProblem.value = null
             refreshStatus()

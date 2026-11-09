@@ -177,6 +177,10 @@ class SourceReader(
                         podcast.episodeOrder?.let { put("episodeOrder", JsonPrimitive(it.name)) }
                         put("youtubeVariants", JsonPrimitive(podcast.youtubeVariants))
                         put("needsCredentials", JsonPrimitive(podcast.needsCredentials || podcast.credentialId != null))
+                        podcastValue(podcast, "credentialOrigin")?.let { put("credentialOrigin", it) }
+                        // `auth` joins the `*` expansion only while sharing is on — the same
+                        // gate ChangeBuilder applies to the explicit field row (10 Passwords).
+                        if (sharePasswords()) podcastValue(podcast, "auth")?.let { put("auth", it) }
                         overrides(rid, isGroup = false).forEach { (name, value) -> put(name, value) }
                     },
                     mapOf("feedKeys" to feedKeys(rid).toSet()),

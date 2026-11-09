@@ -11,6 +11,7 @@ import ch.lkmc.neutrodyne.core.domain.NoPlaybackSync
 import ch.lkmc.neutrodyne.core.domain.SyncIngestHook
 import ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys
 import ch.lkmc.neutrodyne.core.model.settings.SettingKey
+import ch.lkmc.neutrodyne.core.testing.FakeCredentialCommitCoordinator
 import ch.lkmc.neutrodyne.core.testing.FakeLocalNetworkGate
 import ch.lkmc.neutrodyne.core.testing.FakeSecretStore
 import ch.lkmc.neutrodyne.core.testing.FakeSettingsSyncPort
@@ -40,6 +41,7 @@ import ch.lkmc.neutrodyne.sync.protocol.dto.TokenResponse
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonPrimitive
+import okio.Path.Companion.toPath
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -75,17 +77,25 @@ abstract class SyncEngineEffectsDrainTestBase {
         val address = FakeSyncServerAddress(serverUrl = "https://sync.example")
         address.updateSyncPlaybackSettings(switch)
         val clock = TestClock(now)
+        val secrets = FakeSecretStore()
+        val credentials = FakeCredentialCommitCoordinator()
         val effects =
-            SyncApplyEffects(db, port, TestSettingsWriteCoordinator()) {
-                address.syncPlaybackSettings()
-            }
+            SyncApplyEffects(
+                db,
+                port,
+                TestSettingsWriteCoordinator(),
+                { address.syncPlaybackSettings() },
+                secrets,
+                credentials,
+                "__absent_cache__".toPath(),
+            )
         val engine =
             SyncEngine(
                 db = db,
                 client = client,
-                applier = applier(db, port, clock),
+                applier = applier(db, port, clock, secrets, credentials),
                 clock = clock,
-                secrets = FakeSecretStore(),
+                secrets = secrets,
                 sharePasswords = { false },
                 address = address,
                 tokens =
@@ -95,6 +105,7 @@ abstract class SyncEngineEffectsDrainTestBase {
                 activity = SyncActivityState(),
                 gate = FakeLocalNetworkGate(),
                 effects = effects,
+                notices = SyncNoticeBus(),
             )
         return DrainHarness(db, port, address, engine, effects)
     }
@@ -374,11 +385,13 @@ abstract class SyncEngineEffectsDrainTestBase {
         db: NeutrodyneDatabase,
         port: FakeSettingsSyncPort,
         clock: TestClock,
+        secrets: FakeSecretStore = FakeSecretStore(),
+        credentials: FakeCredentialCommitCoordinator = FakeCredentialCommitCoordinator(),
     ): SyncApplier =
         SyncApplier(
             db = db,
             clock = clock,
-            secrets = FakeSecretStore(),
+            secrets = secrets,
             settings = port,
             playback = NoPlaybackSync,
             syncIngestHook = SyncIngestHook.None,
@@ -394,6 +407,7 @@ abstract class SyncEngineEffectsDrainTestBase {
                     override suspend fun onDeleted(uuid: String) = Unit
                 },
             sharePasswords = { false },
+            coordinator = credentials,
         )
 
     private suspend fun seedLinked(db: NeutrodyneDatabase) {

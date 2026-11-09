@@ -4,6 +4,7 @@ package ch.lkmc.neutrodyne.sync.impl
 
 import androidx.room3.withWriteTransaction
 import ch.lkmc.neutrodyne.core.common.Clock
+import ch.lkmc.neutrodyne.core.common.suspendRunCatching
 import ch.lkmc.neutrodyne.core.database.EpisodeEntity
 import ch.lkmc.neutrodyne.core.database.EpisodePositionEntity
 import ch.lkmc.neutrodyne.core.database.EpisodeStateEntity
@@ -16,6 +17,7 @@ import ch.lkmc.neutrodyne.core.database.PodcastSettingsEntity
 import ch.lkmc.neutrodyne.core.database.QueueEntryEntity
 import ch.lkmc.neutrodyne.core.database.ScopeOverrides
 import ch.lkmc.neutrodyne.core.database.SyncOutboxEntity
+import ch.lkmc.neutrodyne.core.domain.CredentialCommitCoordinator
 import ch.lkmc.neutrodyne.core.domain.GroupChannelSync
 import ch.lkmc.neutrodyne.core.domain.PlaybackSyncPort
 import ch.lkmc.neutrodyne.core.domain.SecretStore
@@ -54,12 +56,19 @@ data class SyncApplyResult(
     val parked: Int,
     val held: Int,
     val invalid: Int,
+    /** Podcasts this page flagged `needsCredentials` — one `FeedPasswordNeeded` per pull. */
+    val feedsNeedingCredentials: List<Long> = emptyList(),
 )
 
 /**
  * The pull side of 10 Pull and apply: one write transaction per page with `applying = 1`, field
  * merge against `sync_clock` and the pending outbox, then the collection-specific writes. Removals
  * are staged through [MassChangeGuard]; settings and credentials are recorded as durable effects.
+ *
+ * 10 Passwords: a podcast record's plaintext `auth` is staged into the protected `SecretStore`
+ * before the page transaction ([stageAuthCandidates]); the merge runs on the field-stripped
+ * record and [decideAuth] commits only a protected reference plus the durable `pendingAuth`
+ * marker. Plaintext `auth` never reaches `sync_clock`, the outbox or a log.
  */
 class SyncApplier(
     private val db: NeutrodyneDatabase,
@@ -70,6 +79,7 @@ class SyncApplier(
     private val syncIngestHook: SyncIngestHook,
     private val channelSync: GroupChannelSync,
     private val sharePasswords: () -> Boolean,
+    private val coordinator: CredentialCommitCoordinator,
 ) {
     private val clockStore = SyncClockStore(db)
     private val matcher = EpisodeMatcher(db.backupDao())
@@ -78,32 +88,61 @@ class SyncApplier(
         records: List<RecordDto>,
         roundId: Long,
     ): SyncApplyResult {
+        // The protected snapshots land before any Room write: a SecretStore failure fails the
+        // page before its cursor or any credential state can advance past an unstaged auth.
+        val staged = stageAuthCandidates(db, secrets, coordinator, records)
+        val dropKeys = mutableListOf<String>()
+        val feedsNeedingCredentials = mutableListOf<Long>()
         var applied = 0
         var stale = 0
         var parked = 0
         var held = 0
         var invalid = 0
-        db.withWriteTransaction {
-            db.syncStateDao().withApplying {
-                val ordered = records.sortedBy { it.coll }
-                for (dto in ordered) {
-                    val result = applyRecord(dto, roundId)
-                    when (result) {
-                        is RecordOutcome.Applied -> applied++
-                        is RecordOutcome.Stale -> stale++
-                        is RecordOutcome.Parked -> parked++
-                        is RecordOutcome.Held -> held++
-                        is RecordOutcome.Invalid -> invalid++
+        try {
+            db.withWriteTransaction {
+                db.syncStateDao().withApplying {
+                    val ordered = records.sortedBy { it.coll }
+                    for (dto in ordered) {
+                        val rid = wireRid(dto)
+                        val result =
+                            applyRecord(dto, roundId, rid?.let { staged[it] }, dropKeys, feedsNeedingCredentials)
+                        when (result) {
+                            is RecordOutcome.Applied -> applied++
+                            is RecordOutcome.Stale -> stale++
+                            is RecordOutcome.Parked -> parked++
+                            is RecordOutcome.Held -> held++
+                            is RecordOutcome.Invalid -> invalid++
+                        }
                     }
                 }
             }
+        } finally {
+            // Losing, failed-page and superseded snapshots leave once the commit's references
+            // are durable; a rollback drops every key this page staged but nothing referenced.
+            // A cleanup failure must never mask the page's own outcome.
+            suspendRunCatching {
+                dropUnreferencedStaged(
+                    db,
+                    secrets,
+                    coordinator,
+                    staged.values.mapTo(HashSet()) { it.storeKey } + dropKeys,
+                )
+            }
         }
-        return SyncApplyResult(applied, stale, parked, held, invalid)
+        return SyncApplyResult(applied, stale, parked, held, invalid, feedsNeedingCredentials)
+    }
+
+    private suspend fun wireRid(dto: RecordDto): String? {
+        val coll = runCatching { SyncCollection.fromWire(dto.coll) }.getOrNull() ?: return null
+        return runCatching { RecordId.fromWire(coll, dto.id) }.getOrNull()?.rid
     }
 
     private suspend fun applyRecord(
         dto: RecordDto,
         roundId: Long,
+        stagedAuth: StagedAuth?,
+        dropKeys: MutableList<String>,
+        feedsNeedingCredentials: MutableList<Long>,
     ): RecordOutcome {
         val coll =
             runCatching { SyncCollection.fromWire(dto.coll) }.getOrNull() ?: return RecordOutcome.Invalid
@@ -114,19 +153,52 @@ class SyncApplier(
         val resolved = resolve(id)
         val stored = clockStore.get(coll.wire, resolved.rid)
         val pending = pendingState(coll, resolved.rid)
-        val merge = SyncRecordMerger.merge(stored?.state, pending, incoming)
+        // The merge runs on the field-stripped record: the winner's `auth` is decided below
+        // against the stored reference and the pending local intent, never carried in state.
+        val authField = incoming.fields["auth"]
+        val merge = SyncRecordMerger.merge(stored?.state, pending, incoming.withoutField("auth"))
         if (merge.advanced.isEmpty() && merge.lost.isEmpty() && merge.record == stored?.state) {
             return RecordOutcome.Stale
         }
+        val auth =
+            if (coll == SyncCollection.PODCAST) {
+                decideAuth(stored, pending, merge.record, authField, stagedAuth)
+            } else {
+                null
+            }
+        auth?.let {
+            dropKeys += it.dropKeys
+            if (it.remoteWon) dropLosingLocalAuth(coll.wire, resolved.rid, authField?.c)
+        }
         val outcome =
             when (coll) {
-                SyncCollection.PODCAST -> applyPodcast(resolved, merge, roundId)
-                SyncCollection.GROUP -> applyGroup(resolved, merge, roundId)
-                SyncCollection.MEMBER -> applyMember(resolved, merge)
-                SyncCollection.EPISODE -> applyEpisode(resolved, merge)
-                SyncCollection.UPNEXT -> applyUpNext(resolved, merge)
-                SyncCollection.SESSION -> applySession(resolved, merge)
-                SyncCollection.SETTING -> applySetting(resolved, merge)
+                SyncCollection.PODCAST -> {
+                    applyPodcast(resolved, merge, roundId, auth?.pending != null, feedsNeedingCredentials)
+                }
+
+                SyncCollection.GROUP -> {
+                    applyGroup(resolved, merge, roundId)
+                }
+
+                SyncCollection.MEMBER -> {
+                    applyMember(resolved, merge)
+                }
+
+                SyncCollection.EPISODE -> {
+                    applyEpisode(resolved, merge)
+                }
+
+                SyncCollection.UPNEXT -> {
+                    applyUpNext(resolved, merge)
+                }
+
+                SyncCollection.SESSION -> {
+                    applySession(resolved, merge)
+                }
+
+                SyncCollection.SETTING -> {
+                    applySetting(resolved, merge)
+                }
             }
         if (outcome is RecordOutcome.Applied || outcome is RecordOutcome.Held) {
             val pendingSetting =
@@ -145,10 +217,13 @@ class SyncApplier(
                 coll.wire,
                 resolved.rid,
                 RawSyncRecord(
-                    state = merge.record,
+                    // The persisted state is the stripped merge — a pending local `auth`
+                    // hydrated for the merge never reaches `clocks` either.
+                    state = merge.record.withoutField("auth"),
                     by = dto.by ?: stored?.by,
+                    authReference = auth?.reference ?: stored?.authReference,
                     pendingSetting = pendingSetting ?: stored?.pendingSetting,
-                    pendingAuth = stored?.pendingAuth,
+                    pendingAuth = auth?.pending ?: stored?.pendingAuth,
                 ),
             )
             deleteLostPending(coll.wire, resolved.rid, merge.advanced)
@@ -156,10 +231,24 @@ class SyncApplier(
         return outcome
     }
 
+    /** The remote auth won: the strictly-older local `auth` intent leaves the outbox. */
+    private suspend fun dropLosingLocalAuth(
+        coll: String,
+        rid: String,
+        remoteClock: Hlc?,
+    ) {
+        val row = db.syncOutboxDao().get(coll, rid, "auth") ?: return
+        val local = outboxClock(row) ?: return
+        if (remoteClock == null || local >= remoteClock) return
+        db.syncOutboxDao().deleteIfUnchanged(coll, rid, "auth", row.hlc, row.nodeId)
+    }
+
     private suspend fun applyPodcast(
         id: RecordId,
         merge: RecordMerge,
         roundId: Long,
+        authPending: Boolean,
+        feedsNeedingCredentials: MutableList<Long>,
     ): RecordOutcome {
         val rid = (id as RecordId.Podcast).id.value
         val existing = db.podcastDao().bySyncId(rid)
@@ -184,6 +273,7 @@ class SyncApplier(
             val now = clock.now()
             val syncId = rid
             val title = merge.record.stringField("title") ?: feedUrl
+            val needsCredentials = needsCredentialsFor(merge.record, null, authPending)
             val idInserted =
                 db
                     .podcastDao()
@@ -210,11 +300,12 @@ class SyncApplier(
                             initialFetch = true,
                             subscribedAt = merge.record.longField("subscribedAt") ?: now,
                             nextRefreshAt = now,
-                            needsCredentials = merge.record.booleanField("needsCredentials") ?: false,
+                            needsCredentials = needsCredentials,
                             artworkKey = "u-$syncId",
                         ),
                     )
             if (idInserted == -1L) return RecordOutcome.Invalid
+            if (needsCredentials) feedsNeedingCredentials += idInserted
             // A `*` row's aliases and the overrides land with the projection.
             merge.record.growSets["feedKeys"]?.forEach { key ->
                 if (key != feedKey) {
@@ -234,7 +325,44 @@ class SyncApplier(
             return RecordOutcome.Applied
         }
         applyPodcastFields(existing, merge.record)
+        // 10 Passwords: a feed whose credential origin this device cannot satisfy is flagged
+        // (and noticed once per pull); a pending auth or a matching credential clears it.
+        val needs = needsCredentialsFor(merge.record, existing, authPending)
+        if (needs != existing.needsCredentials) {
+            db.podcastDao().setNeedsCredentials(existing.id, needs)
+        }
+        if (needs) feedsNeedingCredentials += existing.id
         return RecordOutcome.Applied
+    }
+
+    /**
+     * The `needsCredentials` projection of 10 Passwords: true while the winning
+     * `credentialOrigin` has no matching local credential — unless the winning auth is still
+     * being installed (`authPending`). Without an origin the remote `needsCredentials` flag
+     * applies, and an installed credential always clears the flag.
+     */
+    private suspend fun needsCredentialsFor(
+        record: RecordState,
+        existing: PodcastEntity?,
+        authPending: Boolean,
+    ): Boolean {
+        if (authPending) return false
+        val origin =
+            record.stringField("credentialOrigin") ?: run {
+                if (existing?.credentialId != null) return false
+                return record.booleanField("needsCredentials") ?: existing?.needsCredentials ?: false
+            }
+        val credentialOrigin =
+            existing
+                ?.credentialId
+                ?.let {
+                    db
+                        .credentialDao()
+                        .byIds(listOf(it))
+                        .firstOrNull()
+                        ?.origin
+                }
+        return credentialOrigin != origin
     }
 
     private suspend fun applyPodcastFields(
@@ -783,6 +911,9 @@ private inline fun <reified E : Enum<E>> RecordState.enumField(name: String): E?
     stringField(name)?.let { value -> enumValues<E>().firstOrNull { it.name == value } }
 
 private fun RecordState.fieldClock(name: String): String? = fields[name]?.c?.toString()
+
+/** The record minus one field — the `auth` strip of 10 Passwords (never persisted plaintext). */
+private fun RecordState.withoutField(name: String): RecordState = copy(fields = fields - name)
 
 private fun maxOfNullable(
     a: Long?,

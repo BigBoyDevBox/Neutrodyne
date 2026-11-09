@@ -81,6 +81,7 @@ class SyncEngine(
     private val activity: SyncActivityState,
     private val gate: LocalNetworkGate,
     private val effects: SyncApplyEffects,
+    private val notices: SyncNoticeBus,
 ) {
     private val reader = OutboxReader(db, clock)
     private val builder = ChangeBuilder(db, secrets, sharePasswords)
@@ -121,12 +122,14 @@ class SyncEngine(
         // this round's first request — the drain is local (Room and DataStore), so it recovers
         // while offline too, and the push below can never echo over an unapplied server value.
         effects.drainSettings()
+        effects.drainPasswords()
         var pushed = 0
         var applied = 0
         var stale = 0
         var rejected = 0
         var pulled = 0
         var held = 0
+        val feedsNeedingCredentials = LinkedHashSet<Long>()
         val roundId = clock.now()
 
         // Reasons that never pull on their own: a round with nothing to push is a no-op.
@@ -140,14 +143,20 @@ class SyncEngine(
             val state = db.syncStateDao().get()
             val response = markingRevocation { client.sync(state?.cursor, changes) }
             pushed += changes.size
-            db.withWriteTransaction { handleResults(changes, response.results) }
+            val acked = db.withWriteTransaction { handleResults(changes, response.results) }
+            // 10 Passwords: an acknowledged local auth binds its protected reference at the
+            // acknowledged complete clock, outside the push's Room transaction.
+            effects.acknowledgeAuths(acked)
             applied += response.records.size
             val page = applier.applyPage(response.records, roundId)
             // 10 Pull and apply step 5: the committed page's settings effects drain right after
-            // the commit, under the same per-key lock a local set takes.
+            // the commit, under the same per-key lock a local set takes — and the page's durable
+            // credential effects under the credential-commit coordinator.
             effects.drainSettings()
+            effects.drainPasswords()
             stale += page.stale
             held += page.held
+            feedsNeedingCredentials += page.feedsNeedingCredentials
             pulled += response.records.size
             raiseHlc(response.records)
             storeCursor(response.cursor)
@@ -159,9 +168,11 @@ class SyncEngine(
                 val next = markingRevocation { client.changes(cursor, ProtocolLimits.MAX_RECORDS) }
                 applied += next.records.size
                 pulled += next.records.size
-                applier.applyPage(next.records, roundId)
+                val later = applier.applyPage(next.records, roundId)
+                feedsNeedingCredentials += later.feedsNeedingCredentials
                 // Each later page's effects drain with its own commit, not only at the round's end.
                 effects.drainSettings()
+                effects.drainPasswords()
                 raiseHlc(next.records)
                 storeCursor(next.cursor)
                 cursor = next.cursor
@@ -177,14 +188,26 @@ class SyncEngine(
             // Below the thresholds the guard deleted its provisional row; the removals were staged
             // in `sync_held` only when held, so nothing else to apply here.
         }
+        // 10 Passwords: one notice per pull for the feeds that still need a credential.
+        if (feedsNeedingCredentials.isNotEmpty()) {
+            notices.post(
+                ch.lkmc.neutrodyne.sync.api.SyncNotice
+                    .FeedPasswordNeeded(feedsNeedingCredentials.toList()),
+            )
+        }
         db.syncStateDao().recordSyncAt(clock.now())
         return SyncReport(pushed, applied, stale, rejected, pulled, held, clock.now() - started)
     }
 
+    /**
+     * Deletes acknowledged outbox rows; returns the acknowledged podcast changes carrying an
+     * `auth` field so the caller can bind their protected references after the commit.
+     */
     private suspend fun handleResults(
         changes: List<ChangeDto>,
         results: List<ch.lkmc.neutrodyne.sync.protocol.dto.ChangeResultDto>,
-    ) {
+    ): List<ChangeDto> {
+        val ackedAuths = ArrayList<ChangeDto>()
         changes.forEachIndexed { index, change ->
             val result = results.getOrNull(index) ?: return@forEachIndexed
             if (result.status !in setOf("applied", "stale", "merged")) return@forEachIndexed
@@ -199,6 +222,9 @@ class SyncEngine(
                 val parsed = runCatching { Hlc.parse(clock) }.getOrNull() ?: continue
                 db.syncOutboxDao().deleteAcked(coll, rid, field, parsed.packed, parsed.nodeId.value)
             }
+            if (coll == SyncCollection.PODCAST.wire && change.fields.containsKey("auth")) {
+                ackedAuths += change
+            }
             // A `*` row is acknowledged by every field it expanded to.
             change.fields.values
                 .mapNotNull { it.c }
@@ -206,6 +232,7 @@ class SyncEngine(
                 .minOrNull()
                 ?.let { db.syncOutboxDao().deleteAcked(coll, rid, "*", it.packed, it.nodeId.value) }
         }
+        return ackedAuths
     }
 
     private suspend fun raiseHlc(records: List<RecordDto>) {
