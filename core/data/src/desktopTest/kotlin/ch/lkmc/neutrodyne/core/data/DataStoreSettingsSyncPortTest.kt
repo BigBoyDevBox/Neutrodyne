@@ -133,6 +133,72 @@ class DataStoreSettingsSyncPortTest {
             kotlin.test.assertNull(port.currentJson(GroupsSettingKeys.SHOW_UNGROUPED_TAB))
         }
 
+    @Test
+    fun aRecordedWriteCommitsTheOriginWithTheValueAndReset() =
+        runTest {
+            val (port, store) = portAndStore()
+            val key = GroupsSettingKeys.SHOW_UNGROUPED_TAB
+            val origin =
+                ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin
+                    .Captured("historical intent")
+            port.registerCommittedRecorder { _, _, _ -> origin }
+            assertTrue(port.applyRecorded(key, "true", origin))
+            assertTrue(store.get(key))
+            assertEquals(origin, port.currentSnapshot(key)?.origin)
+            assertTrue(port.applyRecorded(key, "null", origin))
+            assertFalse(store.get(key))
+            assertEquals(origin, port.currentSnapshot(key)?.origin)
+        }
+
+    @Test
+    fun anUnavailableCommittedRecorderLeavesTheValueUntouched() =
+        runTest {
+            val (port, store) = portAndStore()
+            val key = GroupsSettingKeys.SHOW_UNGROUPED_TAB
+            store.set(key, true)
+            assertFailsWith<okio.IOException> { port.recordCommitted(key, "false", port.currentSnapshot(key)!!) }
+            port.registerCommittedRecorder { _, _, _ -> throw java.io.IOException("intent unavailable") }
+            assertFailsWith<java.io.IOException> { port.recordCommitted(key, "false", port.currentSnapshot(key)!!) }
+            assertTrue(store.get(key))
+        }
+
+    @Test
+    fun aFailedRecordedWritePreservesThePreviousValueAndReceipt() =
+        runTest {
+            var failWrites = false
+            val (port, store) =
+                portAndStore { delegate ->
+                    object : DataStore<Preferences> by delegate {
+                        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences {
+                            if (failWrites) throw java.io.IOException("store unavailable")
+                            return delegate.updateData(transform)
+                        }
+                    }
+                }
+            val key = GroupsSettingKeys.SHOW_UNGROUPED_TAB
+            val prior =
+                ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin
+                    .Captured("prior intent")
+            port.registerCommittedRecorder { _, _, _ -> prior }
+            assertTrue(port.applyRecorded(key, "true", prior))
+            val before = port.currentSnapshot(key)
+            port.registerCommittedRecorder { _, _, _ ->
+                ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin
+                    .Captured("historical next intent")
+            }
+            failWrites = true
+            assertFalse(
+                port.applyRecorded(
+                    key,
+                    "false",
+                    ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin
+                        .Captured("next"),
+                ),
+            )
+            assertEquals(before, port.currentSnapshot(key))
+            assertTrue(store.get(key))
+        }
+
     private fun TestScope.portAndStore(
         wrap: (
             androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>,

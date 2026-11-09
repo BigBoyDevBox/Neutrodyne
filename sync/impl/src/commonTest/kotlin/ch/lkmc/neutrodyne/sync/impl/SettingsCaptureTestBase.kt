@@ -1069,6 +1069,59 @@ abstract class SettingsCaptureTestBase {
             }
         }
 
+    @Test
+    fun aRecordedRestoreAfterAnOffEditKeepsItsHistoricalIntent() = restoreAfterOffEdit(RestoreStore.COMMITTED)
+
+    @Test
+    fun aFailedRestoreAfterAnOffEditRecoversWithItsHistoricalIntent() = restoreAfterOffEdit(RestoreStore.FAILED)
+
+    @Test
+    fun aRestoreCommittedBeforeItsStoreWriteRecoversAfterAnOffEdit() = restoreAfterOffEdit(RestoreStore.NOT_STARTED)
+
+    private enum class RestoreStore { COMMITTED, FAILED, NOT_STARTED }
+
+    private fun restoreAfterOffEdit(write: RestoreStore) =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val accepted = Hlc.of(1_600_000_000_000, 3, remote)
+                seedKnown(db, key, "9000", accepted)
+                db.syncStateDao().raiseHlc(accepted.packed)
+                var enabled = true
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                val capture = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                capture.install()
+                enabled = false
+                capture.reconcile()
+                port.recordLocal(key, 25000L)
+                port.commitLocal(key, 25000L)
+                port.emitLocal(key, 25000L, now)
+                val before = port.currentSnapshot(key)!!
+                val origin =
+                    db.withWriteTransaction {
+                        assertTrue(db.syncOutboxDao().captureAt("setting", key.name, "v", 1_700_000_000_000, "15000"))
+                        port.recordCommitted(key, "15000", before)
+                    }
+                val original = db.syncOutboxDao().get("setting", key.name, "v")!!
+                port.remoteResult = write == RestoreStore.COMMITTED
+                if (write != RestoreStore.NOT_STARTED) {
+                    assertEquals(write == RestoreStore.COMMITTED, port.applyRecorded(key, "15000", origin))
+                }
+                if (write != RestoreStore.COMMITTED) assertEquals("25000", port.current[key.name])
+                port.remoteResult = true
+                enabled = true
+                val recovered = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                recovered.reconcile()
+                assertEquals("15000", port.current[key.name])
+                assertEquals(original, db.syncOutboxDao().get("setting", key.name, "v"))
+                assertEquals(listOf(original), recovered.prepareForPush(listOf(original), firstLink = false))
+            } finally {
+                db.close()
+            }
+        }
+
     private suspend fun seedKnown(
         db: NeutrodyneDatabase,
         key: SettingKey<*>,

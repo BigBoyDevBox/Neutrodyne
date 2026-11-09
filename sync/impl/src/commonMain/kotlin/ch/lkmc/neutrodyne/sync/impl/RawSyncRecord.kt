@@ -131,4 +131,9 @@ data class SettingIntent(
     val clock: String,
     val priorReceipt: String? = null,
     val priorHash: String,
+    val kind: SettingIntentKind = SettingIntentKind.LOCAL,
 )
+
+/** A historical restore may precede an already accepted clock while being the next physical write. */
+@Serializable
+enum class SettingIntentKind { LOCAL, RESTORE }

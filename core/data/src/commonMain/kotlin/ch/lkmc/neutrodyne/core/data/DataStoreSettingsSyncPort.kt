@@ -48,6 +48,9 @@ internal class DataStoreSettingsSyncPort(
 
     @Volatile
     private var materializedRef: suspend (SettingKey<*>, String) -> Unit = { _, _ -> }
+
+    @Volatile
+    private var committedRef: (suspend (SettingKey<*>, String, SyncedSettingSnapshot) -> SettingWriteOrigin)? = null
     private val local = MutableSharedFlow<LocalSyncedSetting>(extraBufferCapacity = 16)
     override val localSyncedChanges: Flow<LocalSyncedSetting> = local
 
@@ -61,6 +64,45 @@ internal class DataStoreSettingsSyncPort(
             SyncedSettingValue.Reset -> suspendRunCatching { settingsStore.reset(key) }.isSuccess
             is SyncedSettingValue.Set -> suspendRunCatching { write(key, decoded.value) }.isSuccess
         }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun applyRecorded(
+        key: SettingKey<*>,
+        json: String,
+        origin: SettingWriteOrigin,
+    ): Boolean {
+        if (!key.synced) return false
+        val decoded = decodeSyncedValue(key, json) ?: return false
+        return suspendRunCatching {
+            val receipt = origin.storedReceipt()
+            when (decoded) {
+                SyncedSettingValue.Reset -> {
+                    settingsStore.resetWithReceipt(key, receipt)
+                }
+
+                is SyncedSettingValue.Set -> {
+                    settingsStore.setWithReceipt(
+                        key as SettingKey<Any>,
+                        decoded.value,
+                        receipt,
+                    )
+                }
+            }
+        }.isSuccess
+    }
+
+    override suspend fun recordCommitted(
+        key: SettingKey<*>,
+        json: String,
+        before: SyncedSettingSnapshot,
+    ): SettingWriteOrigin =
+        (committedRef ?: throw okio.IOException("committed setting recorder unavailable"))(key, json, before)
+
+    override fun registerCommittedRecorder(
+        recorder: (suspend (key: SettingKey<*>, json: String, before: SyncedSettingSnapshot) -> SettingWriteOrigin)?,
+    ) {
+        committedRef = recorder
     }
 
     override fun registerRecorder(recorder: (suspend (key: SettingKey<*>, json: String) -> SettingWriteOrigin)?) {

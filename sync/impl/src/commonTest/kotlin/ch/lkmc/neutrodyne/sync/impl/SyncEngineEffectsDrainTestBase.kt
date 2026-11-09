@@ -468,6 +468,82 @@ abstract class SyncEngineEffectsDrainTestBase {
             }
         }
 
+    @Test
+    fun anOlderLinkedRestoreCannotAcquireAFreshClock() = olderRestore(RestoreWrite.COMMITTED)
+
+    @Test
+    fun anInterruptedOlderRestoreRecoversWithoutAFreshClock() = olderRestore(RestoreWrite.INTERRUPTED)
+
+    @Test
+    fun anOlderRestoreCommittedBeforeItsStoreWriteCannotAcquireAFreshClock() = olderRestore(RestoreWrite.NOT_STARTED)
+
+    private enum class RestoreWrite { COMMITTED, INTERRUPTED, NOT_STARTED }
+
+    private fun olderRestore(write: RestoreWrite) =
+        runTest {
+            val db = newTestDb()
+            try {
+                seedLinked(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val accepted = Hlc.of(now, 1, remote)
+                val server = settingRecord(key, 9000L, accepted)
+                val sent = mutableListOf<List<ChangeDto>>()
+                val client =
+                    object : SyncClient by scriptedClient(syncRecords = emptyList()) {
+                        override suspend fun sync(
+                            since: String?,
+                            changes: List<ChangeDto>,
+                        ): SyncResponse {
+                            sent += changes
+                            return SyncResponse(
+                                results = changes.mapIndexed { index, _ -> ChangeResultDto(index, "stale") },
+                                records = listOf(server),
+                                cursor = "c:00000001:5",
+                                hasMore = false,
+                                serverTime = "",
+                            )
+                        }
+                    }
+                val h = harness(db, client)
+                h.engine.round(SyncRoundReason.SYNC_NOW)
+                h.capture.reconcile()
+                assertEquals("9000", h.port.current[key.name], "precondition: accepted value materialized")
+                val archiveCreatedAt = now - 100_000_000_000L
+                val before = h.port.currentSnapshot(key)!!
+                val origin =
+                    db.withWriteTransaction {
+                        assertTrue(db.syncOutboxDao().captureAt("setting", key.name, "v", archiveCreatedAt, "15000"))
+                        h.port.recordCommitted(key, "15000", before)
+                    }
+                val historical = db.syncOutboxDao().get("setting", key.name, "v")!!
+                val older = Hlc(historical.hlc, NodeId(historical.nodeId))
+                assertTrue(older < accepted, "the archive is older than the accepted server setting")
+                h.port.remoteResult = write == RestoreWrite.COMMITTED
+                if (write != RestoreWrite.NOT_STARTED) {
+                    assertEquals(write == RestoreWrite.COMMITTED, h.port.applyRecorded(key, "15000", origin))
+                }
+                h.port.remoteResult = true
+                h.engine.round(SyncRoundReason.SYNC_NOW)
+                val published =
+                    sent
+                        .flatten()
+                        .flatMap { it.fields.values }
+                        .mapNotNull { it.c }
+                        .map(Hlc::parse)
+                assertTrue(
+                    published.all { it <= older },
+                    "captureAt restore must not be re-stamped before push: $published vs $older",
+                )
+                h.capture.reconcile()
+                assertNull(
+                    db.syncOutboxDao().get("setting", key.name, "v"),
+                    "the old restore must never be re-captured with a fresh clock",
+                )
+            } finally {
+                db.close()
+            }
+        }
+
     // --- Fixtures -----------------------------------------------------------------------------------
 
     private fun applier(

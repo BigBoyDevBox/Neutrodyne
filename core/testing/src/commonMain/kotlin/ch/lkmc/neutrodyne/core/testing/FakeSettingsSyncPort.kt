@@ -16,6 +16,9 @@ import kotlin.uuid.Uuid
 /** A [SettingsSyncPort] fixture: recordings in, scripted remote applies, no DataStore. */
 class FakeSettingsSyncPort : SettingsSyncPort {
     private var recorderRef: (suspend (key: SettingKey<*>, json: String) -> SettingWriteOrigin)? = null
+    private var committedRef: (
+        suspend (key: SettingKey<*>, json: String, before: SyncedSettingSnapshot) -> SettingWriteOrigin
+    )? = null
     private val admitted = mutableMapOf<String, SettingWriteOrigin>()
     private val origins = mutableMapOf<String, SettingWriteOrigin>()
     private val receiptIds = mutableMapOf<String, String>()
@@ -65,6 +68,30 @@ class FakeSettingsSyncPort : SettingsSyncPort {
         applied += key to json
         if (remoteResult) current[key.name] = if (json == "null") encode(key, key.default)!! else json
         return remoteResult
+    }
+
+    override suspend fun applyRecorded(
+        key: SettingKey<*>,
+        json: String,
+        origin: SettingWriteOrigin,
+    ): Boolean {
+        if (key.name !in current) current[key.name] = encode(key, key.default)!!
+        if (!applyRemote(key, json)) return false
+        origins[key.name] = origin
+        receiptIds[key.name] = Uuid.random().toString()
+        return true
+    }
+
+    override suspend fun recordCommitted(
+        key: SettingKey<*>,
+        json: String,
+        before: SyncedSettingSnapshot,
+    ): SettingWriteOrigin = committedRef?.invoke(key, json, before) ?: SettingWriteOrigin.Uncaptured
+
+    override fun registerCommittedRecorder(
+        recorder: (suspend (key: SettingKey<*>, json: String, before: SyncedSettingSnapshot) -> SettingWriteOrigin)?,
+    ) {
+        committedRef = recorder
     }
 
     override fun registerRecorder(recorder: (suspend (key: SettingKey<*>, json: String) -> SettingWriteOrigin)?) {

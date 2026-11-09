@@ -237,6 +237,21 @@ class SyncEngine(
                 fields = mapOf("v" to FieldState(value, clock)),
             )
         val merged = SyncRecordMerger.merge(stored?.state, null, incoming)
+        // A historical restore may have materialized below a value already known in raw state.
+        // Its rejected ACK must journal that winner even if the response re-delivers equal raw
+        // clocks; otherwise the applier's stale fast path leaves the restore looking unrecorded.
+        val winner = merged.record.fields["v"]
+        val winnerClock = winner?.c
+        val pending = stored?.pendingSetting
+        val pendingClock = pending?.clock?.let { runCatching { Hlc.parse(it) }.getOrNull() }
+        val materializeWinner =
+            if (winner != null && winnerClock != null && winnerClock > clock &&
+                (pendingClock == null || pendingClock < winnerClock)
+            ) {
+                PendingSetting(winner.v.toString(), winnerClock.toString())
+            } else {
+                pending
+            }
         clockStore.put(
             SyncCollection.SETTING.wire,
             rid,
@@ -252,7 +267,7 @@ class SyncEngine(
                 settingHash =
                     stored?.settingHash?.takeIf { it.clock == null }
                         ?: stored?.settingHash.advancedTo(value.toString(), clock.toString()),
-                pendingSetting = stored?.pendingSetting,
+                pendingSetting = materializeWinner,
                 pendingAuth = stored?.pendingAuth,
                 settingIntent = stored?.settingIntent,
             ),

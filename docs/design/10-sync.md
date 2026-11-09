@@ -2539,3 +2539,14 @@ All checked 2026-10-05 by the research behind the scope revision unless marked o
 - Debian 12 Java 17 package: https://packages.debian.org/bookworm/openjdk-17-jre-headless · Debian 13 Java 21 package (arm64 and armhf; checked 2026-10-05 in review): https://packages.debian.org/trixie/openjdk-21-jre-headless · Raspberry Pi OS based on Debian 13, released 2025-10-02: https://linuxiac.com/raspberry-pi-os-based-on-debian-13-now-available-for-download/ · Temurin platforms: https://adoptium.net/supported-platforms/ · OpenJDK GPL-2.0 with Classpath Exception: https://openjdk.org/legal/gplv2+ce.html
 - Android local network permission (Android 17 enforcement for target 37, `NEARBY_DEVICES` group, TCP timeouts, DNS exemption; the page lists no address ranges; re-checked 2026-10-05): https://developer.android.com/privacy-and-security/local-network-permission · App Standby bucket limits for jobs (checked 2026-10-05 in review): https://developer.android.com/topic/performance/power/power-details · WorkManager 15-min minimum: https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work · macOS Local Network privacy TN3179: https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy
 - Prototype measurements (Ktor 3.6.0 CIO with sqlite-jdbc on x86-64, idle RSS and 50,000-change push and pull) were taken during the research for this plan on 2026-10-05; they are not externally sourced and are re-measured by S16.
+
+**Implementation note (2026-11-09, linked settings restore recovery).** A linked
+restore reads the strict value/receipt snapshot under the per-key lock before
+Room. Its `captureAt` and the historical intent's predecessor boundary commit in
+one writer transaction. Only then does DataStore atomically write the restored
+value and its captured origin receipt. Recovery therefore retains the archive's
+original complete clock across a crash before or after the store write; an older
+OFF baseline cannot discard the restore or turn it into a fresh edit. If an ACK
+finds an already-known newer account value, it journals that winner for the
+normal settings drain even when the response repeats equal raw clocks. Newer
+local intents still supersede that pending effect.

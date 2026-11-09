@@ -82,6 +82,22 @@ class SettingsCapture(
     }
 
     private fun installRecorder() {
+        settings.registerCommittedRecorder { key, json, before ->
+            db.withWriteTransaction {
+                val state = linkedState() ?: throw IOException("restore link is unavailable")
+                val intent =
+                    db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v")
+                        ?: throw IOException("restore setting intent is missing")
+                if (intent.value != json) throw IOException("restore setting intent changed")
+                rememberIntentBoundary(key, intent, before, SettingIntentKind.RESTORE)
+                val clock = Hlc(intent.hlc, NodeId(intent.nodeId)).toString()
+                SettingWriteOrigin.Captured(
+                    SyncJson.encodeToString(
+                        CapturedSettingReceipt(clock, state.nodeId, state.accountId, state.serverUrl),
+                    ),
+                )
+            }
+        }
         settings.registerRecorder { key, json ->
             // OFF settings remain usable even if Room is unavailable. Their uncaptured origin
             // commits with the value in DataStore, so it survives a failed Room notification.
@@ -116,6 +132,7 @@ class SettingsCapture(
     fun clear() {
         settings.registerRecorder(null)
         settings.registerMaterialized(null)
+        settings.registerCommittedRecorder(null)
     }
 
     /** A linked, unrevoked account — the only state in which capture bookkeeping may live. */
@@ -221,7 +238,8 @@ class SettingsCapture(
             val offWrite =
                 !predecessorUnchanged &&
                     (uncaptured || (!capturedHere && baseline != null && baseline.clock == null))
-            val superseded = baselineClock != null && baselineClock > intentClock
+            val historicalWrite = boundary?.kind == SettingIntentKind.RESTORE && (capturedHere || predecessorUnchanged)
+            val superseded = baselineClock != null && baselineClock > intentClock && !historicalWrite
             val externalDrift =
                 !predecessorUnchanged && baseline != null &&
                     !matchesIntent && !matchesBaseline(key, current, baseline)
@@ -239,7 +257,7 @@ class SettingsCapture(
             return
         }
         // A replay or an intent with no evidence of a newer local write keeps its own clock.
-        materialize(key, row, intentClock)
+        materialize(key, row, intentClock, boundary?.kind ?: SettingIntentKind.LOCAL, snapshot)
     }
 
     /** The intent never landed in DataStore: apply it, then baseline it under its own clock. */
@@ -247,9 +265,18 @@ class SettingsCapture(
         key: SettingKey<*>,
         row: SyncOutboxEntity,
         intentClock: Hlc,
+        kind: SettingIntentKind,
+        before: SyncedSettingSnapshot,
     ) {
         val literal = row.value ?: return
-        if (!settings.applyRemote(key, literal)) return
+        val applied =
+            if (kind == SettingIntentKind.RESTORE) {
+                val origin = settings.recordCommitted(key, literal, before)
+                settings.applyRecorded(key, literal, origin)
+            } else {
+                settings.applyRemote(key, literal)
+            }
+        if (!applied) return
         advanceBaseline(key, literal, intentClock.toString())
     }
 
@@ -414,6 +441,7 @@ class SettingsCapture(
         key: SettingKey<*>,
         intent: SyncOutboxEntity,
         before: SyncedSettingSnapshot,
+        kind: SettingIntentKind = SettingIntentKind.LOCAL,
     ) {
         val row = db.syncClockDao().get(SyncCollection.SETTING.wire, key.name)
         val stored = row?.clocks?.let(::decode)
@@ -424,6 +452,7 @@ class SettingsCapture(
                 Hlc(intent.hlc, NodeId(intent.nodeId)).toString(),
                 before.receipt,
                 settingBaselineHash(before.json),
+                kind,
             )
         db.syncClockDao().upsert(
             SyncClockEntity(

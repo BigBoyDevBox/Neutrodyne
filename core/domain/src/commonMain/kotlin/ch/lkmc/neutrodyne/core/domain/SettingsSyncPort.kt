@@ -25,6 +25,29 @@ interface SettingsSyncPort {
     ): Boolean
 
     /**
+     * Materializes a linked restore's already committed literal intent with its opaque receipt.
+     * Returns false on invalid data or unavailable storage. The caller holds the per-key lock;
+     * capture and recordCommitted already committed together, before this DataStore-only write.
+     */
+    suspend fun applyRecorded(
+        key: SettingKey<*>,
+        json: String,
+        origin: SettingWriteOrigin,
+    ): Boolean
+
+    /** Records the existing intent's receipt in the caller's writer, without any DataStore IO. */
+    suspend fun recordCommitted(
+        key: SettingKey<*>,
+        json: String,
+        before: SyncedSettingSnapshot,
+    ): SettingWriteOrigin
+
+    /** Installs the adapter for a restore's committed intent; null clears it on unlink. */
+    fun registerCommittedRecorder(
+        recorder: (suspend (key: SettingKey<*>, json: String, before: SyncedSettingSnapshot) -> SettingWriteOrigin)?,
+    )
+
+    /**
      * Local changes to synced keys, emitted after the DataStore write commits. `:sync:impl`
      * records the literal value and its clock before this point.
      */
@@ -104,7 +127,7 @@ sealed interface SettingWriteOrigin {
     ) : SettingWriteOrigin
 }
 
-/** A missing origin means an untracked writer, such as a direct store edit or restore. */
+/** A missing origin means an untracked writer, such as a direct store edit or plain unlinked restore. */
 data class SyncedSettingSnapshot(
     val json: String,
     val origin: SettingWriteOrigin?,
