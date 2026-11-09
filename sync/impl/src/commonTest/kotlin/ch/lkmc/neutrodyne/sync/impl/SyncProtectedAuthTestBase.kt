@@ -9,6 +9,7 @@ import ch.lkmc.neutrodyne.core.database.SyncStateEntity
 import ch.lkmc.neutrodyne.core.domain.GroupChannelSync
 import ch.lkmc.neutrodyne.core.domain.NoPlaybackSync
 import ch.lkmc.neutrodyne.core.domain.SyncIngestHook
+import ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys
 import ch.lkmc.neutrodyne.core.testing.FakeCredentialCommitCoordinator
 import ch.lkmc.neutrodyne.core.testing.FakeSecretStore
 import ch.lkmc.neutrodyne.core.testing.FakeSettingsSyncPort
@@ -19,6 +20,7 @@ import ch.lkmc.neutrodyne.sync.protocol.Hlc
 import ch.lkmc.neutrodyne.sync.protocol.NodeId
 import ch.lkmc.neutrodyne.sync.protocol.RecordState
 import ch.lkmc.neutrodyne.sync.protocol.SyncCollection
+import ch.lkmc.neutrodyne.sync.protocol.SyncJson
 import ch.lkmc.neutrodyne.sync.protocol.dto.ChangeDto
 import ch.lkmc.neutrodyne.sync.protocol.dto.ChangeResultDto
 import ch.lkmc.neutrodyne.sync.protocol.dto.FieldValue
@@ -1224,6 +1226,206 @@ abstract class SyncProtectedAuthTestBase {
                 assertEquals(pendingAuthKey(account, rid, sent.toString()), ref.storeKey)
                 assertEquals(sentOrigin, ref.credentialOrigin)
                 assertEquals(sent.toString(), ref.clock)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * One push ACKs both collections: the settings merge (sent value, baseline, metadata) and
+     * the auth binding land in the same Room commit, and neither outbox row survives.
+     */
+    @Test
+    fun anAuthAndASettingAcknowledgeInOnePushWithoutMetadataLoss() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                seedCredential(db, h.secrets, origin)
+                h.applier.applyPage(listOf(authRecord(counter = 10)), roundId = 1)
+                h.effects.drainPasswords()
+
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val sentSetting = Hlc.of(now + 40, 2, localNode)
+                val sentAuth = Hlc.of(now + 41, 3, localNode)
+                db.withWriteTransaction {
+                    db.syncOutboxDao().captureStored(
+                        SyncCollection.SETTING.wire,
+                        key.name,
+                        "v",
+                        sentSetting.packed,
+                        sentSetting.nodeId.value,
+                        "20000",
+                    )
+                    db
+                        .syncOutboxDao()
+                        .upsert(
+                            ch.lkmc.neutrodyne.core.database.SyncOutboxEntity(
+                                coll = SyncCollection.PODCAST.wire,
+                                rid = rid,
+                                field = "auth",
+                                hlc = sentAuth.packed,
+                                nodeId = sentAuth.nodeId.value,
+                            ),
+                        )
+                }
+                db
+                    .syncClockDao()
+                    .upsert(
+                        ch.lkmc.neutrodyne.core.database.SyncClockEntity(
+                            SyncCollection.SETTING.wire,
+                            key.name,
+                            SyncJson.encodeToString(
+                                RawSyncRecord(
+                                    state = RecordState(SyncCollection.SETTING),
+                                    by = "tester",
+                                    settingIntent =
+                                        SettingIntent(
+                                            clock = sentSetting.toString(),
+                                            priorReceipt = "receipt",
+                                            priorHash = settingBaselineHash("15000"),
+                                        ),
+                                    pendingSetting =
+                                        PendingSetting(
+                                            "99999",
+                                            Hlc.of(now + 90, 5, remote).toString(),
+                                        ),
+                                ),
+                            ),
+                        ),
+                    )
+
+                h.effects.acknowledge(
+                    listOf(
+                        ChangeDto(
+                            coll = SyncCollection.SETTING.wire,
+                            id = JsonPrimitive(key.name),
+                            fields =
+                                mapOf(
+                                    "v" to FieldValue(JsonPrimitive(20000), sentSetting.toString()),
+                                ),
+                        ),
+                        ChangeDto(
+                            coll = SyncCollection.PODCAST.wire,
+                            id = JsonPrimitive(rid),
+                            fields =
+                                mapOf(
+                                    "auth" to
+                                        FieldValue(authValue(user, pass), sentAuth.toString()),
+                                    "credentialOrigin" to
+                                        FieldValue(JsonPrimitive(origin), sentAuth.toString()),
+                                ),
+                        ),
+                    ),
+                    listOf(ChangeResultDto(0, "applied"), ChangeResultDto(1, "applied")),
+                )
+
+                assertNull(db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v"))
+                assertNull(db.syncOutboxDao().get(SyncCollection.PODCAST.wire, rid, "auth"))
+
+                val row = db.syncClockDao().get(SyncCollection.SETTING.wire, key.name)!!
+                val raw = SyncJson.decodeFromString<RawSyncRecord>(row.clocks)
+                assertEquals(JsonPrimitive(20000), raw.state.fields["v"]?.v)
+                assertEquals(
+                    sentSetting.toString(),
+                    raw.state.fields["v"]
+                        ?.c
+                        ?.toString(),
+                )
+                assertEquals(settingBaselineHash("20000"), raw.settingHash?.hash)
+                assertEquals(sentSetting.toString(), raw.settingHash?.clock)
+                assertEquals("tester", raw.by)
+                assertEquals("receipt", raw.settingIntent?.priorReceipt)
+                assertEquals("99999", raw.pendingSetting?.value)
+
+                val authRaw = decodeRawClocks(clocksJson(db))!!
+                val bound = pendingAuthKey(account, rid, sentAuth.toString())
+                assertEquals(AuthReference(bound, origin, sentAuth.toString()), authRaw.authReference)
+                assertNotNull(h.secrets.get(bound))
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * The staging phase runs before the Room write: a SecretStore failure while staging the
+     * sent auth pair rolls back before any outbox delete, so the setting intent and its raw
+     * marker survive for the retry.
+     */
+    @Test
+    fun aFailedAuthStageCannotPartiallyDeleteTheSettingsAck() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                seedCredential(db, h.secrets, origin)
+                h.applier.applyPage(listOf(authRecord(counter = 10)), roundId = 1)
+                h.effects.drainPasswords()
+
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val sentSetting = Hlc.of(now + 40, 2, localNode)
+                val sentAuth = Hlc.of(now + 41, 3, localNode)
+                db.withWriteTransaction {
+                    db.syncOutboxDao().captureStored(
+                        SyncCollection.SETTING.wire,
+                        key.name,
+                        "v",
+                        sentSetting.packed,
+                        sentSetting.nodeId.value,
+                        "20000",
+                    )
+                    db
+                        .syncOutboxDao()
+                        .upsert(
+                            ch.lkmc.neutrodyne.core.database.SyncOutboxEntity(
+                                coll = SyncCollection.PODCAST.wire,
+                                rid = rid,
+                                field = "auth",
+                                hlc = sentAuth.packed,
+                                nodeId = sentAuth.nodeId.value,
+                            ),
+                        )
+                }
+
+                val changes =
+                    listOf(
+                        ChangeDto(
+                            coll = SyncCollection.PODCAST.wire,
+                            id = JsonPrimitive(rid),
+                            fields =
+                                mapOf(
+                                    "auth" to
+                                        FieldValue(authValue(user, pass), sentAuth.toString()),
+                                    "credentialOrigin" to
+                                        FieldValue(JsonPrimitive(origin), sentAuth.toString()),
+                                ),
+                        ),
+                        ChangeDto(
+                            coll = SyncCollection.SETTING.wire,
+                            id = JsonPrimitive(key.name),
+                            fields =
+                                mapOf(
+                                    "v" to FieldValue(JsonPrimitive(20000), sentSetting.toString()),
+                                ),
+                        ),
+                    )
+                val results = listOf(ChangeResultDto(0, "applied"), ChangeResultDto(1, "applied"))
+
+                h.secrets.failure = IllegalStateException("store locked")
+                assertFailsWith<IllegalStateException> { h.effects.acknowledge(changes, results) }
+                assertNotNull(
+                    db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v"),
+                    "the setting intent survives a failed auth stage",
+                )
+                assertNotNull(db.syncOutboxDao().get(SyncCollection.PODCAST.wire, rid, "auth"))
+                assertNull(db.syncClockDao().get(SyncCollection.SETTING.wire, key.name))
+
+                h.secrets.failure = null
+                h.effects.acknowledge(changes, results)
+                assertNull(db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v"))
+                assertNull(db.syncOutboxDao().get(SyncCollection.PODCAST.wire, rid, "auth"))
             } finally {
                 db.close()
             }
