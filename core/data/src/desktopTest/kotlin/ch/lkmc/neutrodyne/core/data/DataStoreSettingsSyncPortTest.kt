@@ -200,12 +200,36 @@ class DataStoreSettingsSyncPortTest {
         }
 
     @Test
-    fun rootProbeFloatJsonUsesTheTypedStoredRepresentation() = runTest {
-        val (port, _) = portAndStore()
-        val key = ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys.SPEED
-        assertTrue(port.applyRemote(key, "1"))
-        assertEquals("1.0", port.currentJson(key))
-    }
+    fun aFloatLiteralUsesTheTypedStoredRepresentation() =
+        runTest {
+            val (port, _) = portAndStore()
+            val key = ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys.SPEED
+            assertTrue(port.applyRemote(key, "1"))
+            assertEquals("1.0", port.currentJson(key))
+        }
+
+    @Test
+    fun canonicalJsonPreservesIntegerPrecisionAndResetIntent() =
+        runTest {
+            val (port, _) = portAndStore()
+            val longKey =
+                ch.lkmc.neutrodyne.core.model.settings.SettingKey
+                    .Int64("probe.long", 0L, synced = true)
+            for (literal in listOf(
+                "9007199254740992",
+                "9007199254740993",
+                Long.MAX_VALUE.toString(),
+                Long.MIN_VALUE.toString(),
+            )) {
+                assertEquals(literal, port.canonicalJson(longKey, literal))
+            }
+            val speed = ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys.SPEED
+            assertEquals("1.0", port.canonicalJson(speed, "1"))
+            assertEquals("1.0", port.canonicalJson(speed, "1e0"))
+            assertEquals("null", port.canonicalJson(speed, "null"))
+            assertEquals(null, port.canonicalJson(speed, "not-json"))
+            assertEquals(null, port.canonicalJson(speed, "10000"))
+        }
 
     private fun TestScope.portAndStore(
         wrap: (

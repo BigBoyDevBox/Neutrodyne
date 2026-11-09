@@ -1123,41 +1123,95 @@ abstract class SettingsCaptureTestBase {
         }
 
     @Test
-    fun rootProbeFloatJsonCanonicalizationMustNotRetickARestore() = runTest {
-        val db = newTestDb()
-        try {
-            link(db)
-            val key = PlaybackSettingKeys.SPEED
-            val accepted = Hlc.of(1_600_000_000_000, 3, remote)
-            seedKnown(db, key, "2.0", accepted)
-            db.syncStateDao().raiseHlc(accepted.packed)
-            val delegate = FakeSettingsSyncPort().apply { current[key.name] = "2.0" }
-            // The real DataStore adapter decodes a Float32 JSON integer1 as Float1.0.
-            val typed = object : SettingsSyncPort by delegate {
-                override suspend fun applyRecorded(
-                    key: SettingKey<*>, json: String,
-                    origin: ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin,
-                ): Boolean = delegate.applyRecorded(
-                    key, if (json == "null") json else JsonPrimitive(json.toFloat()).toString(), origin,
+    fun typedFloatNormalizationKeepsTheHistoricalRestoreClock() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SPEED
+                val accepted = Hlc.of(1_600_000_000_000, 3, remote)
+                seedKnown(db, key, "2.0", accepted)
+                db.syncStateDao().raiseHlc(accepted.packed)
+                val delegate = FakeSettingsSyncPort().apply { current[key.name] = "2.0" }
+                // The real DataStore adapter decodes a Float32 JSON integer 1 as Float 1.0.
+                val typed =
+                    object : SettingsSyncPort by delegate {
+                        override suspend fun applyRecorded(
+                            key: SettingKey<*>,
+                            json: String,
+                            origin: ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin,
+                        ): Boolean =
+                            delegate.applyRecorded(
+                                key,
+                                if (json == "null") json else JsonPrimitive(json.toFloat()).toString(),
+                                origin,
+                            )
+                    }
+                val capture = SettingsCapture(db, typed, TestSettingsWriteCoordinator()) { true }
+                capture.install()
+                val before = typed.currentSnapshot(key)!!
+                val origin =
+                    db.withWriteTransaction {
+                        assertTrue(db.syncOutboxDao().captureAt("setting", key.name, "v", 1_700_000_000_000, "1"))
+                        typed.recordCommitted(key, "1", before)
+                    }
+                val historical = db.syncOutboxDao().get("setting", key.name, "v")!!
+                assertTrue(typed.applyRecorded(key, "1", origin))
+                assertEquals("1.0", typed.currentJson(key))
+                capture.reconcile()
+                assertEquals(
+                    historical,
+                    db.syncOutboxDao().get("setting", key.name, "v"),
+                    "valid typed Float32 normalization must not give a historical restore a new clock",
                 )
+            } finally {
+                db.close()
             }
-            val capture = SettingsCapture(db, typed, TestSettingsWriteCoordinator()) { true }
-            capture.install()
-            val before = typed.currentSnapshot(key)!!
-            val origin = db.withWriteTransaction {
-                assertTrue(db.syncOutboxDao().captureAt("setting", key.name, "v", 1_700_000_000_000, "1"))
-                typed.recordCommitted(key, "1", before)
-            }
-            val historical = db.syncOutboxDao().get("setting", key.name, "v")!!
-            assertTrue(typed.applyRecorded(key, "1", origin))
-            assertEquals("1.0", typed.currentJson(key))
-            capture.reconcile()
-            assertEquals(historical, db.syncOutboxDao().get("setting", key.name, "v"),
-                "valid typed Float32 normalization must not give a historical restore a new clock")
-        } finally {
-            db.close()
         }
-    }
+
+    @Test
+    fun aRemoteFloatLiteralDoesNotBecomeAnUnrecordedLocalEdit() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SPEED
+                val accepted = Hlc.of(1_700_000_000_000, 3, remote)
+                seedKnown(db, key, "1", accepted)
+                val row = db.syncClockDao().get("setting", key.name)!!
+                val raw = SyncJson.decodeFromString<RawSyncRecord>(row.clocks)
+                db.syncClockDao().upsert(
+                    row.copy(
+                        clocks =
+                            SyncJson.encodeToString(
+                                raw.copy(pendingSetting = PendingSetting("1", accepted.toString())),
+                            ),
+                    ),
+                )
+                val delegate = FakeSettingsSyncPort().apply { current[key.name] = "2.0" }
+                val typed =
+                    object : SettingsSyncPort by delegate {
+                        override suspend fun applyRemote(
+                            key: SettingKey<*>,
+                            json: String,
+                        ): Boolean {
+                            val stored = if (json == "null") json else JsonPrimitive(json.toFloat()).toString()
+                            return delegate.applyRemote(key, stored)
+                        }
+                    }
+                val locks = TestSettingsWriteCoordinator()
+                SyncApplyEffects(db, typed, locks) { true }.drainSettings()
+                assertEquals("1.0", typed.currentJson(key))
+                SettingsCapture(db, typed, locks) { true }.reconcile()
+                assertNull(db.syncOutboxDao().get("setting", key.name, "v"))
+                val finalRow = db.syncClockDao().get("setting", key.name)!!
+                val finalRaw = SyncJson.decodeFromString<RawSyncRecord>(finalRow.clocks)
+                assertEquals(accepted, finalRaw.state.fields["v"]!!.c)
+                assertEquals(SettingBaseline(settingBaselineHash("1.0"), accepted.toString()), finalRaw.settingHash)
+            } finally {
+                db.close()
+            }
+        }
 
     private suspend fun seedKnown(
         db: NeutrodyneDatabase,

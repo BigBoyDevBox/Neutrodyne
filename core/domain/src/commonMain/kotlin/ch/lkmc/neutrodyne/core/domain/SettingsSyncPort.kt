@@ -80,6 +80,16 @@ interface SettingsSyncPort {
     ): String?
 
     /**
+     * Purely decodes and re-encodes valid JSON in the key's stored type, without store IO.
+     * Preserves a reset as "null"; returns null for invalid input. Recovery hashes this
+     * representation so Float32 normalization cannot be mistaken for another local write.
+     */
+    fun canonicalJson(
+        key: SettingKey<*>,
+        json: String,
+    ): String?
+
+    /**
      * The key's current stored value in the same JSON shape [encode] produces (its default when
      * never written); `null` when it cannot be read or encoded. Recovery compares this against
      * the committed intent and the baseline to tell an unmaterialized intent from a later

@@ -280,6 +280,15 @@ class SettingsCapture(
         advanceBaseline(key, literal, intentClock.toString())
     }
 
+    /** Canonicalizes an immutable sent literal without reading mutable settings storage. */
+    internal fun canonicalLiteral(
+        name: String,
+        json: String,
+    ): String? {
+        val key = AllSettingKeys.list.firstOrNull { it.name == name && it.synced } ?: return null
+        return settings.canonicalJson(key, json)
+    }
+
     /** Baselines [json] at [clock] when that is newer — merged into the fresh row, one transaction. */
     private suspend fun advanceBaseline(
         key: SettingKey<*>,
@@ -291,7 +300,12 @@ class SettingsCapture(
             val raw = row?.clocks?.let(::decode)
             if (row != null && raw == null) return@withWriteTransaction
             val stored = raw ?: RawSyncRecord(RecordState(SyncCollection.SETTING))
-            val next = stored.settingHash.advancedTo(json, clock)
+            val next =
+                stored.settingHash.advancedTo(
+                    json,
+                    clock,
+                    settings.canonicalJson(key, json) ?: return@withWriteTransaction,
+                )
             if (next === stored.settingHash) return@withWriteTransaction
             db.syncClockDao().upsert(
                 SyncClockEntity(
@@ -468,7 +482,8 @@ class SettingsCapture(
         current: String,
         literal: String,
     ): Boolean {
-        val effective = if (literal == "null") settings.encode(key, key.default) ?: return false else literal
+        val canonical = settings.canonicalJson(key, literal) ?: return false
+        val effective = if (canonical == "null") settings.encode(key, key.default) ?: return false else canonical
         return settingBaselineHash(current) == settingBaselineHash(effective)
     }
 

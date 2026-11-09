@@ -9,8 +9,11 @@ import ch.lkmc.neutrodyne.core.domain.SyncedSettingSnapshot
 import ch.lkmc.neutrodyne.core.model.settings.SettingKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.floatOrNull
 import kotlin.uuid.Uuid
 
 /** A [SettingsSyncPort] fixture: recordings in, scripted remote applies, no DataStore. */
@@ -163,6 +166,20 @@ class FakeSettingsSyncPort : SettingsSyncPort {
                 null
             }
         }
+
+    override fun canonicalJson(
+        key: SettingKey<*>,
+        json: String,
+    ): String? {
+        val parsed = runCatching { Json.parseToJsonElement(json) }.getOrNull() ?: return null
+        if (parsed is JsonNull) return "null"
+        // This fixture keeps scripted values, while matching the real adapter's Float32 shape.
+        return if (key is SettingKey.Float32) {
+            (parsed as? JsonPrimitive)?.floatOrNull?.let { encode(key, it) }
+        } else {
+            parsed.toString()
+        }
+    }
 
     override suspend fun recordLocal(
         key: SettingKey<*>,

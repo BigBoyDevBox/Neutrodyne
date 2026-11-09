@@ -102,13 +102,29 @@ private fun canonicalSettingElement(element: JsonElement): JsonElement =
 internal fun SettingBaseline?.advancedTo(
     json: String,
     clock: String,
+    canonicalJson: String = json,
 ): SettingBaseline {
     val storedClock = this?.clock?.let { runCatching { Hlc.parse(it) }.getOrNull() }
     val next = runCatching { Hlc.parse(clock) }.getOrNull()
     return when {
-        this == null -> SettingBaseline(settingBaselineHash(json), clock)
-        next == null || (storedClock != null && storedClock >= next) -> this
-        else -> SettingBaseline(settingBaselineHash(json), clock)
+        this == null -> {
+            SettingBaseline(settingBaselineHash(canonicalJson), clock)
+        }
+
+        // An older writer may have hashed the accepted wire spelling before Float32 decode.
+        // Normalize only the same clock and the same literal, never another write's baseline.
+        next != null && storedClock == next && hash == settingBaselineHash(json) &&
+            hash != settingBaselineHash(canonicalJson) -> {
+            copy(hash = settingBaselineHash(canonicalJson))
+        }
+
+        next == null || (storedClock != null && storedClock >= next) -> {
+            this
+        }
+
+        else -> {
+            SettingBaseline(settingBaselineHash(canonicalJson), clock)
+        }
     }
 }
 

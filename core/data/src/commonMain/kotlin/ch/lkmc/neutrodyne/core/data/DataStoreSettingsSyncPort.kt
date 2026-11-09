@@ -142,6 +142,16 @@ internal class DataStoreSettingsSyncPort(
         return element.toString()
     }
 
+    override fun canonicalJson(
+        key: SettingKey<*>,
+        json: String,
+    ): String? =
+        when (val decoded = decodeSyncedValue(key, json)) {
+            null -> null
+            SyncedSettingValue.Reset -> "null"
+            is SyncedSettingValue.Set -> encode(key, decoded.value)
+        }
+
     override suspend fun recordLocal(
         key: SettingKey<*>,
         value: Any?,

@@ -130,7 +130,11 @@ class SyncApplyEffects(
             }
             val next =
                 if (applied) {
-                    freshRaw.settingHash.advancedTo(marker.value, marker.clock)
+                    freshRaw.settingHash.advancedTo(
+                        marker.value,
+                        marker.clock,
+                        settings.canonicalJson(key, marker.value) ?: return@withWriteTransaction,
+                    )
                 } else {
                     freshRaw.settingHash
                 }

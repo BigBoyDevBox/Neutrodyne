@@ -266,7 +266,11 @@ class SyncEngine(
                 // delayed acknowledgement must not relabel it as the older sent value.
                 settingHash =
                     stored?.settingHash?.takeIf { it.clock == null }
-                        ?: stored?.settingHash.advancedTo(value.toString(), clock.toString()),
+                        ?: stored?.settingHash.advancedTo(
+                            value.toString(),
+                            clock.toString(),
+                            capture.canonicalLiteral(rid, value.toString()) ?: return,
+                        ),
                 pendingSetting = materializeWinner,
                 pendingAuth = stored?.pendingAuth,
                 settingIntent = stored?.settingIntent,
