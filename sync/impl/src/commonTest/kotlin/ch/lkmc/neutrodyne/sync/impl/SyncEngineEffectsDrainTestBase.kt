@@ -431,6 +431,42 @@ abstract class SyncEngineEffectsDrainTestBase {
             }
         }
 
+    @Test
+    fun anAckCannotRelabelANewerOffSwitchWrite() =
+        runTest {
+            val db = newTestDb()
+            try {
+                seedLinked(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "5000" }
+                lateinit var h: DrainHarness
+                val client =
+                    scriptedClient(syncRecords = emptyList(), onSync = {
+                        kotlinx.coroutines.runBlocking {
+                            h.address.updateSyncPlaybackSettings(false)
+                            h.capture.reconcile()
+                            port.current[key.name] = "7000"
+                            port.recordLocal(key, 7000L)
+                            port.emitLocal(key, 7000L, now)
+                        }
+                    })
+                h = harness(db, client, port)
+                h.capture.install()
+                port.recordLocal(key, 20000L)
+                h.engine.round(SyncRoundReason.SYNC_NOW)
+                val raw = SyncJson.decodeFromString<RawSyncRecord>(db.syncClockDao().get("setting", key.name)!!.clocks)
+                assertEquals(settingBaselineHash("7000"), raw.settingHash?.hash, "preserve the newer baseline")
+                assertNull(raw.settingHash?.clock, "the off-write provenance must survive the old ack")
+                assertEquals(JsonPrimitive(20000), raw.state.fields["v"]?.v, "ack uses the sent snapshot")
+                h.address.updateSyncPlaybackSettings(true)
+                h.capture.reconcile()
+                assertEquals("20000", port.current[key.name], "the acknowledged account value wins on enable")
+                assertNull(db.syncOutboxDao().get("setting", key.name, "v"))
+            } finally {
+                db.close()
+            }
+        }
+
     // --- Fixtures -----------------------------------------------------------------------------------
 
     private fun applier(

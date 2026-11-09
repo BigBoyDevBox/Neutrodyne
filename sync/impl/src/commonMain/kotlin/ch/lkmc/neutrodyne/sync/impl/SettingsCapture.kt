@@ -132,11 +132,13 @@ class SettingsCapture(
         key: SettingKey<*>,
         json: String,
     ) {
+        // Read the live gate while the caller holds the key lock, outside the Room transaction.
+        val captureEnabled = settingsSyncEnabled()
         db.withWriteTransaction {
             if (!linked()) return@withWriteTransaction
             val intent = db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v")
             val clock =
-                if (intent?.value == json) Hlc(intent.hlc, NodeId(intent.nodeId)).toString() else null
+                if (captureEnabled && intent?.value == json) Hlc(intent.hlc, NodeId(intent.nodeId)).toString() else null
             val row = db.syncClockDao().get(SyncCollection.SETTING.wire, key.name)
             val raw = row?.clocks?.let(::decode)
             if (row != null && raw == null) return@withWriteTransaction
@@ -187,53 +189,28 @@ class SettingsCapture(
                 pendingClock >= intentClock
         if (deferred) return
         val current = settings.currentJson(key) ?: return
-        if (row.value?.let { matchesLiteral(key, current, it) } == true) {
-            // Already materialized (the DataStore write landed before the crash): only the
-            // baseline still has to advance to the intent's clock.
+        val matchesIntent = row.value?.let { matchesLiteral(key, current, it) } == true
+        val baseline = raw?.settingHash
+        if (row.captureKind != SyncCaptureKind.REPLAY && baseline != null) {
+            val baselineClock = baseline.clock?.let(::parseHlc)
+            val offWrite = baseline.clock == null
+            val superseded = baselineClock != null && baselineClock > intentClock
+            val externalDrift = !matchesIntent && !matchesBaseline(key, current, baseline)
+            if (offWrite || superseded || externalDrift) {
+                // Off-writes have explicit clockless provenance. A clocked baseline instead
+                // remains evidence for hash reconciliation of an unrecorded external edit.
+                retire(key, row, current)
+                return
+            }
+        }
+        if (matchesIntent) {
+            // A captured write may have landed before its post-write bookkeeping did. Equal
+            // intent/baseline clocks are normal here; the still-unacknowledged row must survive.
             row.value?.let { advanceBaseline(key, it, intentClock.toString()) }
             return
         }
-        val baseline = raw?.settingHash
-        when {
-            // A replayed accepted value wins over anything stored locally.
-            row.captureKind == SyncCaptureKind.REPLAY -> {
-                materialize(key, row, intentClock)
-            }
-
-            // Nothing proves a newer write: the intent simply never landed — replay it.
-            baseline == null -> {
-                materialize(key, row, intentClock)
-            }
-
-            // A clockless baseline is a real write the account never saw (an edit while
-            // the switch was off); so is a stored value that moved past its baseline
-            // without a clock to prove it (an external restore, or a wiped value). The
-            // intent is superseded bookkeeping — retire it, never roll the newer value back.
-            baseline != null && baseline.newerThanStored(key, current, intentClock) -> {
-                retire(key, row, current)
-            }
-
-            else -> {
-                materialize(key, row, intentClock)
-            }
-        }
-    }
-
-    /**
-     * The [SettingBaseline] proves a real write the intent predates: clockless (an edit made
-     * while the switch was off), a stored value that moved past it, or a clock at least as new
-     * as the intent's.
-     */
-    private fun SettingBaseline.newerThanStored(
-        key: SettingKey<*>,
-        current: String?,
-        intentClock: Hlc,
-    ): Boolean {
-        val baselineClock = clock?.let(::parseHlc)
-        return baselineClock == null ||
-            current == null ||
-            !matchesBaseline(key, current, this) ||
-            baselineClock >= intentClock
+        // A replay or an intent with no evidence of a newer local write keeps its own clock.
+        materialize(key, row, intentClock)
     }
 
     /** The intent never landed in DataStore: apply it, then baseline it under its own clock. */
@@ -292,6 +269,9 @@ class SettingsCapture(
             if (current == null) return@withWriteTransaction
             val clockRow = db.syncClockDao().get(SyncCollection.SETTING.wire, key.name)
             val raw = clockRow?.clocks?.let(::decode) ?: return@withWriteTransaction
+            // Do not turn a clocked baseline into off-write provenance merely by retiring an
+            // unrelated failed intent. The unchanged hash lets reconciliation detect real drift.
+            if (raw.settingHash?.clock != null) return@withWriteTransaction
             db.syncClockDao().upsert(
                 clockRow.copy(
                     clocks = encode(raw.copy(settingHash = SettingBaseline(settingBaselineHash(current)))),

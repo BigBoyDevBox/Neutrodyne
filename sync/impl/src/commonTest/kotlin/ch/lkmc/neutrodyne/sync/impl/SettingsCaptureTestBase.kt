@@ -623,6 +623,152 @@ abstract class SettingsCaptureTestBase {
             }
         }
 
+    @Test
+    fun anOffWriteMatchingAnIntentDoesNotBorrowItsClock() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val accepted = Hlc.of(now, 1, remote)
+                seedKnown(db, key, "9000", accepted)
+                db.syncStateDao().raiseHlc(accepted.packed)
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                var enabled = true
+                val capture = capture(db, port, settingsSyncEnabled = { enabled })
+                capture.install()
+                port.recordLocal(key, 15000L)
+                enabled = false
+                capture.reconcile()
+                port.current[key.name] = "15000"
+                port.emitLocal(key, 15000L, now)
+                assertNull(baselineOf(db, key)?.clock, "an off-write is not the earlier captured write")
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aClocklessBaselineSupersedesAnEqualOldIntent() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val accepted = Hlc.of(now, 1, remote)
+                seedKnown(db, key, "9000", accepted, SettingBaseline(settingBaselineHash("15000")))
+                val old = Hlc.of(now, 2, localNode)
+                db.syncOutboxDao().upsert(
+                    SyncOutboxEntity(
+                        "setting",
+                        key.name,
+                        "v",
+                        old.packed,
+                        old.nodeId.value,
+                        SyncCaptureKind.LOCAL,
+                        "15000",
+                    ),
+                )
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "15000" }
+                capture(db, port).reconcile()
+                assertEquals("9000", port.current[key.name], "the account must win over the equal off-edit")
+                assertNull(db.syncOutboxDao().get("setting", key.name, "v"))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aFailedIntentDoesNotTurnExternalDriftIntoAnOffWrite() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val accepted = Hlc.of(now, 1, remote)
+                seedKnown(db, key, "9000", accepted)
+                val failed = Hlc.of(now, 2, localNode)
+                db.syncOutboxDao().upsert(
+                    SyncOutboxEntity(
+                        "setting",
+                        key.name,
+                        "v",
+                        failed.packed,
+                        failed.nodeId.value,
+                        SyncCaptureKind.LOCAL,
+                        "12000",
+                    ),
+                )
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "7000" }
+                capture(db, port).reconcile()
+                assertEquals("7000", db.syncOutboxDao().get("setting", key.name, "v")?.value)
+                assertTrue(port.applied.isEmpty(), "external edits must not be overwritten as if made while off")
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun externalDriftMatchingAnOlderIntentGetsAFreshClock() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val accepted = Hlc.of(now, 2, remote)
+                seedKnown(db, key, "9000", accepted)
+                db.syncStateDao().raiseHlc(accepted.packed)
+                val old = Hlc.of(now, 1, localNode)
+                db.syncOutboxDao().upsert(
+                    SyncOutboxEntity(
+                        "setting",
+                        key.name,
+                        "v",
+                        old.packed,
+                        old.nodeId.value,
+                        SyncCaptureKind.LOCAL,
+                        "15000",
+                    ),
+                )
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "15000" }
+                capture(db, port).reconcile()
+                val fresh = assertNotNull(db.syncOutboxDao().get("setting", key.name, "v"))
+                assertEquals("15000", fresh.value)
+                assertTrue(Hlc(fresh.hlc, NodeId(fresh.nodeId)) > old, "the restored edit must be newer")
+                assertTrue(port.applied.isEmpty())
+            } finally {
+                db.close()
+            }
+        }
+
+    private suspend fun seedKnown(
+        db: NeutrodyneDatabase,
+        key: SettingKey<*>,
+        json: String,
+        clock: Hlc,
+        baseline: SettingBaseline = SettingBaseline(settingBaselineHash(json), clock.toString()),
+    ) {
+        db.syncClockDao().upsert(
+            SyncClockEntity(
+                "setting",
+                key.name,
+                SyncJson.encodeToString(
+                    RawSyncRecord(
+                        RecordState(
+                            SyncCollection.SETTING,
+                            fields =
+                                mapOf(
+                                    "v" to
+                                        FieldState(SyncJson.parseToJsonElement(json), clock),
+                                ),
+                        ),
+                        settingHash = baseline,
+                    ),
+                ),
+            ),
+        )
+    }
+
     /** The linked fixture: `enabled` plus `linkedAt`, as `SyncStateDao.enableLinked` writes. */
     private suspend fun link(db: NeutrodyneDatabase) {
         db.withWriteTransaction {

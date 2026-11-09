@@ -246,7 +246,12 @@ class SyncEngine(
                 authReference = stored?.authReference,
                 redirect = stored?.redirect,
                 alias = stored?.alias,
-                settingHash = stored?.settingHash.advancedTo(value.toString(), clock.toString()),
+                // prepareForPush baselines a selected literal before sending it. A clockless
+                // baseline seen now therefore belongs to a later off-switch write, and this
+                // delayed acknowledgement must not relabel it as the older sent value.
+                settingHash =
+                    stored?.settingHash?.takeIf { it.clock == null }
+                        ?: stored?.settingHash.advancedTo(value.toString(), clock.toString()),
                 pendingSetting = stored?.pendingSetting,
                 pendingAuth = stored?.pendingAuth,
             ),
