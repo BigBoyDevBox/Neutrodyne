@@ -634,6 +634,34 @@ abstract class SyncProtectedAuthTestBase {
             credentials = credentials,
         )
 
+    @Test
+    fun rootProbeANewerOriginMustNotReceiveAnOlderAuthSnapshot() = runTest {
+        val db = newTestDb()
+        try {
+            link(db)
+            val h = harness(db)
+            val movedOrigin = "https://moved.example"
+            val localSecret = kotlin.uuid.Uuid.random().toString()
+            seedCredential(db, h.secrets, movedOrigin, localSecret)
+            val newer = Hlc.of(now, 20, remote).toString()
+            // Valid server history: auth at10 for the former origin, then a public feed/origin
+            // move at20 from a client whose password sharing is OFF. The full record retains
+            // the old auth field; it is not permission to use that password at the new origin.
+            val original = authRecord()
+            val mixed = original.copy(fields = original.fields + mapOf(
+                "feedUrl" to FieldValue(JsonPrimitive("$movedOrigin/feed"), newer),
+                "credentialOrigin" to FieldValue(JsonPrimitive(movedOrigin), newer),
+            ))
+            assertEquals(1, h.applier.applyPage(listOf(mixed), roundId = 1).applied)
+            h.effects.drainPasswords()
+            val after = h.secrets.get(movedOrigin)!!
+            assertTrue(after.secret.contentEquals(localSecret.toCharArray()),
+                "an auth snapshot older than the origin move must not replace the new origin's credential")
+        } finally {
+            db.close()
+        }
+    }
+
     private suspend fun clocksJson(db: NeutrodyneDatabase): String? =
         db.syncClockDao().get(SyncCollection.PODCAST.wire, rid)?.clocks
 
