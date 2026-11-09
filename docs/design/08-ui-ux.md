@@ -1409,8 +1409,11 @@ existing `LinkFlow` holds, it is not cancelled or restarted. `Revoked` shows
 "This device was unlinked" with "Link again". While `Linked`, the rows
 "Link another device" and "Devices" ("{n} linked") are shipped with their
 destinations: `SyncApproveKey`'s sheet looks the code up with `approveLink`,
-shows the named pending device, and only the explicit **Link**/**Don't link**
-choice calls `confirmLink`; `SyncDevicesKey` lists every `SyncDevice` with
+shows the named pending request — a purpose line says what approval grants
+("gets your whole library" for `device`, "signs a browser in to your account"
+for `web`) and warns "Requested from a different network" when `sameNetwork`
+is false — and only the explicit **Link**/**Don't link** choice calls
+`confirmLink`; `SyncDevicesKey` lists every `SyncDevice` with
 platform icon, version, "This device"/"Last seen"/"Not seen for 6 months",
 Rename (trimmed 1–40) and a name-confirming Remove for the other devices, plus
 the "manage devices on {host}" footer. Still open for MS2: the Name (own

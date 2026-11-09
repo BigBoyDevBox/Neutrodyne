@@ -85,6 +85,7 @@
   <string name="sync_error_clock_skew">This device's date and time are off, so its changes can't be ordered. Set the clock automatically, then sync again.</string>
   <string name="sync_error_quota">Your account on %1$s is full. Ask its administrator.</string>
   <string name="sync_error_not_a_server">%1$s isn\'t a Neutrodyne Sync server. Check the address.</string>
+  <string name="sync_error_device_gone">That device is already gone.</string>
 
   <!-- Linked settings rows (08 Settings › Sync "Rows while linked"). -->
   <string name="sync_link_another">Link another device</string>
@@ -99,7 +100,11 @@
   <string name="sync_approve_code_label">Code shown on the new device</string>
   <string name="sync_approve_code_hint">XXXX-XXXX</string>
   <string name="sync_approve_link_question">Link %1$s?</string>
+  <string name="sync_approve_sign_in_question">Sign %1$s in?</string>
   <string name="sync_approve_pending_detail">%1$s · Neutrodyne %2$s · requested %3$s</string>
+  <string name="sync_approve_purpose_device">%1$s gets your whole library.</string>
+  <string name="sync_approve_purpose_web">This signs a browser in to your account.</string>
+  <string name="sync_approve_other_network">Requested from a different network. Only approve a device you are holding.</string>
   <string name="sync_approve_link">Link</string>
   <string name="sync_approve_dont_link">Don't link</string>
   <string name="sync_approve_linked">%1$s is linked</string>

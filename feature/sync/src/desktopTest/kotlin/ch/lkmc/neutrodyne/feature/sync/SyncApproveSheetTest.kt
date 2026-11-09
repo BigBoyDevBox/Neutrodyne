@@ -32,6 +32,7 @@ import ch.lkmc.neutrodyne.core.ui.LocalPlatformKind
 import ch.lkmc.neutrodyne.core.ui.LocalUiClock
 import ch.lkmc.neutrodyne.core.ui.root.LocalRootScope
 import ch.lkmc.neutrodyne.core.ui.root.LocalSnackbarHost
+import ch.lkmc.neutrodyne.sync.api.LinkPurpose
 import ch.lkmc.neutrodyne.sync.api.PendingDevice
 import ch.lkmc.neutrodyne.sync.api.SyncActivity
 import ch.lkmc.neutrodyne.sync.api.SyncController
@@ -263,6 +264,50 @@ class SyncApproveSheetTest {
         }
 
     @Test
+    fun aDevicePurposeStatesTheGrant() =
+        runComposeUiTest {
+            val harness = Harness()
+            setSheet(harness)
+            lookup(harness)
+
+            onNodeWithText("Link Anna's phone?").assertIsDisplayed()
+            onNodeWithText("Anna's phone gets your whole library.").assertIsDisplayed()
+            onNodeWithText("different network", substring = true).assertDoesNotExist()
+        }
+
+    @Test
+    fun aWebPurposeSaysBrowserSignInNotADeviceLink() =
+        runComposeUiTest {
+            val harness = Harness()
+            // 10 Link codes: `web` only signs a browser in — never presented as a device grant.
+            harness.controller.fake.approveResult =
+                Outcome.Success(
+                    PENDING.copy(
+                        deviceName = "Firefox on Linux",
+                        platform = "Web",
+                        purpose = LinkPurpose.WEB,
+                    ),
+                )
+            setSheet(harness)
+            lookup(harness)
+
+            onNodeWithText("Sign Firefox on Linux in?").assertIsDisplayed()
+            onNodeWithText("This signs a browser in to your account.").assertIsDisplayed()
+            onNodeWithText("gets your whole library", substring = true).assertDoesNotExist()
+        }
+
+    @Test
+    fun aRequestFromAnotherNetworkWarns() =
+        runComposeUiTest {
+            val harness = Harness()
+            harness.controller.fake.approveResult = Outcome.Success(PENDING.copy(sameNetwork = false))
+            setSheet(harness)
+            lookup(harness)
+
+            onNodeWithText("Requested from a different network.", substring = true).assertIsDisplayed()
+        }
+
+    @Test
     fun aShortCodeKeepsLookupDisabled() =
         runComposeUiTest {
             val harness = Harness()
@@ -345,6 +390,8 @@ class SyncApproveSheetTest {
                 platform = "Android",
                 appVersion = "0.9.3",
                 requestedAtMs = TestClock.DEFAULT_NOW - 5 * 60 * 1000,
+                purpose = LinkPurpose.DEVICE,
+                sameNetwork = true,
             )
     }
 }

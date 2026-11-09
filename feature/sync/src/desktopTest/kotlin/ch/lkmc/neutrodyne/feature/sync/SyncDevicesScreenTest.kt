@@ -199,6 +199,25 @@ class SyncDevicesScreenTest {
         }
 
     @Test
+    fun anAlreadyGoneDeviceRefreshesTheList() =
+        runComposeUiTest {
+            val harness = Harness()
+            // 10 Errors: a 404 on PATCH/DELETE /devices/{id} is the missing row — the screen
+            // reloads and words it, never the wrong-server text or an op retry.
+            harness.controller.fake.revokeResult = Outcome.Failure(SyncProblem.DeviceGone)
+            setScreen(harness)
+
+            onNodeWithText("Desk").performClick()
+            onNodeWithText("Remove").performClick()
+            onNodeWithText("Remove").performClick()
+            waitForIdle()
+
+            onNodeWithText("That device is already gone.").assertIsDisplayed()
+            assertEquals(listOf("dev-b"), harness.controller.fake.revokes)
+            assertEquals(2, harness.controller.fake.deviceLists.size, "the list reloads on DeviceGone")
+        }
+
+    @Test
     fun anOperationCompletingAfterAnIdentityChangeIsDropped() =
         runComposeUiTest {
             val harness = Harness()

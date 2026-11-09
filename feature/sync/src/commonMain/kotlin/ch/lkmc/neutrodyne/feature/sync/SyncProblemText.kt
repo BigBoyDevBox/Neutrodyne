@@ -7,6 +7,7 @@ import ch.lkmc.neutrodyne.feature.sync.resources.Res
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_error_app_too_old
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_error_certificate
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_error_clock_skew
+import ch.lkmc.neutrodyne.feature.sync.resources.sync_error_device_gone
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_error_insecure_transport
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_error_invalid_code
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_error_invite_invalid
@@ -122,6 +123,10 @@ internal fun problemText(
 
         SyncProblem.MergeFailed -> {
             stringResource(Res.string.sync_error_merge_failed)
+        }
+
+        SyncProblem.DeviceGone -> {
+            stringResource(Res.string.sync_error_device_gone)
         }
 
         is SyncProblem.Server -> {

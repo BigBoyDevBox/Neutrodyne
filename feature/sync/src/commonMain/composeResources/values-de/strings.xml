@@ -85,6 +85,7 @@
   <string name="sync_error_clock_skew">Die Uhrzeit dieses Geräts ist falsch, daher können seine Änderungen nicht eingeordnet werden. Stelle die Uhr automatisch ein und synchronisiere dann erneut.</string>
   <string name="sync_error_quota">Dein Konto auf %1$s ist voll. Bitte die Administration um mehr Platz.</string>
   <string name="sync_error_not_a_server">%1$s ist kein Neutrodyne-Sync-Server. Prüfe die Adresse.</string>
+  <string name="sync_error_device_gone">Dieses Gerät wurde bereits entfernt.</string>
 
   <!-- Linked settings rows (08 Settings › Sync "Rows while linked"). -->
   <string name="sync_link_another">Weiteres Gerät verknüpfen</string>
@@ -99,7 +100,11 @@
   <string name="sync_approve_code_label">Code auf dem neuen Gerät</string>
   <string name="sync_approve_code_hint">XXXX-XXXX</string>
   <string name="sync_approve_link_question">%1$s verknüpfen?</string>
+  <string name="sync_approve_sign_in_question">%1$s anmelden?</string>
   <string name="sync_approve_pending_detail">%1$s · Neutrodyne %2$s · angefragt %3$s</string>
+  <string name="sync_approve_purpose_device">%1$s erhält deine gesamte Bibliothek.</string>
+  <string name="sync_approve_purpose_web">Dadurch wird ein Browser bei deinem Konto angemeldet.</string>
+  <string name="sync_approve_other_network">Von einem anderen Netzwerk angefragt. Bestätige nur ein Gerät, das du in der Hand hast.</string>
   <string name="sync_approve_link">Verknüpfen</string>
   <string name="sync_approve_dont_link">Nicht verknüpfen</string>
   <string name="sync_approve_linked">%1$s ist verknüpft</string>

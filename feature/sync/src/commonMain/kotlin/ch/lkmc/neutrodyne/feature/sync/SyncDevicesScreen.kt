@@ -166,7 +166,14 @@ private fun SyncDevicesBody(
 
                 is Outcome.Failure -> {
                     if (stillCurrent()) {
-                        ui = ui.copy(busyId = null, opError = DeviceOpError(device, op, outcome.error))
+                        if (outcome.error == SyncProblem.DeviceGone) {
+                            // The row is already gone on the server: reload (10 Errors) so it
+                            // leaves the list, and word it — retrying the op can never succeed.
+                            refresh()
+                            ui = ui.copy(busyId = null, error = outcome.error, opError = null)
+                        } else {
+                            ui = ui.copy(busyId = null, opError = DeviceOpError(device, op, outcome.error))
+                        }
                     }
                 }
             }

@@ -39,9 +39,14 @@ import ch.lkmc.neutrodyne.feature.sync.resources.sync_approve_dont_link
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_approve_link
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_approve_link_question
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_approve_linked
+import ch.lkmc.neutrodyne.feature.sync.resources.sync_approve_other_network
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_approve_pending_detail
+import ch.lkmc.neutrodyne.feature.sync.resources.sync_approve_purpose_device
+import ch.lkmc.neutrodyne.feature.sync.resources.sync_approve_purpose_web
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_approve_rate_limited
+import ch.lkmc.neutrodyne.feature.sync.resources.sync_approve_sign_in_question
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_link_another
+import ch.lkmc.neutrodyne.sync.api.LinkPurpose
 import ch.lkmc.neutrodyne.sync.api.PendingDevice
 import ch.lkmc.neutrodyne.sync.api.SyncController
 import ch.lkmc.neutrodyne.sync.api.SyncProblem
@@ -201,7 +206,13 @@ private fun SyncApproveBody(
             )
         } else {
             Text(
-                stringResource(Res.string.sync_approve_link_question, shown.deviceName),
+                stringResource(
+                    when (shown.purpose) {
+                        LinkPurpose.DEVICE -> Res.string.sync_approve_link_question
+                        LinkPurpose.WEB -> Res.string.sync_approve_sign_in_question
+                    },
+                    shown.deviceName,
+                ),
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(
@@ -213,6 +224,30 @@ private fun SyncApproveBody(
                 ),
                 style = MaterialTheme.typography.bodyMedium,
             )
+            // The grant in plain words (10 Link codes): a device receives the whole library, a
+            // `web` request only signs a browser in — never rendered as a device link.
+            Text(
+                text =
+                    when (shown.purpose) {
+                        LinkPurpose.DEVICE -> {
+                            stringResource(Res.string.sync_approve_purpose_device, shown.deviceName)
+                        }
+
+                        LinkPurpose.WEB -> {
+                            stringResource(Res.string.sync_approve_purpose_web)
+                        }
+                    },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            // `sameNetwork == false` is the consent-phishing shape (10 Link codes, RFC 8628
+            // §5.4): the request did not come from the approver's client IP.
+            if (!shown.sameNetwork) {
+                Text(
+                    stringResource(Res.string.sync_approve_other_network),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             if (busy) {
                 NdProgress.Linear(progress = null, modifier = Modifier.fillMaxWidth())
             }
