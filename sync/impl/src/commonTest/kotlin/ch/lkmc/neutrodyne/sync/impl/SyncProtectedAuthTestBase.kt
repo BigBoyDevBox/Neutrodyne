@@ -820,32 +820,414 @@ abstract class SyncProtectedAuthTestBase {
         )
 
     @Test
-    fun rootProbeANewerOriginMustNotReceiveAnOlderAuthSnapshot() = runTest {
-        val db = newTestDb()
-        try {
-            link(db)
-            val h = harness(db)
-            val movedOrigin = "https://moved.example"
-            val localSecret = kotlin.uuid.Uuid.random().toString()
-            seedCredential(db, h.secrets, movedOrigin, localSecret)
-            val newer = Hlc.of(now, 20, remote).toString()
-            // Valid server history: auth at10 for the former origin, then a public feed/origin
-            // move at20 from a client whose password sharing is OFF. The full record retains
-            // the old auth field; it is not permission to use that password at the new origin.
-            val original = authRecord()
-            val mixed = original.copy(fields = original.fields + mapOf(
-                "feedUrl" to FieldValue(JsonPrimitive("$movedOrigin/feed"), newer),
-                "credentialOrigin" to FieldValue(JsonPrimitive(movedOrigin), newer),
-            ))
-            assertEquals(1, h.applier.applyPage(listOf(mixed), roundId = 1).applied)
-            h.effects.drainPasswords()
-            val after = h.secrets.get(movedOrigin)!!
-            assertTrue(after.secret.contentEquals(localSecret.toCharArray()),
-                "an auth snapshot older than the origin move must not replace the new origin's credential")
-        } finally {
-            db.close()
+    fun rootProbeANewerOriginMustNotReceiveAnOlderAuthSnapshot() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                val movedOrigin = "https://moved.example"
+                val localSecret =
+                    kotlin.uuid.Uuid
+                        .random()
+                        .toString()
+                seedCredential(db, h.secrets, movedOrigin, localSecret)
+                val newer = Hlc.of(now, 20, remote).toString()
+                // Valid server history: auth at10 for the former origin, then a public feed/origin
+                // move at20 from a client whose password sharing is OFF. The full record retains
+                // the old auth field; it is not permission to use that password at the new origin.
+                val original = authRecord()
+                val mixed =
+                    original.copy(
+                        fields =
+                            original.fields +
+                                mapOf(
+                                    "feedUrl" to FieldValue(JsonPrimitive("$movedOrigin/feed"), newer),
+                                    "credentialOrigin" to FieldValue(JsonPrimitive(movedOrigin), newer),
+                                ),
+                    )
+                assertEquals(1, h.applier.applyPage(listOf(mixed), roundId = 1).applied)
+                h.effects.drainPasswords()
+                val after = h.secrets.get(movedOrigin)!!
+                assertTrue(
+                    after.secret.contentEquals(localSecret.toCharArray()),
+                    "an auth snapshot older than the origin move must not replace the new origin's credential",
+                )
+            } finally {
+                db.close()
+            }
         }
-    }
+
+    /**
+     * The offline-client order of the same defect: a client still at origin A shares its auth
+     * at 30 after the feed already moved to B at 20 — the wire record keeps A's stale
+     * credentialOrigin at 10 next to the newer bare auth. The stale companion cannot prove
+     * the pair: nothing installs at B, the accepted A reference stays put and the snapshot
+     * the write staged is dropped.
+     */
+    @Test
+    fun anUnpairedNewerAuthDoesNotInstallAtTheMergedOrigin() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                val newOrigin = "https://b.example"
+                val bSecret = "b-secret-1a2b"
+                seedCredential(db, h.secrets, origin)
+                h.applier.applyPage(listOf(authRecord(counter = 10)), roundId = 1)
+                h.effects.drainPasswords()
+                val acceptedClock = Hlc.of(now, 10, remote)
+                val aCredential = db.podcastDao().bySyncId(rid)!!.credentialId
+                seedCredential(db, h.secrets, newOrigin, bSecret)
+                h.applier.applyPage(listOf(originMove(newOrigin, counter = 20)), roundId = 2)
+
+                val stale = Hlc.of(now, 10, remote).toString()
+                val offline = Hlc.of(now, 30, remote).toString()
+                val record =
+                    RecordDto(
+                        coll = SyncCollection.PODCAST.wire,
+                        id = JsonPrimitive(rid),
+                        seq = 30,
+                        by = deviceId,
+                        fields =
+                            mapOf(
+                                "credentialOrigin" to FieldValue(JsonPrimitive(origin), stale),
+                                "auth" to FieldValue(authValue(user, "offline-pass"), offline),
+                            ),
+                    )
+                h.applier.applyPage(listOf(record), roundId = 3)
+                h.effects.drainPasswords()
+
+                val raw = decodeRawClocks(clocksJson(db))!!
+                assertNull(raw.pendingAuth)
+                val ref = raw.authReference!!
+                assertEquals(origin, ref.credentialOrigin)
+                assertEquals(acceptedClock.toString(), ref.clock)
+                assertEquals(
+                    setOf(pendingAuthKey(account, rid, acceptedClock.toString())),
+                    h.secrets.originsWithPrefix(PENDING_AUTH_PREFIX),
+                )
+                val bStored = h.secrets.get(newOrigin)
+                assertNotNull(bStored)
+                assertTrue(bStored.secret.contentEquals(bSecret.toCharArray()))
+                val podcast = db.podcastDao().bySyncId(rid)!!
+                assertEquals(aCredential, podcast.credentialId)
+                assertTrue(podcast.needsCredentials)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * The positive side of the proof: an auth that arrives with its companion origin at the
+     * same complete clock wins and installs at that origin, even when it rewrote a newer
+     * independent origin.
+     */
+    @Test
+    fun aPairedAuthAndOriginWriteInstallsAtItsOwnOrigin() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                val newOrigin = "https://b.example"
+                seedCredential(db, h.secrets, origin)
+                h.applier.applyPage(listOf(authRecord(counter = 10)), roundId = 1)
+                h.effects.drainPasswords()
+                seedCredential(db, h.secrets, newOrigin)
+                h.applier.applyPage(listOf(originMove(newOrigin, counter = 20)), roundId = 2)
+
+                val paired = Hlc.of(now, 30, remote)
+                h.applier.applyPage(
+                    listOf(authUpdate(origin = newOrigin, pass = "p-three", counter = 30)),
+                    roundId = 3,
+                )
+                h.effects.drainPasswords()
+
+                val raw = decodeRawClocks(clocksJson(db))!!
+                assertNull(raw.pendingAuth)
+                val ref = raw.authReference!!
+                assertEquals(newOrigin, ref.credentialOrigin)
+                assertEquals(paired.toString(), ref.clock)
+                val stored = h.secrets.get(newOrigin)
+                assertNotNull(stored)
+                assertTrue(stored.secret.contentEquals("p-three".toCharArray()))
+                assertFalse(db.podcastDao().bySyncId(rid)!!.needsCredentials)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * A pending effect proven for origin A must not install after the winning origin moved
+     * to B: the drain never sets the A credential on the feed, and the flag the pending
+     * marker suppressed now reports the feed still needs a credential for B.
+     */
+    @Test
+    fun aPendingEffectForTheOldOriginCannotInstallAfterTheMove() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                val newOrigin = "https://b.example"
+                seedCredential(db, h.secrets, origin)
+                h.applier.applyPage(listOf(authRecord(counter = 10)), roundId = 1)
+                h.applier.applyPage(listOf(originMove(newOrigin, counter = 20)), roundId = 2)
+
+                h.effects.drainPasswords()
+
+                val podcast = db.podcastDao().bySyncId(rid)!!
+                assertNull(podcast.credentialId)
+                assertTrue(podcast.needsCredentials)
+                assertNull(decodeRawClocks(clocksJson(db))!!.pendingAuth)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * 10 Passwords / origin association, producer side: a local `auth` intent pushed while
+     * sharing is on carries its credential's origin as a companion at the same complete
+     * clock, so a receiver can prove the pair.
+     */
+    @Test
+    fun anAuthPushCarriesItsOwnOriginAtTheSameClock() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                val podcastId =
+                    db.podcastDao().insertPodcast(podcastEntity(syncId = rid))
+                val credentialId = seedCredential(db, h.secrets, origin)
+                db.withWriteTransaction {
+                    db.syncStateDao().withApplying {
+                        db.podcastDao().setCredentialId(podcastId, credentialId)
+                    }
+                }
+                val clock = Hlc.of(now + 30, 2, localNode)
+                db.withWriteTransaction {
+                    db.syncOutboxDao().upsert(
+                        ch.lkmc.neutrodyne.core.database.SyncOutboxEntity(
+                            coll = SyncCollection.PODCAST.wire,
+                            rid = rid,
+                            field = "auth",
+                            hlc = clock.packed,
+                            nodeId = localNode.value,
+                        ),
+                    )
+                }
+
+                val pushed =
+                    ChangeBuilder(db, h.secrets) { true }
+                        .build(db.syncOutboxDao().rows())
+                        .single { it.fields.containsKey("auth") }
+                val auth = pushed.fields.getValue("auth")
+                assertEquals(clock.toString(), auth.c)
+                assertEquals(authValue(user, pass), auth.v)
+                val companion = pushed.fields["credentialOrigin"]
+                assertNotNull(companion)
+                assertEquals(clock.toString(), companion.c)
+                assertEquals(JsonPrimitive(origin), companion.v)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * A replay re-asserts the accepted pair, not whatever the live credential became: the
+     * companion rides at the reference's own complete clock and carries its proven origin.
+     */
+    @Test
+    fun aReplayCarriesTheAcceptedOriginAtTheAcceptedClock() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                seedCredential(db, h.secrets, origin)
+                h.applier.applyPage(listOf(authRecord(counter = 10)), roundId = 1)
+                h.effects.drainPasswords()
+                val accepted = Hlc.of(now, 10, remote)
+
+                h.secrets.put(origin, user, "rotated-live".toCharArray())
+                captureStored(db, rid, "auth", accepted, "\"replay\"")
+
+                val pushed =
+                    ChangeBuilder(db, h.secrets) { true }
+                        .build(
+                            db.syncOutboxDao().rows().filter {
+                                it.coll == SyncCollection.PODCAST.wire && it.rid == rid
+                            },
+                        ).single { it.fields.containsKey("auth") }
+                val auth = pushed.fields.getValue("auth")
+                assertEquals(accepted.toString(), auth.c)
+                assertEquals(authValue(user, pass), auth.v)
+                val companion = pushed.fields["credentialOrigin"]
+                assertNotNull(companion)
+                assertEquals(accepted.toString(), companion.c)
+                assertEquals(JsonPrimitive(origin), companion.v)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * A replay row at a clock the bound reference does not own must not hydrate the live
+     * pair or a mismatched snapshot under a different write's clock — the field is omitted.
+     */
+    @Test
+    fun aReplayAtAnUnboundClockOmitsAuth() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                val bound = Hlc.of(now, 10, remote)
+                val key = pendingAuthKey(account, rid, bound.toString())
+                h.secrets.put(key, user, pass.toCharArray())
+                seedRawReference(db, key, origin, bound.toString())
+
+                val other = Hlc.of(now, 40, remote)
+                captureStored(db, rid, "auth", other, "\"replay\"")
+                val pushed =
+                    ChangeBuilder(db, h.secrets) { true }
+                        .build(
+                            db.syncOutboxDao().rows().filter {
+                                it.coll == SyncCollection.PODCAST.wire && it.rid == rid
+                            },
+                        )
+                val change = pushed.singleOrNull { it.coll == SyncCollection.PODCAST.wire }
+                assertTrue(change == null || !change.fields.containsKey("auth"))
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * A newer pending credentialOrigin outbox row is not acknowledged by the pair's clock:
+     * the companion stamps the auth's proven origin at the auth's clock in the change, and
+     * the sent-clock ACK leaves the newer origin intent pending for the next round.
+     */
+    @Test
+    fun aCoalescedNewerOriginSurvivesThePairsAck() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                val bound = Hlc.of(now, 10, remote)
+                val key = pendingAuthKey(account, rid, bound.toString())
+                h.secrets.put(key, user, pass.toCharArray())
+                seedRawReference(db, key, origin, bound.toString())
+                val newerOrigin = "https://d.example"
+                val newer = Hlc.of(now, 40, remote)
+                captureStored(db, rid, "auth", bound, "\"replay\"")
+                db.withWriteTransaction {
+                    db.syncOutboxDao().upsert(
+                        ch.lkmc.neutrodyne.core.database.SyncOutboxEntity(
+                            coll = SyncCollection.PODCAST.wire,
+                            rid = rid,
+                            field = "credentialOrigin",
+                            hlc = newer.packed,
+                            nodeId = localNode.value,
+                            value = "\"$newerOrigin\"",
+                        ),
+                    )
+                }
+
+                val pushed =
+                    ChangeBuilder(db, h.secrets) { true }
+                        .build(
+                            db.syncOutboxDao().rows().filter {
+                                it.coll == SyncCollection.PODCAST.wire && it.rid == rid
+                            },
+                        ).single { it.fields.containsKey("auth") }
+                // The sent origin is the auth's proven companion at the auth's clock — the
+                // newer pending intent is not lent out under the pair's clock.
+                val companion = pushed.fields["credentialOrigin"]
+                assertNotNull(companion)
+                assertEquals(bound.toString(), companion.c)
+                assertEquals(JsonPrimitive(origin), companion.v)
+
+                h.effects.acknowledge(listOf(pushed), listOf(ChangeResultDto(0, "applied")))
+
+                val pending = db.syncOutboxDao().get(SyncCollection.PODCAST.wire, rid, "credentialOrigin")
+                assertNotNull(pending)
+                assertEquals(newer.packed, pending.hlc)
+                assertNull(db.syncOutboxDao().get(SyncCollection.PODCAST.wire, rid, "auth"))
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * An acknowledgement binds only the proven sent pair — the companion the change carried
+     * at the auth's own clock — never the merged or live origin it finds around it.
+     */
+    @Test
+    fun anAckWithoutAProvenPairBindsNothing() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                val bound = Hlc.of(now, 10, remote)
+                val key = pendingAuthKey(account, rid, bound.toString())
+                h.secrets.put(key, user, pass.toCharArray())
+                seedRawReference(db, key, origin, bound.toString())
+
+                val unpaired = Hlc.of(now, 20, remote)
+                h.effects.acknowledge(
+                    listOf(
+                        ChangeDto(
+                            coll = SyncCollection.PODCAST.wire,
+                            id = JsonPrimitive(rid),
+                            fields =
+                                mapOf(
+                                    "auth" to
+                                        FieldValue(authValue(user, pass), unpaired.toString()),
+                                ),
+                        ),
+                    ),
+                    listOf(ChangeResultDto(0, "applied")),
+                )
+                var ref = decodeRawClocks(clocksJson(db))!!.authReference!!
+                assertEquals(key, ref.storeKey)
+                assertEquals(origin, ref.credentialOrigin)
+                assertEquals(bound.toString(), ref.clock)
+
+                // The proven pair still governs: the sent companion binds, never the merged
+                // or live origin — here the record's winning origin stays A while the ack
+                // carried the pair for X.
+                val sentOrigin = "https://x.example"
+                val sent = Hlc.of(now, 30, remote)
+                h.effects.acknowledge(
+                    listOf(
+                        ChangeDto(
+                            coll = SyncCollection.PODCAST.wire,
+                            id = JsonPrimitive(rid),
+                            fields =
+                                mapOf(
+                                    "auth" to
+                                        FieldValue(authValue(user, pass), sent.toString()),
+                                    "credentialOrigin" to
+                                        FieldValue(JsonPrimitive(sentOrigin), sent.toString()),
+                                ),
+                        ),
+                    ),
+                    listOf(ChangeResultDto(0, "applied")),
+                )
+                ref = decodeRawClocks(clocksJson(db))!!.authReference!!
+                assertEquals(pendingAuthKey(account, rid, sent.toString()), ref.storeKey)
+                assertEquals(sentOrigin, ref.credentialOrigin)
+                assertEquals(sent.toString(), ref.clock)
+            } finally {
+                db.close()
+            }
+        }
 
     private suspend fun clocksJson(db: NeutrodyneDatabase): String? =
         db.syncClockDao().get(SyncCollection.PODCAST.wire, rid)?.clocks
@@ -921,6 +1303,54 @@ abstract class SyncProtectedAuthTestBase {
                     pendingAuth = PendingAuth(key, origin, clock),
                 ),
             )
+    }
+
+    /**
+     * A raw reference with no pending marker: the accepted snapshot's immutable binding as a
+     * completed install (or an acknowledged send) left it.
+     */
+    private suspend fun seedRawReference(
+        db: NeutrodyneDatabase,
+        key: String,
+        credentialOrigin: String,
+        clock: String,
+    ) {
+        SyncClockStore(db)
+            .put(
+                SyncCollection.PODCAST.wire,
+                rid,
+                RawSyncRecord(
+                    state =
+                        RecordState(
+                            SyncCollection.PODCAST,
+                            fields =
+                                mapOf(
+                                    "credentialOrigin" to
+                                        FieldState(JsonPrimitive(credentialOrigin), Hlc.parse(clock)),
+                                ),
+                        ),
+                    authReference = AuthReference(key, credentialOrigin, clock),
+                ),
+            )
+    }
+
+    /** A feed/origin move without an `auth`: the bare origin write at [counter]'s clock. */
+    private fun originMove(
+        newOrigin: String,
+        counter: Long,
+    ): RecordDto {
+        val c = Hlc.of(now, counter, remote).toString()
+        return RecordDto(
+            coll = SyncCollection.PODCAST.wire,
+            id = JsonPrimitive(rid),
+            seq = counter,
+            by = deviceId,
+            fields =
+                mapOf(
+                    "feedUrl" to FieldValue(JsonPrimitive("$newOrigin/feed"), c),
+                    "credentialOrigin" to FieldValue(JsonPrimitive(newOrigin), c),
+                ),
+        )
     }
 
     private fun authRecord(

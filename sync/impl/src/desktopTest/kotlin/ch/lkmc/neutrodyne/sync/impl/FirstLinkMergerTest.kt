@@ -722,6 +722,80 @@ class FirstLinkMergerTest {
             }
         }
 
+    /**
+     * 10 Passwords / origin association: an auth whose companion credentialOrigin sits at a
+     * different complete clock proves nothing — it stages no snapshot, and the staging line
+     * still drops the field rather than leaking its plaintext to disk.
+     */
+    @Test
+    fun anUnpairedAuthNeverReachesTheStagingFileOrRawState() =
+        runTest {
+            val db = TestDb.inMemory()
+            val library = FakeLibraryMerger()
+            val secrets = FakeSecretStore()
+            val stagedPass = "s3ntinel-link-9e4d"
+            val client = CountingClient(listOf(unpairedAuthPodcastRecord(stagedPass)))
+            try {
+                link(db, deviceId = device)
+                val merger = mergerOf(db, client, library, secrets = secrets)
+
+                library.result =
+                    ch.lkmc.neutrodyne.core.common.Outcome.Failure(
+                        ch.lkmc.neutrodyne.core.domain.BackupError.Storage,
+                    )
+                assertTrue(merger.merge(FirstLinkChoice.MERGE) is FirstLinkResult.Failed)
+
+                val stagedText =
+                    fileSystem.read(cache.resolve("sync-link-$device.jsonl").toString().toPath()) {
+                        readUtf8()
+                    }
+                assertFalse(stagedText.contains(stagedPass))
+                assertFalse(stagedText.contains("feed-user"))
+                assertFalse(stagedText.contains("\"authRef\""))
+                assertFalse(stagedText.contains("\"authClock\""))
+
+                library.result =
+                    ch.lkmc.neutrodyne.core.common.Outcome.Success(
+                        ch.lkmc.neutrodyne.core.model
+                            .MergeSummary(0, 0, 0, 0, 0, 0, 0, 0),
+                    )
+                assertTrue(merger.merge(FirstLinkChoice.MERGE) is FirstLinkResult.Completed)
+
+                val raw = decodeRawClocks(db.syncClockDao().get("podcast", podcastSyncId)!!.clocks)!!
+                assertNull(raw.pendingAuth)
+                assertNull(raw.authReference)
+                assertTrue(secrets.originsWithPrefix(PENDING_AUTH_PREFIX).isEmpty())
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * "Use the server's library" applies the same proof to the seeded reference: an
+     * unpaired server auth seeds no reference and no durable marker.
+     */
+    @Test
+    fun useServerSeedsNoReferenceForAnUnpairedAuth() =
+        runTest {
+            val db = TestDb.inMemory()
+            val library = FakeLibraryMerger()
+            val secrets = FakeSecretStore()
+            val client = CountingClient(listOf(unpairedAuthPodcastRecord("s3ntinel-use-server")))
+            try {
+                link(db, deviceId = device)
+                val merger = mergerOf(db, client, library, secrets = secrets)
+
+                assertTrue(merger.merge(FirstLinkChoice.USE_SERVER) is FirstLinkResult.Completed)
+
+                val raw = decodeRawClocks(db.syncClockDao().get("podcast", podcastSyncId)!!.clocks)!!
+                assertNull(raw.pendingAuth)
+                assertNull(raw.authReference)
+                assertTrue(secrets.originsWithPrefix(PENDING_AUTH_PREFIX).isEmpty())
+            } finally {
+                db.close()
+            }
+        }
+
     /** Unmatched lines park their record for the next ingest (10 Parked state and stubs). */
     @Test
     fun unmatchedLinesParkTheirRecord() =
@@ -1828,6 +1902,28 @@ class FirstLinkMergerTest {
                     "subscribed" to FieldValue(JsonPrimitive(true), clock(october)),
                     "title" to FieldValue(JsonPrimitive("Example"), clock(october)),
                 ),
+        )
+
+    /**
+     * A server record whose `auth` clock differs from its `credentialOrigin` clock — the
+     * mixed full record of an origin move, where nothing proves the pair (10 Passwords).
+     */
+    private fun unpairedAuthPodcastRecord(pass: String): RecordDto =
+        podcastRecord().copy(
+            fields =
+                podcastRecord().fields +
+                    mapOf(
+                        "credentialOrigin" to
+                            FieldValue(JsonPrimitive("https://a.example"), clock(october + 1_000)),
+                        "auth" to
+                            FieldValue(
+                                buildJsonObject {
+                                    put("u", "feed-user")
+                                    put("p", pass)
+                                },
+                                clock(october),
+                            ),
+                    ),
         )
 
     /** A podcast record carrying a wire `auth` pair for the protected-staging tests. */

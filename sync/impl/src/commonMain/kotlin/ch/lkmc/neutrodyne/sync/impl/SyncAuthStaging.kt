@@ -47,10 +47,15 @@ internal fun pendingAuthKey(
     clock: String,
 ): String = "$PENDING_AUTH_PREFIX$account:$rid:$clock"
 
-/** A validated, staged auth snapshot: its `SecretStore` key and the winning complete clock. */
+/**
+ * A validated, staged auth snapshot: its `SecretStore` key, the winning complete clock and
+ * the `credentialOrigin` the record paired at that same complete clock — the proof the
+ * snapshot may install under (10 Passwords / origin association).
+ */
 internal class StagedAuth(
     val storeKey: String,
     val clock: String,
+    val credentialOrigin: String,
 )
 
 /** Decodes a `sync_clock.clocks` envelope; null on malformed JSON, as `SyncClockStore` reads it. */
@@ -134,12 +139,22 @@ internal suspend fun stageAuthCandidatesLocked(
         val field = dto.fields["auth"] ?: continue
         val (user, pass) = authPair(field.v) ?: continue
         val clock = field.c?.let { runCatching { Hlc.parse(it) }.getOrNull() } ?: continue
+        // The snapshot is provable only with its origin companion written at the same
+        // complete clock: a bare `auth` or a mixed record (an older auth next to a newer
+        // origin, or a stale companion beside a newer auth) stages nothing — its plaintext
+        // never enters the journal and cannot bind to an origin it did not write with.
+        val origin =
+            dto.fields["credentialOrigin"]
+                ?.takeIf { it.c == field.c }
+                ?.v
+                ?.let { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.contentOrNull }
+                ?: continue
         val key = pendingAuthKey(account, rid, clock.toString())
         val referenced = decodeRawClocks(db.syncClockDao().get(SyncCollection.PODCAST.wire, rid)?.clocks)
         if (referenced?.authReference?.clock != clock.toString() || secrets.get(key) == null) {
             secrets.put(key, user, pass)
         }
-        staged[rid] = StagedAuth(key, clock.toString())
+        staged[rid] = StagedAuth(key, clock.toString(), origin)
     }
     return staged
 }
@@ -171,9 +186,13 @@ internal fun decideAuth(
     val drops = mutableListOf<String>()
 
     // A strictly newer remote write wins only when it bound to the merged record's winning
-    // credential origin — a bare `auth` without a provable origin can never install.
+    // credential origin — and only the snapshot's own companion proves that binding. The
+    // companion was written at the auth's exact complete clock (staging enforced it), so
+    // an older `originClock <= authClock` mix can never install a credential under an
+    // origin it did not write with; a bare or mixed `auth` can never install at all.
     val remoteWon =
         remoteClock != null && staged != null && mergedOrigin != null &&
+            staged.credentialOrigin == mergedOrigin &&
             (refClock == null || remoteClock > refClock) &&
             (localClock == null || remoteClock > localClock)
     if (remoteWon) {
@@ -191,9 +210,14 @@ internal fun decideAuth(
     // of the referenced write is idempotent, not a loser.
     if (staged != null && remoteClock != null && remoteClock != refClock) drops += staged.storeKey
 
+    // A pending effect is installable only while the origin it proved still wins the merge:
+    // once a newer bare origin or an unproven pair moves the feed, the stale effect must
+    // never install its credential or clear the flag under the new origin.
+    val pendingAuth = stored?.pendingAuth?.takeIf { it.credentialOrigin == mergedOrigin }
+
     // A pending local intent keeps the last accepted reference: only the server's
     // acknowledgement may advance it, binding the exact sent snapshot's immutable key.
-    return AuthDecision(storedRef, stored?.pendingAuth, drops, remoteWon = false)
+    return AuthDecision(storedRef, pendingAuth, drops, remoteWon = false)
 }
 
 /**

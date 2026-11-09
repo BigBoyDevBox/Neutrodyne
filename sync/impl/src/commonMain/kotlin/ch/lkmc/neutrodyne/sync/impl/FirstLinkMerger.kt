@@ -323,6 +323,9 @@ class FirstLinkMerger(
         // The server's records are the adopted state: seed verbatim, nothing captured, so
         // later local changes order after them (10 Use the server's library). An `auth` is
         // never seeded — only its protected reference and durable marker (10 Passwords).
+        // The same origin-association proof applies as to a live page: only an `auth` whose
+        // `credentialOrigin` companion sits at the auth's exact complete clock seeds a
+        // reference; an unpaired auth installs nothing.
         val account = db.syncStateDao().get()?.accountId ?: "local"
         for (dto in pull.records) {
             val coll = runCatching { SyncCollection.fromWire(dto.coll) }.getOrNull() ?: continue
@@ -332,11 +335,12 @@ class FirstLinkMerger(
                 if (coll == SyncCollection.PODCAST) {
                     val field = incoming.fields["auth"]
                     val clock = field?.c
+                    val originField = incoming.fields["credentialOrigin"]
                     val origin =
-                        (incoming.fields["credentialOrigin"]?.v as? JsonPrimitive)
+                        (originField?.v as? JsonPrimitive)
                             ?.takeIf { it.isString }
                             ?.contentOrNull
-                    if (field != null && clock != null && origin != null) {
+                    if (field != null && clock != null && originField?.c == clock && origin != null) {
                         val key = pendingAuthKey(account, rid, clock.toString())
                         Pair(
                             AuthReference(key, origin, clock.toString()),
@@ -433,7 +437,11 @@ class FirstLinkMerger(
                         .writeUtf8(
                             SyncJson.encodeToString(
                                 StagingLine(
-                                    record = if (auth == null) dto else dto.withoutField("auth"),
+                                    // `auth` never persists in a staging line — proved or
+                                    // not. An unpaired auth stages no snapshot, so keeping
+                                    // the dto here would leak its plaintext to disk; only a
+                                    // proved reference reconstructs the field on resume.
+                                    record = dto.withoutField("auth"),
                                     authRef = auth?.storeKey,
                                     authClock = auth?.clock,
                                 ),
@@ -1001,12 +1009,33 @@ class FirstLinkMerger(
                     // carries no plaintext and a winning auth journals its durable marker.
                     val auth =
                         if (coll == SyncCollection.PODCAST) {
+                            // The staging pull already proved the pair before snapshotting:
+                            // an `auth` whose `credentialOrigin` sits at its own complete
+                            // clock. Reconstruct only that proved staging — an unpaired or
+                            // mixed auth can never install here either.
                             val staged =
-                                dto.fields["auth"]?.c?.let {
-                                    runCatching { Hlc.parse(it) }.getOrNull()?.let { clock ->
-                                        StagedAuth(pendingAuthKey(account, rid, clock.toString()), clock.toString())
+                                dto.fields["auth"]
+                                    ?.c
+                                    ?.let {
+                                        runCatching { Hlc.parse(it) }.getOrNull()
+                                    }?.let { clock ->
+                                        val origin =
+                                            incoming.fields["credentialOrigin"]
+                                                ?.takeIf { it.c == clock }
+                                                ?.v
+                                                ?.let {
+                                                    (it as? JsonPrimitive)
+                                                        ?.takeIf { p -> p.isString }
+                                                        ?.contentOrNull
+                                                }
+                                        origin?.let {
+                                            StagedAuth(
+                                                pendingAuthKey(account, rid, clock.toString()),
+                                                clock.toString(),
+                                                it,
+                                            )
+                                        }
                                     }
-                                }
                             decideAuth(stored, null, merged.record, incoming.fields["auth"], staged)
                         } else {
                             null

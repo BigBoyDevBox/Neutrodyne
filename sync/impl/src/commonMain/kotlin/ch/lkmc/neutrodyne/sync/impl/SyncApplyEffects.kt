@@ -153,6 +153,17 @@ class SyncApplyEffects(
             // A newer page moved the marker on; this pass owns only the marker it read.
             if (raw.pendingAuth != marker) return@withCredentialCommit
             val ref = raw.authReference
+            val mergedOrigin = jsonContent(raw.state.fields["credentialOrigin"]?.v)
+            if (marker.credentialOrigin != mergedOrigin) {
+                // The winning origin moved past the origin this marker proved (a newer bare
+                // origin or a newer proven pair): installing its snapshot would bind the
+                // credential bytes to an origin they did not write with. The marker clears
+                // like any moved-on winner; the feed is flagged when nothing satisfies the
+                // winning origin — never setCredentialId, never a silent clear.
+                flagMissingCredential(rid, mergedOrigin)
+                discardAuth(rid, marker)
+                return@withCredentialCommit
+            }
             val markerClock = runCatching { Hlc.parse(marker.clock) }.getOrNull()
             val newerLocal =
                 db.syncOutboxDao().get(SyncCollection.PODCAST.wire, rid, "auth")?.let { intent ->
@@ -230,6 +241,36 @@ class SyncApplyEffects(
             db.syncClockDao().upsert(
                 fresh.copy(clocks = encode(raw.copy(pendingAuth = null))),
             )
+        }
+    }
+
+    /**
+     * The feed is flagged `needsCredentials` unless its installed credential already
+     * satisfies [mergedOrigin] — the projection the pending marker suppressed while the
+     * moved-from origin still looked installable.
+     */
+    private suspend fun flagMissingCredential(
+        rid: String,
+        mergedOrigin: String?,
+    ) {
+        val podcast = db.podcastDao().bySyncId(rid) ?: return
+        val satisfied =
+            podcast.credentialId
+                ?.let {
+                    db
+                        .credentialDao()
+                        .byIds(listOf(it))
+                        .firstOrNull()
+                        ?.origin
+                } == mergedOrigin &&
+                mergedOrigin != null
+        if (satisfied) return
+        db.withWriteTransaction {
+            db.syncStateDao().withApplying {
+                if (db.podcastDao().byId(podcast.id) != null) {
+                    db.podcastDao().setNeedsCredentials(podcast.id, true)
+                }
+            }
         }
     }
 
@@ -329,6 +370,10 @@ class SyncApplyEffects(
     /**
      * Binds the acknowledged auth's staged snapshot as the raw reference — the protected copy
      * a resync replay hydrates — unless the stored reference is already at least as new.
+     * Only the proven sent pair binds: the `credentialOrigin` companion the change itself
+     * carried at the auth's exact complete clock. An ack whose auth rode unpaired binds
+     * nothing — the independently merged or live origin is never a fallback for what the
+     * snapshot wrote with.
      */
     private suspend fun bindAcknowledgedAuth(
         account: String,
@@ -337,16 +382,16 @@ class SyncApplyEffects(
     ) {
         val clock = change.fields.getValue("auth").c ?: return
         runCatching { Hlc.parse(clock) }.getOrNull() ?: return
+        val origin =
+            change.fields["credentialOrigin"]
+                ?.takeIf { it.c == clock }
+                ?.v
+                ?.let(::jsonContent) ?: return
         val row = db.syncClockDao().get(SyncCollection.PODCAST.wire, rid) ?: return
         val raw = decode(row.clocks) ?: return
         val existing = raw.authReference
         val existingClock = existing?.clock?.let { runCatching { Hlc.parse(it) }.getOrNull() }
         if (existingClock != null && existingClock >= Hlc.parse(clock)) return
-        val origin =
-            jsonContent(change.fields["credentialOrigin"]?.v)
-                ?: jsonContent(raw.state.fields["credentialOrigin"]?.v)
-                ?: liveCredentialOrigin(rid)
-                ?: return
         db.syncClockDao().upsert(
             row.copy(
                 clocks =
@@ -362,17 +407,6 @@ class SyncApplyEffects(
                     ),
             ),
         )
-    }
-
-    /** The credential origin the podcast's live `credentialId` binds to. */
-    private suspend fun liveCredentialOrigin(rid: String): String? {
-        val podcast = db.podcastDao().bySyncId(rid) ?: return null
-        val credentialId = podcast.credentialId ?: return null
-        return db
-            .credentialDao()
-            .byIds(listOf(credentialId))
-            .firstOrNull()
-            ?.origin
     }
 
     private fun jsonContent(value: kotlinx.serialization.json.JsonElement?): String? =
