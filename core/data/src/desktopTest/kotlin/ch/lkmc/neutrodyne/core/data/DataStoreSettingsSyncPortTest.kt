@@ -199,6 +199,14 @@ class DataStoreSettingsSyncPortTest {
             assertTrue(store.get(key))
         }
 
+    @Test
+    fun rootProbeFloatJsonUsesTheTypedStoredRepresentation() = runTest {
+        val (port, _) = portAndStore()
+        val key = ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys.SPEED
+        assertTrue(port.applyRemote(key, "1"))
+        assertEquals("1.0", port.currentJson(key))
+    }
+
     private fun TestScope.portAndStore(
         wrap: (
             androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>,
