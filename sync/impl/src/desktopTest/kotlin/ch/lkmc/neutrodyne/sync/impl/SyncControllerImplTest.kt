@@ -1209,6 +1209,7 @@ private class Harness(
             activity = activity,
             gate = gate,
             effects = effects,
+            capture = settingsCapture,
         )
     val libraryMerger =
         ch.lkmc.neutrodyne.core.testing

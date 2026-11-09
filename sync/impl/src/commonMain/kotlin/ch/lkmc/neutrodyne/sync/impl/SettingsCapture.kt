@@ -46,11 +46,13 @@ import kotlinx.serialization.encodeToString
  *      off, or an external restore). The intent is superseded bookkeeping: its row is retired
  *      under its own clock and the baseline records the surviving value clocklessly — no wall
  *      clock is invented and the latest user intent is not rolled back.
- * 3. [captureAbsentKeys] captures the stored value of every synced key the account does not
- *    carry (`v` neither in raw state nor pending), so enabling the switch or completing a link
- *    publishes the local value as at the first link.
+ * 3. [reconcileStoredKeys] initializes accepted baselines without a fresh clock, restores
+ *    account values over off-switch edits, and captures genuinely unrecorded differences
+ *    from clocked baselines. Pending local intents and remote effects are excluded, so stale
+ *    projections never become fresh edits. Keys absent from the account upload their value.
  *
- * Recovery runs only inside [install], never while the switch is off or the link is gone:
+ * Recovery runs during [install] and again under the key lock before each push snapshot,
+ * never while the switch is off or the link is gone (first-link publishing has its own gate):
  * [reconcile] chooses between the two from the persisted gates read live. The callbacks also
  * re-check the gates at call time — a `set` racing an unlink or the switch's off edge captures
  * nothing and writes no baseline while unlinked.
@@ -83,6 +85,7 @@ class SettingsCapture(
      */
     fun off() {
         settings.registerRecorder(null)
+        installMaterializedListener()
     }
 
     /** Starts recording and recovers committed intents; called while linked with the switch on. */
@@ -96,14 +99,18 @@ class SettingsCapture(
                 }
             }
         }
+        installMaterializedListener()
+        recoverCommittedIntents()
+        reconcileStoredKeys()
+    }
+
+    private fun installMaterializedListener() {
         settings.registerMaterialized { key, json ->
             if (linked()) recordMaterialized(key, json)
         }
-        recoverCommittedIntents()
-        captureAbsentKeys()
     }
 
-    /** Stops recording and baselining (unlinked, revoked, or the switch off). */
+    /** Stops recording and baselining after unlink or revocation. */
     fun clear() {
         settings.registerRecorder(null)
         settings.registerMaterialized(null)
@@ -126,6 +133,7 @@ class SettingsCapture(
         json: String,
     ) {
         db.withWriteTransaction {
+            if (!linked()) return@withWriteTransaction
             val intent = db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v")
             val clock =
                 if (intent?.value == json) Hlc(intent.hlc, NodeId(intent.nodeId)).toString() else null
@@ -178,8 +186,8 @@ class SettingsCapture(
                 pendingClock != null &&
                 pendingClock >= intentClock
         if (deferred) return
-        val current = settings.currentJson(key)
-        if (current == row.value) {
+        val current = settings.currentJson(key) ?: return
+        if (row.value?.let { matchesLiteral(key, current, it) } == true) {
             // Already materialized (the DataStore write landed before the crash): only the
             // baseline still has to advance to the intent's clock.
             row.value?.let { advanceBaseline(key, it, intentClock.toString()) }
@@ -201,7 +209,7 @@ class SettingsCapture(
             // the switch was off); so is a stored value that moved past its baseline
             // without a clock to prove it (an external restore, or a wiped value). The
             // intent is superseded bookkeeping — retire it, never roll the newer value back.
-            baseline != null && baseline.newerThanStored(current, intentClock) -> {
+            baseline != null && baseline.newerThanStored(key, current, intentClock) -> {
                 retire(key, row, current)
             }
 
@@ -217,13 +225,14 @@ class SettingsCapture(
      * as the intent's.
      */
     private fun SettingBaseline.newerThanStored(
+        key: SettingKey<*>,
         current: String?,
         intentClock: Hlc,
     ): Boolean {
         val baselineClock = clock?.let(::parseHlc)
         return baselineClock == null ||
             current == null ||
-            settingBaselineHash(current) != hash ||
+            !matchesBaseline(key, current, this) ||
             baselineClock >= intentClock
     }
 
@@ -292,35 +301,99 @@ class SettingsCapture(
     }
 
     /**
-     * Step 3 of [install]: every synced key the account does not carry — no `v` in raw state,
-     * no pending marker and no committed intent — uploads the stored value, as at the first
-     * link. A pending marker means the server decides the key, so it is left for the drain.
+     * Freeze only materialized setting intents for this push. A local write can commit after
+     * the round's initial recovery, so re-read and recover each selected key under the same
+     * mutex as set/reset. The returned literals stay immutable if a later write coalesces them.
+     * Failed reads/writes keep their rows queued rather than acknowledging an unapplied value.
      */
-    private suspend fun captureAbsentKeys() {
+    internal suspend fun prepareForPush(
+        rows: List<SyncOutboxEntity>,
+        firstLink: Boolean,
+    ): List<SyncOutboxEntity> {
+        val prepared = mutableListOf<SyncOutboxEntity>()
+        for (row in rows) {
+            if (row.coll != SyncCollection.SETTING.wire || row.field != "v") {
+                prepared += row
+                continue
+            }
+            val key = AllSettingKeys.list.firstOrNull { it.synced && it.name == row.rid } ?: continue
+            writeLocks.withLock(key) {
+                val state = db.syncStateDao().get() ?: return@withLock
+                if (!state.enabled || (!firstLink && state.linkedAt == null) ||
+                    state.lastError == SYNC_ERROR_REVOKED || !settingsSyncEnabled()
+                ) {
+                    return@withLock
+                }
+                recoverIntent(key)
+                val fresh = db.syncOutboxDao().get(row.coll, row.rid, row.field) ?: return@withLock
+                val current = settings.currentJson(key) ?: return@withLock
+                val literal = fresh.value ?: return@withLock
+                if (matchesLiteral(key, current, literal)) prepared += fresh
+            }
+        }
+        return prepared
+    }
+
+    /**
+     * After recovery, capture genuinely unrecorded changes to known clocked baselines. A
+     * pending effect or intent always takes precedence. An absent/clockless baseline cannot
+     * prove a newer synced edit: initialize from the accepted value, preserving server-wins
+     * when enabling after an off-switch edit. Account-absent keys upload their current value.
+     */
+    private suspend fun reconcileStoredKeys() {
         for (key in AllSettingKeys.list) {
             if (!key.synced) continue
             writeLocks.withLock(key) {
-                if (db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v") != null) {
-                    return@withLock
-                }
+                if (!linked() || !settingsSyncEnabled()) return@withLock
+                if (db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v") != null) return@withLock
                 val raw =
                     db
                         .syncClockDao()
                         .get(SyncCollection.SETTING.wire, key.name)
                         ?.clocks
                         ?.let(::decode)
-                if (raw?.state?.fields?.containsKey("v") == true || raw?.pendingSetting != null) {
-                    return@withLock
+                if (raw?.pendingSetting != null) return@withLock
+                val current = settings.currentJson(key) ?: return@withLock
+                val accepted = raw?.state?.fields?.get("v")
+                val baseline = raw?.settingHash
+                val acceptedClock = accepted?.c
+                if (accepted != null && acceptedClock != null) {
+                    val literal = accepted.v.toString()
+                    if (matchesLiteral(key, current, literal)) {
+                        advanceBaseline(key, literal, acceptedClock.toString())
+                        return@withLock
+                    }
+                    if (baseline?.clock == null) {
+                        if (settings.applyRemote(key, literal)) {
+                            advanceBaseline(key, literal, acceptedClock.toString())
+                        }
+                        return@withLock
+                    }
+                    if (matchesBaseline(key, current, baseline)) return@withLock
                 }
-                val json = settings.currentJson(key) ?: return@withLock
                 db.withWriteTransaction {
-                    db
-                        .syncOutboxDao()
-                        .captureIntent(SyncCollection.SETTING.wire, key.name, "v", json)
+                    db.syncOutboxDao().captureIntent(SyncCollection.SETTING.wire, key.name, "v", current)
                 }
             }
         }
     }
+
+    private fun matchesLiteral(
+        key: SettingKey<*>,
+        current: String,
+        literal: String,
+    ): Boolean {
+        val effective = if (literal == "null") settings.encode(key, key.default) ?: return false else literal
+        return settingBaselineHash(current) == settingBaselineHash(effective)
+    }
+
+    private fun matchesBaseline(
+        key: SettingKey<*>,
+        current: String,
+        baseline: SettingBaseline,
+    ): Boolean =
+        settingBaselineHash(current) == baseline.hash ||
+            (baseline.hash == settingBaselineHash("null") && matchesLiteral(key, current, "null"))
 
     private fun parseHlc(clock: String): Hlc? = runCatching { Hlc.parse(clock) }.getOrNull()
 

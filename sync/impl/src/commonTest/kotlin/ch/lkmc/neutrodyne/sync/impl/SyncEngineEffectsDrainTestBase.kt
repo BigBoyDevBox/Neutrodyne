@@ -101,6 +101,7 @@ abstract class SyncEngineEffectsDrainTestBase {
                 activity = SyncActivityState(),
                 gate = FakeLocalNetworkGate(),
                 effects = effects,
+                capture = capture,
             )
         return DrainHarness(db, port, address, engine, effects, capture)
     }
@@ -377,6 +378,59 @@ abstract class SyncEngineEffectsDrainTestBase {
             }
         }
 
+    @Test
+    fun aCommittedLocalIntentMaterializesBeforeTheRoundSendsIt() =
+        runTest {
+            val db = newTestDb()
+            try {
+                seedLinked(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "5000" }
+                val client =
+                    scriptedClient(syncRecords = emptyList(), onSync = { changes ->
+                        assertTrue(port.applied.any { it == key to "20000" }, "materialize before sending")
+                        assertTrue(changes.any { it.coll == "setting" && it.fields["v"]?.v == JsonPrimitive(20000) })
+                    })
+                val h = harness(db, client, port)
+                h.capture.install()
+                port.recordLocal(key, 20000L)
+                val before = db.syncOutboxDao().get("setting", key.name, "v")!!
+                h.engine.round(SyncRoundReason.SYNC_NOW)
+                assertNull(db.syncOutboxDao().get("setting", key.name, "v"))
+                val raw = SyncJson.decodeFromString<RawSyncRecord>(db.syncClockDao().get("setting", key.name)!!.clocks)
+                assertEquals(Hlc(before.hlc, NodeId(before.nodeId)).toString(), raw.settingHash?.clock)
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anUnmaterializableIntentIsNotPushedOrAcknowledged() =
+        runTest {
+            val db = newTestDb()
+            try {
+                seedLinked(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val port =
+                    FakeSettingsSyncPort().apply {
+                        current[key.name] = "5000"
+                        remoteResult = false
+                    }
+                val client =
+                    scriptedClient(syncRecords = emptyList(), onSync = { changes ->
+                        assertTrue(changes.none { it.coll == "setting" }, "a failed write stays local and retryable")
+                    })
+                val h = harness(db, client, port)
+                h.capture.install()
+                port.recordLocal(key, 20000L)
+                val before = db.syncOutboxDao().get("setting", key.name, "v")!!
+                h.engine.round(SyncRoundReason.SYNC_NOW)
+                assertEquals(before, db.syncOutboxDao().get("setting", key.name, "v"))
+            } finally {
+                db.close()
+            }
+        }
+
     // --- Fixtures -----------------------------------------------------------------------------------
 
     private fun applier(
@@ -467,6 +521,7 @@ abstract class SyncEngineEffectsDrainTestBase {
         syncHasMore: Boolean = false,
         syncFailure: (() -> Throwable)? = null,
         pageRecords: List<RecordDto> = emptyList(),
+        onSync: ((List<ChangeDto>) -> Unit)? = null,
     ): SyncClient =
         object : SyncClient {
             override suspend fun discover(baseUrl: String): DiscoveryDocument = unsupported()
@@ -524,6 +579,7 @@ abstract class SyncEngineEffectsDrainTestBase {
                 since: String?,
                 changes: List<ChangeDto>,
             ): SyncResponse {
+                onSync?.invoke(changes)
                 syncFailure?.let { throw it() }
                 return SyncResponse(
                     results =

@@ -97,6 +97,7 @@ object SyncBindings {
         activity: SyncActivityState,
         gate: LocalNetworkGate,
         effects: SyncApplyEffects,
+        capture: SettingsCapture,
     ): SyncEngine =
         SyncEngine(
             db = db,
@@ -110,6 +111,7 @@ object SyncBindings {
             activity = activity,
             gate = gate,
             effects = effects,
+            capture = capture,
         )
 
     /**

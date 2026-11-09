@@ -83,6 +83,7 @@ class SyncEngine(
     private val activity: SyncActivityState,
     private val gate: LocalNetworkGate,
     private val effects: SyncApplyEffects,
+    private val capture: SettingsCapture,
 ) {
     private val reader = OutboxReader(db, clock)
     private val builder = ChangeBuilder(db, secrets, sharePasswords)
@@ -123,6 +124,7 @@ class SyncEngine(
         // 10 Durable apply effects: a marker an earlier committed page left behind retries before
         // this round's first request — the drain is local (Room and DataStore), so it recovers
         // while offline too, and the push below can never echo over an unapplied server value.
+        capture.reconcile()
         effects.drainSettings()
         var pushed = 0
         var applied = 0
@@ -137,7 +139,7 @@ class SyncEngine(
         var rounds = 0
         while (rounds < MAX_ROUNDS) {
             rounds++
-            val rows = reader.next()
+            val rows = capture.prepareForPush(reader.next(), reason == SyncRoundReason.FIRST_LINK)
             val changes = builder.build(rows)
             if (changes.isEmpty() && (rounds > 1 || reason in noPullReasons)) break
             val state = db.syncStateDao().get()

@@ -2,6 +2,8 @@
 
 package ch.lkmc.neutrodyne.core.data
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import ch.lkmc.neutrodyne.core.common.AppDirs
 import ch.lkmc.neutrodyne.core.common.StoragePaths
 import ch.lkmc.neutrodyne.core.datastore.DataStoreBindings
@@ -15,6 +17,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -94,6 +98,36 @@ class DataStoreSettingsSyncPortTest {
             port.registerRecorder(null)
             port.recordLocal(GroupsSettingKeys.SHOW_UNGROUPED_TAB, false)
             assertEquals(listOf("true"), calls)
+        }
+
+    @Test
+    fun aMaterializedListenerFailureDoesNotEscapeOrLoseTheLocalEvent() =
+        runTest {
+            val (port, store) = portAndStore()
+            val events = mutableListOf<ch.lkmc.neutrodyne.core.domain.LocalSyncedSetting>()
+            val collector =
+                backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+                    port.localSyncedChanges.collect { events += it }
+                }
+            port.registerMaterialized { _, _ -> throw java.io.IOException("Room bookkeeping unavailable") }
+            store.set(GroupsSettingKeys.SHOW_UNGROUPED_TAB, true)
+            port.emitLocal(GroupsSettingKeys.SHOW_UNGROUPED_TAB, true, 123L)
+            assertTrue(store.get(GroupsSettingKeys.SHOW_UNGROUPED_TAB))
+            assertEquals(listOf("true"), events.map { it.json })
+            collector.cancel()
+        }
+
+    @Test
+    fun anUnreadableFileIsNotARealDefaultValueForSync() =
+        runTest {
+            val (port, _) =
+                portAndStore { delegate ->
+                    object : DataStore<Preferences> by delegate {
+                        override val data: Flow<Preferences> =
+                            kotlinx.coroutines.flow.flow { throw java.io.IOException("cannot read") }
+                    }
+                }
+            kotlin.test.assertNull(port.currentJson(GroupsSettingKeys.SHOW_UNGROUPED_TAB))
         }
 
     private fun TestScope.portAndStore(

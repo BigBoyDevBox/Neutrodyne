@@ -31,6 +31,7 @@ class FakeSettingsSyncPort : SettingsSyncPort {
         json: String,
     ): Boolean {
         applied += key to json
+        if (remoteResult) current[key.name] = if (json == "null") encode(key, key.default)!! else json
         return remoteResult
     }
 

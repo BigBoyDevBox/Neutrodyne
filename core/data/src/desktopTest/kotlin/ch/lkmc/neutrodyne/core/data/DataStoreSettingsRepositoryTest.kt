@@ -117,6 +117,32 @@ class DataStoreSettingsRepositoryTest : SettingsRepositoryContract() {
             assertEquals(10_000L, repository.get(portableSyncedLong))
         }
 
+    @Test
+    fun postWriteBookkeepingFailureStillReturnsSuccessForTheCommittedValue() =
+        runTest {
+            if (!::scope.isInitialized) {
+                scope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+            }
+            val dispatcher = UnconfinedTestDispatcher(testScheduler)
+            val factory = SettingsDataStoreFactory(storagePathsFor(root.resolve("post-write")), scope, dispatcher)
+            val store = DataStoreBindings.settingsStore(DataStoreBindings.portableDataStore(factory))
+            val clock =
+                ch.lkmc.neutrodyne.core.testing
+                    .TestClock()
+            val port = DataStoreSettingsSyncPort(store, clock)
+            port.registerMaterialized { _, _ -> throw java.io.IOException("bookkeeping unavailable") }
+            val repository =
+                DataStoreSettingsRepository(
+                    store,
+                    DataStoreBindings.deviceSettingsStore(DataStoreBindings.deviceDataStore(factory)),
+                    port,
+                    clock,
+                    DataStoreSettingsWriteCoordinator(),
+                )
+            assertEquals(Outcome.Success(Unit), repository.set(portableSyncedLong, 20000L))
+            assertEquals(20000L, repository.get(portableSyncedLong))
+        }
+
     @Test fun appearanceValuesPersistAndStayOutOfSync() =
         runTest {
             val repository = repositoryOver(root.resolve("appearance"))

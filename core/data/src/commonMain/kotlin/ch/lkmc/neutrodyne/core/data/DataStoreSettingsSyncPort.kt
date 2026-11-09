@@ -4,6 +4,7 @@ package ch.lkmc.neutrodyne.core.data
 
 import ch.lkmc.neutrodyne.core.common.AppScope
 import ch.lkmc.neutrodyne.core.common.Clock
+import ch.lkmc.neutrodyne.core.common.Log
 import ch.lkmc.neutrodyne.core.common.suspendRunCatching
 import ch.lkmc.neutrodyne.core.datastore.SettingsStore
 import ch.lkmc.neutrodyne.core.domain.LocalSyncedSetting
@@ -68,7 +69,7 @@ internal class DataStoreSettingsSyncPort(
 
     @Suppress("UNCHECKED_CAST")
     override suspend fun currentJson(key: SettingKey<*>): String? =
-        suspendRunCatching { encode(key, settingsStore.get(key as SettingKey<Any>)) }.getOrNull()
+        suspendRunCatching { encode(key, settingsStore.getOrThrow(key as SettingKey<Any>)) }.getOrNull()
 
     override fun encode(
         key: SettingKey<*>,
@@ -105,7 +106,11 @@ internal class DataStoreSettingsSyncPort(
     ) {
         if (!key.synced) return
         val json = encode(key, value) ?: return
-        materializedRef(key, json)
+        // The value has already committed. Room bookkeeping can retry from its durable intent;
+        // it must not turn a successful settings write into an uncaught UI failure.
+        suspendRunCatching { materializedRef(key, json) }.onFailure { failure ->
+            Log.w("Settings", failure) { "materialization bookkeeping failed for '${key.name}'" }
+        }
         local.tryEmit(LocalSyncedSetting(key, json, atMs))
     }
 

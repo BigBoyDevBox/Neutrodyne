@@ -1584,6 +1584,15 @@ class FirstLinkMergerTest {
         activity: SyncActivityState,
     ): SyncEngine {
         val secrets = FakeSecretStore()
+        val writeLocks = TestSettingsWriteCoordinator()
+        val settings =
+            FakeSettingsSyncPort().apply {
+                // A fresh real DataStore reads typed defaults, rather than an unreadable value.
+                for (key in ch.lkmc.neutrodyne.core.model.settings.AllSettingKeys.list
+                    .filter { it.synced }) {
+                    current[key.name] = encode(key, key.default)!!
+                }
+            }
         return SyncEngine(
             db = db,
             client = client,
@@ -1619,7 +1628,8 @@ class FirstLinkMergerTest {
             gate =
                 ch.lkmc.neutrodyne.core.testing
                     .FakeLocalNetworkGate(),
-            effects = newEffects(db),
+            effects = SyncApplyEffects(db, settings, writeLocks) { true },
+            capture = SettingsCapture(db, settings, writeLocks) { true },
         )
     }
 
