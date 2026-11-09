@@ -32,10 +32,12 @@ interface SettingsSyncPort {
 
     /**
      * Installs the recorder `SettingsCapture` uses to persist a local intent before DataStore;
-     * `null` clears it (unlinked or the switch off). The recorder is called only for keys with
+     * `null` clears it while unlinked. While linked it stays installed and live-gated, including
+     * when the switch is off. Its result identifies this exact write's admission, independent of
+     * later gate changes; the repository persists it atomically with the value. Called only for
      * [SettingKey.synced].
      */
-    fun registerRecorder(recorder: (suspend (key: SettingKey<*>, json: String) -> Unit)?)
+    fun registerRecorder(recorder: (suspend (key: SettingKey<*>, json: String) -> SettingWriteOrigin)?)
 
     /**
      * Installs the listener `SettingsCapture` uses to record that a local synced write reached
@@ -62,6 +64,9 @@ interface SettingsSyncPort {
      */
     suspend fun currentJson(key: SettingKey<*>): String?
 
+    /** Strictly reads the effective value and its local write origin from one store snapshot. */
+    suspend fun currentSnapshot(key: SettingKey<*>): SyncedSettingSnapshot?
+
     /**
      * Persists the local intent for a synced key before its DataStore write. A recorder failure
      * propagates so the caller leaves DataStore unchanged.
@@ -69,7 +74,7 @@ interface SettingsSyncPort {
     suspend fun recordLocal(
         key: SettingKey<*>,
         value: Any?,
-    )
+    ): SettingWriteOrigin
 
     /**
      * Runs the materialized listener, then emits [LocalSyncedSetting] after a successful local
@@ -87,4 +92,22 @@ data class LocalSyncedSetting(
     val key: SettingKey<*>,
     val json: String,
     val atMs: Long,
+)
+
+/** Admission fixed before a local write; an uncaptured edit has no wire clock. */
+sealed interface SettingWriteOrigin {
+    data object Uncaptured : SettingWriteOrigin
+
+    /** Opaque account/link and complete-clock receipt owned by the capture implementation. */
+    data class Captured(
+        val token: String,
+    ) : SettingWriteOrigin
+}
+
+/** A missing origin means an untracked writer, such as a direct store edit or restore. */
+data class SyncedSettingSnapshot(
+    val json: String,
+    val origin: SettingWriteOrigin?,
+    /** Opaque identity of this physical write; null for an untracked store value. */
+    val receipt: String? = null,
 )

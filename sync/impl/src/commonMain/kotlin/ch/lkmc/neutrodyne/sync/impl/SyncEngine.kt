@@ -254,6 +254,7 @@ class SyncEngine(
                         ?: stored?.settingHash.advancedTo(value.toString(), clock.toString()),
                 pendingSetting = stored?.pendingSetting,
                 pendingAuth = stored?.pendingAuth,
+                settingIntent = stored?.settingIntent,
             ),
         )
     }

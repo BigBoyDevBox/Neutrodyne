@@ -8,6 +8,7 @@ import ch.lkmc.neutrodyne.core.database.SyncCaptureKind
 import ch.lkmc.neutrodyne.core.database.SyncClockEntity
 import ch.lkmc.neutrodyne.core.database.SyncOutboxEntity
 import ch.lkmc.neutrodyne.core.database.SyncStateEntity
+import ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin
 import ch.lkmc.neutrodyne.core.domain.SettingsSyncPort
 import ch.lkmc.neutrodyne.core.domain.SettingsWriteCoordinator
 import ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys
@@ -99,8 +100,8 @@ abstract class SettingsCaptureTestBase {
 
                 // The intent commits AND its DataStore write lands before the crash.
                 port.recordLocal(PlaybackSettingKeys.SKIP_BACK_MS, 20_000L)
+                port.commitLocal(PlaybackSettingKeys.SKIP_BACK_MS, 20_000L)
                 port.emitLocal(PlaybackSettingKeys.SKIP_BACK_MS, 20_000L, now)
-                port.current[PlaybackSettingKeys.SKIP_BACK_MS.name] = "20000"
                 val intent =
                     db.syncOutboxDao().get("setting", PlaybackSettingKeys.SKIP_BACK_MS.name, "v")
                 assertNotNull(intent)
@@ -244,8 +245,8 @@ abstract class SettingsCaptureTestBase {
                 // 3. A newer local set while off: nothing is captured, but the successful write
                 //    still baselines clocklessly through the materialized listener.
                 port.recordLocal(key, 25_000L)
+                port.commitLocal(key, 25_000L)
                 port.emitLocal(key, 25_000L, now)
-                port.current[key.name] = "25000"
                 assertEquals(
                     "15000",
                     db.syncOutboxDao().get("setting", key.name, "v")?.value,
@@ -320,6 +321,7 @@ abstract class SettingsCaptureTestBase {
                 capture.reconcile()
 
                 port.recordLocal(key, 20_000L)
+                port.commitLocal(key, 20_000L)
                 port.emitLocal(key, 20_000L, now)
                 assertNull(
                     db.syncOutboxDao().get("setting", key.name, "v"),
@@ -418,6 +420,7 @@ abstract class SettingsCaptureTestBase {
                 port.recordLocal(key, 20_000L)
                 val intent = db.syncOutboxDao().get("setting", key.name, "v")
                 assertNotNull(intent)
+                port.commitLocal(key, 20_000L)
                 port.emitLocal(key, 20_000L, now)
 
                 val baseline = baselineOf(db, key)
@@ -448,8 +451,8 @@ abstract class SettingsCaptureTestBase {
                 val capture = capture(db, port)
                 capture.install()
                 port.recordLocal(key, 5000L)
+                port.commitLocal(key, 5000L)
                 port.emitLocal(key, 5000L, now)
-                port.current[key.name] = "5000"
                 port.recordLocal(key, 20000L)
                 val before = db.syncOutboxDao().get("setting", key.name, "v")!!
                 port.current.remove(key.name)
@@ -548,6 +551,7 @@ abstract class SettingsCaptureTestBase {
                 val first = SettingsCapture(db, port, coordinator) { enabled }
                 first.install()
                 port.recordLocal(key, 5000L)
+                port.commitLocal(key, 5000L)
                 port.emitLocal(key, 5000L, now)
                 port.recordLocal(key, 20000L)
                 first.clear()
@@ -555,6 +559,7 @@ abstract class SettingsCaptureTestBase {
                 val restarted = SettingsCapture(db, port, coordinator) { enabled }
                 restarted.reconcile()
                 port.recordLocal(key, 5000L)
+                port.commitLocal(key, 5000L)
                 port.emitLocal(key, 5000L, now + 1)
                 enabled = true
                 restarted.reconcile()
@@ -640,7 +645,8 @@ abstract class SettingsCaptureTestBase {
                 port.recordLocal(key, 15000L)
                 enabled = false
                 capture.reconcile()
-                port.current[key.name] = "15000"
+                port.recordLocal(key, 15000L)
+                port.commitLocal(key, 15000L)
                 port.emitLocal(key, 15000L, now)
                 assertNull(baselineOf(db, key)?.clock, "an off-write is not the earlier captured write")
             } finally {
@@ -736,6 +742,328 @@ abstract class SettingsCaptureTestBase {
                 assertEquals("15000", fresh.value)
                 assertTrue(Hlc(fresh.hlc, NodeId(fresh.nodeId)) > old, "the restored edit must be newer")
                 assertTrue(port.applied.isEmpty())
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anOnEdgeWriteCannotEscapeTheInstalledRecorder() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                seedKnown(db, key, "9000", Hlc.of(now - 1000, 3, remote))
+                db.syncStateDao().raiseHlc(Hlc.of(now - 1000, 3, remote).packed)
+                var enabled = false
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                val capture = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                capture.reconcile()
+                enabled = true
+                port.recordLocal(key, 20000L)
+                port.commitLocal(key, 20000L)
+                port.emitLocal(key, 20000L, now)
+                capture.reconcile()
+                assertEquals("20000", port.current[key.name])
+                assertEquals("20000", db.syncOutboxDao().get("setting", key.name, "v")?.value)
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anOffAdmittedWriteCannotBorrowAClockAfterEnabling() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                seedKnown(db, key, "9000", Hlc.of(now - 1000, 3, remote))
+                db.syncStateDao().raiseHlc(Hlc.of(now - 1000, 3, remote).packed)
+                var enabled = true
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                val capture = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                capture.install()
+                port.recordLocal(key, 15000L)
+                enabled = false
+                capture.reconcile()
+                port.recordLocal(key, 15000L)
+                enabled = true
+                port.commitLocal(key, 15000L)
+                port.emitLocal(key, 15000L, now)
+                capture.reconcile()
+                assertEquals("9000", port.current[key.name])
+                assertNull(db.syncOutboxDao().get("setting", key.name, "v"))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anOnAdmittedWriteKeepsItsClockAfterDisabling() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                seedKnown(db, key, "9000", Hlc.of(now - 1000, 3, remote))
+                db.syncStateDao().raiseHlc(Hlc.of(now - 1000, 3, remote).packed)
+                var enabled = true
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                val capture = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                capture.install()
+                port.recordLocal(key, 15000L)
+                val intent = db.syncOutboxDao().get("setting", key.name, "v")!!
+                enabled = false
+                capture.reconcile()
+                port.commitLocal(key, 15000L)
+                port.emitLocal(key, 15000L, now)
+                assertEquals(Hlc(intent.hlc, NodeId(intent.nodeId)).toString(), baselineOf(db, key)?.clock)
+                enabled = true
+                capture.reconcile()
+                assertEquals("15000", port.current[key.name])
+                assertEquals(intent, db.syncOutboxDao().get("setting", key.name, "v"))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anOffWriteSurvivesACrashBeforeItsRoomCallback() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                seedKnown(db, key, "9000", Hlc.of(now - 1000, 3, remote))
+                db.syncStateDao().raiseHlc(Hlc.of(now - 1000, 3, remote).packed)
+                var enabled = true
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                val capture = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                capture.install()
+                port.recordLocal(key, 15000L)
+                enabled = false
+                capture.reconcile()
+                port.recordLocal(key, 15000L)
+                port.commitLocal(key, 15000L)
+                // DataStore committed, but no Room callback ran before the process died.
+                val restarted = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                restarted.reconcile()
+                enabled = true
+                restarted.reconcile()
+                assertEquals("9000", port.current[key.name])
+                assertNull(db.syncOutboxDao().get("setting", key.name, "v"))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aFailedOffWriteCannotEraseAPreviousCommittedOnIntent() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                seedKnown(db, key, "9000", Hlc.of(now - 1000, 3, remote))
+                db.syncStateDao().raiseHlc(Hlc.of(now - 1000, 3, remote).packed)
+                var enabled = true
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                val capture = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                capture.install()
+                port.recordLocal(key, 15000L)
+                val intent = db.syncOutboxDao().get("setting", key.name, "v")!!
+                enabled = false
+                capture.reconcile()
+                port.recordLocal(key, 20000L)
+                // This DataStore write fails: neither the stored value nor its receipt changes.
+                enabled = true
+                capture.reconcile()
+                assertEquals("15000", port.current[key.name])
+                assertEquals(intent, db.syncOutboxDao().get("setting", key.name, "v"))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aCapturedOnWriteSurvivesAnOlderClocklessBaseline() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val accepted = Hlc.of(now - 1000, 3, remote)
+                seedKnown(db, key, "9000", accepted)
+                db.syncStateDao().raiseHlc(accepted.packed)
+                var enabled = false
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                val capture = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                capture.reconcile()
+                port.recordLocal(key, 20000L)
+                port.commitLocal(key, 20000L)
+                port.emitLocal(key, 20000L, now)
+                assertNull(baselineOf(db, key)?.clock)
+                enabled = true
+                port.recordLocal(key, 15000L)
+                val intent = db.syncOutboxDao().get("setting", key.name, "v")!!
+                port.commitLocal(key, 15000L)
+                // Crash before the callback: the durable receipt supersedes the old OFF baseline.
+                SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }.reconcile()
+                assertEquals("15000", port.current[key.name])
+                assertEquals(intent, db.syncOutboxDao().get("setting", key.name, "v"))
+                assertEquals(Hlc(intent.hlc, NodeId(intent.nodeId)).toString(), baselineOf(db, key)?.clock)
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aReceiptFromAnotherLinkCannotBecomeANewAccountEdit() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                val capture = capture(db, port)
+                capture.install()
+                port.recordLocal(key, 15000L)
+                port.commitLocal(key, 15000L)
+                db.syncStateDao().unlink()
+                link(db)
+                db.syncStateDao().upsert(
+                    db.syncStateDao().get()!!.copy(nodeId = "0000000000000003", accountId = "new-account"),
+                )
+                seedKnown(db, key, "7000", Hlc.of(now, 5, remote))
+                db.syncStateDao().raiseHlc(Hlc.of(now, 5, remote).packed)
+                capture.reconcile()
+                assertEquals("7000", port.current[key.name])
+                assertNull(db.syncOutboxDao().get("setting", key.name, "v"))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun offAdmissionNeedsNoRoomConnection() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val port = FakeSettingsSyncPort()
+                val capture = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { false }
+                capture.reconcile()
+                db.close()
+                assertEquals(SettingWriteOrigin.Uncaptured, port.recordLocal(key, 15000L))
+                port.commitLocal(key, 15000L)
+                assertEquals("15000", port.currentSnapshot(key)?.json)
+                assertEquals(SettingWriteOrigin.Uncaptured, port.currentSnapshot(key)?.origin)
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aFailedOnWriteRecoversAfterAnOlderUncapturedWrite() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val accepted = Hlc.of(now - 1000, 3, remote)
+                seedKnown(db, key, "9000", accepted)
+                db.syncStateDao().raiseHlc(accepted.packed)
+                var enabled = false
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                val capture = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                capture.reconcile()
+                port.recordLocal(key, 20000L)
+                port.commitLocal(key, 20000L)
+                port.emitLocal(key, 20000L, now)
+                enabled = true
+                port.recordLocal(key, 15000L)
+                val intent = db.syncOutboxDao().get("setting", key.name, "v")!!
+                // This ON DataStore write failed. The surviving UNC receipt belongs to an older write.
+                SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }.reconcile()
+                assertEquals("15000", port.current[key.name])
+                assertEquals(intent, db.syncOutboxDao().get("setting", key.name, "v"))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun bootstrapAdmissionSurvivesLinkCompletionBeforeAck() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                db.syncStateDao().upsert(db.syncStateDao().get()!!.copy(linkedAt = null))
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val port = FakeSettingsSyncPort()
+                port.recordLocal(key, 20000L)
+                port.commitLocal(key, 20000L)
+                db.withWriteTransaction { db.syncOutboxDao().captureLiteral("setting", key.name, "v", "20000") }
+                val intent = db.syncOutboxDao().get("setting", key.name, "v")!!
+                val capture = capture(db, port)
+                assertEquals(listOf(intent), capture.prepareForPush(listOf(intent), firstLink = true))
+                db.syncStateDao().upsert(db.syncStateDao().get()!!.copy(linkedAt = now))
+                capture.reconcile()
+                assertEquals(intent, db.syncOutboxDao().get("setting", key.name, "v"), "keep the admitted clock")
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun aLaterOffWriteOfTheSameValueSupersedesTheNewIntent() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val accepted = Hlc.of(now - 1000, 3, remote)
+                seedKnown(db, key, "9000", accepted)
+                db.syncStateDao().raiseHlc(accepted.packed)
+                var enabled = false
+                val port = FakeSettingsSyncPort().apply { current[key.name] = "9000" }
+                val capture = SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }
+                capture.reconcile()
+                port.recordLocal(key, 20000L)
+                port.commitLocal(key, 20000L)
+                port.emitLocal(key, 20000L, now)
+                enabled = true
+                port.recordLocal(key, 15000L)
+                enabled = false
+                port.recordLocal(key, 20000L)
+                port.commitLocal(key, 20000L)
+                // Same value, another physical OFF write, and no Room callback before the crash.
+                enabled = true
+                SettingsCapture(db, port, TestSettingsWriteCoordinator()) { enabled }.reconcile()
+                assertEquals("9000", port.current[key.name])
+                assertNull(db.syncOutboxDao().get("setting", key.name, "v"))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun anUncapturedAccountAbsentValueCanBeAdmittedForPush() =
+        runTest {
+            val db = newTestDb()
+            try {
+                val key = PlaybackSettingKeys.SKIP_BACK_MS
+                val port = FakeSettingsSyncPort()
+                port.recordLocal(key, 20000L)
+                port.commitLocal(key, 20000L)
+                link(db)
+                val capture = capture(db, port)
+                capture.install()
+                val intent = db.syncOutboxDao().get("setting", key.name, "v")!!
+                assertEquals(listOf(intent), capture.prepareForPush(listOf(intent), firstLink = false))
             } finally {
                 db.close()
             }

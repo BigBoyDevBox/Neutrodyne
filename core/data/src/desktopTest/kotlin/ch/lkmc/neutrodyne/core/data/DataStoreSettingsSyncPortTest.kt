@@ -93,7 +93,10 @@ class DataStoreSettingsSyncPortTest {
         runTest {
             val (port, _) = portAndStore()
             val calls = mutableListOf<String>()
-            port.registerRecorder { _, json -> calls += json }
+            port.registerRecorder { _, json ->
+                calls += json
+                ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin.Uncaptured
+            }
             port.recordLocal(GroupsSettingKeys.SHOW_UNGROUPED_TAB, true)
             port.registerRecorder(null)
             port.recordLocal(GroupsSettingKeys.SHOW_UNGROUPED_TAB, false)

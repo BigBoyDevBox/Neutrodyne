@@ -447,6 +447,7 @@ abstract class SyncEngineEffectsDrainTestBase {
                             h.capture.reconcile()
                             port.current[key.name] = "7000"
                             port.recordLocal(key, 7000L)
+                            port.commitLocal(key, 7000L)
                             port.emitLocal(key, 7000L, now)
                         }
                     })

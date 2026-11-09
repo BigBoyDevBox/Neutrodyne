@@ -3,16 +3,22 @@
 package ch.lkmc.neutrodyne.core.testing
 
 import ch.lkmc.neutrodyne.core.domain.LocalSyncedSetting
+import ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin
 import ch.lkmc.neutrodyne.core.domain.SettingsSyncPort
+import ch.lkmc.neutrodyne.core.domain.SyncedSettingSnapshot
 import ch.lkmc.neutrodyne.core.model.settings.SettingKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlin.uuid.Uuid
 
 /** A [SettingsSyncPort] fixture: recordings in, scripted remote applies, no DataStore. */
 class FakeSettingsSyncPort : SettingsSyncPort {
-    private var recorderRef: (suspend (key: SettingKey<*>, json: String) -> Unit)? = null
+    private var recorderRef: (suspend (key: SettingKey<*>, json: String) -> SettingWriteOrigin)? = null
+    private val admitted = mutableMapOf<String, SettingWriteOrigin>()
+    private val origins = mutableMapOf<String, SettingWriteOrigin>()
+    private val receiptIds = mutableMapOf<String, String>()
     private var materializedRef: (suspend (key: SettingKey<*>, json: String) -> Unit)? = null
     private val locals = MutableSharedFlow<LocalSyncedSetting>(extraBufferCapacity = 16)
 
@@ -23,7 +29,33 @@ class FakeSettingsSyncPort : SettingsSyncPort {
     val applied = mutableListOf<Pair<SettingKey<*>, String>>()
 
     /** What [currentJson] reports per key — the fixture's stand-in for DataStore contents. */
-    val current = mutableMapOf<String, String>()
+    private val storedValues = mutableMapOf<String, String>()
+    val current: MutableMap<String, String> =
+        object : MutableMap<String, String> by storedValues {
+            override fun put(
+                key: String,
+                value: String,
+            ): String? {
+                origins.remove(key)
+                receiptIds.remove(key)
+                return storedValues.put(key, value)
+            }
+
+            override fun putAll(from: Map<out String, String>) {
+                from.forEach { (key, value) -> put(key, value) }
+            }
+
+            override fun remove(key: String): String? {
+                origins.remove(key)
+                receiptIds.remove(key)
+                return storedValues.remove(key)
+            }
+
+            override fun clear() {
+                origins.clear()
+                storedValues.clear()
+            }
+        }
     val materialized = mutableListOf<Pair<SettingKey<*>, String>>()
 
     override suspend fun applyRemote(
@@ -35,7 +67,7 @@ class FakeSettingsSyncPort : SettingsSyncPort {
         return remoteResult
     }
 
-    override fun registerRecorder(recorder: (suspend (key: SettingKey<*>, json: String) -> Unit)?) {
+    override fun registerRecorder(recorder: (suspend (key: SettingKey<*>, json: String) -> SettingWriteOrigin)?) {
         recorderRef = recorder
     }
 
@@ -44,6 +76,20 @@ class FakeSettingsSyncPort : SettingsSyncPort {
     }
 
     override suspend fun currentJson(key: SettingKey<*>): String? = current[key.name]
+
+    override suspend fun currentSnapshot(key: SettingKey<*>): SyncedSettingSnapshot? =
+        current[key.name]?.let { SyncedSettingSnapshot(it, origins[key.name], receiptIds[key.name]) }
+
+    /** The repository's atomic store commit, independently of its later notification. */
+    fun commitLocal(
+        key: SettingKey<*>,
+        value: Any?,
+    ) {
+        val origin = admitted.remove(key.name) ?: SettingWriteOrigin.Uncaptured
+        current[key.name] = encode(key, value ?: key.default) ?: error("invalid fixture setting")
+        origins[key.name] = origin
+        receiptIds[key.name] = Uuid.random().toString()
+    }
 
     override fun encode(
         key: SettingKey<*>,
@@ -94,10 +140,16 @@ class FakeSettingsSyncPort : SettingsSyncPort {
     override suspend fun recordLocal(
         key: SettingKey<*>,
         value: Any?,
-    ) {
-        val json = encode(key, value) ?: return
+    ): SettingWriteOrigin {
+        if (!key.synced) return SettingWriteOrigin.Uncaptured
+        // A real store always reads the default of a never-written key. Populate only the
+        // admitted key, leaving unconfigured keys unavailable to focused snapshot fixtures.
+        if (key.name !in current) current[key.name] = encode(key, key.default)!!
+        val json = encode(key, value) ?: return SettingWriteOrigin.Uncaptured
         recordings += key to json
-        recorderRef?.invoke(key, json)
+        val origin = recorderRef?.invoke(key, json) ?: SettingWriteOrigin.Uncaptured
+        admitted[key.name] = origin
+        return origin
     }
 
     override suspend fun emitLocal(

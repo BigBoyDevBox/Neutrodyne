@@ -7,8 +7,11 @@ import ch.lkmc.neutrodyne.core.database.NeutrodyneDatabase
 import ch.lkmc.neutrodyne.core.database.SyncCaptureKind
 import ch.lkmc.neutrodyne.core.database.SyncClockEntity
 import ch.lkmc.neutrodyne.core.database.SyncOutboxEntity
+import ch.lkmc.neutrodyne.core.database.SyncStateEntity
+import ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin
 import ch.lkmc.neutrodyne.core.domain.SettingsSyncPort
 import ch.lkmc.neutrodyne.core.domain.SettingsWriteCoordinator
+import ch.lkmc.neutrodyne.core.domain.SyncedSettingSnapshot
 import ch.lkmc.neutrodyne.core.model.settings.AllSettingKeys
 import ch.lkmc.neutrodyne.core.model.settings.SettingKey
 import ch.lkmc.neutrodyne.sync.protocol.Hlc
@@ -16,46 +19,32 @@ import ch.lkmc.neutrodyne.sync.protocol.NodeId
 import ch.lkmc.neutrodyne.sync.protocol.RecordState
 import ch.lkmc.neutrodyne.sync.protocol.SyncCollection
 import ch.lkmc.neutrodyne.sync.protocol.SyncJson
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import okio.IOException
 
 /**
- * 10 Settings capture: while linked and the persisted "Sync playback settings" switch is on,
- * installs the recorder that persists a local synced-key change as a literal `v` outbox intent
- * with a fresh clock **before** DataStore, and the materialized listener that advances the key's
- * [SettingBaseline] after every successful local DataStore write — captured or not. A failed
- * Room record leaves DataStore unchanged; a failed DataStore write keeps the committed intent
- * for recovery.
+ * 10 Settings capture: a local write's admission is decided before DataStore. While linked the
+ * recorder remains installed, reading the persisted sharing gate live. ON commits a literal
+ * outbox intent and returns an account/link/complete-clock receipt; OFF returns uncaptured
+ * provenance without requiring Room. The repository commits that opaque receipt with the value
+ * in one DataStore edit. A failed edit changes neither; a lost Room callback cannot lose origin.
  *
- * [install] runs three steps, in order, each setting key under its [SettingsWriteCoordinator]
- * lock (the same mutex local `set`/`reset` takes, so no capture gap opens):
+ * Recovery and push snapshots take the same per-key [SettingsWriteCoordinator] lock as local
+ * set/reset and linked restore. Durable origin is checked before value equality or baseline
+ * heuristics: an equal older intent cannot claim an OFF write, and an ON write keeps its clock
+ * across an OFF edge or a crash before notification. Each intent journals its predecessor's
+ * receipt and value hash in the same Room transaction: an older UNC value cannot cancel a newer
+ * intent whose DataStore write failed, and another equal-value OFF write has a new receipt.
+ * Direct store edits clear the receipt, so
+ * clocked-baseline drift remains evidence for genuinely unrecorded edits. Known account values
+ * win over explicit uncaptured writes when sharing is enabled; absent keys upload as at link.
  *
- * 1. Both callbacks register first, so a local write during the rest of the install can neither
- *    escape capture nor lose its baseline write.
- * 2. [recoverCommittedIntents] replays every committed `v` outbox intent whose DataStore write
- *    never landed (a crash or a write failure after the Room commit). The intent keeps its
- *    original complete clock — replay never takes a fresh tick. The decision re-reads the
- *    intent, the pending remote marker, the baseline and the live stored value:
- *    - the stored value already equals the intent: nothing to write; the baseline just advances.
- *    - a pending remote marker at least as new as the intent wins ([SyncApplyEffects] drains it
- *      next, after recovery — that order keeps an older intent from masking the newer effect).
- *    - the stored value still equals the baseline's: the intent simply never materialized, so
- *      it is applied and the baseline advances with it.
- *    - the baseline is clockless or the stored value matches neither intent nor baseline: a
- *      newer real write exists that the account never saw (an edit made while the switch was
- *      off, or an external restore). The intent is superseded bookkeeping: its row is retired
- *      under its own clock and the baseline records the surviving value clocklessly — no wall
- *      clock is invented and the latest user intent is not rolled back.
- * 3. [reconcileStoredKeys] initializes accepted baselines without a fresh clock, restores
- *    account values over off-switch edits, and captures genuinely unrecorded differences
- *    from clocked baselines. Pending local intents and remote effects are excluded, so stale
- *    projections never become fresh edits. Keys absent from the account upload their value.
- *
- * Recovery runs during [install] and again under the key lock before each push snapshot,
- * never while the switch is off or the link is gone (first-link publishing has its own gate):
- * [reconcile] chooses between the two from the persisted gates read live. The callbacks also
- * re-check the gates at call time — a `set` racing an unlink or the switch's off edge captures
- * nothing and writes no baseline while unlinked.
+ * A pending remote effect at least as new as an intent drains before recovery can mask it.
+ * Replay and first-link bootstrap retain their original-clock rules. [prepareForPush] admits
+ * only materialized literals, and acknowledgements merge immutable sent values, never a later
+ * store projection. Neither Room transactions nor account metadata cross the DataStore IO.
  */
 class SettingsCapture(
     private val db: NeutrodyneDatabase,
@@ -65,7 +54,7 @@ class SettingsCapture(
 ) {
     /**
      * The lifecycle entry point (start-up, link, the switch's both edges, unlink, revocation):
-     * installs while linked with the switch on, clears otherwise. The gates are the persisted
+     * installs live-gated callbacks while linked, and clears them while unlinked. The gates are the persisted
      * values read at this call — never a cache.
      */
     suspend fun reconcile() {
@@ -78,30 +67,43 @@ class SettingsCapture(
         }
     }
 
-    /**
-     * The switch's off edge: the recorder goes inert but the materialized listener stays — a
-     * local write while off is not captured, yet its clockless baseline is what later keeps a
-     * committed-but-unmaterialized intent from rolling it back. [clear] removes both.
-     */
+    /** Both callbacks remain installed while linked; admission reads the persisted gate live. */
     fun off() {
-        settings.registerRecorder(null)
+        installRecorder()
         installMaterializedListener()
     }
 
     /** Starts recording and recovers committed intents; called while linked with the switch on. */
     suspend fun install() {
-        settings.registerRecorder { key, json ->
-            if (linked() && settingsSyncEnabled()) {
-                db.withWriteTransaction {
-                    db
-                        .syncOutboxDao()
-                        .captureIntent(SyncCollection.SETTING.wire, key.name, "v", json)
-                }
-            }
-        }
+        installRecorder()
         installMaterializedListener()
         recoverCommittedIntents()
         reconcileStoredKeys()
+    }
+
+    private fun installRecorder() {
+        settings.registerRecorder { key, json ->
+            // OFF settings remain usable even if Room is unavailable. Their uncaptured origin
+            // commits with the value in DataStore, so it survives a failed Room notification.
+            if (!settingsSyncEnabled()) {
+                SettingWriteOrigin.Uncaptured
+            } else {
+                val before = settings.currentSnapshot(key) ?: throw IOException("setting admission is unreadable")
+                db.withWriteTransaction {
+                    val state = linkedState() ?: return@withWriteTransaction SettingWriteOrigin.Uncaptured
+                    if (state.applying) return@withWriteTransaction SettingWriteOrigin.Uncaptured
+                    db.syncOutboxDao().captureIntent(SyncCollection.SETTING.wire, key.name, "v", json)
+                    val intent = checkNotNull(db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v"))
+                    val clock = Hlc(intent.hlc, NodeId(intent.nodeId)).toString()
+                    rememberIntentBoundary(key, intent, before)
+                    SettingWriteOrigin.Captured(
+                        SyncJson.encodeToString(
+                            CapturedSettingReceipt(clock, state.nodeId, state.accountId, state.serverUrl),
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     private fun installMaterializedListener() {
@@ -117,28 +119,26 @@ class SettingsCapture(
     }
 
     /** A linked, unrevoked account — the only state in which capture bookkeeping may live. */
-    private suspend fun linked(): Boolean {
-        val state = db.syncStateDao().get() ?: return false
-        return state.enabled && state.linkedAt != null && state.lastError != SYNC_ERROR_REVOKED
-    }
+    private suspend fun linked(): Boolean = linkedState() != null
+
+    private suspend fun linkedState(): SyncStateEntity? =
+        db.syncStateDao().get()?.takeIf {
+            it.enabled && it.linkedAt != null && it.lastError != SYNC_ERROR_REVOKED
+        }
 
     /**
-     * The post-write half of the capture contract: the stored value [json] just landed in
-     * DataStore, so the baseline tracks it at the committed intent's complete clock when the
-     * row still carries that literal, or clocklessly when nothing was captured (the switch
-     * off). The per-key lock the caller holds serializes this with every other writer.
+     * The origin was committed with this value, before this notification. A gate flip or an
+     * equal older intent cannot relabel an uncaptured write or erase a captured write's clock.
      */
     private suspend fun recordMaterialized(
         key: SettingKey<*>,
         json: String,
     ) {
-        // Read the live gate while the caller holds the key lock, outside the Room transaction.
-        val captureEnabled = settingsSyncEnabled()
+        val snapshot = settings.currentSnapshot(key) ?: return
+        if (!matchesLiteral(key, snapshot.json, json) || snapshot.origin == null) return
         db.withWriteTransaction {
-            if (!linked()) return@withWriteTransaction
-            val intent = db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v")
-            val clock =
-                if (captureEnabled && intent?.value == json) Hlc(intent.hlc, NodeId(intent.nodeId)).toString() else null
+            val state = linkedState() ?: return@withWriteTransaction
+            val clock = captureClock(snapshot.origin, state)
             val row = db.syncClockDao().get(SyncCollection.SETTING.wire, key.name)
             val raw = row?.clocks?.let(::decode)
             if (row != null && raw == null) return@withWriteTransaction
@@ -147,16 +147,28 @@ class SettingsCapture(
                 if (clock == null) {
                     SettingBaseline(settingBaselineHash(json))
                 } else {
-                    stored.settingHash.advancedTo(json, clock)
+                    stored.settingHash.advancedTo(json, clock.toString())
                 }
             db.syncClockDao().upsert(
-                SyncClockEntity(
-                    SyncCollection.SETTING.wire,
-                    key.name,
-                    encode(stored.copy(settingHash = next)),
-                ),
+                SyncClockEntity(SyncCollection.SETTING.wire, key.name, encode(stored.copy(settingHash = next))),
             )
         }
+    }
+
+    private fun captureClock(
+        origin: SettingWriteOrigin?,
+        state: SyncStateEntity,
+    ): Hlc? {
+        val token = (origin as? SettingWriteOrigin.Captured)?.token ?: return null
+        val receipt =
+            runCatching { SyncJson.decodeFromString<CapturedSettingReceipt>(token) }.getOrNull()
+                ?: return null
+        if (receipt.nodeId != state.nodeId || receipt.accountId != state.accountId ||
+            receipt.serverUrl != state.serverUrl
+        ) {
+            return null
+        }
+        return parseHlc(receipt.clock)?.takeIf { it.nodeId.value == state.nodeId }
     }
 
     /** Step 2 of [install]: replay or retire each committed `v` intent under its key's lock. */
@@ -171,7 +183,10 @@ class SettingsCapture(
         }
     }
 
-    private suspend fun recoverIntent(key: SettingKey<*>) {
+    private suspend fun recoverIntent(
+        key: SettingKey<*>,
+        scope: RecoveryScope = RecoveryScope.LINKED,
+    ) {
         // Re-read under the lock: a local write may have coalesced or acked the row meanwhile.
         val row = db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v") ?: return
         val intentClock = Hlc(row.hlc, NodeId(row.nodeId))
@@ -188,14 +203,28 @@ class SettingsCapture(
                 pendingClock != null &&
                 pendingClock >= intentClock
         if (deferred) return
-        val current = settings.currentJson(key) ?: return
+        val snapshot = settings.currentSnapshot(key) ?: return
+        val current = snapshot.json
+        val state = db.syncStateDao().get() ?: return
+        val receiptClock = captureClock(snapshot.origin, state)
+        val hasOrigin = scope == RecoveryScope.LINKED && snapshot.origin != null
+        val uncaptured = hasOrigin && receiptClock == null
         val matchesIntent = row.value?.let { matchesLiteral(key, current, it) } == true
+        val boundary = raw?.settingIntent?.takeIf { it.clock == intentClock.toString() }
+        val predecessorUnchanged =
+            boundary != null && boundary.priorReceipt == snapshot.receipt &&
+                boundary.priorHash == settingBaselineHash(current)
         val baseline = raw?.settingHash
-        if (row.captureKind != SyncCaptureKind.REPLAY && baseline != null) {
-            val baselineClock = baseline.clock?.let(::parseHlc)
-            val offWrite = baseline.clock == null
+        if (row.captureKind != SyncCaptureKind.REPLAY) {
+            val baselineClock = baseline?.clock?.let(::parseHlc)
+            val capturedHere = hasOrigin && receiptClock == intentClock && matchesIntent
+            val offWrite =
+                !predecessorUnchanged &&
+                    (uncaptured || (!capturedHere && baseline != null && baseline.clock == null))
             val superseded = baselineClock != null && baselineClock > intentClock
-            val externalDrift = !matchesIntent && !matchesBaseline(key, current, baseline)
+            val externalDrift =
+                !predecessorUnchanged && baseline != null &&
+                    !matchesIntent && !matchesBaseline(key, current, baseline)
             if (offWrite || superseded || externalDrift) {
                 // Off-writes have explicit clockless provenance. A clocked baseline instead
                 // remains evidence for hash reconciliation of an unrecorded external edit.
@@ -304,7 +333,24 @@ class SettingsCapture(
                 ) {
                     return@withLock
                 }
-                recoverIntent(key)
+                val scope = if (firstLink && state.linkedAt == null) RecoveryScope.BOOTSTRAP else RecoveryScope.LINKED
+                if (scope == RecoveryScope.BOOTSTRAP) {
+                    val fresh = db.syncOutboxDao().get(row.coll, row.rid, row.field) ?: return@withLock
+                    val snapshot = settings.currentSnapshot(key) ?: return@withLock
+                    if (fresh.value?.let { matchesLiteral(key, snapshot.json, it) } == true) {
+                        db.withWriteTransaction {
+                            val raw =
+                                db
+                                    .syncClockDao()
+                                    .get(row.coll, row.rid)
+                                    ?.clocks
+                                    ?.let(::decode)
+                            val clock = Hlc(fresh.hlc, NodeId(fresh.nodeId)).toString()
+                            if (raw?.settingIntent?.clock != clock) rememberIntentBoundary(key, fresh, snapshot)
+                        }
+                    }
+                }
+                recoverIntent(key, scope)
                 val fresh = db.syncOutboxDao().get(row.coll, row.rid, row.field) ?: return@withLock
                 val current = settings.currentJson(key) ?: return@withLock
                 val literal = fresh.value ?: return@withLock
@@ -333,7 +379,10 @@ class SettingsCapture(
                         ?.clocks
                         ?.let(::decode)
                 if (raw?.pendingSetting != null) return@withLock
-                val current = settings.currentJson(key) ?: return@withLock
+                val snapshot = settings.currentSnapshot(key) ?: return@withLock
+                val current = snapshot.json
+                val state = db.syncStateDao().get() ?: return@withLock
+                val uncaptured = snapshot.origin != null && captureClock(snapshot.origin, state) == null
                 val accepted = raw?.state?.fields?.get("v")
                 val baseline = raw?.settingHash
                 val acceptedClock = accepted?.c
@@ -343,7 +392,7 @@ class SettingsCapture(
                         advanceBaseline(key, literal, acceptedClock.toString())
                         return@withLock
                     }
-                    if (baseline?.clock == null) {
+                    if (uncaptured || baseline?.clock == null) {
                         if (settings.applyRemote(key, literal)) {
                             advanceBaseline(key, literal, acceptedClock.toString())
                         }
@@ -353,9 +402,36 @@ class SettingsCapture(
                 }
                 db.withWriteTransaction {
                     db.syncOutboxDao().captureIntent(SyncCollection.SETTING.wire, key.name, "v", current)
+                    val intent = checkNotNull(db.syncOutboxDao().get(SyncCollection.SETTING.wire, key.name, "v"))
+                    rememberIntentBoundary(key, intent, snapshot)
                 }
             }
         }
+    }
+
+    /** Caller owns the key lock and writer; no DataStore IO occurs inside this transaction. */
+    private suspend fun rememberIntentBoundary(
+        key: SettingKey<*>,
+        intent: SyncOutboxEntity,
+        before: SyncedSettingSnapshot,
+    ) {
+        val row = db.syncClockDao().get(SyncCollection.SETTING.wire, key.name)
+        val stored = row?.clocks?.let(::decode)
+        if (row != null && stored == null) throw IOException("setting metadata is unreadable")
+        val raw = stored ?: RawSyncRecord(RecordState(SyncCollection.SETTING))
+        val boundary =
+            SettingIntent(
+                Hlc(intent.hlc, NodeId(intent.nodeId)).toString(),
+                before.receipt,
+                settingBaselineHash(before.json),
+            )
+        db.syncClockDao().upsert(
+            SyncClockEntity(
+                SyncCollection.SETTING.wire,
+                key.name,
+                encode(raw.copy(settingIntent = boundary)),
+            ),
+        )
     }
 
     private fun matchesLiteral(
@@ -374,6 +450,16 @@ class SettingsCapture(
     ): Boolean =
         settingBaselineHash(current) == baseline.hash ||
             (baseline.hash == settingBaselineHash("null") && matchesLiteral(key, current, "null"))
+
+    private enum class RecoveryScope { LINKED, BOOTSTRAP }
+
+    @Serializable
+    private data class CapturedSettingReceipt(
+        val clock: String,
+        val nodeId: String?,
+        val accountId: String? = null,
+        val serverUrl: String? = null,
+    )
 
     private fun parseHlc(clock: String): Hlc? = runCatching { Hlc.parse(clock) }.getOrNull()
 

@@ -8,7 +8,9 @@ import ch.lkmc.neutrodyne.core.common.Log
 import ch.lkmc.neutrodyne.core.common.suspendRunCatching
 import ch.lkmc.neutrodyne.core.datastore.SettingsStore
 import ch.lkmc.neutrodyne.core.domain.LocalSyncedSetting
+import ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin
 import ch.lkmc.neutrodyne.core.domain.SettingsSyncPort
+import ch.lkmc.neutrodyne.core.domain.SyncedSettingSnapshot
 import ch.lkmc.neutrodyne.core.model.settings.AllSettingKeys
 import ch.lkmc.neutrodyne.core.model.settings.SettingKey
 import dev.zacsweers.metro.ContributesBinding
@@ -25,6 +27,7 @@ import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlin.concurrent.Volatile
+import kotlin.uuid.Uuid
 
 /**
  * [SettingsSyncPort] over the portable [SettingStore] (10 Settings capture). The recorder is
@@ -40,7 +43,8 @@ internal class DataStoreSettingsSyncPort(
     private val clock: Clock,
 ) : SettingsSyncPort {
     @Volatile
-    private var recorderRef: suspend (SettingKey<*>, String) -> Unit = { _, _ -> }
+    private var recorderRef: suspend (SettingKey<*>, String) -> SettingWriteOrigin =
+        { _, _ -> SettingWriteOrigin.Uncaptured }
 
     @Volatile
     private var materializedRef: suspend (SettingKey<*>, String) -> Unit = { _, _ -> }
@@ -59,17 +63,23 @@ internal class DataStoreSettingsSyncPort(
         }
     }
 
-    override fun registerRecorder(recorder: (suspend (key: SettingKey<*>, json: String) -> Unit)?) {
-        recorderRef = recorder ?: { _, _ -> }
+    override fun registerRecorder(recorder: (suspend (key: SettingKey<*>, json: String) -> SettingWriteOrigin)?) {
+        recorderRef = recorder ?: { _, _ -> SettingWriteOrigin.Uncaptured }
     }
 
     override fun registerMaterialized(listener: (suspend (SettingKey<*>, String) -> Unit)?) {
         materializedRef = listener ?: { _, _ -> }
     }
 
+    override suspend fun currentJson(key: SettingKey<*>): String? = currentSnapshot(key)?.json
+
     @Suppress("UNCHECKED_CAST")
-    override suspend fun currentJson(key: SettingKey<*>): String? =
-        suspendRunCatching { encode(key, settingsStore.getOrThrow(key as SettingKey<Any>)) }.getOrNull()
+    override suspend fun currentSnapshot(key: SettingKey<*>): SyncedSettingSnapshot? =
+        suspendRunCatching {
+            val snapshot = settingsStore.readWithReceipt(key as SettingKey<Any>)
+            val json = encode(key, snapshot.value) ?: return@suspendRunCatching null
+            SyncedSettingSnapshot(json, decodeWriteOrigin(snapshot.receipt), snapshot.receipt)
+        }.getOrNull()
 
     override fun encode(
         key: SettingKey<*>,
@@ -93,10 +103,10 @@ internal class DataStoreSettingsSyncPort(
     override suspend fun recordLocal(
         key: SettingKey<*>,
         value: Any?,
-    ) {
-        if (!key.synced) return
-        val json = encode(key, value) ?: return
-        recorderRef.invoke(key, json)
+    ): SettingWriteOrigin {
+        if (!key.synced) return SettingWriteOrigin.Uncaptured
+        val json = encode(key, value) ?: return SettingWriteOrigin.Uncaptured
+        return recorderRef.invoke(key, json)
     }
 
     override suspend fun emitLocal(
@@ -192,3 +202,28 @@ private fun decodeSettingValue(
             name?.let(key::fromStored)
         }
     }
+
+// The low-level store treats these as opaque receipts; sync types stay in this adapter.
+internal fun SettingWriteOrigin.storedReceipt(): String =
+    when (this) {
+        SettingWriteOrigin.Uncaptured -> "$UNCAPTURED_RECEIPT:${Uuid.random()}"
+        is SettingWriteOrigin.Captured -> "$CAPTURED_RECEIPT_PREFIX$token"
+    }
+
+private fun decodeWriteOrigin(receipt: String?): SettingWriteOrigin? =
+    when {
+        receipt == null -> {
+            null
+        }
+
+        receipt.startsWith(CAPTURED_RECEIPT_PREFIX) && receipt.length > CAPTURED_RECEIPT_PREFIX.length -> {
+            SettingWriteOrigin.Captured(receipt.removePrefix(CAPTURED_RECEIPT_PREFIX))
+        }
+
+        else -> {
+            SettingWriteOrigin.Uncaptured
+        }
+    }
+
+private const val UNCAPTURED_RECEIPT = "uncaptured"
+private const val CAPTURED_RECEIPT_PREFIX = "captured:"

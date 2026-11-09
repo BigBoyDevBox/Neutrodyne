@@ -192,6 +192,7 @@ class RestoreSettingsWriteOrderTest {
             db.withWriteTransaction {
                 db.syncOutboxDao().captureIntent("setting", key.name, "v", json)
             }
+            ch.lkmc.neutrodyne.core.domain.SettingWriteOrigin.Uncaptured
         }
         val writeLocks = DataStoreSettingsWriteCoordinator()
         val repository =

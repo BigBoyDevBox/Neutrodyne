@@ -28,6 +28,8 @@ data class RawSyncRecord(
     val alias: String? = null,
     /** The materialization baseline: the last setting value DataStore is known to hold. */
     val settingHash: SettingBaseline? = null,
+    /** The predecessor snapshot of a local intent, committed atomically with its outbox row. */
+    val settingIntent: SettingIntent? = null,
     /** A winning remote setting awaiting its DataStore write. */
     val pendingSetting: PendingSetting? = null,
     /** A winning remote credential awaiting its `SecretStore.put` and `credentialId` write. */
@@ -122,3 +124,11 @@ fun RawSyncRecord.pendingSettingClock(): String? = pendingSetting?.clock
 
 /** The newest complete field clock in the record, hints included (the receive bound). */
 fun RawSyncRecord.maxClock(): String? = state.maxClock?.toString()
+
+/** Distinguishes an older uncaptured value from an OFF write that superseded this intent. */
+@Serializable
+data class SettingIntent(
+    val clock: String,
+    val priorReceipt: String? = null,
+    val priorHash: String,
+)
