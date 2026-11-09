@@ -116,18 +116,23 @@ class ChangeBuilder(
             "auth" -> {
                 if (sharePasswords()) {
                     // 10 Passwords: the pushed value is the protected snapshot the raw
-                    // reference points at — the staging copy or the credential at its
-                    // origin — hydrated at the row's own complete clock. A local row with
-                    // no reference yet reads the live credential; a pending remote
-                    // snapshot is never pushed under a local clock.
+                    // reference points at — the immutable `sync:pending:` copy accepted at
+                    // its complete clock — hydrated at the row's own complete clock. A local
+                    // row with no accepted reference yet reads the live credential (the
+                    // intent IS the current password); a replay row reasserts only the
+                    // snapshot the reference binds — stamping a later live value under an
+                    // accepted clock would be a different write, so a missing snapshot
+                    // omits the field.
                     val reference = clockStore.get(collection.wire, rid)?.authReference
+                    val replay =
+                        row.captureKind == ch.lkmc.neutrodyne.core.database.SyncCaptureKind.REPLAY
                     val hydrated =
                         when {
                             reference == null -> {
                                 null
                             }
 
-                            row.captureKind == ch.lkmc.neutrodyne.core.database.SyncCaptureKind.REPLAY -> {
+                            replay -> {
                                 secrets.get(reference.storeKey)
                             }
 
@@ -139,7 +144,12 @@ class ChangeBuilder(
                                 secrets.get(reference.storeKey)
                             }
                         }
-                    val value = hydrated?.let(::authValue) ?: source.authField(rid)?.v
+                    val value =
+                        if (replay) {
+                            hydrated?.let(::authValue)
+                        } else {
+                            hydrated?.let(::authValue) ?: source.authField(rid)?.v
+                        }
                     value?.let { fields["auth"] = FieldValue(it, clock.toString()) }
                 }
             }

@@ -17,6 +17,7 @@ import ch.lkmc.neutrodyne.sync.protocol.RecordId
 import ch.lkmc.neutrodyne.sync.protocol.SyncCollection
 import ch.lkmc.neutrodyne.sync.protocol.SyncJson
 import ch.lkmc.neutrodyne.sync.protocol.dto.ChangeDto
+import ch.lkmc.neutrodyne.sync.protocol.dto.ChangeResultDto
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonPrimitive
@@ -54,12 +55,15 @@ import okio.Path
  * unfinished marker installs idempotently. A missing podcast or a missing snapshot leaves the
  * marker pending (a missing snapshot also flags `needsCredentials`); the `credentialId` write
  * runs under capture suppression so a synced credential never echoes as a local intent. After
- * both stores commit, the marker clears and the reference re-binds to the installed origin —
- * the staging snapshot is then unreferenced and removed.
+ * both stores commit the marker clears and the accepted snapshot stays the reference — the
+ * immutable `sync:pending:` copy accepted at the marker's complete clock, never a pointer to
+ * the mutable credential origin.
  *
- * [acknowledgeAuths] binds an acknowledged local `auth` push to its credential origin at the
- * acknowledged complete clock, so a later resync replays the protected value with its original
- * provenance instead of a bare projection.
+ * [acknowledge] applies one push's results: acknowledged outbox rows delete and each
+ * acknowledged local `auth` binds its protected reference, all atomically inside the
+ * coordinator and one Room write. The bound snapshot is the exact `{u,p}` the acknowledged
+ * change carried, staged under the acknowledged complete clock before the write — a later
+ * resync replay reasserts those bytes, not whatever the live credential holds then.
  */
 class SyncApplyEffects(
     private val db: NeutrodyneDatabase,
@@ -123,8 +127,11 @@ class SyncApplyEffects(
     private suspend fun sweepOrphanedAuthStaging() {
         // A live first-link staging file is itself a consumer of the pending snapshots.
         if (stagingFileAlive()) return
-        val referenced = referencedAuthKeys(db)
         credentials.withCredentialCommit {
+            // The reference set is read inside the hold: a page mid-commit keeps its staged
+            // keys unreachable until it publishes them, so enumerating first and locking
+            // second would delete exactly the snapshots that page is about to reference.
+            val referenced = referencedAuthKeys(db)
             for (origin in secrets.originsWithPrefix(PENDING_AUTH_PREFIX)) {
                 if (origin !in referenced) suspendRunCatching { secrets.remove(origin) }
             }
@@ -200,16 +207,17 @@ class SyncApplyEffects(
                 return@withCredentialCommit
             }
             ackAuth(rid, marker)
-            if (marker.reference.startsWith(PENDING_AUTH_PREFIX)) {
-                suspendRunCatching { secrets.remove(marker.reference) }
-            }
+            // The staged snapshot stays while the reference owns it; a candidate only drops
+            // when nothing durable points at it any more.
+            dropUnreferencedStagedLocked(db, secrets, setOf(marker.reference))
         }
     }
 
     /**
-     * Both stores committed: the marker clears and the reference re-binds to the installed
-     * credential's origin — what a resync hydrates and replays — keeping the winning clock.
-     * Re-read and write share one Room transaction so a newer page's marker is never cleared.
+     * Both stores committed: only the marker clears — the reference keeps pointing at the
+     * immutable accepted snapshot, so a replay reasserts the exact bytes accepted at the
+     * marker's complete clock instead of a later live-credential value. Re-read and write
+     * share one Room transaction so a newer page's marker is never cleared.
      */
     private suspend fun ackAuth(
         rid: String,
@@ -220,27 +228,14 @@ class SyncApplyEffects(
             val raw = decode(fresh.clocks) ?: return@withWriteTransaction
             if (raw.pendingAuth != marker) return@withWriteTransaction
             db.syncClockDao().upsert(
-                fresh.copy(
-                    clocks =
-                        encode(
-                            raw.copy(
-                                pendingAuth = null,
-                                authReference =
-                                    AuthReference(
-                                        storeKey = marker.credentialOrigin,
-                                        credentialOrigin = marker.credentialOrigin,
-                                        clock = marker.clock,
-                                    ),
-                            ),
-                        ),
-                ),
+                fresh.copy(clocks = encode(raw.copy(pendingAuth = null))),
             )
         }
     }
 
     /**
-     * The marker's winner is gone: the marker clears and the staged snapshot leaves — a
-     * strictly newer write owns the credential now.
+     * The marker's winner is gone: the marker clears and the staged snapshot leaves once
+     * nothing durable references it — a strictly newer write owns the credential now.
      */
     private suspend fun discardAuth(
         rid: String,
@@ -252,9 +247,7 @@ class SyncApplyEffects(
             if (raw.pendingAuth != marker) return@withWriteTransaction
             db.syncClockDao().upsert(fresh.copy(clocks = encode(raw.copy(pendingAuth = null))))
         }
-        if (marker.reference.startsWith(PENDING_AUTH_PREFIX)) {
-            suspendRunCatching { secrets.remove(marker.reference) }
-        }
+        dropUnreferencedStagedLocked(db, secrets, setOf(marker.reference))
     }
 
     /**
@@ -272,48 +265,103 @@ class SyncApplyEffects(
     }
 
     /**
-     * 10 Passwords / Push ack: an acknowledged local `auth` keeps its protected reference — the
-     * credential origin it was pushed from and the acknowledged complete clock — so a resync's
-     * replay hydrates the stored snapshot rather than echoing a bare projection.
+     * 10 Passwords / Push ack: the round's acknowledgement effects commit as one unit under
+     * the credential coordinator. For every accepted change the acknowledged outbox rows
+     * delete exactly as before; for every accepted podcast `auth` the raw reference binds the
+     * immutable snapshot of the exact `{u,p}` that was sent, keyed by account, rid and the
+     * acknowledged complete clock. The snapshots stage before the Room write — never inside
+     * it — and a delayed old ack cannot replace newer state: the clock comparison keeps the
+     * newer reference and `deleteAcked` keeps the newer intent.
      */
-    suspend fun acknowledgeAuths(changes: List<ChangeDto>) {
-        val auths =
-            changes.filter { change ->
-                change.coll == SyncCollection.PODCAST.wire && change.fields.containsKey("auth")
-            }
-        if (auths.isEmpty()) return
+    suspend fun acknowledge(
+        changes: List<ChangeDto>,
+        results: List<ChangeResultDto>,
+    ) {
+        if (changes.isEmpty() || results.isEmpty()) return
         credentials.withCredentialCommit {
+            val account = db.syncStateDao().get()?.accountId ?: "local"
+            changes.forEachIndexed { index, change ->
+                if (change.coll != SyncCollection.PODCAST.wire) return@forEachIndexed
+                val result = results.getOrNull(index) ?: return@forEachIndexed
+                if (result.status !in setOf("applied", "stale", "merged")) return@forEachIndexed
+                val value = change.fields["auth"] ?: return@forEachIndexed
+                val (user, pass) = authPair(value.v) ?: return@forEachIndexed
+                val clock = value.c?.let { runCatching { Hlc.parse(it) }.getOrNull() } ?: return@forEachIndexed
+                val rid =
+                    runCatching {
+                        RecordId.fromWire(SyncCollection.PODCAST, change.id)
+                    }.getOrNull()
+                        ?.rid ?: return@forEachIndexed
+                val key = pendingAuthKey(account, rid, clock.toString())
+                // The snapshot is immutable by clock: an existing key at the same complete
+                // clock already holds the accepted bytes and is not rewritten.
+                if (secrets.get(key) == null) secrets.put(key, user, pass)
+            }
             db.withWriteTransaction {
-                for (change in auths) {
-                    val clock = change.fields.getValue("auth").c ?: continue
-                    runCatching { Hlc.parse(clock) }.getOrNull() ?: continue
-                    val rid =
-                        runCatching {
-                            RecordId.fromWire(SyncCollection.PODCAST, change.id)
-                        }.getOrNull()
-                            ?.rid ?: continue
-                    val row = db.syncClockDao().get(SyncCollection.PODCAST.wire, rid) ?: continue
-                    val raw = decode(row.clocks) ?: continue
-                    val existing = raw.authReference
-                    val existingClock =
-                        existing?.clock?.let { runCatching { Hlc.parse(it) }.getOrNull() }
-                    if (existingClock != null && existingClock >= Hlc.parse(clock)) continue
-                    val origin =
-                        jsonContent(change.fields["credentialOrigin"]?.v)
-                            ?: jsonContent(raw.state.fields["credentialOrigin"]?.v)
-                            ?: liveCredentialOrigin(rid)
-                            ?: continue
-                    db.syncClockDao().upsert(
-                        row.copy(
-                            clocks =
-                                encode(
-                                    raw.copy(authReference = AuthReference(origin, origin, clock)),
-                                ),
-                        ),
-                    )
+                changes.forEachIndexed { index, change ->
+                    val result = results.getOrNull(index) ?: return@forEachIndexed
+                    if (result.status !in setOf("applied", "stale", "merged")) return@forEachIndexed
+                    val coll = change.coll
+                    val rid = RecordId.fromWire(SyncCollection.fromWire(coll), change.id).rid
+                    if (change.op == "rekey") {
+                        db.syncOutboxDao().deleteField(coll, rid, "~rekey")
+                        return@forEachIndexed
+                    }
+                    for ((field, value) in change.fields) {
+                        val clock = value.c ?: continue
+                        val parsed = runCatching { Hlc.parse(clock) }.getOrNull() ?: continue
+                        db.syncOutboxDao().deleteAcked(coll, rid, field, parsed.packed, parsed.nodeId.value)
+                    }
+                    if (coll == SyncCollection.PODCAST.wire && change.fields.containsKey("auth")) {
+                        bindAcknowledgedAuth(account, change, rid)
+                    }
+                    // A `*` row is acknowledged by every field it expanded to.
+                    change.fields.values
+                        .mapNotNull { it.c }
+                        .mapNotNull { runCatching { Hlc.parse(it) }.getOrNull() }
+                        .minOrNull()
+                        ?.let { db.syncOutboxDao().deleteAcked(coll, rid, "*", it.packed, it.nodeId.value) }
                 }
             }
         }
+    }
+
+    /**
+     * Binds the acknowledged auth's staged snapshot as the raw reference — the protected copy
+     * a resync replay hydrates — unless the stored reference is already at least as new.
+     */
+    private suspend fun bindAcknowledgedAuth(
+        account: String,
+        change: ChangeDto,
+        rid: String,
+    ) {
+        val clock = change.fields.getValue("auth").c ?: return
+        runCatching { Hlc.parse(clock) }.getOrNull() ?: return
+        val row = db.syncClockDao().get(SyncCollection.PODCAST.wire, rid) ?: return
+        val raw = decode(row.clocks) ?: return
+        val existing = raw.authReference
+        val existingClock = existing?.clock?.let { runCatching { Hlc.parse(it) }.getOrNull() }
+        if (existingClock != null && existingClock >= Hlc.parse(clock)) return
+        val origin =
+            jsonContent(change.fields["credentialOrigin"]?.v)
+                ?: jsonContent(raw.state.fields["credentialOrigin"]?.v)
+                ?: liveCredentialOrigin(rid)
+                ?: return
+        db.syncClockDao().upsert(
+            row.copy(
+                clocks =
+                    encode(
+                        raw.copy(
+                            authReference =
+                                AuthReference(
+                                    pendingAuthKey(account, rid, clock),
+                                    origin,
+                                    clock,
+                                ),
+                        ),
+                    ),
+            ),
+        )
     }
 
     /** The credential origin the podcast's live `credentialId` binds to. */

@@ -35,8 +35,8 @@ import kotlinx.serialization.json.contentOrNull
  * pending local intent: a strictly newer remote wins and journals `pendingAuth`; an
  * equal-clock redelivery keeps the existing marker; a losing candidate's staged snapshot is
  * returned in [AuthDecision.dropKeys] for post-commit cleanup. A pending local credential
- * keeps its own reference at its credential origin, so a later resync can hydrate the replay
- * from the real credential — never from raw metadata.
+ * keeps the last accepted reference: its outbox row is what the push hydrates, and the
+ * acknowledgement binds the exact sent snapshot under its own complete clock.
  */
 internal const val PENDING_AUTH_PREFIX = "sync:pending:"
 
@@ -65,16 +65,32 @@ internal fun authPair(value: JsonElement?): Pair<String, CharArray>? {
     return user to pass.toCharArray()
 }
 
-/** Every `sync:pending:` key raw state still references — markers and references both count. */
-internal suspend fun referencedAuthKeys(db: NeutrodyneDatabase): Set<String> =
-    db
-        .syncClockDao()
-        .all()
-        .asSequence()
-        .mapNotNull { decodeRawClocks(it.clocks) }
-        .flatMap { listOfNotNull(it.authReference?.storeKey, it.pendingAuth?.reference) }
-        .filter { it.startsWith(PENDING_AUTH_PREFIX) }
-        .toSet()
+/**
+ * Every `sync:pending:` key anything durable still references: committed markers and
+ * references, and the still-pending podcast `auth` outbox intents whose acknowledged
+ * snapshot is staged under the intent's own complete clock — a key the ack path staged
+ * but whose commit crashed keeps its owner until the retry binds the reference.
+ */
+internal suspend fun referencedAuthKeys(db: NeutrodyneDatabase): Set<String> {
+    val account = db.syncStateDao().get()?.accountId ?: "local"
+    val fromRaw =
+        db
+            .syncClockDao()
+            .all()
+            .asSequence()
+            .mapNotNull { decodeRawClocks(it.clocks) }
+            .flatMap { listOfNotNull(it.authReference?.storeKey, it.pendingAuth?.reference) }
+    val fromOutbox =
+        db
+            .syncOutboxDao()
+            .rows()
+            .asSequence()
+            .filter { it.coll == SyncCollection.PODCAST.wire && (it.field == "auth" || it.field == "*") }
+            .mapNotNull { row ->
+                outboxClock(row)?.let { pendingAuthKey(account, row.rid, it.toString()) }
+            }
+    return (fromRaw + fromOutbox).filter { it.startsWith(PENDING_AUTH_PREFIX) }.toSet()
+}
 
 /**
  * Stages every podcast record's wire `auth` in the protected store before the raw records
@@ -94,26 +110,39 @@ internal suspend fun stageAuthCandidates(
     records: List<RecordDto>,
 ): Map<String, StagedAuth> =
     coordinator.withCredentialCommit {
-        val account = db.syncStateDao().get()?.accountId ?: "local"
-        val staged = LinkedHashMap<String, StagedAuth>()
-        for (dto in records) {
-            if (dto.coll != SyncCollection.PODCAST.wire) continue
-            val rid =
-                runCatching { RecordId.fromWire(SyncCollection.PODCAST, dto.id) }
-                    .getOrNull()
-                    ?.rid ?: continue
-            val field = dto.fields["auth"] ?: continue
-            val (user, pass) = authPair(field.v) ?: continue
-            val clock = field.c?.let { runCatching { Hlc.parse(it) }.getOrNull() } ?: continue
-            val key = pendingAuthKey(account, rid, clock.toString())
-            val referenced = decodeRawClocks(db.syncClockDao().get(SyncCollection.PODCAST.wire, rid)?.clocks)
-            if (referenced?.authReference?.clock != clock.toString() || secrets.get(key) == null) {
-                secrets.put(key, user, pass)
-            }
-            staged[rid] = StagedAuth(key, clock.toString())
-        }
-        staged
+        stageAuthCandidatesLocked(db, secrets, records)
     }
+
+/**
+ * [stageAuthCandidates] without its own coordinator acquisition: callers that already hold
+ * the coordinator over the whole stage→commit span use this, so a page's staging and its
+ * Room reference commit are one protected unit the non-reentrant mutex cannot split.
+ */
+internal suspend fun stageAuthCandidatesLocked(
+    db: NeutrodyneDatabase,
+    secrets: SecretStore,
+    records: List<RecordDto>,
+): Map<String, StagedAuth> {
+    val account = db.syncStateDao().get()?.accountId ?: "local"
+    val staged = LinkedHashMap<String, StagedAuth>()
+    for (dto in records) {
+        if (dto.coll != SyncCollection.PODCAST.wire) continue
+        val rid =
+            runCatching { RecordId.fromWire(SyncCollection.PODCAST, dto.id) }
+                .getOrNull()
+                ?.rid ?: continue
+        val field = dto.fields["auth"] ?: continue
+        val (user, pass) = authPair(field.v) ?: continue
+        val clock = field.c?.let { runCatching { Hlc.parse(it) }.getOrNull() } ?: continue
+        val key = pendingAuthKey(account, rid, clock.toString())
+        val referenced = decodeRawClocks(db.syncClockDao().get(SyncCollection.PODCAST.wire, rid)?.clocks)
+        if (referenced?.authReference?.clock != clock.toString() || secrets.get(key) == null) {
+            secrets.put(key, user, pass)
+        }
+        staged[rid] = StagedAuth(key, clock.toString())
+    }
+    return staged
+}
 
 /**
  * What one podcast record's `auth` resolves to against the stored raw state and the pending
@@ -139,7 +168,6 @@ internal fun decideAuth(
     val localClock = pending?.fields?.get("auth")?.c
     val remoteClock = authField?.c
     val mergedOrigin = jsonString(merged.fields["credentialOrigin"]?.v)
-    val pendingOrigin = jsonString(pending?.fields?.get("credentialOrigin")?.v)
     val drops = mutableListOf<String>()
 
     // A strictly newer remote write wins only when it bound to the merged record's winning
@@ -163,39 +191,26 @@ internal fun decideAuth(
     // of the referenced write is idempotent, not a loser.
     if (staged != null && remoteClock != null && remoteClock != refClock) drops += staged.storeKey
 
-    // A pending local credential keeps the reference at its own credential origin — the live
-    // credential the push hydrates — so a resync replay stays bound to this account's store.
-    if (localClock != null && (refClock == null || localClock > refClock)) {
-        val origin = pendingOrigin ?: mergedOrigin
-        if (origin != null) {
-            return AuthDecision(
-                reference = AuthReference(origin, origin, localClock.toString()),
-                pending = stored?.pendingAuth,
-                dropKeys = drops,
-                remoteWon = false,
-            )
-        }
-    }
+    // A pending local intent keeps the last accepted reference: only the server's
+    // acknowledgement may advance it, binding the exact sent snapshot's immutable key.
     return AuthDecision(storedRef, stored?.pendingAuth, drops, remoteWon = false)
 }
 
 /**
- * Removes every candidate key raw state no longer references — losing snapshots, failed-page
- * snapshots and superseded pending markers — under the coordinator, like every credential
- * delete. A key still referenced by a committed marker or reference is kept (10 cleanup).
+ * Removes every candidate key nothing durable references — losing snapshots, failed-page
+ * snapshots and superseded pending markers. The caller holds the coordinator over the whole
+ * span that produced the candidates, so [referencedAuthKeys] is re-read here under the same
+ * hold: a key a competing page committed in the meantime survives (10 cleanup).
  */
-internal suspend fun dropUnreferencedStaged(
+internal suspend fun dropUnreferencedStagedLocked(
     db: NeutrodyneDatabase,
     secrets: SecretStore,
-    coordinator: CredentialCommitCoordinator,
     candidates: Set<String>,
 ) {
     if (candidates.isEmpty()) return
     val referenced = referencedAuthKeys(db)
-    coordinator.withCredentialCommit {
-        for (key in candidates - referenced) {
-            suspendRunCatching { secrets.remove(key) }
-        }
+    for (key in candidates - referenced) {
+        suspendRunCatching { secrets.remove(key) }
     }
 }
 

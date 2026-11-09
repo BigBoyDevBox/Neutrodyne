@@ -69,6 +69,11 @@ data class SyncApplyResult(
  * before the page transaction ([stageAuthCandidates]); the merge runs on the field-stripped
  * record and [decideAuth] commits only a protected reference plus the durable `pendingAuth`
  * marker. Plaintext `auth` never reaches `sync_clock`, the outbox or a log.
+ *
+ * The whole stage→commit→drop span runs under the one [CredentialCommitCoordinator]: the
+ * orphan sweep cannot interleave a snapshot whose reference is still uncommitted, and the
+ * post-commit drop re-reads references under the same hold. The coordinator is never
+ * acquired from inside the page's Room writer (03 lock ordering).
  */
 class SyncApplier(
     private val db: NeutrodyneDatabase,
@@ -87,50 +92,62 @@ class SyncApplier(
     suspend fun applyPage(
         records: List<RecordDto>,
         roundId: Long,
-    ): SyncApplyResult {
-        // The protected snapshots land before any Room write: a SecretStore failure fails the
-        // page before its cursor or any credential state can advance past an unstaged auth.
-        val staged = stageAuthCandidates(db, secrets, coordinator, records)
-        val dropKeys = mutableListOf<String>()
-        val feedsNeedingCredentials = mutableListOf<Long>()
-        var applied = 0
-        var stale = 0
-        var parked = 0
-        var held = 0
-        var invalid = 0
-        try {
-            db.withWriteTransaction {
-                db.syncStateDao().withApplying {
-                    val ordered = records.sortedBy { it.coll }
-                    for (dto in ordered) {
-                        val rid = wireRid(dto)
-                        val result =
-                            applyRecord(dto, roundId, rid?.let { staged[it] }, dropKeys, feedsNeedingCredentials)
-                        when (result) {
-                            is RecordOutcome.Applied -> applied++
-                            is RecordOutcome.Stale -> stale++
-                            is RecordOutcome.Parked -> parked++
-                            is RecordOutcome.Held -> held++
-                            is RecordOutcome.Invalid -> invalid++
+    ): SyncApplyResult =
+        // The stage→Room-commit→drop span is one credential-commit hold: a staged snapshot is
+        // referenced or discarded only inside the same span, so the orphan sweep — which takes
+        // the same coordinator — can never delete a snapshot a page is still committing.
+        coordinator.withCredentialCommit {
+            // The protected snapshots land before any Room write: a SecretStore failure fails
+            // the page before its cursor or any credential state can advance past an unstaged
+            // auth. SecretStore IO stays outside the Room transaction.
+            val staged = stageAuthCandidatesLocked(db, secrets, records)
+            val dropKeys = mutableListOf<String>()
+            val feedsNeedingCredentials = mutableListOf<Long>()
+            var applied = 0
+            var stale = 0
+            var parked = 0
+            var held = 0
+            var invalid = 0
+            try {
+                db.withWriteTransaction {
+                    db.syncStateDao().withApplying {
+                        val ordered = records.sortedBy { it.coll }
+                        for (dto in ordered) {
+                            val rid = wireRid(dto)
+                            val result =
+                                applyRecord(
+                                    dto,
+                                    roundId,
+                                    rid?.let { staged[it] },
+                                    dropKeys,
+                                    feedsNeedingCredentials,
+                                )
+                            when (result) {
+                                is RecordOutcome.Applied -> applied++
+                                is RecordOutcome.Stale -> stale++
+                                is RecordOutcome.Parked -> parked++
+                                is RecordOutcome.Held -> held++
+                                is RecordOutcome.Invalid -> invalid++
+                            }
                         }
                     }
                 }
+            } finally {
+                // Losing, failed-page and superseded snapshots leave once the commit's
+                // references are durable; a rollback drops every key this page staged but
+                // nothing referenced. The re-read happens under the same coordinator hold, so
+                // a competing committed page's keys survive. A cleanup failure must never
+                // mask the page's own outcome.
+                suspendRunCatching {
+                    dropUnreferencedStagedLocked(
+                        db,
+                        secrets,
+                        staged.values.mapTo(HashSet()) { it.storeKey } + dropKeys,
+                    )
+                }
             }
-        } finally {
-            // Losing, failed-page and superseded snapshots leave once the commit's references
-            // are durable; a rollback drops every key this page staged but nothing referenced.
-            // A cleanup failure must never mask the page's own outcome.
-            suspendRunCatching {
-                dropUnreferencedStaged(
-                    db,
-                    secrets,
-                    coordinator,
-                    staged.values.mapTo(HashSet()) { it.storeKey } + dropKeys,
-                )
-            }
+            SyncApplyResult(applied, stale, parked, held, invalid, feedsNeedingCredentials)
         }
-        return SyncApplyResult(applied, stale, parked, held, invalid, feedsNeedingCredentials)
-    }
 
     private suspend fun wireRid(dto: RecordDto): String? {
         val coll = runCatching { SyncCollection.fromWire(dto.coll) }.getOrNull() ?: return null

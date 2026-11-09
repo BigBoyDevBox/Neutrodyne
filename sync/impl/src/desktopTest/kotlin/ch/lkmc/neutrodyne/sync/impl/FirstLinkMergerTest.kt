@@ -667,6 +667,61 @@ class FirstLinkMergerTest {
             }
         }
 
+    /**
+     * 10 Passwords / Merge step 1: the staging line carries the protected snapshot's
+     * reference and clock, never the wire `{u,p}` — and the resume rehydrates the field from
+     * the `SecretStore`, so the journaled marker is bound end to end.
+     */
+    @Test
+    fun theStagingFileCarriesOnlyTheProtectedAuthReference() =
+        runTest {
+            val db = TestDb.inMemory()
+            val library = FakeLibraryMerger()
+            val secrets = FakeSecretStore()
+            val stagedPass = "s3ntinel-link-3c7f"
+            val client = CountingClient(listOf(authPodcastRecord(stagedPass)))
+            try {
+                link(db, deviceId = device)
+                val merger = mergerOf(db, client, library, secrets = secrets)
+
+                library.result =
+                    ch.lkmc.neutrodyne.core.common.Outcome.Failure(
+                        ch.lkmc.neutrodyne.core.domain.BackupError.Storage,
+                    )
+                assertTrue(merger.merge(FirstLinkChoice.MERGE) is FirstLinkResult.Failed)
+
+                val stagedText =
+                    fileSystem.read(cache.resolve("sync-link-$device.jsonl").toString().toPath()) {
+                        readUtf8()
+                    }
+                assertFalse(stagedText.contains(stagedPass))
+                assertFalse(stagedText.contains("feed-user"))
+                assertTrue(stagedText.contains("\"authRef\""))
+                assertTrue(stagedText.contains("\"authClock\""))
+
+                library.result =
+                    ch.lkmc.neutrodyne.core.common.Outcome.Success(
+                        ch.lkmc.neutrodyne.core.model
+                            .MergeSummary(0, 0, 0, 0, 0, 0, 0, 0),
+                    )
+                assertTrue(merger.merge(FirstLinkChoice.MERGE) is FirstLinkResult.Completed)
+                assertEquals(1, client.changesCalls, "the resume reused the staged auth lines")
+
+                // The rehydrated auth field journaled the durable marker and reference at
+                // the snapshot's own key; the snapshot itself survived the whole flow.
+                val raw = decodeRawClocks(db.syncClockDao().get("podcast", podcastSyncId)!!.clocks)!!
+                val pending = raw.pendingAuth!!
+                val key = pendingAuthKey("local", podcastSyncId, pending.clock)
+                assertEquals(key, pending.reference)
+                assertEquals(key, raw.authReference!!.storeKey)
+                val snapshot = secrets.get(key)
+                assertNotNull(snapshot)
+                assertEquals(stagedPass, snapshot.secret.concatToString())
+            } finally {
+                db.close()
+            }
+        }
+
     /** Unmatched lines park their record for the next ingest (10 Parked state and stubs). */
     @Test
     fun unmatchedLinesParkTheirRecord() =
@@ -1488,6 +1543,7 @@ class FirstLinkMergerTest {
         library: FakeLibraryMerger,
         activity: SyncActivityState = SyncActivityState(),
         effects: SyncApplyEffects = newEffects(db),
+        secrets: FakeSecretStore = FakeSecretStore(),
     ): FirstLinkMerger =
         FirstLinkMerger(
             db = db,
@@ -1499,7 +1555,7 @@ class FirstLinkMergerTest {
             effects = effects,
             clock = TestClock(now),
             activity = activity,
-            secrets = FakeSecretStore(),
+            secrets = secrets,
             coordinator = FakeCredentialCommitCoordinator(),
         )
 
@@ -1772,6 +1828,25 @@ class FirstLinkMergerTest {
                     "subscribed" to FieldValue(JsonPrimitive(true), clock(october)),
                     "title" to FieldValue(JsonPrimitive("Example"), clock(october)),
                 ),
+        )
+
+    /** A podcast record carrying a wire `auth` pair for the protected-staging tests. */
+    private fun authPodcastRecord(pass: String): RecordDto =
+        podcastRecord().copy(
+            fields =
+                podcastRecord().fields +
+                    mapOf(
+                        "credentialOrigin" to
+                            FieldValue(JsonPrimitive("https://a.example"), clock(october)),
+                        "auth" to
+                            FieldValue(
+                                buildJsonObject {
+                                    put("u", "feed-user")
+                                    put("p", pass)
+                                },
+                                clock(october),
+                            ),
+                    ),
         )
 
     private fun upNextRecord(

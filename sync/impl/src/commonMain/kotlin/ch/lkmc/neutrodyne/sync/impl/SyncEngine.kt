@@ -2,7 +2,6 @@
 
 package ch.lkmc.neutrodyne.sync.impl
 
-import androidx.room3.withWriteTransaction
 import ch.lkmc.neutrodyne.core.common.Clock
 import ch.lkmc.neutrodyne.core.database.NeutrodyneDatabase
 import ch.lkmc.neutrodyne.core.database.SyncStateEntity
@@ -17,9 +16,6 @@ import ch.lkmc.neutrodyne.sync.api.SyncRoundReason
 import ch.lkmc.neutrodyne.sync.protocol.Hlc
 import ch.lkmc.neutrodyne.sync.protocol.ProtocolException
 import ch.lkmc.neutrodyne.sync.protocol.ProtocolLimits
-import ch.lkmc.neutrodyne.sync.protocol.RecordId
-import ch.lkmc.neutrodyne.sync.protocol.SyncCollection
-import ch.lkmc.neutrodyne.sync.protocol.dto.ChangeDto
 import ch.lkmc.neutrodyne.sync.protocol.dto.RecordDto
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -143,10 +139,11 @@ class SyncEngine(
             val state = db.syncStateDao().get()
             val response = markingRevocation { client.sync(state?.cursor, changes) }
             pushed += changes.size
-            val acked = db.withWriteTransaction { handleResults(changes, response.results) }
-            // 10 Passwords: an acknowledged local auth binds its protected reference at the
-            // acknowledged complete clock, outside the push's Room transaction.
-            effects.acknowledgeAuths(acked)
+            // 10 Passwords: the acknowledgement commits under the credential coordinator —
+            // the acknowledged auths' exact sent snapshots stage first (outside the writer),
+            // then the outbox deletes and the immutable reference binds land in one Room
+            // transaction, so a replayed push reasserts accepted bytes, not live ones.
+            effects.acknowledge(changes, response.results)
             applied += response.records.size
             val page = applier.applyPage(response.records, roundId)
             // 10 Pull and apply step 5: the committed page's settings effects drain right after
@@ -197,42 +194,6 @@ class SyncEngine(
         }
         db.syncStateDao().recordSyncAt(clock.now())
         return SyncReport(pushed, applied, stale, rejected, pulled, held, clock.now() - started)
-    }
-
-    /**
-     * Deletes acknowledged outbox rows; returns the acknowledged podcast changes carrying an
-     * `auth` field so the caller can bind their protected references after the commit.
-     */
-    private suspend fun handleResults(
-        changes: List<ChangeDto>,
-        results: List<ch.lkmc.neutrodyne.sync.protocol.dto.ChangeResultDto>,
-    ): List<ChangeDto> {
-        val ackedAuths = ArrayList<ChangeDto>()
-        changes.forEachIndexed { index, change ->
-            val result = results.getOrNull(index) ?: return@forEachIndexed
-            if (result.status !in setOf("applied", "stale", "merged")) return@forEachIndexed
-            val coll = change.coll
-            val rid = RecordId.fromWire(SyncCollection.fromWire(coll), change.id).rid
-            if (change.op == "rekey") {
-                db.syncOutboxDao().deleteField(coll, rid, "~rekey")
-                return@forEachIndexed
-            }
-            for ((field, value) in change.fields) {
-                val clock = value.c ?: continue
-                val parsed = runCatching { Hlc.parse(clock) }.getOrNull() ?: continue
-                db.syncOutboxDao().deleteAcked(coll, rid, field, parsed.packed, parsed.nodeId.value)
-            }
-            if (coll == SyncCollection.PODCAST.wire && change.fields.containsKey("auth")) {
-                ackedAuths += change
-            }
-            // A `*` row is acknowledged by every field it expanded to.
-            change.fields.values
-                .mapNotNull { it.c }
-                .mapNotNull { runCatching { Hlc.parse(it) }.getOrNull() }
-                .minOrNull()
-                ?.let { db.syncOutboxDao().deleteAcked(coll, rid, "*", it.packed, it.nodeId.value) }
-        }
-        return ackedAuths
     }
 
     private suspend fun raiseHlc(records: List<RecordDto>) {

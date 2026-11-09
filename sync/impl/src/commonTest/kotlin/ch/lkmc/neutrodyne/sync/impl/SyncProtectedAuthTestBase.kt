@@ -20,6 +20,7 @@ import ch.lkmc.neutrodyne.sync.protocol.NodeId
 import ch.lkmc.neutrodyne.sync.protocol.RecordState
 import ch.lkmc.neutrodyne.sync.protocol.SyncCollection
 import ch.lkmc.neutrodyne.sync.protocol.dto.ChangeDto
+import ch.lkmc.neutrodyne.sync.protocol.dto.ChangeResultDto
 import ch.lkmc.neutrodyne.sync.protocol.dto.FieldValue
 import ch.lkmc.neutrodyne.sync.protocol.dto.RecordDto
 import kotlinx.coroutines.CompletableDeferred
@@ -133,11 +134,15 @@ abstract class SyncProtectedAuthTestBase {
                 val raw = decodeRawClocks(clocksJson(db))!!
                 assertNull(raw.pendingAuth)
                 val ref = raw.authReference!!
-                assertEquals(origin, ref.storeKey)
+                // The accepted snapshot stays the reference — the exact bytes accepted at the
+                // winning complete clock, immune to later edits of the live credential.
+                assertEquals(staged, ref.storeKey)
                 assertEquals(origin, ref.credentialOrigin)
                 assertEquals(Hlc.of(now, 10, remote).toString(), ref.clock)
-                assertNull(h.secrets.get(staged))
-                assertTrue(h.secrets.originsWithPrefix(PENDING_AUTH_PREFIX).isEmpty())
+                val retained = h.secrets.get(staged)
+                assertNotNull(retained)
+                assertEquals(pass, retained.secret.concatToString())
+                assertEquals(setOf(staged), h.secrets.originsWithPrefix(PENDING_AUTH_PREFIX))
             } finally {
                 db.close()
             }
@@ -222,7 +227,9 @@ abstract class SyncProtectedAuthTestBase {
                 assertNotNull(podcast.credentialId)
                 assertFalse(podcast.needsCredentials)
                 assertNull(decodeRawClocks(clocksJson(db))!!.pendingAuth)
-                assertNull(h.secrets.get(key))
+                // The snapshot is the reference now: it stays while raw state owns it.
+                assertNotNull(h.secrets.get(key))
+                assertEquals(key, decodeRawClocks(clocksJson(db))!!.authReference!!.storeKey)
             } finally {
                 db.close()
             }
@@ -312,8 +319,9 @@ abstract class SyncProtectedAuthTestBase {
 
                 val raw = decodeRawClocks(clocksJson(db))!!
                 assertNull(raw.pendingAuth)
-                assertEquals(localOrigin, raw.authReference!!.storeKey)
-                assertEquals(local.toString(), raw.authReference.clock)
+                // The local intent is only pending: the reference keeps the last accepted
+                // state until the server's acknowledgement binds the exact sent snapshot.
+                assertNull(raw.authReference)
                 assertNotNull(
                     db.syncOutboxDao().get(SyncCollection.PODCAST.wire, rid, "auth"),
                 )
@@ -355,9 +363,12 @@ abstract class SyncProtectedAuthTestBase {
                 )
                 val raw = decodeRawClocks(clocksJson(db))!!
                 assertNull(raw.pendingAuth)
-                assertEquals(newOrigin, raw.authReference!!.storeKey)
-                assertEquals(Hlc.of(now, 20, remote).toString(), raw.authReference.clock)
-                assertTrue(h.secrets.originsWithPrefix(PENDING_AUTH_PREFIX).isEmpty())
+                val winner = pendingAuthKey(account, rid, Hlc.of(now, 20, remote).toString())
+                val ref = raw.authReference!!
+                assertEquals(winner, ref.storeKey)
+                assertEquals(newOrigin, ref.credentialOrigin)
+                assertEquals(Hlc.of(now, 20, remote).toString(), ref.clock)
+                assertEquals(setOf(winner), h.secrets.originsWithPrefix(PENDING_AUTH_PREFIX))
             } finally {
                 db.close()
             }
@@ -375,34 +386,208 @@ abstract class SyncProtectedAuthTestBase {
                 h.effects.drainPasswords()
 
                 val acked = Hlc.of(now + 5, 7, remote)
-                h.effects.acknowledgeAuths(
+                h.effects.acknowledge(
                     listOf(
                         ChangeDto(
                             coll = SyncCollection.PODCAST.wire,
                             id = JsonPrimitive(rid),
                             fields =
                                 mapOf(
-                                    "auth" to FieldValue(JsonPrimitive("x"), acked.toString()),
+                                    "auth" to
+                                        FieldValue(authValue(user, pass), acked.toString()),
                                     "credentialOrigin" to
                                         FieldValue(JsonPrimitive(origin), acked.toString()),
                                 ),
                         ),
                     ),
+                    listOf(ChangeResultDto(0, "applied")),
                 )
-                assertEquals(acked.toString(), decodeRawClocks(clocksJson(db))!!.authReference!!.clock)
+                var ref = decodeRawClocks(clocksJson(db))!!.authReference!!
+                assertEquals(acked.toString(), ref.clock)
+                // The bound key is the staged snapshot of the exact bytes that were sent.
+                val boundKey = pendingAuthKey(account, rid, acked.toString())
+                assertEquals(boundKey, ref.storeKey)
+                assertNotNull(h.secrets.get(boundKey))
 
                 val older = Hlc.of(now, 3, remote)
-                h.effects.acknowledgeAuths(
+                h.effects.acknowledge(
                     listOf(
                         ChangeDto(
                             coll = SyncCollection.PODCAST.wire,
                             id = JsonPrimitive(rid),
                             fields =
-                                mapOf("auth" to FieldValue(JsonPrimitive("x"), older.toString())),
+                                mapOf(
+                                    "auth" to
+                                        FieldValue(authValue(user, pass), older.toString()),
+                                ),
                         ),
                     ),
+                    listOf(ChangeResultDto(0, "applied")),
                 )
-                assertEquals(acked.toString(), decodeRawClocks(clocksJson(db))!!.authReference!!.clock)
+                ref = decodeRawClocks(clocksJson(db))!!.authReference!!
+                assertEquals(acked.toString(), ref.clock)
+                assertEquals(boundKey, ref.storeKey)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * 10 Passwords / exact accepted-clock replay: after the remote credential installs, a
+     * later local edit of the live credential must not change what a replay at the accepted
+     * clock resends — the immutable snapshot bound at acceptance is the truth.
+     */
+    @Test
+    fun anInstalledAuthReplaysItsAcceptedBytesNotTheLiveCredential() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                seedCredential(db, h.secrets, origin)
+                h.applier.applyPage(listOf(authRecord(counter = 10)), roundId = 1)
+                h.effects.drainPasswords()
+                val accepted = Hlc.of(now, 10, remote)
+
+                // The live credential changes after acceptance — a local password rotation.
+                h.secrets.put(origin, user, "s3ntinel-rotated-4a1d".toCharArray())
+                captureStored(db, rid, "auth", accepted, "\"replay\"")
+
+                val pushed =
+                    ChangeBuilder(db, h.secrets) { true }
+                        .build(
+                            db.syncOutboxDao().rows().filter {
+                                it.coll == SyncCollection.PODCAST.wire && it.rid == rid
+                            },
+                        ).single { it.fields.containsKey("auth") }
+                val value = pushed.fields.getValue("auth")
+                assertEquals(accepted.toString(), value.c)
+                // The replay reasserts the accepted snapshot, not the rotated credential.
+                assertEquals(authValue(user, pass), value.v)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * An acknowledgement binds the exact bytes that were sent — staged under the acknowledged
+     * complete clock — even when a newer local edit raced the HTTP round. The newer outbox
+     * intent survives the same atomic commit and the delayed ack cannot replace it.
+     */
+    @Test
+    fun anAcknowledgedSendBindsTheSentBytesUnderANewerLocalEdit() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                seedCredential(db, h.secrets, origin)
+                h.applier.applyPage(listOf(authRecord(counter = 10)), roundId = 1)
+                h.effects.drainPasswords()
+                val sent = Hlc.of(now + 30, 2, localNode)
+                val newer = Hlc.of(now + 90, 0, localNode)
+                db.withWriteTransaction {
+                    db.syncOutboxDao().upsert(
+                        ch.lkmc.neutrodyne.core.database.SyncOutboxEntity(
+                            coll = SyncCollection.PODCAST.wire,
+                            rid = rid,
+                            field = "auth",
+                            hlc = newer.packed,
+                            nodeId = localNode.value,
+                        ),
+                    )
+                }
+                // The credential rotated while the push was in flight: what the server
+                // accepted is the older pair, carried by the acknowledged change itself.
+                h.secrets.put(origin, user, "s3ntinel-rotated-6b2e".toCharArray())
+
+                h.effects.acknowledge(
+                    listOf(
+                        ChangeDto(
+                            coll = SyncCollection.PODCAST.wire,
+                            id = JsonPrimitive(rid),
+                            fields =
+                                mapOf(
+                                    "auth" to FieldValue(authValue(user, pass), sent.toString()),
+                                    "credentialOrigin" to
+                                        FieldValue(JsonPrimitive(origin), sent.toString()),
+                                ),
+                        ),
+                    ),
+                    listOf(ChangeResultDto(0, "applied")),
+                )
+
+                val key = pendingAuthKey(account, rid, sent.toString())
+                val raw = decodeRawClocks(clocksJson(db))!!
+                assertEquals(AuthReference(key, origin, sent.toString()), raw.authReference)
+                val staged = h.secrets.get(key)
+                assertNotNull(staged)
+                assertEquals(pass, staged.secret.concatToString())
+
+                // The newer intent outlives the old ack, and a replay at the acked clock sends
+                // the bytes that were accepted then — not the rotated live credential.
+                assertNotNull(
+                    db.syncOutboxDao().get(SyncCollection.PODCAST.wire, rid, "auth"),
+                )
+                db.withWriteTransaction {
+                    db.syncOutboxDao().deleteField(SyncCollection.PODCAST.wire, rid, "auth")
+                }
+                captureStored(db, rid, "auth", sent, "\"replay\"")
+                val rows =
+                    db.syncOutboxDao().rows().filter {
+                        it.coll == SyncCollection.PODCAST.wire && it.rid == rid
+                    }
+                val replayed =
+                    ChangeBuilder(db, h.secrets) { true }.build(rows).single {
+                        it.fields["auth"]?.c == sent.toString()
+                    }
+                assertEquals(authValue(user, pass), replayed.fields.getValue("auth").v)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * A snapshot the ack path staged is owned by the still-pending outbox intent until the
+     * acknowledgement's atomic commit binds it — the sweep derives that ownership from the
+     * row's account, rid and complete clock.
+     */
+    @Test
+    fun aPendingOutboxIntentKeepsItsStagedSnapshotFromTheSweep() =
+        runTest {
+            val db = newTestDb()
+            try {
+                link(db)
+                val h = harness(db)
+                val clock = Hlc.of(now + 30, 2, localNode)
+                val key = pendingAuthKey(account, rid, clock.toString())
+                h.secrets.put(key, user, pass.toCharArray())
+                db.withWriteTransaction {
+                    db.syncOutboxDao().upsert(
+                        ch.lkmc.neutrodyne.core.database.SyncOutboxEntity(
+                            coll = SyncCollection.PODCAST.wire,
+                            rid = rid,
+                            field = "auth",
+                            hlc = clock.packed,
+                            nodeId = localNode.value,
+                        ),
+                    )
+                }
+
+                h.effects.drainPasswords()
+                assertNotNull(h.secrets.get(key), "the pending intent owns its snapshot")
+
+                db.withWriteTransaction {
+                    db.syncOutboxDao().deleteAcked(
+                        SyncCollection.PODCAST.wire,
+                        rid,
+                        "auth",
+                        clock.packed,
+                        localNode.value,
+                    )
+                }
+                h.effects.drainPasswords()
+                assertNull(h.secrets.get(key), "unowned after the intent is acknowledged")
             } finally {
                 db.close()
             }
