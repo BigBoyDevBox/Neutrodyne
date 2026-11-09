@@ -101,7 +101,7 @@
   <string name="sync_approve_link_question">Link %1$s?</string>
   <string name="sync_approve_pending_detail">%1$s · Neutrodyne %2$s · requested %3$s</string>
   <string name="sync_approve_link">Link</string>
-  <string name="sync_approve_dont_link">Don\'t link</string>
+  <string name="sync_approve_dont_link">Don't link</string>
   <string name="sync_approve_linked">%1$s is linked</string>
   <string name="sync_approve_declined">Link declined</string>
   <string name="sync_approve_rate_limited">Too many attempts. Ask the new device for a new code.</string>

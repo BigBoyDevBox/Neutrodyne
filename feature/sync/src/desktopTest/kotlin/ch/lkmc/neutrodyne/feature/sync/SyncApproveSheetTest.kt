@@ -129,7 +129,7 @@ class SyncApproveSheetTest {
             setSheet(harness)
             lookup(harness)
 
-            onNodeWithText("'t link", substring = true).performClick()
+            onNodeWithText("Don't link").performClick()
             waitForIdle()
 
             assertEquals(listOf("WDJBMJHT" to false), harness.controller.fake.confirmations)
@@ -154,7 +154,7 @@ class SyncApproveSheetTest {
 
             onNodeWithText("Link Anna's phone?").assertDoesNotExist()
             onNodeWithText("Link").assertDoesNotExist()
-            onNodeWithText("'t link", substring = true).assertDoesNotExist()
+            onNodeWithText("Don't link").assertDoesNotExist()
             assertTrue(
                 harness.controller.fake.confirmations
                     .isEmpty(),
