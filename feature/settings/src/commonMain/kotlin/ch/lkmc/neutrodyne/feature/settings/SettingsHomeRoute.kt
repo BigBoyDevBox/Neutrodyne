@@ -267,5 +267,4 @@ private fun syncSummary(status: SyncStatus): String =
         }
     }
 
-private fun hostOf(url: String): String =
-    url.removePrefix("https://").removePrefix("http://").substringBefore('/')
+private fun hostOf(url: String): String = url.removePrefix("https://").removePrefix("http://").substringBefore('/')

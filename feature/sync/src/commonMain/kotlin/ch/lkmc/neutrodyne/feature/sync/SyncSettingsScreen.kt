@@ -4,6 +4,7 @@ package ch.lkmc.neutrodyne.feature.sync
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -125,7 +126,7 @@ fun SyncSettingsScreen(
  * `SyncSetupKey`, and the README link for running a server.
  */
 @Composable
-private fun NotConfiguredBody(
+private fun ColumnScope.NotConfiguredBody(
     address: SyncServerAddress,
     runServerUrl: String,
     onContinue: (String) -> Unit,

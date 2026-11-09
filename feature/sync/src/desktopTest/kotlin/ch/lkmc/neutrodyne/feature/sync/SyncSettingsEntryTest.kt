@@ -80,7 +80,9 @@ class SyncSettingsEntryTest {
             waitForIdle()
 
             assertEquals(
-                listOf<RecordingAppNavigator.Call>(RecordingAppNavigator.Call.Push(SyncSetupKey("https://sync.example.org"))),
+                listOf<RecordingAppNavigator.Call>(
+                    RecordingAppNavigator.Call.Push(SyncSetupKey("https://sync.example.org")),
+                ),
                 harness.navigator.calls,
             )
             assertUntouched(harness)
@@ -93,15 +95,19 @@ class SyncSettingsEntryTest {
             setSyncPage(harness)
 
             onNode(hasSetTextAction())
-                .assert(SemanticsMatcher.expectValue(
-                    SemanticsProperties.EditableText,
-                    AnnotatedString("https://kept.example"),
-                ))
+                .assert(
+                    SemanticsMatcher.expectValue(
+                        SemanticsProperties.EditableText,
+                        AnnotatedString("https://kept.example"),
+                    ),
+                )
             onNodeWithText("Continue").performClick()
             waitForIdle()
 
             assertEquals(
-                listOf<RecordingAppNavigator.Call>(RecordingAppNavigator.Call.Push(SyncSetupKey("https://kept.example"))),
+                listOf<RecordingAppNavigator.Call>(
+                    RecordingAppNavigator.Call.Push(SyncSetupKey("https://kept.example")),
+                ),
                 harness.navigator.calls,
             )
         }
@@ -137,7 +143,9 @@ class SyncSettingsEntryTest {
             waitForIdle()
 
             assertEquals(
-                listOf<RecordingAppNavigator.Call>(RecordingAppNavigator.Call.Push(SyncSetupKey("https://sync.example.org"))),
+                listOf<RecordingAppNavigator.Call>(
+                    RecordingAppNavigator.Call.Push(SyncSetupKey("https://sync.example.org")),
+                ),
                 harness.navigator.calls,
             )
             assertUntouched(harness)
@@ -153,7 +161,9 @@ class SyncSettingsEntryTest {
             waitForIdle()
 
             assertEquals(
-                listOf<RecordingAppNavigator.Call>(RecordingAppNavigator.Call.Push(SyncSetupKey("https://sync.example.org"))),
+                listOf<RecordingAppNavigator.Call>(
+                    RecordingAppNavigator.Call.Push(SyncSetupKey("https://sync.example.org")),
+                ),
                 harness.navigator.calls,
             )
             assertUntouched(harness)
@@ -170,7 +180,9 @@ class SyncSettingsEntryTest {
             waitForIdle()
 
             assertEquals(
-                listOf<RecordingAppNavigator.Call>(RecordingAppNavigator.Call.Push(SyncSetupKey("https://sync.example.org"))),
+                listOf<RecordingAppNavigator.Call>(
+                    RecordingAppNavigator.Call.Push(SyncSetupKey("https://sync.example.org")),
+                ),
                 harness.navigator.calls,
             )
             assertEquals(0, link.cancelCount)
