@@ -15,7 +15,7 @@ import time
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from yt_dlp import YoutubeDL
 from yt_dlp.version import __version__
@@ -159,7 +159,61 @@ def _formats(info):
             'formatNote': _text(fmt.get('format_note')), 'protocol': protocol,
             'availableAt': _number(fmt.get('available_at')), 'xtags': _text(fmt.get('xtags')),
         })
-    return formats
+    return _without_alternate_tracks(formats)
+
+
+# YouTube's automatic dubbing repeats every audio itag once per language, about 20 times, which
+# pushes a resolve result past RESULT_BYTES (and the Binder host's UTF-16 accounting well before
+# that). The app's AudioStreamSelector picks a dubbed or descriptive track only when no other
+# track is left, so they are dropped whenever a track it can play remains; the selection itself
+# does not change. The classification and the codec and MIME checks mirror YtDlpAudioMapper's.
+_ALTERNATE_TRACKS = frozenset(('dubbed', 'dubbed-auto', 'descriptive'))
+_OTHER_TRACKS = frozenset(('original', 'secondary'))
+_DESCRIPTIVE_PREFERENCE = -10
+_PLAYABLE_CODEC = re.compile(r'mp4a(?:\.[A-Za-z0-9]+)*|opus|vorbis')
+_CODEC_LIMIT = 128
+_PLAYABLE_MIMES = frozenset(('audio/mp4', 'audio/webm'))
+_MIME_BY_EXT = {'m4a': 'audio/mp4', 'mp4': 'audio/mp4', 'webm': 'audio/webm'}
+
+
+def _query_value(url, key):
+    values = parse_qs(urlsplit(url).query, keep_blank_values=True).get(key, [])
+    return values[0] if len(values) == 1 else None
+
+
+def _track_content(fmt):
+    tags = fmt['xtags'] if fmt['xtags'] is not None else _query_value(fmt['url'], 'xtags') or ''
+    for part in tags.split(':'):
+        key, _, value = part.partition('=')
+        if key == 'acont':
+            return value
+    return None
+
+
+def _alternate_track(fmt):
+    content = _track_content(fmt)
+    if content in _ALTERNATE_TRACKS:
+        return True
+    if content in _OTHER_TRACKS:
+        return False
+    return fmt['languagePreference'] == _DESCRIPTIVE_PREFERENCE
+
+
+def _playable(fmt):
+    codec = fmt['acodec'] or ''
+    if len(codec) > _CODEC_LIMIT or not _PLAYABLE_CODEC.fullmatch(codec):
+        return False
+    mime = _query_value(fmt['url'], 'mime')
+    mime = mime.partition(';')[0] if mime is not None else _MIME_BY_EXT.get(fmt['ext'])
+    return mime in _PLAYABLE_MIMES
+
+
+def _without_alternate_tracks(formats):
+    alternate = [_alternate_track(fmt) for fmt in formats]
+    playable = any(not skip and _playable(fmt) for fmt, skip in zip(formats, alternate))
+    if not playable:
+        return formats
+    return [fmt for fmt, skip in zip(formats, alternate) if not skip]
 
 
 def _images(info, kind):
