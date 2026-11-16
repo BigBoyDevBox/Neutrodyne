@@ -64,6 +64,9 @@ class YtxService : Service() {
                 if (::http.isInitialized) http.begin(engineId)
                 executor.execute {
                     running.incrementAndGet()
+                    // Per call, unlike the service-wide [ready] another bind's call may set: only
+                    // this call's own configure decides whether its failure came before the host.
+                    var configured = false
                     try {
                         if (deadlineAtMs > 0 && SystemClock.elapsedRealtime() >= deadlineAtMs) {
                             // The ID is freed before every terminal answer: a woken caller
@@ -90,6 +93,7 @@ class YtxService : Service() {
                                 }
                             } else {
                                 python.configure(configuration, http, replay?.first)
+                                configured = true
                                 ready = true
                                 if (method != "ping") {
                                     when (replay?.second) {
@@ -119,11 +123,14 @@ class YtxService : Service() {
                         // Before the host is configured the failure is the interpreter start, the
                         // compile, the import or a call to an unprepared bind, which the app sees
                         // only as ENGINE_UNAVAILABLE. No request has reached the network yet, and
-                        // Log redacts the trace anyway.
-                        if (!ready && failure !is YtxCallException) {
+                        // Log redacts the trace anyway. The message goes to the main process too:
+                        // only it feeds the in-app Diagnostics log, and phones rarely reach adb.
+                        val startFailure = !configured && failure !is YtxCallException
+                        if (startFailure) {
                             Log.w(TAG, failure) { "Engine host call $method failed before the host was configured" }
                         }
-                        runCatching { callback.onError(id, code, null) }
+                        val detail = if (startFailure) startFailureDetail(failure) else null
+                        runCatching { callback.onError(id, code, detail) }
                     } finally {
                         calls.remove(id, engineId)
                         if (::http.isInitialized) http.end(engineId)
@@ -186,6 +193,14 @@ class YtxService : Service() {
     }
 
     companion object {
+        /** Bounds the start-failure text sent to the main process; one line is enough to act on. */
+        internal const val DETAIL_CHARS = 300
+
+        /** The exception type and the first line of its message (a Python error's type and text). */
+        internal fun startFailureDetail(failure: Exception): String =
+            "${failure::class.java.simpleName}: ${failure.message?.lineSequence()?.firstOrNull().orEmpty()}"
+                .take(DETAIL_CHARS)
+
         const val ENGINE_BIND = "ch.lkmc.neutrodyne.youtube.ENGINE"
         const val LIB_DIR = "ytx.lib"
         const val APP_VERSION = "ytx.appVersion"

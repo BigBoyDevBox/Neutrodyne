@@ -33,6 +33,7 @@ import kotlin.test.assertTrue
 class YtxServiceControlPathTest {
     private val context = RuntimeEnvironment.getApplication()
     private var service: ServiceController<YtxService>? = null
+    private val lastMessage = AtomicReference<String?>()
 
     @After
     fun destroyService() {
@@ -51,6 +52,17 @@ class YtxServiceControlPathTest {
     fun unconfiguredMethodFailsClearlyWithoutAGraph() {
         val engine = bind()
         assertEquals("ENGINE_UNAVAILABLE", call(engine, "resolve", SystemClock.elapsedRealtime() + 60_000))
+        // The main process logs this text; it is the only part of the cause the app can show.
+        assertEquals("IllegalStateException: Engine not prepared", lastMessage.get())
+    }
+
+    @Test
+    fun startFailureDetailKeepsOneBoundedLine() {
+        val traced = RuntimeException("Engine probe failed: yt_dlp_api\nTraceback (most recent call last):\n  File x")
+        assertEquals("RuntimeException: Engine probe failed: yt_dlp_api", YtxService.startFailureDetail(traced))
+        val long = YtxService.startFailureDetail(IllegalStateException("x".repeat(1_000)))
+        assertEquals(YtxService.DETAIL_CHARS, long.length)
+        assertTrue(long.startsWith("IllegalStateException: xx"))
     }
 
     private fun bind(): IYtxEngine {
@@ -89,6 +101,7 @@ class YtxServiceControlPathTest {
                     message: String?,
                 ) {
                     error.set(code)
+                    lastMessage.set(message)
                     latch.countDown()
                 }
             },
