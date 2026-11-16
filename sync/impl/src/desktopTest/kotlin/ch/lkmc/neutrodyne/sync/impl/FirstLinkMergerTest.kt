@@ -8,6 +8,7 @@ import ch.lkmc.neutrodyne.core.common.AppDirs
 import ch.lkmc.neutrodyne.core.common.Outcome
 import ch.lkmc.neutrodyne.core.common.StoragePaths
 import ch.lkmc.neutrodyne.core.database.CredentialEntity
+import ch.lkmc.neutrodyne.core.database.EpisodePositionEntity
 import ch.lkmc.neutrodyne.core.database.EpisodeStateEntity
 import ch.lkmc.neutrodyne.core.database.SyncOutboxEntity
 import ch.lkmc.neutrodyne.core.database.SyncStateEntity
@@ -16,6 +17,8 @@ import ch.lkmc.neutrodyne.core.domain.LibraryMerger
 import ch.lkmc.neutrodyne.core.domain.NoPlaybackSync
 import ch.lkmc.neutrodyne.core.domain.SyncIngestHook
 import ch.lkmc.neutrodyne.core.model.MergePolicy
+import ch.lkmc.neutrodyne.core.model.PositionSource
+import ch.lkmc.neutrodyne.core.model.RestoreCategory
 import ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys
 import ch.lkmc.neutrodyne.core.testing.FakeCredentialCommitCoordinator
 import ch.lkmc.neutrodyne.core.testing.FakeLibraryMerger
@@ -63,8 +66,10 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okio.FileSystem
 import okio.Path.Companion.toPath
@@ -767,6 +772,122 @@ class FirstLinkMergerTest {
                 // Inspect the frozen wire payload after its real acknowledgement drained the outbox.
                 assertTrue(sent.any { it.coll == "podcast" && "title" in it.fields })
                 assertEquals(0, db.syncOutboxDao().count())
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * 10 Merge step 3 decides the played mark at `playedAt` (else `episode_state.updatedAt`),
+     * as the row merge does. A later position write must not lift the local June mark over the
+     * server's October "unplayed", or the pushed winner would disagree with this device's row.
+     */
+    @Test
+    fun aNewerPositionDoesNotLiftAnOlderPlayedMarkOverTheServer() =
+        runTest {
+            val db = TestDb.inMemory()
+            try {
+                link(db, deviceId = device)
+                val podcastId =
+                    db
+                        .podcastDao()
+                        .insertPodcast(
+                            podcastEntity(
+                                syncId = podcastSyncId,
+                                feedUrl = "https://example.com/feed",
+                                feedKey = "https://example.com/feed",
+                                title = "Example",
+                            ),
+                        )
+                val episodeId =
+                    db
+                        .ingestDao()
+                        .insertEpisodes(
+                            listOf(
+                                episodeEntity(
+                                    podcastId = podcastId,
+                                    identityKey = "g:one",
+                                ) { copy(guid = "one") },
+                            ),
+                        ).single()
+                db
+                    .episodeStateDao()
+                    .ensure(EpisodeStateEntity(episodeId = episodeId, playedAt = june, updatedAt = june))
+                db
+                    .positionDao()
+                    .insertIfAbsent(
+                        EpisodePositionEntity(
+                            episodeId = episodeId,
+                            positionMs = 42_000L,
+                            positionSource = PositionSource.STREAM,
+                            updatedAt = october + 100_000L,
+                        ),
+                    )
+                val client = CountingClient(listOf(podcastRecord(), episodeRecord()))
+                val merger = mergerOf(db, client, FakeLibraryMerger())
+
+                val result = merger.merge(FirstLinkChoice.MERGE)
+
+                assertTrue(result is FirstLinkResult.Completed, "$result")
+                val raw = assertNotNull(db.syncClockDao().get("episode", podcastSyncId + "g:one"))
+                assertEquals(JsonPrimitive(false), decodeEpisode(raw.clocks).fields.getValue("played").v)
+                val sent = client.pushed.filter { it.coll == "episode" }
+                assertTrue(sent.none { "played" in it.fields }, "sent=$sent")
+                // The newer local position still wins, at its own timestamp.
+                val pos = sent.single { "pos" in it.fields }.fields.getValue("pos")
+                assertEquals(october + 100_000L, Hlc.parse(checkNotNull(pos.c)).millis)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * `playCount` and `lastPlayedAt` merge as maximums: the higher local value wins but takes
+     * the server's newer clock, so 10 Merge step 5 must decide it by value. Otherwise the
+     * server keeps its lower count while this device's row keeps the higher one.
+     */
+    @Test
+    fun aLocalMaximumAboveTheServersIsSentDespiteTheNewerServerClock() =
+        runTest {
+            val db = TestDb.inMemory()
+            try {
+                link(db, deviceId = device)
+                val podcastId =
+                    db
+                        .podcastDao()
+                        .insertPodcast(
+                            podcastEntity(
+                                syncId = podcastSyncId,
+                                feedUrl = "https://example.com/feed",
+                                feedKey = "https://example.com/feed",
+                                title = "Example",
+                            ),
+                        )
+                val episodeId =
+                    db
+                        .ingestDao()
+                        .insertEpisodes(
+                            listOf(
+                                episodeEntity(podcastId = podcastId, identityKey = "g:one") { copy(guid = "one") },
+                            ),
+                        ).single()
+                val localLastPlay = june + 5_000L
+                db.episodeStateDao().ensure(
+                    EpisodeStateEntity(episodeId, playCount = 5, lastPlayedAt = localLastPlay, updatedAt = june),
+                )
+                val client = CountingClient(listOf(podcastRecord(), episodeRecordWithLowerMaximums()))
+                val merger = mergerOf(db, client, FakeLibraryMerger())
+
+                val result = merger.merge(FirstLinkChoice.MERGE)
+
+                assertTrue(result is FirstLinkResult.Completed, "$result")
+                val sent = client.pushed.filter { it.coll == "episode" }.flatMap { it.fields.entries }
+                val playCount = sent.single { it.key == "playCount" }.value
+                assertEquals(JsonPrimitive(5L), playCount.v, "sent=$sent")
+                assertEquals(october, Hlc.parse(checkNotNull(playCount.c)).millis)
+                val lastPlayed = sent.single { it.key == "lastPlayedAt" }.value
+                assertEquals(JsonPrimitive(localLastPlay), lastPlayed.v)
+                assertEquals(october, Hlc.parse(checkNotNull(lastPlayed.c)).millis)
             } finally {
                 db.close()
             }
@@ -2749,6 +2870,227 @@ class FirstLinkMergerTest {
         }
 
     /**
+     * 05's Replace for all synced devices runs 10's step 2 on a device that was already linked:
+     * `sync_clock` still holds the server records from before the Replace, so the restored rows
+     * must decide against the fresh snapshot at the backup's own times. The restored newer mark
+     * is sent at its backup timestamp, the server's newer play survives and is not echoed, and
+     * nothing this device wrote before the restore is sent again.
+     */
+    @Test
+    fun restoreEverywhereMergesTheServerHistoryIntoTheRestoredLibrary() =
+        runTest {
+            val db = TestDb.inMemory()
+            val library = FakeLibraryMerger()
+            try {
+                // The Replace writes its rows with capture suppressed; the link is live again
+                // before step 8 runs.
+                link(db, deviceId = device)
+                val podcastId =
+                    db
+                        .podcastDao()
+                        .insertPodcast(
+                            podcastEntity(
+                                syncId = podcastSyncId,
+                                feedUrl = "https://example.com/feed",
+                                feedKey = "https://example.com/feed",
+                                title = "Example",
+                            ),
+                        )
+                val (one, two) =
+                    db
+                        .ingestDao()
+                        .insertEpisodes(
+                            listOf(
+                                episodeEntity(podcastId = podcastId, identityKey = "g:one") { copy(guid = "one") },
+                                episodeEntity(podcastId = podcastId, identityKey = "g:two") { copy(guid = "two") },
+                            ),
+                        )
+                // The Replace wrote the backup's rows: `g:one` played after the server's
+                // October "unplayed", `g:two` an older June "unplayed".
+                val restoredPlay = october + 100_000L
+                db.episodeStateDao().ensure(EpisodeStateEntity(one, playedAt = restoredPlay, updatedAt = restoredPlay))
+                db.episodeStateDao().ensure(EpisodeStateEntity(two, updatedAt = june))
+                // The server records as the linked device accepted them before the Replace,
+                // including this device's own earlier writes.
+                val otherSyncId = "00000000-0000-4000-8000-0000000000bb"
+                val store = SyncClockStore(db)
+                store.put("episode", podcastSyncId + "g:one", staleEpisode(played = false, Hlc.of(june, 1, remote)))
+                store.put("episode", podcastSyncId + "g:two", staleEpisode(played = false, Hlc.of(june, 1, localNode)))
+                store.put("episode", otherSyncId + "g:old", staleEpisode(played = true, Hlc.of(june, 1, localNode)))
+                val playedElsewhere =
+                    episodeRecord().copy(
+                        id =
+                            buildJsonObject {
+                                put("p", podcastSyncId)
+                                put("k", "g:two")
+                            },
+                        fields =
+                            mapOf(
+                                "played" to FieldValue(JsonPrimitive(true), clock(october)),
+                                "playedAt" to FieldValue(JsonPrimitive(october), clock(october)),
+                            ),
+                        match = MatchHints(guid = "two", title = "Two"),
+                    )
+                val client = CountingClient(listOf(podcastRecord(), episodeRecord(), playedElsewhere))
+                client.allowReset = true
+                val merger = mergerOf(db, client, library)
+                db.withWriteTransaction {
+                    db.syncStateDao().upsert(checkNotNull(db.syncStateDao().get()).copy(enabled = true))
+                }
+
+                val result = merger.restoreEverywhere(RestoreCategory.entries.toSet())
+
+                assertTrue(result is FirstLinkResult.Completed, "$result")
+                assertEquals(MergePolicy.LINK_HISTORY, library.calls.single().policy)
+                val sent = client.pushed.filter { it.coll == "episode" }
+                val played = sent.single { "played" in it.fields }
+                assertEquals("g:one", (played.id as JsonObject)["k"]?.jsonPrimitive?.content)
+                val playedField = played.fields.getValue("played")
+                assertEquals(JsonPrimitive(true), playedField.v)
+                assertEquals(restoredPlay, Hlc.parse(checkNotNull(playedField.c)).millis)
+                // The server's newer play elsewhere survives the restored older "unplayed".
+                val raw = assertNotNull(db.syncClockDao().get("episode", podcastSyncId + "g:two"))
+                assertEquals(JsonPrimitive(true), decodeEpisode(raw.clocks).fields.getValue("played").v)
+                // This device's history from before the restore is not sent again.
+                assertTrue(
+                    sent.none { (it.id as JsonObject)["p"]?.jsonPrimitive?.content == otherSyncId },
+                    "sent=$sent",
+                )
+                assertEquals(1, client.resetCalls)
+                assertEquals("c:00000001:1", client.resetBeforeCursor)
+                assertNotNull(db.syncStateDao().get()?.linkedAt)
+                assertEquals(0, db.syncOutboxDao().count())
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * A restored maximum above the server's wins the field merge but takes the server's newer
+     * clock, so the restore's step 3 must still send it, or the server keeps its lower count
+     * while this device's row keeps the restored one.
+     */
+    @Test
+    fun restoreEverywhereSendsARestoredMaximumAboveTheServers() =
+        runTest {
+            val db = TestDb.inMemory()
+            try {
+                link(db, deviceId = device)
+                val podcastId =
+                    db
+                        .podcastDao()
+                        .insertPodcast(
+                            podcastEntity(
+                                syncId = podcastSyncId,
+                                feedUrl = "https://example.com/feed",
+                                feedKey = "https://example.com/feed",
+                                title = "Example",
+                            ),
+                        )
+                val episodeId =
+                    db
+                        .ingestDao()
+                        .insertEpisodes(
+                            listOf(
+                                episodeEntity(podcastId = podcastId, identityKey = "g:one") { copy(guid = "one") },
+                            ),
+                        ).single()
+                val restoredLastPlay = june + 5_000L
+                db.episodeStateDao().ensure(
+                    EpisodeStateEntity(episodeId, playCount = 5, lastPlayedAt = restoredLastPlay, updatedAt = june),
+                )
+                SyncClockStore(db).put(
+                    "episode",
+                    podcastSyncId + "g:one",
+                    staleEpisode(played = false, Hlc.of(june, 1, remote)),
+                )
+                val client = CountingClient(listOf(podcastRecord(), episodeRecordWithLowerMaximums()))
+                client.allowReset = true
+                val merger = mergerOf(db, client, FakeLibraryMerger())
+                db.withWriteTransaction {
+                    db.syncStateDao().upsert(checkNotNull(db.syncStateDao().get()).copy(enabled = true))
+                }
+
+                val result = merger.restoreEverywhere(RestoreCategory.entries.toSet())
+
+                assertTrue(result is FirstLinkResult.Completed, "$result")
+                val sent = client.pushed.filter { it.coll == "episode" }.flatMap { it.fields.entries }
+                val playCount = sent.single { it.key == "playCount" }.value
+                assertEquals(JsonPrimitive(5L), playCount.v, "sent=$sent")
+                assertEquals(october, Hlc.parse(checkNotNull(playCount.c)).millis)
+                val lastPlayed = sent.single { it.key == "lastPlayedAt" }.value
+                assertEquals(JsonPrimitive(restoredLastPlay), lastPlayed.v)
+                assertEquals(october, Hlc.parse(checkNotNull(lastPlayed.c)).millis)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
+     * A Replace for all synced devices without listening history leaves the episode rows as
+     * they were, so their times are not the backup's: a device-local write can have moved
+     * `updatedAt` past a newer play from another device that this device has not pulled yet.
+     * Step 2 must not re-seed such rows, so the server's history keeps deciding.
+     */
+    @Test
+    fun restoreEverywhereWithoutHistoryLeavesTheServersHistoryDeciding() =
+        runTest {
+            val db = TestDb.inMemory()
+            try {
+                link(db, deviceId = device)
+                val podcastId =
+                    db
+                        .podcastDao()
+                        .insertPodcast(
+                            podcastEntity(
+                                syncId = podcastSyncId,
+                                feedUrl = "https://example.com/feed",
+                                feedKey = "https://example.com/feed",
+                                title = "Example",
+                            ),
+                        )
+                val episodeId =
+                    db
+                        .ingestDao()
+                        .insertEpisodes(
+                            listOf(
+                                episodeEntity(podcastId = podcastId, identityKey = "g:one") { copy(guid = "one") },
+                            ),
+                        ).single()
+                db.episodeStateDao().ensure(EpisodeStateEntity(episodeId, updatedAt = october + 100_000L))
+                SyncClockStore(db).put(
+                    "episode",
+                    podcastSyncId + "g:one",
+                    staleEpisode(played = false, Hlc.of(june, 1, remote)),
+                )
+                val playedElsewhere =
+                    episodeRecord().copy(
+                        fields =
+                            mapOf(
+                                "played" to FieldValue(JsonPrimitive(true), clock(october)),
+                                "playedAt" to FieldValue(JsonPrimitive(october), clock(october)),
+                            ),
+                    )
+                val client = CountingClient(listOf(podcastRecord(), playedElsewhere))
+                client.allowReset = true
+                val merger = mergerOf(db, client, FakeLibraryMerger())
+                db.withWriteTransaction {
+                    db.syncStateDao().upsert(checkNotNull(db.syncStateDao().get()).copy(enabled = true))
+                }
+
+                val result = merger.restoreEverywhere(setOf(RestoreCategory.UP_NEXT, RestoreCategory.SETTINGS))
+
+                assertTrue(result is FirstLinkResult.Completed, "$result")
+                val sent = client.pushed.filter { it.coll == "episode" }
+                assertTrue(sent.isEmpty(), "sent=$sent")
+                val raw = assertNotNull(db.syncClockDao().get("episode", podcastSyncId + "g:one"))
+                assertEquals(JsonPrimitive(true), decodeEpisode(raw.clocks).fields.getValue("played").v)
+            } finally {
+                db.close()
+            }
+        }
+
+    /**
      * "Use this device's library everywhere" step 3 for settings: the choice folds no server
      * setting, so the controller's post-link reconcile queues this device's value as an
      * account-absent key, with a clock above every clock of the snapshot, and the server's
@@ -2933,6 +3275,25 @@ class FirstLinkMergerTest {
         val codec = BackupCodec(BackupCodec.Mode.STAGING)
         return fileSystem.source(stagingDir.toPath() / BackupCodec.ENTRY_LIBRARY).use(codec::decodeLibrary)
     }
+
+    /** An `episode` raw record as a linked device holds it: one accepted played pair. */
+    private fun staleEpisode(
+        played: Boolean,
+        at: Hlc,
+    ): RawSyncRecord =
+        RawSyncRecord(
+            ch.lkmc.neutrodyne.sync.protocol.RecordState(
+                ch.lkmc.neutrodyne.sync.protocol.SyncCollection.EPISODE,
+                mapOf(
+                    "played" to
+                        ch.lkmc.neutrodyne.sync.protocol
+                            .FieldState(JsonPrimitive(played), at),
+                    "playedAt" to
+                        ch.lkmc.neutrodyne.sync.protocol
+                            .FieldState(if (played) JsonPrimitive(at.millis) else JsonNull, at),
+                ),
+            ),
+        )
 
     private fun decodeEpisode(json: String): ch.lkmc.neutrodyne.sync.protocol.RecordState =
         ch.lkmc.neutrodyne.sync.protocol.SyncJson
@@ -3278,6 +3639,18 @@ class FirstLinkMergerTest {
                 ),
             match = MatchHints(guid = "one", title = "One"),
             matchClocks = mapOf("guid" to clock(october).toString()),
+        )
+
+    /** The server's `g:one` with October clocks on a lower play count and an older last play. */
+    private fun episodeRecordWithLowerMaximums(): RecordDto =
+        episodeRecord().copy(
+            fields =
+                mapOf(
+                    "played" to FieldValue(JsonPrimitive(false), clock(october)),
+                    "playedAt" to FieldValue(JsonNull, clock(october)),
+                    "playCount" to FieldValue(JsonPrimitive(3L), clock(october)),
+                    "lastPlayedAt" to FieldValue(JsonPrimitive(june - 5_000L), clock(october)),
+                ),
         )
 
     private fun clock(atMs: Long): String = Hlc.of(atMs, 1, remote).toString()

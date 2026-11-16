@@ -1486,11 +1486,9 @@ Deviations:
   with a fresh clock above every clock of the snapshot, and the next
   round pushes it. The library prune never removes `setting` records, so
   pushing them after step 5 still makes this device's values win.
-- 05's Replace for all synced devices (`restoreEverywhere`) still runs
-  steps 3 to 5 without step 2. It runs on a device that was already
-  linked: its `sync_clock` holds accepted server clocks and its rows carry
-  the backup's timestamps, so merging the server history there needs its
-  own rules and tests.
+- 05's Replace for all synced devices (`restoreEverywhere`) ran steps 3
+  to 5 without step 2 when this note was written; the restore note below
+  adds it.
 
 **Implementation note (2026-11-15, second confirmation).** The local
 warning gate of the 2026-11-04 link-flow note is gone. Choosing "Use this
@@ -1505,6 +1503,49 @@ podcasts by feed key and groups by `nameKey`; a server podcast that only
 an alias or `podcastGuid` matches is counted as a removal although the
 merge keeps it, so the confirmation can overstate the effect, never
 understate it.
+
+**Implementation note (2026-11-15, first-link seeds).** The seed of an
+episode row now uses the local times [Merge](#merge) step 3 decides it
+by, the same ones the row merge (`RestoreEpisodeMerger`) compares: the
+played pair at `playedAt` (else `episode_state.updatedAt`), favourite,
+`playCount` and `lastPlayedAt` at `updatedAt`, the position at its own
+`updatedAt`. The seed used to stamp every state field with the newer of
+the state and position times, so a later position write let an old local
+played mark win in `sync_clock` and be pushed while the row kept the
+server's newer value.
+
+**Implementation note (2026-11-15, step 2 from a restore).** 05's
+Replace for all synced devices now runs step 2 before steps 3 to 5.
+`restoreEverywhere` pulls a fresh snapshot, then merges the server's
+listening history into the replaced library through the same
+`LINK_HISTORY` run as the first-link choice. Because the device was
+linked, `sync_clock` still holds the server's records from before the
+Replace, and the first-link seed (written only where no record exists)
+would leave them deciding. When the Replace restored listening history,
+each restored episode row therefore re-seeds its record's fields at the
+row's own times (the backup's); the record keeps its server-confirmed
+`accepted` state. After the field merge, step 3 sends only the seeded
+fields that kept their seeded clocks, at the backup's times. Everything
+else this device wrote before the restore is already an accepted server
+value and is not sent again, so the restore re-sends no old history.
+Without HISTORY the episode rows were not restored and nothing is
+re-seeded: a row's `updatedAt` can be newer than a play another device
+made since this device's last pull, and the seed would send the older
+value over it. The Replace pre-step deletes the restored podcasts'
+pending `episode` outbox rows with their history, since step 4 would
+otherwise push a replaced value, or the restored one at the old row's
+newer clock. A record that still has pending rows was written after the
+Replace; it keeps its stored state and its rows push as they are.
+
+**Implementation note (2026-11-15, extrema in step 3).** A `MinField` or
+`MaxField` merges its value apart from its clock: a local `playCount`
+above the server's wins but takes the server's newer clock. The capture
+after a first-link merge or a restore's step 2 therefore decides these
+fields by value, sending one whose merged value the server has not
+confirmed, stamped at the merged clock's time. The server merges the
+field by value as well, so the higher count lands although its clock is
+not newer. The capture used to require this device's clock, so the
+server kept its lower count while the device's row kept the higher one.
 
 ### Use the server's library on this device
 
@@ -2575,7 +2616,7 @@ S14 plus MS2, in `desktopTest` with the bundled SQLite driver and a subset as An
 | `OutboxReaderTest`, `ChangeBuilderTest` | batching by record, `*` expansion, immutable played/position literals, position-reset promotion to the wire sibling, exact replay of a foreign node with a non-zero counter, deletion of acknowledged rows only up to the complete pushed clock |
 | `SyncApplierTest` | idempotent re-application; field-by-field clock comparison against `sync_clock` and pending rows; raw played mark survives an in-progress projection without freezing the active saver or posting a played notice, while a newer effective played mark does; explicit local mark-unplayed/reset still captures when the effective columns already equal the target; collection order; stubs only for in-progress, favourite and queued; parked records released by `afterIngest`; redirects; no capture while applying |
 | `EpisodeStateRulesTest` | every row of [Episode-state rules](#episode-state-rules) |
-| `FirstLinkMergerTest` | 05's rules table with the timestamp policy, the June-played versus October-unplayed case (MS2 acceptance 3), ID adoption, Up next order, settings precedence; values the server won are not captured; "Use the server's library" fills `sync_clock`; "Use this device's library everywhere" uploads before it prunes and survives a crash between the two; `resync()` replays original values and complete clocks, removals included, and a grow-set row carries the record's newest known clock; two different known versions replayed in both orders keep the originally newer write; staging maps a record with only `pos` to `ts = 0` and one with `pos` plus `lastPlayedAt` to that field's clock, so its `lastPlayedAt` survives (05's Archive rule), and a record without `played` or `fav` (no `fc` entry) never clears a local played mark or favourite |
+| `FirstLinkMergerTest` | 05's rules table with the timestamp policy, the June-played versus October-unplayed case (MS2 acceptance 3), ID adoption, Up next order, settings precedence; values the server won are not captured; "Use the server's library" fills `sync_clock`; "Use this device's library everywhere" uploads before it prunes and survives a crash between the two; 05's Replace for all synced devices merges the server's history into the restored rows at the backup's times without re-sending this device's earlier writes, and without HISTORY re-seeds no episode row; a later position write never lifts an older played mark over the server; a local or restored `playCount` above the server's is sent although the server's clock is newer; `resync()` replays original values and complete clocks, removals included, and a grow-set row carries the record's newest known clock; two different known versions replayed in both orders keep the originally newer write; staging maps a record with only `pos` to `ts = 0` and one with `pos` plus `lastPlayedAt` to that field's clock, so its `lastPlayedAt` survives (05's Archive rule), and a record without `played` or `fav` (no `fc` entry) never clears a local played mark or favourite |
 | `MassChangeGuardTest` | thresholds (10 podcasts, 20 %, 3 groups) with the boundary values, staging across pages, member and Up next removals staged with their podcast or group, Apply, Keep mine (memberships and Up next restored), Decide later, deferral while playing, a provisional row left by a dead round |
 | `UndoHoldBackTest` | a group deletion and its member removals stay in the outbox for 10 s; an undo inside the window leaves nothing to push; after 10 s they are pushed |
 | `SessionAdopterTest` | adoption only when not playing, the offer's conditions, context mapping, `generation` bump; remote payload received while playing survives pause and restart without redelivery |
