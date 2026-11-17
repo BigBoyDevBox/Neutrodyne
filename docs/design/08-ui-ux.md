@@ -643,6 +643,26 @@ Groups segment: a grid of [`GroupMosaic`](#groupmosaic-and-group-tab-label) tile
 - Overflow: Grid size, Show titles, Manage groups, Import subscriptions… (`FilePicker`, 05; on the desktop also Ctrl/Cmd+O and dropping a file on the window), Export subscriptions… (`ExportKey(null)`), Backup and restore (`BackupKey`).
 - States: loading → 12 skeleton tiles in `surfaceContainer`; empty library → onboarding empty state; filter chip with no members → "No podcasts in 'tech'" + "Add podcasts"; a selected group chip whose group was deleted → chip filter falls back to All silently; banners per [Banners and the startup gate](#banners-and-the-startup-gate) (restore running, held sync changes, foreign Android-backup snapshot, "Reconnect to {server}", import in progress, offline). Library needs no network: offline only adds the banner.
 
+**Radio Library (PO-55, 2026-11-17).** The Library stands in the radio's
+cabinet like every page. Its faceplate carries an ivory Add key ("Add podcasts",
+`AddPodcastKey(null)`), Sort and More; the settings gear is gone because
+Settings opens from the radio's Menu. Podcasts and Groups are a bank of piano
+keys (`PianoKeys`): the chosen key sits pressed in under a lit amber lamp. The
+chip row becomes one enamel selector (`EnamelSelector`) naming the filter (All
+podcasts, Ungrouped or a group); its menu lists those choices, each read as a
+selected or unselected radio button, and New group. Beside it the strip shows
+the filtered podcast count and their unplayed total ("5 podcasts · 59
+unplayed"); when space runs short the counts end in an ellipsis and the
+selector keeps its width. Cover tiles sit in a brass edge with the unplayed count on a brass
+disc (`BrassCountBadge`); titles, when shown, are typed on a paper label of up
+to two lines. The Groups segment is a cabinet of drawers (`GroupDrawer`): a
+wooden front with the name typed on a card in a brass holder, the group's
+colour on an enamel tab, "{n} podcasts · {u} unplayed · {k} new", up to four
+member covers and a brass cup pull. Drawers fill the width on phones and sit
+side by side on panes wide enough for two of at least 300 dp; the cover size
+setting applies only to covers. The empty drawer at the end opens New group. Taps, menus, custom
+actions, selection and keyboard behaviour are unchanged.
+
 Implementation note (2026-10-16, M2): D7 delivers the Library chips,
 persisted Podcasts/Groups segment, mosaic grid and selection actions. Group
 tile counts are wired to `FeedRepository.observeGroupCounts(sinceMs)`, using
@@ -689,6 +709,20 @@ value is a raw UUID, unlike `ui.feeds_selected_source`'s `group:` encoding.
 - Preview mode: Subscribe button + group chips (multi-select, "+ New group" inline), episode rows without play or download buttons ("Subscribe to play"), "Already subscribed — Open" when `alreadySubscribed.exact`, "You may already be subscribed to this show. Subscribe anyway?" otherwise; failures as in the [Add podcast sheet](#add-podcast-sheet).
 - Data: 03's `PodcastDetail` (display title, author, description as `ShowNotes`, `artwork`, `bannerUrl`, `sourceType`, `link`, `episodeCount`, `latestEpisodeAt`, `status`, `health: FeedHealth` with the derived `possiblyDead`, `isPrivate`, `episodeOrder`, `showType`, `hasOlderPages`) and `ArtworkRepository.observeColors(detail.artwork.key)` for the header scheme.
 - States: loading → header skeleton (cover box in the monogram tone) + 6 skeleton rows; `observePodcast` emits null (unsubscribed elsewhere, merged into another podcast) → pop with snackbar "This podcast was removed"; offline → offline banner, list from the database, refresh disabled with a tooltip; feed with no episodes → "No episodes yet" (`emptyFeed`, new show); YouTube channel with no visible episodes → "No long-form videos yet. This channel may post only Shorts or live streams." + "Podcast settings" (variants, 04 [UI per capability](04-youtube.md#ui-per-capability-hand-off-to-08-capability-differences-in-ui)); preview resolution failure → the [Add podcast sheet](#add-podcast-sheet) failure texts with Retry.
+
+**Radio podcast page (PO-55, 2026-11-17).** The header is the radio's programme card
+(`PodcastHeader`): the 120 dp cover in a brass edge beside a paper card typed with the title
+and author and a lit "Subscribed" lamp; memberships are small enamel plates with the group's
+colour, opening the membership sheet, each with its own remove key, and "+ Group" is a paper
+tag. The filter chips are a bank of latching piano keys (`FeedFilterChips`): a filter key stays
+pressed in with its lamp lit while on, and the Clear key, printed "Clear" and read "Clear
+filters", releases them; it stays in the bank, dimmed, while nothing is pressed. The bank
+scrolls sideways when the labels do not fit. The order control is a momentary key printed
+"Newest" or "Oldest" (read "Newest first" or "Oldest first") that opens the same menu. Every
+`EpisodeRow` is a cream paper slip inset in the tray, with ivory play and overflow keys; the
+whole list line stays the click and gesture target, and the slip draws the press, hover and
+focus indication. Slips appear wherever `EpisodeRow` does (Podcast, Up next, Feeds). The
+download key and swipes are unchanged, so a left swipe still discards by default.
 
 ### Podcast settings
 
@@ -764,6 +798,14 @@ The group settings screen follows in D8b.
 - Show notes: [`ShowNotes`](#show-notes-renderer) renderer from `EpisodeRepository.observeShowNotes`. Chapters: `ChapterRepository.observe(id)` (06); tap → seek per 06 [Current chapter and commands](06-playback.md#current-chapter-and-commands).
 - Unavailable YouTube episode: a reason line under the meta (`AvailabilityText`, [Capability differences in UI](#capability-differences-in-ui)). External YouTube episode: the line "Opens in YouTube" and, below the buttons, the short [external-reason text](#external-reason-texts) (for example "In-app YouTube is off") linking to Settings › YouTube.
 - States: missing episode (deleted by retention or unsubscribe) → "This episode is no longer available"; notes loading → 3 skeleton paragraphs; notes empty → "No show notes"; offline and not downloaded → primary button shows `cloud_off` "Offline" and taps give the offline snackbar; images in notes stay unloaded offline (no error).
+
+**Radio episode page (PO-55, 2026-11-17).** The art sits in a brass edge (4 dp corners) beside
+the typed title, and the actions are a bank of tall ivory keys in a metal slot (`ActionKey` in an
+`ActionKeySlot`), each a symbol over its label: the primary play key (Play, Pause, Resume, Play
+again, Offline or Watch on YouTube, as above), Download with its live glyph and status as the
+label, Up next (Play next or Play last) and Mark played or Mark unplayed. The keys share one row
+while every label's longest word fits its key; otherwise the bank wraps into rows of two (down
+to one per row), so the labels stay whole at 200 % text.
 
 ### Group editor
 
@@ -902,6 +944,11 @@ In progress is enabled; Downloaded remains gated until M6.
 - Empty: "Nothing up next. Add episodes with Play next or Play last." (one wording for touch and mouse) + chips "Play tech", "Play news", "Play fiction" (the first three groups in user order, each `playFeed(Group)`); nothing playing and no groups: Discover link.
 - `AddResult.Rejected` texts: `ALREADY_PLAYING` "This episode is already playing", `YOUTUBE_EXTERNAL` "YouTube episodes open in YouTube", `UNAVAILABLE` "This episode isn't available".
 
+**Radio Up next (PO-55, 2026-11-17).** Section labels (Now playing, Up next) are engraved in
+spaced capitals and read as written. The episode on air is a tan slip with its cover in a
+recess and an ivory play key; queue rows are the shared paper slips. "Stop after Up next" is a
+momentary piano key: it drops the continuation, so it has no latched state to show.
+
 ### Downloads
 
 **Implementation note (2026-10-19, M6a).** The manual Downloads screen exposes
@@ -966,6 +1013,15 @@ accessibility and permission behavior still require device/packaged-app runs.
 - States: loading → skeleton rows; storage bar shows "—" while `observeStorage()` has not emitted; the screen is fully usable offline (rows show "Waiting for a connection").
 - `DownloadsOverview.notices` render as `NdBanner`s above the lists (at most two, in 07's table order) with 07's texts adopted as the final wording ([07 Notices](07-downloads.md#notices)): `DATA_SAVER` (Android; open the data-restriction settings), `BACKGROUND_RESTRICTED` (Android), `NOTIFICATIONS_OFF` (Android; Allow → the contextual prompt, [Permission prompts](#permission-prompts)), `CAP_REACHED`, `STORAGE_LOW` (Manage storage), `ROOT_UNAVAILABLE`, `YOUTUBE_PAUSED` (04's breaker text with "Try now" → `YouTubeHealth.retryNow()`; shown above the YouTube rows), `MOVE_IN_PROGRESS`, `ORPHAN_FILES` (Delete → confirmation → `deleteOrphanFiles()`). In external mode completed YouTube downloads stay listed with Delete and Share file (desktop: "Show in …") but no play button (they are not played in the app, 04 [Engine absent or disabled](04-youtube.md#engine-absent-or-disabled)); queued YouTube rows wait with `YOUTUBE_ENGINE_OFF`, or, on an APK without the engine (`NOT_IN_THIS_APK`), end `FAILED(UNSUPPORTED_STREAM)` with the YouTube text of [Download status text](#download-status-text).
 - Empty: "Downloaded episodes play offline" + storage summary + "Auto-download settings" (`SettingsKey(DOWNLOADS)`).
+
+**Radio Downloads (PO-55, 2026-11-17).** The faceplate has no settings gear; Settings opens
+from the radio's Menu. Storage is an analog meter behind glass (`NeedleGauge`, printed
+"Storage", 0 to "Full") under the used and free line, which states the values; the meter is
+decorative. Section and selection actions (Download settings, Pause all, Resume all, Retry all,
+Play all, Select all completed, Select played, Delete and Cancel for a selection) are momentary
+piano keys in banks that scroll sideways; momentary keys have no lamp. Each download is a paper
+slip whose whole list line stays the click target, with its cover in a recess, ivory Play, state
+and overflow keys, and a needle window (`NeedleWindow`) for a known download progress.
 
 ### Discover
 
