@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -54,7 +55,6 @@ import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.role
@@ -71,6 +71,7 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.BatToggle
 import ch.lkmc.neutrodyne.core.designsystem.radio.Brass
 import ch.lkmc.neutrodyne.core.designsystem.radio.Cream
 import ch.lkmc.neutrodyne.core.designsystem.radio.DialOpening
+import ch.lkmc.neutrodyne.core.designsystem.radio.Faceplate
 import ch.lkmc.neutrodyne.core.designsystem.radio.IvoryKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.MaterialPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioMaterial
@@ -203,22 +204,17 @@ internal fun RadioPlayer(
                 if (!compact) RadioText(radioTimeline(duration), 11, modifier = Modifier.align(Alignment.End))
             }
         }
-        MaterialPlate(
-            RadioMaterial.METAL,
-            Modifier.padding(top = if (compact) 6.dp else 8.dp).fillMaxWidth().border(
-                1.dp,
-                Brass,
-            ),
-        ) {
+        Faceplate(Modifier.padding(top = if (compact) 6.dp else 8.dp).fillMaxWidth()) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 // The skip keys flank the counter while the counter keeps room for legible tubes;
                 // the needle still seeks when very large text leaves no room for them.
                 val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
                 val skipKeys = maxWidth >= SKIP_ROW_RESERVE * capScale + NIXIE_MIN_WIDTH * fontScale
+                // Clear of the faceplate's corner screws.
                 Row(
                     Modifier.fillMaxWidth().padding(
-                        vertical = 7.dp,
-                        horizontal = 9.dp,
+                        vertical = 10.dp,
+                        horizontal = 12.dp,
                     ),
                     horizontalArrangement = Arrangement.SpaceAround,
                     verticalAlignment = Alignment.CenterVertically,
@@ -244,6 +240,7 @@ internal fun RadioPlayer(
                                     ),
                                 enabled = selected != null,
                                 scale = capScale,
+                                arrow = NdIcons.ArrowBack,
                                 tag = "radio_skip_back",
                                 modifier = Modifier.offset(y = keyDrop),
                                 onClick = actions.skipBack,
@@ -264,6 +261,7 @@ internal fun RadioPlayer(
                                     ),
                                 enabled = selected != null,
                                 scale = capScale,
+                                arrow = NdIcons.ArrowForward,
                                 tag = "radio_skip_forward",
                                 modifier = Modifier.offset(y = keyDrop),
                                 onClick = actions.skipForward,
@@ -285,13 +283,14 @@ internal fun RadioPlayer(
     }
 }
 
-/** A round ivory key beside the counter, engraved with the seconds it skips ("−15", "+30"). */
+/** A round ivory key beside the counter, engraved with an [arrow] over the seconds it skips. */
 @Composable
 private fun SkipKey(
     legend: String,
     description: String,
     enabled: Boolean,
     scale: Float,
+    arrow: ImageVector,
     tag: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -305,7 +304,7 @@ private fun SkipKey(
             .testTag(tag),
         contentAlignment = Alignment.Center,
     ) {
-        IvoryKeyCap(legend, enabled = enabled, size = SKIP_CAP * scale)
+        IvoryKeyCap(legend, enabled = enabled, size = SKIP_CAP * scale, icon = arrow)
     }
 }
 
@@ -528,11 +527,11 @@ private const val CATHODE_GHOST = '8'
 
 private const val FIXED_CAP_FONT_SCALE = 1.3f
 private const val MILLIS_PER_SECOND = 1_000L
-private val SKIP_TARGET = 48.dp
-private val SKIP_CAP = 40.dp
+private val SKIP_TARGET = 52.dp
+private val SKIP_CAP = 52.dp
 
 // Room the row needs besides the counter when the skip keys show: its padding, the play
 // switch and two key targets (all scaled with the cap), then the narrowest counter whose
 // tubes still hold their digits (scaled with the text).
-private val SKIP_ROW_RESERVE = 18.dp + 58.dp + SKIP_TARGET * 2
+private val SKIP_ROW_RESERVE = 24.dp + 58.dp + SKIP_TARGET * 2
 private val NIXIE_MIN_WIDTH = 112.dp
