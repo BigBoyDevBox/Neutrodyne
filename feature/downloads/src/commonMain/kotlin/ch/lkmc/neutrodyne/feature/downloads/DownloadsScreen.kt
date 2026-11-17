@@ -7,7 +7,6 @@ import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -24,7 +23,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
@@ -56,7 +54,6 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.semantics.CustomAccessibilityAction
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
@@ -75,11 +72,11 @@ import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbar
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbarColor
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
 import ch.lkmc.neutrodyne.core.designsystem.radio.Brass
+import ch.lkmc.neutrodyne.core.designsystem.radio.KeyBank
 import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioFaceplate
+import ch.lkmc.neutrodyne.core.designsystem.radio.MomentaryKey
 import ch.lkmc.neutrodyne.core.designsystem.radio.NeedleGauge
 import ch.lkmc.neutrodyne.core.designsystem.radio.NeedleWindow
-import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKey
-import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKeySlot
 import ch.lkmc.neutrodyne.core.designsystem.radio.recess
 import ch.lkmc.neutrodyne.core.model.DownloadError
 import ch.lkmc.neutrodyne.core.model.DownloadState
@@ -137,7 +134,6 @@ import ch.lkmc.neutrodyne.core.ui.resources.downloads_unknown
 import ch.lkmc.neutrodyne.core.ui.resources.downloads_working
 import ch.lkmc.neutrodyne.core.ui.resources.nav_downloads
 import ch.lkmc.neutrodyne.core.ui.root.LocalMiniPlayerInset
-import ch.lkmc.neutrodyne.core.ui.root.SettingsGearButton
 import ch.lkmc.neutrodyne.download.api.DownloadEntry
 import ch.lkmc.neutrodyne.download.api.DownloadNotice
 import ch.lkmc.neutrodyne.download.api.DownloadStatus
@@ -329,7 +325,7 @@ internal fun DownloadsScreen(
                             downloadSize(rows.completed.sumOf { it.status.totalBytes ?: it.status.downloadedBytes }),
                         ),
                     ) {
-                        MomentaryKey(stringResource(Res.string.downloads_play_all)) { onPlay(null) }
+                        MomentaryKey(stringResource(Res.string.downloads_play_all), { onPlay(null) })
                         // Selection is limited to completed files; queued transfers cannot be deleted
                         // accidentally.
                         MomentaryKey(stringResource(Res.string.downloads_select_all), onSelectAll)
@@ -384,23 +380,6 @@ private fun SectionHeader(
         Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
         KeyBank(Modifier.padding(top = 6.dp), content = actions)
     }
-}
-
-/** A bank of momentary keys that scrolls sideways when the labels do not fit. */
-@Composable
-private fun KeyBank(
-    modifier: Modifier = Modifier,
-    content: @Composable RowScope.() -> Unit,
-) {
-    PianoKeySlot(modifier.horizontalScroll(rememberScrollState()), content = content)
-}
-
-@Composable
-private fun MomentaryKey(
-    label: String,
-    onClick: () -> Unit,
-) {
-    PianoKey(label, pressed = false, onClick = onClick, role = Role.Button)
 }
 
 /**
