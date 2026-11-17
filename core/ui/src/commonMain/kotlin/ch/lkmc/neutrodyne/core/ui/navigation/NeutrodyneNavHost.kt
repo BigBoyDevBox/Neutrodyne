@@ -31,12 +31,29 @@ import androidx.navigation3.ui.NavDisplay
 import androidx.navigation3.ui.defaultPopTransitionSpec
 import androidx.navigation3.ui.defaultPredictivePopTransitionSpec
 import androidx.navigation3.ui.defaultTransitionSpec
+import ch.lkmc.neutrodyne.core.designsystem.radio.CabinetDeck
+import ch.lkmc.neutrodyne.core.designsystem.radio.LocalCabinetBackKey
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioCabinetPage
 import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneMotion
 import ch.lkmc.neutrodyne.core.navigation.EntryProviderInstaller
+import ch.lkmc.neutrodyne.core.navigation.FeedsKey
 import ch.lkmc.neutrodyne.core.navigation.LocalNavTab
 import ch.lkmc.neutrodyne.core.navigation.NdSceneMetadata
 import ch.lkmc.neutrodyne.core.navigation.TopLevelKey
+import ch.lkmc.neutrodyne.core.ui.NavBackButton
+
+/**
+ * How the host frames each page. The app root builds every page except the radio home into the
+ * radio's cabinet (PO-55); navigation tests that probe transition pixels use bare pages.
+ */
+public enum class PageFrame {
+    /** Pages fill their scene edge to edge. */
+    NONE,
+
+    /** Pages stand in [RadioCabinetPage]; the radio home and overlays stay unframed. */
+    RADIO_CABINET,
+}
 
 /**
  * The shared `NavDisplay` (01 AppNavigator and per-tab back stacks). Every tab's stack is decorated
@@ -53,6 +70,7 @@ public fun NeutrodyneNavHost(
     installers: Set<EntryProviderInstaller>,
     directive: PaneScaffoldDirective,
     modifier: Modifier = Modifier,
+    pageFrame: PageFrame = PageFrame.NONE,
 ) {
     // The DI graph's multibound installer set is rebuilt on every access, so the parameter's
     // identity churns on each recomposition while its bindings stay fixed for the process.
@@ -76,7 +94,8 @@ public fun NeutrodyneNavHost(
                             rememberViewModelStoreNavEntryDecorator(),
                             rememberTabLocalNavEntryDecorator(tab),
                             rememberPaneFocusDecorator(),
-                            rememberHeaderBarDecorator(state, tab, directive.maxHorizontalPartitions),
+                            rememberHeaderBarDecorator(state, tab, directive.maxHorizontalPartitions, pageFrame),
+                            rememberCabinetDecorator(directive.maxHorizontalPartitions, pageFrame),
                         ),
                     entryProvider = { key -> withPaneRole(key, provider(key), tab) },
                 )
@@ -322,14 +341,58 @@ private fun rememberHeaderBarDecorator(
     state: NavigationState,
     tab: TopLevelKey,
     partitions: Int,
+    pageFrame: PageFrame,
 ): NavEntryDecorator<NavKey> =
-    remember(state, tab, partitions) {
+    remember(state, tab, partitions, pageFrame) {
         NavEntryDecorator { entry ->
             CompositionLocalProvider(
                 LocalHeaderSystemBarsEnabled provides (
-                    partitions == 1 && state.selectedTab == tab &&
+                    !inCabinet(entry, pageFrame) && partitions == 1 && state.selectedTab == tab &&
                         state.stack(tab).lastOrNull() == entry.metadata[PANE_NAV_KEY]
                 ),
             ) { entry.Content() }
         }
     }
+
+/**
+ * Builds every page except the radio home into the radio's cabinet (owner decision 2026-11-17).
+ * Sheets and dialogs keep their own containers. In a pane row only the list pane, which leads
+ * the row, carries the valve deck, so a two-pane window shows one deck as one radio would.
+ */
+@Composable
+private fun rememberCabinetDecorator(
+    partitions: Int,
+    pageFrame: PageFrame,
+): NavEntryDecorator<NavKey> =
+    remember(partitions, pageFrame) {
+        NavEntryDecorator { entry ->
+            if (inCabinet(entry, pageFrame)) {
+                val role = entry.metadata[NdSceneMetadata.KEY_PANE]
+                val deck =
+                    if (partitions == 1 || role == null || role == NdSceneMetadata.PANE_LIST) {
+                        CabinetDeck.SHOWN
+                    } else {
+                        CabinetDeck.HIDDEN
+                    }
+                RadioCabinetPage(deck) {
+                    CompositionLocalProvider(LocalCabinetBackKey provides CabinetBackKey) { entry.Content() }
+                }
+            } else {
+                entry.Content()
+            }
+        }
+    }
+
+private val CabinetBackKey: @Composable () -> Unit = { NavBackButton() }
+
+/**
+ * Cabinet pages sit below the valve deck on the charcoal stage, so the status bar always has
+ * light icons there and no page header leases it.
+ */
+private fun inCabinet(
+    entry: NavEntry<NavKey>,
+    pageFrame: PageFrame,
+): Boolean =
+    pageFrame == PageFrame.RADIO_CABINET &&
+        entry.metadata[PANE_NAV_KEY] != FeedsKey &&
+        entry.metadata[NdSceneMetadata.KEY_OVERLAY] == null
