@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
@@ -113,8 +114,13 @@ internal fun DirectoryScreen(
                     }
                 }
             }
-            items(state.hits, key = { it.feedUrl }) { hit -> DirectoryRow(hit) { navigator.openHit(hit) } }
-            if (state.hits.isEmpty()) {
+            val keys = hitKeys(state.hits)
+            itemsIndexed(state.hits, key = { index, _ -> keys[index] }) { _, hit ->
+                DirectoryRow(hit) { navigator.openHit(hit) }
+            }
+            // While the directory is still answering, the skeleton slips stand where this key
+            // would; once it has answered with nothing (or failed), adding by URL is the way on.
+            if (!state.loading && state.hits.isEmpty()) {
                 item {
                     KeyBank(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                         MomentaryKey(
