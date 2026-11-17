@@ -1051,6 +1051,31 @@ and overflow keys, and a needle window (`NeedleWindow`) for a known download pro
 
 **Implementation note (2026-11-01, M7).** Discover, [Directory results](#directory-results) and the podcast preview mode of [Podcast detail](#podcast-detail) are implemented as specified here, both apps; the provider disclosure, the per-provider partial-results wording and the key-consent row of [Add podcast sheet](#add-podcast-sheet) come from `:feature:discover`'s `DiscoveryContent` and `AddPodcastSheet`, and the surfaces are covered by `DiscoveryScreenTest`, `DiscoveryScreenshotTest`, `PreviewScreenshotTest` and the desktop `DiscoveryJourneyTest`.
 
+**Radio Discover (PO-55, 2026-11-17).** Discover is built from radio parts and replaces the
+layout above. The faceplate carries only the "Discover" sign; Settings opens from the radio's
+Menu. The search field is a strip of paper in a brass-rimmed slot, typed in Courier, with the
+provider disclosure under it and a bank of momentary piano keys: "Add this link" (while the
+input is a link), "Add by URL" and "Import". With nothing typed, the charts are radio stations:
+
+- A `TuningDial` prints "Top" and every genre along a scale behind glass; tapping a station
+  tunes to it, the red needle travels there and the scale scrolls to keep it in view. Each
+  station is a tab in one selectable group. The dial replaces the 19 category chips.
+- Preset keys above the dial ("Top" and each genre a group's name maps to, once per genre)
+  tune with one tap; they appear only when at least one group maps to a genre.
+- One tray shows the tuned station's chart: "Top podcasts" or "Popular in {genre}" with a More
+  key (`DirectoryKey("", genreId)`), then the first 10 hits as paper slips. Only the tuned
+  chart is requested, once the tray is composed (`DiscoverViewModel.loadChart`), and a
+  directory configuration change fetches it again. Loading shows 5 blank slips; a failure
+  shows "Charts unavailable" with Retry instead of hiding the section. While Apple, the only
+  chart source, is off, a note in place of the dial, presets and tray says so, with a Settings
+  key to Discover settings (Discover has no gear; Settings is in the radio's Menu).
+
+Directory hits, here and in [Directory results](#directory-results), are paper slips: cover in
+a recess, Courier title, author, then episode count, latest episode and the answering
+directories on one line, and the amber "Subscribed" lamp for podcasts in the library. Directory
+results lose their settings gear; Retry, Settings, More and "Add by URL" there and in the
+search status are momentary piano keys.
+
 ### Directory results
 
 `DirectoryKey(query, genreId)`, `:feature:discover`, M7.
@@ -1283,6 +1308,20 @@ interface DesktopIntegration {
 ```
 
 Shared pages hide what the desktop does not use, with 11's one-line explanation where users may look for it: metered-network and Wi-Fi-only rows ("Not used on computers"), "only while charging", "Pause for navigation prompts", the notification-permission row, the Android backup section and Appearance's "Use wallpaper colours" and per-app language row (the language row is in Settings › Desktop) ([11 Behaviour differences from Android](11-desktop.md#behaviour-differences-from-android)).
+
+**Radio Settings (PO-55, 2026-11-17).** Every Settings row is a paper slip: a printed symbol,
+the name in Courier, an optional summary line and, on the home, the current value at the end;
+rows have no chevrons. The home groups its rows under three engraved headings: Listening
+(Playback, Downloads, Feeds, YouTube), Library (Sync, Backup, Discover) and App (Appearance,
+Desktop, Updates, Privacy, About, Licences). Rows show a value where the home already reads one
+(playback speed and skip silence, refresh interval, sync status, update available, close
+behaviour) and otherwise only their name; the descriptive summaries are gone. Switch rows end
+in the radio's bat-handle switch (`BatToggleFace`), with the whole line as the switch. Playback
+mounts its controls on a metal panel: the default speed as a `StepCounter` (keys step 0.1 within
+0.5 to 3.0; its window opens the exact-speed dialog) beside a `NeedleWindow` dial, skip back
+and skip forward as counters that step through the allowed intervals instead of opening choice
+dialogs, and Skip silence, Smart resume and (Android) Pause for navigation prompts as panel
+switches. Other pages keep their dialogs for now.
 
 ### Updates settings
 

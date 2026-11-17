@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -56,17 +57,13 @@ public fun BatToggle(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    val reducedMotion = LocalReducedMotion.current
-    // -1 is lever up (ON), +1 is lever down (OFF).
-    val lever by animateFloatAsState(
-        if (on) -1f else 1f,
-        if (reducedMotion) snap() else spring(dampingRatio = 0.55f, stiffness = 900f),
-    )
     val currentOn by rememberUpdatedState(on)
     val toggle by rememberUpdatedState(onToggle)
-    BoxWithConstraints(
+    BatToggleFace(
+        on,
+        onLabel,
+        offLabel,
         modifier
-            .alpha(if (enabled) 1f else DISABLED_ALPHA)
             .toggleable(on, enabled = enabled, role = Role.Switch) { toggle() }
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
@@ -85,10 +82,33 @@ public fun BatToggle(
                     },
                 )
             },
-    ) {
+        enabled,
+    )
+}
+
+/**
+ * [BatToggle]'s plate and lever as a picture of [on], for a row whose whole line is the toggle
+ * and carries the switch semantics. The lever swings like the real switch's. The printed labels
+ * stay silent: the switch's state, not its plate, is what a screen reader announces.
+ */
+@Composable
+public fun BatToggleFace(
+    on: Boolean,
+    onLabel: String,
+    offLabel: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val reducedMotion = LocalReducedMotion.current
+    // -1 is lever up (ON), +1 is lever down (OFF).
+    val lever by animateFloatAsState(
+        if (on) -1f else 1f,
+        if (reducedMotion) snap() else spring(dampingRatio = 0.55f, stiffness = 900f),
+    )
+    BoxWithConstraints(modifier.alpha(if (enabled) 1f else DISABLED_ALPHA)) {
         val tab = maxHeight * SWITCH_TAB_FRACTION
         Canvas(Modifier.matchParentSize()) { drawSwitchPlate(tab.toPx()) }
-        Column(Modifier.matchParentSize()) {
+        Column(Modifier.matchParentSize().clearAndSetSemantics {}) {
             SwitchLabel(onLabel, tab)
             Spacer(Modifier.weight(1f))
             SwitchLabel(offLabel, tab)
