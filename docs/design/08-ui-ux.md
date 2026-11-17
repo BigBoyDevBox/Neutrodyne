@@ -220,7 +220,19 @@ Focused episodes support Delete on desktop and hardware keyboards. The
 chooser insert restores focus, dismisses on Escape/Back, blocks underlying
 interaction and keeps its header fixed while the list scrolls.
 All supplied English labels follow brief section 5 exactly; German resources
-are supplied. Menu (Menü) is the single owner-added label.
+are supplied. Menu (Menü) is the single owner-added label; the PO-55 Menu plate below adds
+five more.
+
+**Menu plate (PO-55, 2026-11-17).** The Menu dialog is a metal plate with a
+brass edge over the dimmed radio: an enamel Menu sign, an engraved Playback
+row with ivory Speed and Sleep keys (read as Playback speed and Sleep timer),
+a brass rule, an engraved Go to bank with ivory keys for Library, Up next,
+Downloads, Discover and Settings, and a small brass Close plate. Each key is
+one button named by its printed label. Failed downloads light a red count lamp
+on the Downloads key, read as "{n} failed downloads". Destinations, sheets,
+order and test tags are unchanged, and Back, Escape or a tap outside still
+closes it. Added labels: Playback (Wiedergabe), Go to (Gehe zu), Close
+(Schliessen), Speed (Tempo) and Sleep (Schlaf).
 
 **Selection fallback (2026-11-04).** Deleting the selected group falls back
 to the first remaining playlist, or the empty radio if none remain. This
@@ -1872,6 +1884,19 @@ player, tabletop, tint and landscape completeness remain M10. This supersedes
 the desktop part of the M4 boundary below and adds no home/navigation design.
 
 ### The docked bar
+
+**Mini radio (PO-55, 2026-11-17).** The bar is a mini radio set into the cabinet's
+base: a metal plate with a brass edge, lined up with the paper tray (15 dp side
+insets), holding the recessed cover, the episode typed on a paper label with
+the podcast below and a small needle window (`NeedleWindow`) showing progress,
+and the radio's ON/OFF bat-handle switch (`BatToggle`, shared with the radio home)
+for play/pause. Below 520 dp of bar width it shows no skip keys, as in the
+owner-approved mockups; skip back and forward stay custom accessibility actions
+and keyboard shortcuts, and wider bars add small ivory "-30"/"+30" keys. While
+the stream buffers, an amber pilot lamp beside the switch glows instead of the
+ring. Artwork no longer tints the bar. Tap, context menu, swipe-to-dismiss,
+TalkBack node and actions are unchanged.
+
 
 `PlayerRoute` (`:feature:player`, hosted by `NeutrodyneRoot` beside `NavDisplay`) renders the mini player on every screen except the radio home: the root passes `PlayerPresentation.RADIO_HOME` when the selected tab is Feeds and its stack is the root, and the bar hides because the radio is the player. The bar is 64 dp high with 8 dp side insets and 16 dp corners (`NeutrodyneShapes`), floating 8 dp above the navigation chrome (the navigation bar on compact, `WindowInsets.navigationBars` under a rail, the window bottom inset on the desktop). Contents: 48 dp `CoverArt` (10 dp corners; YouTube and other non-RSS items use the 16:9 crop), episode title `titleSmall` and podcast title `bodySmall` (one line each, ellipsis, no marquee), skip back, play/pause and skip forward, each 48 dp, and a 2 dp `primary` progress line on the bottom edge driven by `positionTicks`. Lists reserve `LocalMiniPlayerInset` (80 dp while the bar shows; 88 dp while the [Continue on this device](#continue-on-this-device) card replaces it).
 
