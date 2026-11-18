@@ -68,9 +68,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -95,6 +97,7 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.recess
 import ch.lkmc.neutrodyne.core.ui.ReportVisibleEpisodeIds
 import ch.lkmc.neutrodyne.core.ui.rememberMonogram
 import ch.lkmc.neutrodyne.core.ui.resources.Res
+import ch.lkmc.neutrodyne.core.ui.resources.action_mark_played
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
 import ch.lkmc.neutrodyne.core.ui.resources.action_retry
@@ -324,6 +327,7 @@ private fun RadioSlip(
         }
     }
     val monogram = rememberMonogram(episode.podcast)
+    val markPlayed = stringResource(Res.string.action_mark_played)
     BoxWithConstraints(Modifier.fillMaxWidth().clipToBounds().background(Color(0xFF38291B))) {
         val density = LocalDensity.current
         val threshold = with(density) { radioDiscardThreshold(maxWidth.value).dp.toPx() }
@@ -354,6 +358,14 @@ private fun RadioSlip(
                     } else {
                         false
                     }
+                }.semantics {
+                    customActions =
+                        listOf(
+                            CustomAccessibilityAction(markPlayed) {
+                                actions.discard(episode.id)
+                                true
+                            },
+                        )
                 }.selectable(selected, onClick = { actions.selectEpisode(episode.id) })
                 .pointerInput(episode.id, width, windowSize) {
                     awaitEachGesture {
