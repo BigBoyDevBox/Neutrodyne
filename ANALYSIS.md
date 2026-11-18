@@ -49,6 +49,19 @@ where they would collide. Show a quiet inactive dial when the duration is
 unknown. Test both skip values, unknown durations, three-hour media,
 and 2.0 text at 320 dp. Check German and keyboard access.
 
+Window width also matters. At 390 × 844 both keys flank the counter. At
+700 × 900 the right pane narrows enough to hide them. Retain the 600 dp
+two-column transition. Compare a second compact bank with reallocating pane
+width at 599, 600 and 700 dp and 1×, 1.3× and 2× text. Keep the four Nixie
+digits legible. [Phone](core/ui/screenshots/desktop/radio_phone.png) ·
+[Tablet](core/ui/screenshots/desktop/radio_tablet.png)
+
+For unknown duration, `RadioPlayer` currently prints five zeroes and offers a
+SetProgress action that returns false. Compare blank graduations with a single
+localized duration-unavailable legend. Let the inactive dial pass vertical
+scrolling through and retain elapsed time. Verify an empty playlist, a live
+stream, a downloaded recording, and duration arriving after playback starts.
+
 ### Give long playlists a reliable count
 
 `RadioViewModel.onRows` asks the repository for an unplayed count on every
@@ -79,6 +92,11 @@ Choose an intentional scroll mode if the total still cannot fit. Test 600 ×
 episodes to require scrolling. Count whole usable rows and exercise focus at
 the bottom of the cabinet.
 
+Exercise both the 660 and 800 dp thresholds. An 844 dp window with 72 dp of
+system insets has 772 dp of content but still selects the tall player. Compare
+gesture and three-button navigation and a root banner. Verify the deck,
+focused slip and play switch remain reachable during each transition.
+
 ### Give the playlist sign room and a legible fallback
 
 `RadioProgramme` reserves an invisible key's worth of width to center the
@@ -95,9 +113,9 @@ The home list in `RadioProgramme` lacks the scrollbar drawn by `FeedsScreen`
 and other scrolling destinations. In a short window, a full row can fill the
 paper tray with little indication of more material below. The current shared
 `NdScrollbar` overlay draws a thumb without drag support. Its lazy-list branch
-also hides the thumb when all rows are even partly visible, and a viewport
-shorter than its minimum thumb can yield a negative travel range. Fix those
-cases before wiring the overlay into the radio, or provide a draggable
+also hides the thumb when all rows are even partly visible. A separate [short-track fix](https://github.com/L-K-M/Neutrodyne/pull/570)
+covers the draw exception below the minimum thumb height. Address the partial-row
+case before wiring the overlay into the radio, or provide a draggable
 desktop scrollbar in the existing paper-tray gutter. Check a long list, one
 clipped row, a tray shorter than the thumb minimum, and a fully fitting list.
 Test wheel and trackpad movement, and keep the play target unobstructed.
@@ -116,6 +134,41 @@ with the radio home and one shared page. Compare normal and selected slips,
 hover, keyboard focus, missing cover art, and Retina plus 1× rendering before
 changing the shared components.
 
+The home installs its own light scheme in `RadioScreen`. Many physical legends
+draw fixed ink even when `NeutrodyneTheme` honors the system contrast request.
+Sample the 11 sp metadata and 10 sp timeline against the lightest and darkest
+grain under the letters. Try darker ink and less grain under small type in
+increased-contrast mode. Compare German labels and transport status as well as
+selection and focus.
+
+### Measure switch hit areas in dense panels
+
+`RadioSwitch` requests 30 × 40 dp for the painted plate and passes the same
+modifier to the interactive `BatToggle`. Android can expand input beyond a
+node’s layout bounds.
+
+Measure actual hit regions between adjacent controls in Import, Groups and
+Playback speed before sizing the surrounding panel. For standalone switches,
+reserve a distinct 48 × 48 dp area around the current plate. Verify corner taps,
+lever flicks, disabled controls and vertical scrolling at 2× text. For rows that
+own their switch action, retain one accessible target.
+
+### Place the Mac window in the display’s usable coordinates
+
+A live AWT probe on this Mac reported primary bounds 1920 × 1080, an identity
+display transform, 69 DPI, and top/bottom insets of 30/90.
+`WindowIcons.primaryScreen` passes the bounds and physical DPI to
+`defaultWindowBounds`, which multiplies by 96/69. This computes a first-window
+origin near (736, 351) for a 1200 × 800 cabinet. Its bottom extends beyond the
+screen even before accounting for the Dock. The calculation was reproduced
+independently of a real window launch.
+
+Verify the Compose-to-AWT position on a clean launch at 1× and Retina 2×, with
+the Dock on two edges. Convert from the native usable coordinate space exactly
+once. Verify the 600 × 480 minimum and a secondary display with a negative
+origin. Check Windows fractional scaling and Linux scaling before sharing the
+conversion across platforms.
+
 ## Performance measurements
 
 ### Measure the work done by playback ticks
@@ -131,6 +184,13 @@ and cache ID lookups by loaded snapshot. Compare p95 frame time, input latency,
 composition counts, and idle CPU against the baseline. Measure with and without
 artwork cached.
 
+The one-second desktop ticker also calls `DesktopPlaybackController.publish()`,
+and `PlayerViewModel.position` switches its tick subscription on each new
+`nowPlaying` value. Count subscriptions and transport-state emissions. Run the
+same seeded fling paused and playing on an Android reference device as well as
+the Mac. The existing opening journey misses this workload. Preserve terminal
+state reconciliation, position saving and paused browse seeks.
+
 ### Profile rendering and paging while scrolling
 
 Compare individual and split `RadioCabinetPage` trays for duplicate lid
@@ -141,6 +201,22 @@ frame time, GC, RSS, and appended pages with a cold and warm artwork cache.
 Cache static drawing or index snapshots only where profiling shows work.
 Keep episode keys and the identity guard between the rendered rows and the
 paging snapshot. Verify output and pagination after rapid station switches.
+
+The feed pages by 40 with a maximum loaded size of 400. Time
+`loadedIds.indexOf` against that window before adding a lookup table. Retain
+leading placeholder offsets and ignore IDs missing from the latest snapshot.
+
+### Make desktop screenshot failures reproducible
+
+On this Mac the focused Roborazzi verification of `RadioScreenshotTest.presets`
+failed at `radio_phone.png` on clean main and on the accessibility change. The
+two freshly rendered phone PNGs had identical SHA-256 digests.
+
+Compare the main render on the reference CI OS against the committed PNG. Record
+its JDK, rasterizer, density, fonts and renderer configuration, then decide
+whether the host should use its own baseline or run visual acceptance on the
+reference OS. Verify all six presets and prove a deliberate layout change still
+fails. Preserve the reference until the source of the mismatch is known.
 
 ## Listening workflows
 
@@ -189,6 +265,21 @@ the current key ownership for transport, and use the platform clipboard
 rather than a new editing abstraction. Avoid dropping keyboard equivalents for
 unrelated window commands once the focus bridge is proven.
 
+Exercise read-only selections and password fields as well as normal editing.
+Verify the menu's enabled states after focus leaves the window.
+
+### Trace native shortcuts through sync text fields
+
+The root relies on `ndTextFieldFocus` to suspend shortcuts and clear AWT
+accelerators. Address, invite and password fields in `SyncSetupScreen` and the
+paper fields for device naming and confirmation currently omit it.
+
+Reproduce with a playing episode and the native menu visible. Type a space and
+use a navigation chord in each field, then close the focused form. Confirm the
+current screen and playback stay put while editing and the shortcuts resume on
+exit. Use the existing focus tracker where the failing event originates. Check
+modal focus handoff before changing the shared field primitive.
+
 ## Prototypes
 
 ### Make the Mac useful without the main cabinet open
@@ -228,6 +319,16 @@ controls visible and check that the idle display causes no extra frame
 activity. Review the product decision before
 implementing a new user preference.
 
+### Prototype chapter marks on the tuning scale
+
+Try small index marks along the existing ruler for an episode with chapters.
+Show the current chapter name on deliberate pointer or keyboard inspection, and
+make it reachable by assistive technology. Use existing chapter times and seek
+handling. Compare no chapters, dense short chapters, a very long title and
+unknown duration. Keep the plain unchaptered dial, preserve arbitrary seeking
+and avoid extra permanent controls. Decide from a full-size and a compact render
+whether this earns space.
+
 ## Native verification on proposed fixes
 
 - Scrub a streaming and a downloaded episode on macOS. Check pointer
@@ -236,3 +337,7 @@ implementing a new user preference.
 - Invoke Mark played from VoiceOver and TalkBack, then check Undo and its
   return focus. Verify the desktop keyboard path with Delete, including on a
   compact Mac keyboard. [Programme slip action](https://github.com/L-K-M/Neutrodyne/pull/566)
+  Compare the two proposed implementations before integrating and retain one
+  localized action per slip. [Accessible episode discard](https://github.com/L-K-M/Neutrodyne/pull/563)
+- Verify the printed quarter times against needle position and seeking on an RTL
+  device, including a left-edge tap. [RTL time scale](https://github.com/L-K-M/Neutrodyne/pull/567)
