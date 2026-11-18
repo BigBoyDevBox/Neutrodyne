@@ -51,7 +51,7 @@ had not recorded it.
   Down move the selection, scroll it into view and carry focus, stopping at
   the ends. Chords pass through to the root and the handler bubbles, so a
   descendant that learns arrows later wins.
-- **Global shortcuts stood down in sync fields (PR #577, awaiting merge).** The linking
+- **Global shortcuts stood down in sync fields (PR #577, merged).** The linking
   flow's address, invite, username and password fields, the approve sheet's
   code field, the Settings › Sync server-address field, and the device-rename
   and delete-confirmation strips now report through
