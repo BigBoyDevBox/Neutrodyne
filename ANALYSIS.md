@@ -577,14 +577,12 @@ failed refresh never looks like an empty schedule. The empty-state route keys
 from PR #580 cover the no-subscription case; the remaining journey work is the
 clean-launch exercise, OPML import and the failed-refresh wording.
 
-A first-tuning card is in review: with no playlist the paper offers keys to
-Discover, the import dialog and the Library, and the dial reads NOT TUNED
-([first-tuning card](https://github.com/L-K-M/Neutrodyne/pull/583)). It
-changes the same no-group paper as PR #580's "No playlists yet." sign with
-Discover and Library keys (under
-[done](#done-since-the-last-consolidation)); whichever merges second adopts or
-replaces the other's card. Today the journey from there still takes seven or
-more steps (Library, Groups, New
+A follow-up to #580 is in review
+([empty radio tuning](https://github.com/L-K-M/Neutrodyne/pull/583)): it adds
+an Import key beside Discover and Library, makes the dial read NOT TUNED,
+holds the sign until the groups have loaded so it never flashes on start, and
+keeps the keys in view on a 320 × 568 phone, where #580's are cut off. Today
+the journey from there still takes seven or more steps (Library, Groups, New
 group, name, members, save, back). The journey checks above, and the All
 station decision under
 [Let the radio play subscriptions without a group](#let-the-radio-play-subscriptions-without-a-group),
@@ -758,6 +756,11 @@ Keep it quiet when off and honour the existing timer controls.
 
 ### Small finish notes for the radio face
 
+- A sign whose name ends in a space always letters at its minimum size:
+  `SignLettering` compares `getLineEnd(0, visibleEnd = true)`, which excludes
+  trailing whitespace, with the full length (`RadioParts.kt:169`). Compare
+  with `text.text.trimEnd().length`, or trim group names on save (a search of
+  `feature/groups` found no trim).
 - The printed needle scale always uses `MM:SS`; above 99 minutes the rightmost
   quarter label ("900:00") is wider than the others and nudges the row. Either
   accept it deliberately or use a compact hours form there too.
@@ -986,11 +989,11 @@ Each needs a decision: build it, or correct the document.
   then paste an address from a web page with a no-break space or curly quotes
   around it and confirm it never reaches the directory.
   [Programme names search](https://github.com/L-K-M/Neutrodyne/pull/582)
-- On a fresh install, follow the first-tuning card's Discover, Import and
-  Library keys, return, and confirm the card gives way once a group exists.
-  Start an episode from a notification with no playlists and check that the
-  dial shows its status, not NOT TUNED.
-  [First-tuning card](https://github.com/L-K-M/Neutrodyne/pull/583)
+- On a fresh install, follow the empty radio's Discover, Import and Library
+  keys, return, and confirm the sign gives way once a group exists. On a small
+  phone check that all three keys show. Start an episode from a notification
+  with no playlists and check that the dial shows its status, not NOT TUNED.
+  [Empty radio tuning](https://github.com/L-K-M/Neutrodyne/pull/583)
 - With VoiceOver and TalkBack, move by headings through Library, Settings and
   the Menu plate, open a Diagnostics section from its header, and retune the
   Library dial with reduced motion on.
