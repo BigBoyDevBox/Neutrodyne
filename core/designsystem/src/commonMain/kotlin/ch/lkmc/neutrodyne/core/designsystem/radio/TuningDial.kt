@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ch.lkmc.neutrodyne.core.designsystem.resources.Res
 import ch.lkmc.neutrodyne.core.designsystem.resources.radio_dial_window
+import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
 import org.jetbrains.compose.resources.imageResource
 
 /**
@@ -65,12 +66,14 @@ public fun TuningDial(
     var viewport by remember { mutableIntStateOf(0) }
     val needle = remember { Animatable(Float.NaN) }
     val target = centres[tuned]
+    val reducedMotion = LocalReducedMotion.current
 
     LaunchedEffect(target, viewport) {
         if (target == null || viewport == 0) return@LaunchedEffect
         val visible = (target - viewport / 2f).toInt().coerceIn(0, scroll.maxValue)
-        if (needle.value.isNaN()) {
-            // The first tuning places the needle; later ones sweep it along the scale.
+        if (needle.value.isNaN() || reducedMotion) {
+            // The first tuning places the needle; later ones sweep it along the scale unless the
+            // system asks for reduced motion.
             needle.snapTo(target)
             scroll.scrollTo(visible)
         } else {

@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -75,7 +76,10 @@ public fun EnamelSign(
     text: String,
     modifier: Modifier = Modifier,
 ) {
-    EnamelPlaque(modifier) { SignText(text, Modifier.weight(1f, fill = false)) }
+    // One node with the lettering, so a caller's heading() is announced as the title itself.
+    EnamelPlaque(modifier.semantics(mergeDescendants = true) {}) {
+        SignText(text, Modifier.weight(1f, fill = false))
+    }
 }
 
 /**

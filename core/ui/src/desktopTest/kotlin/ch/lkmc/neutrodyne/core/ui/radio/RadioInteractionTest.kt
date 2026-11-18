@@ -64,6 +64,21 @@ import kotlin.test.assertEquals
 @OptIn(ExperimentalTestApi::class)
 class RadioInteractionTest {
     @Test
+    fun theMenuKeyIsAButton() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var opened = 0
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(radioFixture(), RadioActions(menu = { opened++ }))
+                }
+            }
+            onNodeWithTag("radio_menu")
+                .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+                .performClick()
+            assertEquals(1, opened)
+        }
+
+    @Test
     fun swipeCommitsOnlyOnReleaseAtExactThresholdAndUndoRestores() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             var state by mutableStateOf(radioFixture())

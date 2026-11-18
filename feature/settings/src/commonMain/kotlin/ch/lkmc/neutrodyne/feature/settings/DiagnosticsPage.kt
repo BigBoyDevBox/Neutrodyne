@@ -2,6 +2,7 @@
 
 package ch.lkmc.neutrodyne.feature.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -39,8 +41,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -60,7 +64,9 @@ import ch.lkmc.neutrodyne.core.ui.resources.action_cancel
 import ch.lkmc.neutrodyne.core.ui.root.ShowUserMessages
 import ch.lkmc.neutrodyne.feature.settings.resources.Res
 import ch.lkmc.neutrodyne.feature.settings.resources.diagnostics_battery_settings
+import ch.lkmc.neutrodyne.feature.settings.resources.diagnostics_collapsed
 import ch.lkmc.neutrodyne.feature.settings.resources.diagnostics_copy_report
+import ch.lkmc.neutrodyne.feature.settings.resources.diagnostics_expanded
 import ch.lkmc.neutrodyne.feature.settings.resources.diagnostics_export_confirm
 import ch.lkmc.neutrodyne.feature.settings.resources.diagnostics_export_confirm_body
 import ch.lkmc.neutrodyne.feature.settings.resources.diagnostics_export_db
@@ -297,20 +303,32 @@ private fun DiagnosticsSectionCard(
         }
     Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // The whole header row is the toggle: a 48 dp target named by the section title,
+            // with its open or closed state spoken.
+            val state =
+                stringResource(if (expanded) Res.string.diagnostics_expanded else Res.string.diagnostics_collapsed)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(role = Role.Button) { expanded = !expanded }
+                    .semantics {
+                        heading()
+                        stateDescription = state
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     stringResource(sectionTitle(section.id)),
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(24.dp)) {
-                    Icon(
-                        NdIcons.ArrowForwardIos,
-                        contentDescription = null,
-                        // Right-pointing when collapsed, rotated to down when open.
-                        modifier = Modifier.size(14.dp).rotate(if (expanded) 90f else 0f),
-                    )
-                }
+                Icon(
+                    NdIcons.ArrowForwardIos,
+                    contentDescription = null,
+                    // Right-pointing when collapsed, rotated to down when open.
+                    modifier = Modifier.size(14.dp).rotate(if (expanded) 90f else 0f),
+                )
             }
             if (expanded) {
                 SelectionContainer {
