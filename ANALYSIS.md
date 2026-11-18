@@ -21,7 +21,7 @@ alongside the shared cabinet.
   loaded player's phase, with the pilot lamp amber while buffering and red on
   an issue. The phase and issue come from the existing `PlaybackStateSource`
   snapshot; no new source of playback truth.
-- **Arrow-key tuning (PR #576, awaiting merge).** With a slip focused, Up and
+- **Arrow-key tuning (PR #576, merged).** With a slip focused, Up and
   Down move the selection, scroll it into view and carry focus, stopping at
   the ends. Chords pass through to the root and the handler bubbles, so a
   descendant that learns arrows later wins.
