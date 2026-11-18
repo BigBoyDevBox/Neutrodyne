@@ -675,6 +675,23 @@ failure and provider failure, and verify that a subscribed podcast still opens
 its library page after recovery.
 [SearchRepositoryImpl.kt](core/data/src/commonMain/kotlin/ch/lkmc/neutrodyne/core/data/discovery/SearchRepositoryImpl.kt)
 
+### Diagnose the Linux YouTube preview handoff
+
+In the Linux unit suite, `ExternalYouTubeModeTest.directoryChannelPreviewHandsOffToAdd`
+timed out waiting for the channel title after opening a YouTube handle through
+`PodcastPreviewKey`. The same assertion failed on main and twice on the
+Discover proposal. The recorded requests reached the channel and both podcast
+directories. On macOS the journey passed with the engine omitted and with the
+bundled engine disabled at runtime.
+[Main failure](https://github.com/L-K-M/Neutrodyne/actions/runs/44355818080/job/135003308524),
+[PR retry](https://github.com/L-K-M/Neutrodyne/actions/runs/44354394984/job/135044613932)
+
+At the timeout, capture every Compose root, the active navigation entries and
+the Add sheet state. Compare the preview route with the passing direct
+`AddPodcastKey` journey in the same Linux suite. Determine whether the
+handoff lost the route or the title assertion missed the active sheet. Verify
+that one Subscribe action creates one channel in the selected group.
+
 ## Library, downloads, and sync defects
 
 ### Make listening-page actions do what they show
