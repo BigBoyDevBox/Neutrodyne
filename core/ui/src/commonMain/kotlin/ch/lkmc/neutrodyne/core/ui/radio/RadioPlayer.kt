@@ -213,10 +213,14 @@ internal fun RadioPlayer(
                         ),
                 )
                 RadioText(
+                    // Like the dial, the hint claims nothing before the groups are read: a blank
+                    // line, not a first listener's hint or a cleared playlist's.
                     selected?.podcast
-                        ?: stringResource(
-                            if (state.untuned) Res.string.radio_first_hint else Res.string.radio_choose_other,
-                        ),
+                        ?: when {
+                            !state.playlistsLoaded -> ""
+                            state.untuned -> stringResource(Res.string.radio_first_hint)
+                            else -> stringResource(Res.string.radio_choose_other)
+                        },
                     11,
                     mono = false,
                     maxLines = 1,

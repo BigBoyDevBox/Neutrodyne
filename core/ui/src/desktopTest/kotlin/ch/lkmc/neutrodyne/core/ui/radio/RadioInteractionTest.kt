@@ -58,6 +58,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
 import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
+import ch.lkmc.neutrodyne.core.ui.resources.radio_choose_other
 import ch.lkmc.neutrodyne.core.ui.resources.radio_cleared
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
 import ch.lkmc.neutrodyne.core.ui.resources.radio_ended
@@ -96,6 +97,9 @@ class RadioInteractionTest {
             onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_cleared)).assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_untuned)).assertIsDisplayed()
+            // The hint waits too: neither a first listener's nor a cleared playlist's words fit yet.
+            onNodeWithText(getString(Res.string.radio_first_hint)).assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_choose_other)).assertDoesNotExist()
 
             state = RadioState(playlistsLoaded = true)
             onNodeWithText(getString(Res.string.radio_no_playlists_empty))
@@ -111,6 +115,7 @@ class RadioInteractionTest {
             state = radioFixture().copy(episodes = emptyList(), playlistsLoaded = true)
             onNodeWithTag("radio_empty_import").assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_all_clear)).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_choose_other)).assertIsDisplayed()
         }
 
     @Test
@@ -125,6 +130,7 @@ class RadioInteractionTest {
                 EmptyPaper(360, 800, 1.3f),
                 EmptyPaper(320, 640, 2f),
                 EmptyPaper(360, 640, 1f, Locale.GERMANY),
+                EmptyPaper(360, 640, 1.3f, Locale.GERMANY),
                 EmptyPaper(390, 800, 1f, Locale.GERMANY),
             )
         val saved = Locale.getDefault()
