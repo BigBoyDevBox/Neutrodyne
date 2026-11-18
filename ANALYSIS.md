@@ -14,20 +14,19 @@ alongside the shared cabinet.
 
 ## Playback and programme correctness
 
-### Keep playback and paging current during Mark played and Undo
+### Reconcile paging during Undo and clarify repeated discards
 
-`RadioViewModel.discard` captures the selected episode, position, and playing
-state before awaiting the repository write. A listener can tune another slip,
-pause, or receive an engine position update while the write is suspended. On
-success, the projection can restore the captured selection, position, or
-playback flag. During Undo, `onRows` defers a paging snapshot and the Undo path
-drops that deferred snapshot. Write regression tests with a controllable
-repository suspension. Change selection or pause before completing Mark
-played, then deliver a newer page during Undo with both successful and failed
-writes. Commit the row mutation against the current programme and reconcile
-the latest same-playlist paging snapshot. Preserve the existing policy when
-the actual selected item is removed. Give rapid repeated discards explicit
-feedback while the first write is pending.
+The discard race has a tested fix awaiting merge. It preserves a newer
+selection and seek while a Mark played write is pending. Verify pausing or
+receiving an engine position update during a discard on a device. Preserve
+the adjacent-episode behavior when discarding the selected slip.
+[Discard fix](https://github.com/L-K-M/Neutrodyne/pull/564)
+
+During Undo, `onRows` defers a paging snapshot and the Undo path drops it.
+Suspend a fake repository write, deliver a newer same-playlist page, then
+complete the write with success and failure. Reconcile the page in both
+cases. Give rapid repeated discards explicit feedback while the first write
+is pending.
 
 ### Make buffering and errors intelligible on the radio
 
@@ -56,8 +55,8 @@ width at 599, 600 and 700 dp and 1×, 1.3× and 2× text. Keep the four Nixie
 digits legible. [Phone](core/ui/screenshots/desktop/radio_phone.png) ·
 [Tablet](core/ui/screenshots/desktop/radio_tablet.png)
 
-For unknown duration, `RadioPlayer` currently prints five zeroes and offers a
-SetProgress action that returns false. Compare blank graduations with a single
+For unknown duration, `RadioPlayer` prints five `00:00` labels, repeats the end time on tall
+screens, and exposes a SetProgress action that returns false. Compare blank graduations with a single
 localized duration-unavailable legend. Let the inactive dial pass vertical
 scrolling through and retain elapsed time. Verify an empty playlist, a live
 stream, a downloaded recording, and duration arriving after playback starts.
@@ -113,10 +112,16 @@ The home list in `RadioProgramme` lacks the scrollbar drawn by `FeedsScreen`
 and other scrolling destinations. In a short window, a full row can fill the
 paper tray with little indication of more material below. The current shared
 `NdScrollbar` overlay draws a thumb without drag support. Its lazy-list branch
-also hides the thumb when all rows are even partly visible. A separate [short-track fix](https://github.com/L-K-M/Neutrodyne/pull/570)
-covers the draw exception below the minimum thumb height. Address the partial-row
+also hides the thumb when all rows are even partly visible. Two open fixes cover
+the draw exception below the minimum thumb height. Exercise the 12 dp
+case with a list, grid and ordinary scroll region before choosing one.
+[Short-track fix](https://github.com/L-K-M/Neutrodyne/pull/570),
+[shared thumb bounds](https://github.com/L-K-M/Neutrodyne/pull/569)
+
+Address the partial-row
 case before wiring the overlay into the radio, or provide a draggable
-desktop scrollbar in the existing paper-tray gutter. Check a long list, one
+desktop scrollbar in the existing paper-tray gutter. Compare the treatments
+at 700 and 1200 dp. Check a long list, one
 clipped row, a tray shorter than the thumb minimum, and a fully fitting list.
 Test wheel and trackpad movement, and keep the play target unobstructed.
 The loaded window is the scrollbar's extent until pagination supplies more
@@ -169,6 +174,17 @@ once. Verify the 600 × 480 minimum and a secondary display with a negative
 origin. Check Windows fractional scaling and Linux scaling before sharing the
 conversion across platforms.
 
+### Preserve veneer proportions during live resize
+
+RadioMaterials stretches the cabinet wood image with FillBounds while the
+plinth uses Crop. Capture one cabinet at portrait, ordinary Mac window and
+ultrawide sizes at both display scales. Compare the existing veneer with an
+aspect-preserving crop anchored at the same corner, keeping the bezel,
+lighting and screws fixed. Select a treatment only if the grain holds its
+proportions without an obvious seam or a distracting jump during live
+resize.
+[RadioMaterials.kt](core/designsystem/src/commonMain/kotlin/ch/lkmc/neutrodyne/core/designsystem/radio/RadioMaterials.kt)
+
 ## Performance measurements
 
 ### Measure the work done by playback ticks
@@ -182,7 +198,9 @@ rasterization, and playback separately. If tick invalidation is material,
 read positions in the dial and Nixie leaves, keep the list inputs stable,
 and cache ID lookups by loaded snapshot. Compare p95 frame time, input latency,
 composition counts, and idle CPU against the baseline. Measure with and without
-artwork cached.
+artwork cached. Separate programme recomposition from needle and digit draws.
+Hold window size, episode and playback interval constant.
+[Radio route](feature/feeds/src/commonMain/kotlin/ch/lkmc/neutrodyne/feature/feeds/RadioRoute.kt)
 
 The one-second desktop ticker also calls `DesktopPlaybackController.publish()`,
 and `PlayerViewModel.position` switches its tick subscription on each new
@@ -280,6 +298,18 @@ current screen and playback stay put while editing and the shortcuts resume on
 exit. Use the existing focus tracker where the failing event originates. Check
 modal focus handoff before changing the shared field primitive.
 
+### Identify retained results during a new search
+
+DiscoverViewModel deliberately retains previous hits during the 600 ms
+debounce and while the next provider response is pending. DiscoverRoute
+leaves those rows actionable. Prototype a compact, accessible pending
+indicator alongside the old results, retaining the existing anti-flicker
+behavior. With a fake slow provider, enter two unrelated queries and try to
+open a result with both keyboard and pointer. Check whether listeners can
+correctly identify which query produced the visible list and whether the
+final list retains a sensible focus target.
+[DiscoverViewModel.kt](feature/discover/src/commonMain/kotlin/ch/lkmc/neutrodyne/feature/discover/DiscoverViewModel.kt)
+
 ## Prototypes
 
 ### Make the Mac useful without the main cabinet open
@@ -327,13 +357,17 @@ make it reachable by assistive technology. Use existing chapter times and seek
 handling. Compare no chapters, dense short chapters, a very long title and
 unknown duration. Keep the plain unchaptered dial, preserve arbitrary seeking
 and avoid extra permanent controls. Decide from a full-size and a compact render
-whether this earns space.
+whether this earns space. Prototype slightly longer brass ticks, cluster marks
+too close for a pointer to resolve, and test late-arriving chapter data with
+four and eighty chapters. [PlayerViewModel.kt](feature/player/src/commonMain/kotlin/ch/lkmc/neutrodyne/feature/player/PlayerViewModel.kt)
 
 ## Native verification on proposed fixes
 
 - Scrub a streaming and a downloaded episode on macOS. Check pointer
   cancellation, playback resumption, and the number of engine seeks and
-  writes. Include a duration correction while dragging. [Seek on release](https://github.com/L-K-M/Neutrodyne/pull/565)
+  writes. Include a duration correction while dragging. Compare the two proposals
+  before choosing one. [Seek on release](https://github.com/L-K-M/Neutrodyne/pull/565),
+  [receiver drag and accessibility tests](https://github.com/L-K-M/Neutrodyne/pull/571)
 - Invoke Mark played from VoiceOver and TalkBack, then check Undo and its
   return focus. Verify the desktop keyboard path with Delete, including on a
   compact Mac keyboard. [Programme slip action](https://github.com/L-K-M/Neutrodyne/pull/566)
@@ -341,3 +375,7 @@ whether this earns space.
   localized action per slip. [Accessible episode discard](https://github.com/L-K-M/Neutrodyne/pull/563)
 - Verify the printed quarter times against needle position and seeking on an RTL
   device, including a left-edge tap. [RTL time scale](https://github.com/L-K-M/Neutrodyne/pull/567)
+- Open the paper playlist insert with a non-first group active. Check that
+  VoiceOver announces the group as selected and that keyboard focus starts
+  on its checked row. Try a long group name and return with Escape.
+  [Tuned playlist indicator](https://github.com/L-K-M/Neutrodyne/pull/568)
