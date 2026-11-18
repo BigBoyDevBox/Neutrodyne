@@ -353,7 +353,8 @@ private fun Needle(
     val progress = if (durationMs > 0) (elapsedMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
     val seekLabel = stringResource(Res.string.chapter_seek, radioTimeline(elapsedMs))
     Column(Modifier.padding(top = 8.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        // The canvas and pointer both measure time from the physical left edge.
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Absolute.SpaceBetween) {
             for (index in 0..4) RadioText(radioTimeline(durationMs * index / 4), 10)
         }
         Canvas(
