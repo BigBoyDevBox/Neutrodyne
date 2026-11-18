@@ -4,6 +4,7 @@ package ch.lkmc.neutrodyne.feature.feeds
 
 import androidx.lifecycle.ViewModelStore
 import ch.lkmc.neutrodyne.core.common.Outcome
+import ch.lkmc.neutrodyne.core.domain.EpisodeRepository
 import ch.lkmc.neutrodyne.core.model.FeedSource
 import ch.lkmc.neutrodyne.core.model.GroupDraft
 import ch.lkmc.neutrodyne.core.model.RowLive
@@ -21,6 +22,7 @@ import ch.lkmc.neutrodyne.core.testing.testNowPlaying
 import ch.lkmc.neutrodyne.core.testing.testPlatformInfo
 import ch.lkmc.neutrodyne.core.ui.radio.RadioEpisode
 import ch.lkmc.neutrodyne.playback.api.PlayResult
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
@@ -45,6 +47,7 @@ class RadioViewModelTest : MainDispatcherTest() {
 
     private suspend fun TestScope.withRadio(
         repository: ch.lkmc.neutrodyne.core.domain.GroupRepository = groups,
+        episodeRepository: EpisodeRepository = episodes,
         block: suspend (RadioViewModel, Long) -> Unit,
     ) {
         val id = (groups.create(GroupDraft("First"), setOf(1)) as Outcome.Success).value
@@ -54,7 +57,7 @@ class RadioViewModelTest : MainDispatcherTest() {
                 repository,
                 feeds,
                 podcasts,
-                episodes,
+                episodeRepository,
                 live,
                 controller,
                 controller.state,
@@ -172,6 +175,35 @@ class RadioViewModelTest : MainDispatcherTest() {
                     FakePlaybackController.Call.Transport(FakePlaybackController.Action.SEEK, 0),
                     controller.calls.last(),
                 )
+            }
+        }
+
+    @Test fun discardCompletionPreservesANewerSelectionAndSeek() =
+        runTest {
+            val releaseWrite = CompletableDeferred<Unit>()
+            val delayedEpisodes =
+                object : EpisodeRepository by episodes {
+                    override suspend fun setPlayed(
+                        episodeIds: List<Long>,
+                        played: Boolean,
+                    ) {
+                        releaseWrite.await()
+                        episodes.setPlayed(episodeIds, played)
+                    }
+                }
+            withRadio(episodeRepository = delayedEpisodes) { model, _ ->
+                model.discard(1)
+                runCurrent()
+                model.selectEpisode(3)
+                model.seek(17_500)
+                val calls = controller.calls.toList()
+                releaseWrite.complete(Unit)
+                runCurrent()
+                assertEquals(3L, model.state.value.selectedId)
+                assertEquals(17_500L, model.state.value.elapsedMs)
+                assertEquals(calls, controller.calls)
+                assertEquals(rows.drop(1), model.state.value.episodes)
+                assertEquals(rows.first(), model.state.value.removed)
             }
         }
 

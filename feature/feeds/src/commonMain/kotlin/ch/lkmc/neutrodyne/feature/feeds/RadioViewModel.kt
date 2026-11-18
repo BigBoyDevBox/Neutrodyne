@@ -487,40 +487,49 @@ public class RadioViewModel(
             suspendRunCatching { episodes.setPlayed(listOf(id), true) }
                 .onSuccess {
                     undo = Removal(playlistId, row, before.episodes.indexOf(row))
-                    if (state.value.playlistId == playlistId) {
-                        val selected =
-                            radioSelectionAfterRemoval(before.episodes.map { it.id }, before.selectedId, id)
-                        mutableState.value =
-                            state.value.copy(
-                                episodes = before.episodes.filterNot { it.id == id },
-                                episodeCount = before.episodeCount?.let { (it - 1).coerceAtLeast(0) },
-                                selectedId = selected,
-                                removed = row,
-                                elapsedMs =
-                                    if (selected ==
-                                        before.selectedId
-                                    ) {
-                                        before.elapsedMs
-                                    } else {
-                                        position(selected)
-                                    },
-                                playing =
-                                    before.playing && selected != null,
-                            )
-                        if (selected == null) {
-                            // A paused or followed session can belong to another screen.
-                            val loadedId = playbackStates.nowPlaying.value?.episodeId
-                            if (loadedId == null || loadedId == id) controller.dismiss()
-                        } else if (before.selectedId == id) {
-                            if (before.playing) start(selected) else controller.pause()
-                        }
-                    }
+                    if (state.value.playlistId == playlistId) applyDiscard(row)
                 }.onFailure { writeFailed() }
             writing = false
             deferredRows?.let { rows ->
                 onRows(rows.playlistId, rows.items.filterNot { it.id == id && undo?.episode?.id == id }, rows.complete)
             }
             deferredRows = null
+        }
+    }
+
+    private suspend fun applyDiscard(row: RadioEpisode) {
+        // Selection and transport remain interactive while the repository write is pending.
+        val current = state.value
+        val remaining = current.episodes.filterNot { it.id == row.id }
+        val removedCount = current.episodes.size - remaining.size
+        val updated =
+            current.copy(
+                episodes = remaining,
+                episodeCount = current.episodeCount?.let { (it - removedCount).coerceAtLeast(0) },
+                removed = row,
+            )
+        if (current.selectedId != row.id) {
+            mutableState.value = updated
+            return
+        }
+        val selected = radioSelectionAfterRemoval(current.episodes.map { it.id }, current.selectedId, row.id)
+        val elapsed = position(selected)
+        mutableState.value =
+            updated.copy(
+                selectedId = selected,
+                nowPlayingEpisode = remaining.find { it.id == selected },
+                elapsedMs = elapsed,
+                playing = current.playing && selected != null,
+                hasPlayed = selected != null && elapsed > 0,
+            )
+        if (selected == null) {
+            // A paused or followed session can belong to another screen.
+            val loadedId = playbackStates.nowPlaying.value?.episodeId
+            if (loadedId == null || loadedId == row.id) controller.dismiss()
+        } else if (current.playing) {
+            start(selected)
+        } else {
+            controller.pause()
         }
     }
 
