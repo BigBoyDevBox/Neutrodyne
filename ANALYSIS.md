@@ -677,6 +677,14 @@ Keep it quiet when off and honour the existing timer controls.
 - The programme header reserves a full key's width to centre the enamel sign;
   at large font scales that spacer can be what pushes the sign into ellipsis
   (see "Give the playlist sign room").
+- The dial needles are drawn on top of the glass sheen: `dialWindow` is a
+  `drawBehind` on the parent while `TuningDial`, `NeedleWindow` and
+  `StepCounter` draw their needles afterwards, so the needle never sits under
+  the reflection. Cosmetic, but it is the difference between glass and a
+  printed line.
+- `MaterialPlate(METAL)` draws two screws at the top corners only; the rendered
+  faceplates carry four. The home's plinth feet are plain `Chassis` rectangles
+  with no shadow or recess, so on the dark stage they read as floating bars.
 
 ## Prototypes
 
