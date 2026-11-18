@@ -90,6 +90,7 @@ internal fun RadioRoute(model: RadioViewModel = metroViewModel()) {
             selectPlaylist = model::selectPlaylist,
             openDiscover = { navigator.selectTab(DiscoverKey) },
             openLibrary = { navigator.selectTab(LibraryKey) },
+            openImport = { navigator.push(ImportFileKey) },
             menu = { menu = true },
             loadEpisode = { index ->
                 state.episodes.getOrNull(index)?.id?.let { id ->
@@ -98,9 +99,6 @@ internal fun RadioRoute(model: RadioViewModel = metroViewModel()) {
             },
             visibleEpisodes = model::onVisibleIds,
             retry = items::retry,
-            discover = { navigator.selectTab(DiscoverKey) },
-            importSubscriptions = { navigator.push(ImportFileKey) },
-            library = { navigator.selectTab(LibraryKey) },
         ),
     )
     if (menu) RadioDestinationMenu(onDismiss = { menu = false })

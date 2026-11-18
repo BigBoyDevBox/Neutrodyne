@@ -11,8 +11,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -80,7 +78,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -113,14 +110,12 @@ import ch.lkmc.neutrodyne.core.ui.resources.action_retry
 import ch.lkmc.neutrodyne.core.ui.resources.action_undo
 import ch.lkmc.neutrodyne.core.ui.resources.date_duration_minutes
 import ch.lkmc.neutrodyne.core.ui.resources.feeds_load_error
+import ch.lkmc.neutrodyne.core.ui.resources.import_title
 import ch.lkmc.neutrodyne.core.ui.resources.nav_discover
 import ch.lkmc.neutrodyne.core.ui.resources.nav_library
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
 import ch.lkmc.neutrodyne.core.ui.resources.radio_discard
 import ch.lkmc.neutrodyne.core.ui.resources.radio_episodes
-import ch.lkmc.neutrodyne.core.ui.resources.radio_first_body
-import ch.lkmc.neutrodyne.core.ui.resources.radio_first_import
-import ch.lkmc.neutrodyne.core.ui.resources.radio_first_title
 import ch.lkmc.neutrodyne.core.ui.resources.radio_menu
 import ch.lkmc.neutrodyne.core.ui.resources.radio_no_episodes
 import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists_empty
@@ -261,43 +256,61 @@ internal fun RadioProgramme(
                             modifier = Modifier.padding(8.dp),
                         )
                     }
-                    if (state.untuned) {
-                        FirstTuning(actions, compact, Modifier.weight(1f).fillMaxWidth())
-                    } else if (state.episodes.isEmpty()) {
+                    if (state.episodes.isEmpty()) {
                         Column(
-                            Modifier.weight(1f).fillMaxWidth().padding(12.dp),
+                            Modifier.weight(1f).fillMaxWidth().padding(if (compact) 4.dp else 12.dp),
                             Arrangement.Center,
                             Alignment.CenterHorizontally,
                         ) {
                             if (state.loading) {
                                 CircularProgressIndicator(color = Brass, modifier = Modifier.size(24.dp))
                             } else if (!state.loadError && state.playlistsLoaded) {
-                                // Until the groups are read, an empty paper is not yet "all clear".
-                                if (state.playlists.isEmpty()) {
-                                    RadioText(
-                                        stringResource(Res.string.radio_no_playlists_empty),
-                                        19,
-                                        bold = true,
-                                        maxLines = 2,
-                                    )
-                                    Spacer(Modifier.height(10.dp))
-                                    // A first listener has no station to tune yet: offer the two
-                                    // journeys that fill one instead of an empty paper tray.
-                                    KeyBank {
-                                        PianoKey(
-                                            stringResource(Res.string.nav_discover),
-                                            pressed = false,
-                                            onClick = actions.openDiscover,
-                                            modifier = Modifier.testTag("radio_empty_discover"),
-                                            role = Role.Button,
-                                        )
-                                        PianoKey(
-                                            stringResource(Res.string.nav_library),
-                                            pressed = false,
-                                            onClick = actions.openLibrary,
-                                            modifier = Modifier.testTag("radio_empty_library"),
-                                            role = Role.Button,
-                                        )
+                                // Until the groups are read, an empty paper is neither "none" nor "all clear".
+                                if (state.untuned) {
+                                    // A first listener has no station to tune yet: offer the
+                                    // journeys that fill one instead of an empty paper tray. A paper
+                                    // too short for the sign (a small phone) keeps only the keys,
+                                    // leaving the words to the dial's hint, and scrolls rather than
+                                    // clipping them at large text scales.
+                                    BoxWithConstraints(contentAlignment = Alignment.Center) {
+                                        val signFits = maxHeight >= EMPTY_SIGN_AND_KEYS
+                                        Column(
+                                            Modifier.verticalScroll(rememberScrollState()),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                        ) {
+                                            if (signFits) {
+                                                RadioText(
+                                                    stringResource(Res.string.radio_no_playlists_empty),
+                                                    19,
+                                                    bold = true,
+                                                    maxLines = 2,
+                                                )
+                                                Spacer(Modifier.height(10.dp))
+                                            }
+                                            KeyBank {
+                                                PianoKey(
+                                                    stringResource(Res.string.nav_discover),
+                                                    pressed = false,
+                                                    onClick = actions.openDiscover,
+                                                    modifier = Modifier.testTag("radio_empty_discover"),
+                                                    role = Role.Button,
+                                                )
+                                                PianoKey(
+                                                    stringResource(Res.string.import_title),
+                                                    pressed = false,
+                                                    onClick = actions.openImport,
+                                                    modifier = Modifier.testTag("radio_empty_import"),
+                                                    role = Role.Button,
+                                                )
+                                                PianoKey(
+                                                    stringResource(Res.string.nav_library),
+                                                    pressed = false,
+                                                    onClick = actions.openLibrary,
+                                                    modifier = Modifier.testTag("radio_empty_library"),
+                                                    role = Role.Button,
+                                                )
+                                            }
+                                        }
                                     }
                                 } else {
                                     RadioText(stringResource(Res.string.radio_all_clear), 19, bold = true)
@@ -534,80 +547,6 @@ private fun RadioSlip(
     }
 }
 
-/**
- * The paper's first-run card: with no playlist there is nothing to tune in, so instead of "All
- * clear" the radio points at the three places that fill it (Discover, an import, the Library).
- * It scrolls on its own so a short landscape window never clips the keys; a [compact] paper
- * drops the explanation so the keys stay in view.
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun FirstTuning(
-    actions: RadioActions,
-    compact: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    Box(modifier.testTag("radio_first_tuning"), contentAlignment = Alignment.Center) {
-        Column(
-            Modifier.verticalScroll(rememberScrollState()).padding(if (compact) 4.dp else 12.dp),
-            Arrangement.spacedBy(if (compact) 2.dp else 6.dp),
-            Alignment.CenterHorizontally,
-        ) {
-            RadioText(
-                stringResource(Res.string.radio_first_title),
-                if (compact) 15 else 19,
-                bold = true,
-                modifier = Modifier.semantics { heading() },
-            )
-            if (!compact) {
-                Text(
-                    stringResource(Res.string.radio_first_body),
-                    color = Ink,
-                    fontFamily = barlow(),
-                    fontSize = 13.sp,
-                    lineHeight = 17.sp,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(4.dp))
-            }
-            // Three keys stay on one row down to a 320 dp phone.
-            val keyWidth = if (compact) COMPACT_KEY_WIDTH else KEY_WIDTH
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                MenuKey(
-                    NdIcons.Explore,
-                    stringResource(Res.string.nav_discover),
-                    "radio_first_discover",
-                    labelColor = Ink,
-                    width = keyWidth,
-                ) {
-                    actions.discover()
-                }
-                MenuKey(
-                    NdIcons.RssFeed,
-                    stringResource(Res.string.radio_first_import),
-                    "radio_first_import",
-                    labelColor = Ink,
-                    width = keyWidth,
-                ) {
-                    actions.importSubscriptions()
-                }
-                MenuKey(
-                    NdIcons.GridView,
-                    stringResource(Res.string.nav_library),
-                    "radio_first_library",
-                    labelColor = Ink,
-                    width = keyWidth,
-                ) {
-                    actions.library()
-                }
-            }
-        }
-    }
-}
-
 /** A slip's own play key (the shared ivory slip key); on the slip that is playing it pauses. */
 @Composable
 private fun SlipPlayKey(
@@ -628,7 +567,8 @@ private fun SlipPlayKey(
     }
 }
 
-private val COMPACT_KEY_WIDTH = 76.dp
+/** The empty radio's sign, its gap and a key bank, below which the sign gives way to the keys. */
+private val EMPTY_SIGN_AND_KEYS = 110.dp
 private val SLIP_KEY_TARGET = 48.dp
 private val SLIP_KEY_CAP = 36.dp
 

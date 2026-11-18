@@ -41,7 +41,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -183,12 +182,10 @@ private fun Destinations(open: (NavKey) -> Unit) {
 /**
  * One ivory key with its printed label, read as a button named by the label. A short printed
  * [label] gives way to the full [spokenAs] name; [lamp] lights a red count lamp on the cap that
- * reads as [lampDescription], and [notice] an amber dot like the radio's Menu key. The label
- * is printed in [labelColor]: cream on the metal plate, ink where the key sits on paper; a
- * narrow paper passes a smaller [width].
+ * reads as [lampDescription], and [notice] an amber dot like the radio's Menu key.
  */
 @Composable
-internal fun MenuKey(
+private fun MenuKey(
     icon: ImageVector,
     label: String,
     tag: String,
@@ -196,14 +193,12 @@ internal fun MenuKey(
     lamp: Int? = null,
     lampDescription: String? = null,
     notice: Boolean = false,
-    labelColor: Color = Cream,
-    width: Dp = KEY_WIDTH,
     onClick: () -> Unit,
 ) {
     Column(
         Modifier
             .testTag(tag)
-            .width(width)
+            .width(KEY_WIDTH)
             .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(6.dp))
             .clickable(role = Role.Button, onClick = onClick)
@@ -222,7 +217,7 @@ internal fun MenuKey(
         Text(
             label,
             if (spokenAs != null) Modifier.clearAndSetSemantics {} else Modifier,
-            color = labelColor,
+            color = Cream,
             fontFamily = barlow(),
             fontWeight = FontWeight.Medium,
             fontSize = 13.sp,
@@ -318,7 +313,7 @@ private fun CloseKey(onDismiss: () -> Unit) {
 private val PlateShape = RoundedCornerShape(10.dp)
 private val LampRed = Color(0xFFC62B1F)
 private val PLATE_MAX_WIDTH = 360.dp
-internal val KEY_WIDTH = 88.dp
+private val KEY_WIDTH = 88.dp
 private val KEY_CAP = 52.dp
 private val KEY_GAP = 8.dp
 private const val KEYS_PER_ROW = 3

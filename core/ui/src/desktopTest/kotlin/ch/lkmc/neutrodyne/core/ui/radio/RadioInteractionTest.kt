@@ -80,43 +80,49 @@ import kotlin.test.assertEquals
 @OptIn(ExperimentalTestApi::class)
 class RadioInteractionTest {
     @Test
-    fun aRadioWithoutPlaylistsOffersItsFirstTuningKeys() =
+    fun anEmptyRadioWaitsForItsPlaylistsAndOffersAnImport() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             var state by mutableStateOf(RadioState())
-            val opened = mutableListOf<String>()
+            var imports = 0
             setContent {
                 NeutrodyneTheme(SystemUiState.DEFAULT) {
-                    RadioScreen(
-                        state,
-                        RadioActions(
-                            discover = { opened += "discover" },
-                            importSubscriptions = { opened += "import" },
-                            library = { opened += "library" },
-                        ),
-                    )
+                    RadioScreen(state, RadioActions(openImport = { imports++ }))
                 }
             }
             // Until the repository answers, an empty list is "not read yet", not "none".
-            onNodeWithTag("radio_first_tuning").assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty)).assertDoesNotExist()
+            onNodeWithTag("radio_empty_import").assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_cleared)).assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_untuned)).assertIsDisplayed()
 
             state = RadioState(playlistsLoaded = true)
-            onNodeWithTag("radio_first_tuning").assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty)).assertIsDisplayed()
             onNodeWithText(getString(Res.string.radio_untuned)).assertIsDisplayed()
             onNodeWithText(getString(Res.string.radio_first_hint)).assertIsDisplayed()
-            onNodeWithTag(
-                "radio_first_discover",
-            ).assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
-            onNodeWithTag("radio_first_discover").performClick()
-            onNodeWithTag("radio_first_import").performClick()
-            onNodeWithTag("radio_first_library").performClick()
-            assertEquals(listOf("discover", "import", "library"), opened)
+            onNodeWithTag("radio_empty_import")
+                .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+                .performClick()
+            assertEquals(1, imports)
 
             state = radioFixture().copy(episodes = emptyList(), playlistsLoaded = true)
-            onNodeWithTag("radio_first_tuning").assertDoesNotExist()
+            onNodeWithTag("radio_empty_import").assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_all_clear)).assertIsDisplayed()
+        }
+
+    @Test
+    fun aSmallPhoneKeepsTheEmptyRadiosKeysInView() =
+        runDesktopComposeUiTest(width = 320, height = 568) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(RadioState(playlistsLoaded = true), RadioActions())
+                }
+            }
+            // boundsInRoot is clipped, so a key cut off by the short paper reads shorter than it is.
+            for (tag in listOf("radio_empty_discover", "radio_empty_import", "radio_empty_library")) {
+                val key = onNodeWithTag(tag).fetchSemanticsNode()
+                assertEquals(key.size.height.toFloat(), key.boundsInRoot.height, 1f, "$tag is cut off")
+            }
         }
 
     @Test
@@ -136,7 +142,7 @@ class RadioInteractionTest {
                     )
                 }
             }
-            onNodeWithTag("radio_first_tuning").assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty)).assertIsDisplayed()
             onNodeWithText(getString(Res.string.radio_untuned)).assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_playing)).assertIsDisplayed()
             onNodeWithText(playing.podcast).assertIsDisplayed()
@@ -538,7 +544,7 @@ class RadioInteractionTest {
             setContent {
                 NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(
-                        RadioState(),
+                        RadioState(playlistsLoaded = true),
                         RadioActions(openDiscover = { discover++ }, openLibrary = { library++ }),
                     )
                 }
@@ -560,6 +566,7 @@ class RadioInteractionTest {
             }
             onNodeWithTag("radio_empty_discover").assertDoesNotExist()
             onNodeWithTag("radio_empty_library").assertDoesNotExist()
+            onNodeWithTag("radio_empty_import").assertDoesNotExist()
         }
 
     @Test fun anEmptyRadioHidesRouteKeysWhenLoadFails() =
@@ -571,6 +578,7 @@ class RadioInteractionTest {
             }
             onNodeWithTag("radio_empty_discover").assertDoesNotExist()
             onNodeWithTag("radio_empty_library").assertDoesNotExist()
+            onNodeWithTag("radio_empty_import").assertDoesNotExist()
         }
 
     @Test fun aClearedPlaylistKeepsItsAllClearSignWithoutRouteKeys() =
@@ -580,6 +588,7 @@ class RadioInteractionTest {
                     RadioScreen(
                         RadioState(
                             playlists = listOf(RadioPlaylist(1, "Tech", 0)),
+                            playlistsLoaded = true,
                             playlistId = 1,
                         ),
                         RadioActions(),
