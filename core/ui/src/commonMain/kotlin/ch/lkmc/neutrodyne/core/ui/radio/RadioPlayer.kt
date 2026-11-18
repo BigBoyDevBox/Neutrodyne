@@ -119,7 +119,9 @@ internal fun RadioPlayer(
     // Retain the reference cap through 1.3x text; larger type needs a larger physical key.
     val capScale = (LocalDensity.current.fontScale / FIXED_CAP_FONT_SCALE).coerceAtLeast(1f)
     val duration = selected?.durationMs ?: 0L
+    // Match the needle's gesture keys so a stale drag cannot update a new episode's preview.
     var previewMs by remember(selected?.id, duration) { mutableStateOf<Long?>(null) }
+    val displayedMs = previewMs ?: state.elapsedMs
     val status =
         when {
             selected == null -> Res.string.radio_cleared
@@ -206,7 +208,7 @@ internal fun RadioPlayer(
                 )
                 Needle(
                     selected?.id,
-                    previewMs ?: state.elapsedMs,
+                    displayedMs,
                     duration,
                     onPreview = { previewMs = it },
                     onSeek = actions.seek,
@@ -257,7 +259,7 @@ internal fun RadioPlayer(
                             )
                         }
                         Nixie(
-                            previewMs ?: state.elapsedMs,
+                            displayedMs,
                             selected != null,
                             compact,
                             Modifier.weight(1f, fill = false),

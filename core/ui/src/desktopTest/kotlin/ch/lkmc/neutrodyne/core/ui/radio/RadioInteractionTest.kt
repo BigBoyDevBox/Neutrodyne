@@ -265,7 +265,10 @@ class RadioInteractionTest {
 
     @Test fun aNewSelectionCancelsTheNeedleDrag() =
         runDesktopComposeUiTest(width = 390, height = 844) {
-            var state by mutableStateOf(radioFixture())
+            val fixture = radioFixture()
+            val duration = fixture.episodes.first().durationMs
+            val episodes = fixture.episodes.map { it.copy(durationMs = duration) }
+            var state by mutableStateOf(fixture.copy(episodes = episodes))
             val seeks = mutableListOf<Long>()
             setContent {
                 NeutrodyneTheme(SystemUiState.DEFAULT) {
@@ -277,8 +280,10 @@ class RadioInteractionTest {
                 down(Offset(width / 4f, centerY))
                 moveTo(center)
             }
+            needle.assertContentDescriptionEquals(getString(Res.string.chapter_seek, "19:00"))
             runOnIdle { state = state.copy(selectedId = 2L) }
             needle.performTouchInput { up() }
+            waitForIdle()
             assertEquals(emptyList(), seeks)
             needle.assertContentDescriptionEquals(getString(Res.string.chapter_seek, "00:00"))
         }
