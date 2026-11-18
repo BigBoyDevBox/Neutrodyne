@@ -49,6 +49,11 @@ class RadioScreenshotTest {
     @Config(qualifiers = "en-rUS-w320dp-h568dp-mdpi")
     fun firstTuningSmall() = capture("first_tuning_small", RadioState(playlistsLoaded = true))
 
+    /** A short landscape window, where the card scrolls rather than clipping its keys. */
+    @Test
+    @Config(qualifiers = "en-rUS-w700dp-h360dp-mdpi")
+    fun firstTuningLandscape() = capture("first_tuning_landscape", RadioState(playlistsLoaded = true))
+
     private fun capture(
         name: String,
         state: RadioState = radioFixture(name == "playing"),

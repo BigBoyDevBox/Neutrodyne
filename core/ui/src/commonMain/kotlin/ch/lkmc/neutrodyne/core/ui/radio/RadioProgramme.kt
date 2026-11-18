@@ -252,7 +252,8 @@ internal fun RadioProgramme(
                         ) {
                             if (state.loading) {
                                 CircularProgressIndicator(color = Brass, modifier = Modifier.size(24.dp))
-                            } else if (!state.loadError) {
+                            } else if (!state.loadError && state.playlistsLoaded) {
+                                // Until the groups are read, an empty paper is not yet "all clear".
                                 RadioText(stringResource(Res.string.radio_all_clear), 19, bold = true)
                                 RadioText(stringResource(Res.string.radio_no_episodes), 12, mono = false)
                             }

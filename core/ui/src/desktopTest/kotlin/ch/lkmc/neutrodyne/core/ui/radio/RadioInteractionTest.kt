@@ -57,6 +57,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
 import ch.lkmc.neutrodyne.core.ui.resources.radio_first_hint
 import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists
 import ch.lkmc.neutrodyne.core.ui.resources.radio_paused
+import ch.lkmc.neutrodyne.core.ui.resources.radio_playing
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_back
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward
 import ch.lkmc.neutrodyne.core.ui.resources.radio_untuned
@@ -85,6 +86,7 @@ class RadioInteractionTest {
             }
             // Until the repository answers, an empty list is "not read yet", not "none".
             onNodeWithTag("radio_first_tuning").assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
 
             state = RadioState(playlistsLoaded = true)
             onNodeWithTag("radio_first_tuning").assertIsDisplayed()
@@ -101,6 +103,29 @@ class RadioInteractionTest {
             state = radioFixture().copy(episodes = emptyList(), playlistsLoaded = true)
             onNodeWithTag("radio_first_tuning").assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_all_clear)).assertIsDisplayed()
+        }
+
+    @Test
+    fun playbackFromElsewhereKeepsItsStatusWithoutAPlaylist() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val playing = radioFixture().episodes.first()
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        RadioState(
+                            playlistsLoaded = true,
+                            selectedId = playing.id,
+                            nowPlayingEpisode = playing,
+                            playing = true,
+                        ),
+                        RadioActions(),
+                    )
+                }
+            }
+            onNodeWithTag("radio_first_tuning").assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_untuned)).assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_playing)).assertIsDisplayed()
+            onNodeWithText(playing.podcast).assertIsDisplayed()
         }
 
     @Test

@@ -120,10 +120,15 @@ internal fun RadioPlayer(
     val duration = selected?.durationMs ?: 0L
     val status =
         when {
-            state.untuned -> Res.string.radio_untuned
+            // Playback started elsewhere keeps its own status while no playlist exists.
+            state.untuned && selected == null -> Res.string.radio_untuned
+
             selected == null -> Res.string.radio_cleared
+
             state.playing -> Res.string.radio_playing
+
             state.hasPlayed || state.elapsedMs > 0 -> Res.string.radio_paused
+
             else -> Res.string.radio_ready
         }
     val statusText = stringResource(status)
