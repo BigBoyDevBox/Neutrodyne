@@ -69,6 +69,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.podcast_count
 import ch.lkmc.neutrodyne.feature.sync.resources.Res
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_continue
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_setup_address_hint
+import ch.lkmc.neutrodyne.feature.sync.resources.sync_setup_address_label
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_setup_backup_saved
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_setup_backup_working
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_setup_cancel
@@ -471,7 +472,7 @@ private fun AddressStep(
         OutlinedTextField(
             value = address,
             onValueChange = onAddress,
-            label = { Text(stringResource(Res.string.sync_setup_title)) },
+            label = { Text(stringResource(Res.string.sync_setup_address_label)) },
             placeholder = { Text(stringResource(Res.string.sync_setup_address_hint)) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
@@ -725,7 +726,7 @@ private fun ChooseFirstLinkStep(
                     Res.string.sync_setup_choice_merge_body,
                     state.localPodcasts,
                     state.localGroups,
-                    "",
+                    host,
                     state.serverPodcasts,
                     state.serverGroups,
                 ),
