@@ -58,7 +58,7 @@ had not recorded it.
   `Modifier.ndTextFieldFocus()` like every other field. Typing in them no
   longer toggles playback or skips, and the desktop menu accelerators clear
   again. Regression cover: `SyncApproveSheetTest`'s focus-tracker tests.
-- **An empty radio offers its two filling routes (PR #580, awaiting merge).** With no groups,
+- **An empty radio offers its two filling routes (PR #580, merged).** With no groups,
   the programme said "All clear" as if a station had been emptied. It now
   says "No playlists yet." and offers momentary keys to Discover and Library;
   a genuinely cleared playlist keeps its All clear sign without route keys.
@@ -108,12 +108,12 @@ width at 599, 600 and 700 dp and 1×, 1.3× and 2× text. Keep the four Nixie
 digits legible. [Phone](core/ui/screenshots/desktop/radio_phone.png) ·
 [Tablet](core/ui/screenshots/desktop/radio_tablet.png)
 
-At the 600 × 800 desktop minimum the home already takes the two-column layout:
+At the desktop's 600 dp minimum width (seen at 600 × 800; the window's
+minimum is 600 × 480, `WindowBounds.kt`) the home already takes the
+two-column layout:
 the speaker grille takes half the width, both skip keys disappear, and slip
 titles cut to two short lines. Consider a 720 dp threshold for the split or a
-speaker that yields width before the keys do. Skip forward clamped at the end
-of an episode gives no feedback and does not advance; decide between a brief
-refusal on the key and moving to the next slip.
+speaker that yields width before the keys do.
 
 ### Give long playlists a reliable count
 
@@ -123,7 +123,11 @@ but the current dial only prints its position when the loaded episode list is
 complete. The design calls for repository counts while paging. Show the total
 as a localized unplayed count for partial pages, and show a position only when
 the episode's ordinal is known. Check whether the count can come from the same
-paging generation or can be shared across append events. A failed count should
+paging generation or can be shared across append events. Today
+`feeds.countUnplayed` runs once per incomplete snapshot, guarded only by
+`rowsRevision`, so a long playlist streaming in issues one count query per
+page; count once per generation, or only when the visible window nears the
+end. A failed count should
 leave the total unknown. The existing failure path reports a write error for
 this read. Test successive append, invalidation, count failure, discard and
 Undo, and a playing episode outside the selected group. `RadioPlaylist` already
@@ -141,6 +145,10 @@ claims there is nothing left. Gate the empty state on `complete` or on
 `episodeCount == 0`, and keep the spinner for a first page that is still on
 its way. PR #580 already gives the no-playlist case its own sign and routes;
 this is the remaining paging race.
+
+Skip forward clamped at the end of an episode gives no feedback and does not
+advance. Decide between a brief refusal on the key and moving to the next
+slip.
 
 ### Replace the last Material buttons on the radio home
 
@@ -195,7 +203,8 @@ test in `playback/impl` (Robolectric harness in `LifecycleHarness.kt`) or
   merged and backed up but never applied.
 - Android's explicit start does not record the outgoing item in
   `PlaybackHistory`, so Previous after tapping another episode skips it
-  (`QueueProjector.kt:629`; the desktop records it).
+  (`QueueProjector.kt:629`; the desktop records it). This is separate from
+  #593, which fixes only the played mark.
 - A failed commit in the desktop's `advance` leaves `engineEndedHandled`
   latched, so playback stops and never advances (`DesktopPlaybackController.kt:846-906`).
 - `EffectivePlaybackSettings.prepareWindow` issues one scope query and two
@@ -319,7 +328,8 @@ page (sync setup, credentials, group editor) although design 08 asks for
 `RadioSwitch` requests 30 × 40 dp for the painted plate and passes the same
 modifier to the interactive `BatToggle`. A probe on this Compose version found
 that `Modifier.minimumInteractiveComponentSize()` does not widen the pointer
-region here (a click at (46, 46) inside a 30 dp node did not fire), so meeting
+region here (a click outside the 30 dp node but inside the 48 dp area the
+modifier should claim did not fire), so meeting
 the target needs a real layout change rather than the stock modifier.
 
 Measure actual hit regions between adjacent controls in Import, Groups and
@@ -363,7 +373,9 @@ traffic lights, so the charcoal stage reaches the window top. With
 `apple.awt.application.appearance=system`, a light-mode Mac now shows a light
 title bar over the charcoal stage. `java.awt.Taskbar` offers a Dock menu (Play
 or Pause, skip back and forward, the current title) and an opt-in icon badge
-(unplayed in the tuned playlist); the app uses neither. Window > Minimise lacks
+(unplayed in the tuned playlist); the app uses neither. Guard each with
+`Taskbar.isSupported`: the Dock menu and text badge are macOS features, and
+Windows offers neither. Window > Minimise lacks
 Cmd+M and Zoom lacks Ctrl+Cmd+F. The window title drops the episode as soon as
 playback pauses (`NeutrodyneWindow.kt:305`). Navigation state is lost on
 relaunch; restoring the last playlist already works through settings. Check
@@ -499,10 +511,9 @@ only the size is an input.
 
 Two more cheap wins to measure first:
 
-- `feeds.countUnplayed` is launched for every incomplete paging snapshot,
-  guarded by `rowsRevision`. While a long playlist streams pages in, that is
-  one count query per page; count once per generation, or only when the
-  visible window nears the end.
+- `feeds.countUnplayed` issues one count query per page while a long
+  playlist streams in; the fix is under
+  [Give long playlists a reliable count](#give-long-playlists-a-reliable-count).
 - Every nine-patch and three-patch slice draws with `FilterQuality.High`,
   including the small slices of every key on every slip. A fling composes
   hundreds of slips; try `FilterQuality.Low` for slices under a few pixels and
@@ -568,8 +579,12 @@ clean-launch exercise, OPML import and the failed-refresh wording.
 
 A first-tuning card is in review: with no playlist the paper offers keys to
 Discover, the import dialog and the Library, and the dial reads NOT TUNED
-([first-tuning card](https://github.com/L-K-M/Neutrodyne/pull/583)). Today
-the journey from there still takes eight or more steps (Library, Groups, New
+([first-tuning card](https://github.com/L-K-M/Neutrodyne/pull/583)). It
+changes the same no-group paper as PR #580's "No playlists yet." sign with
+Discover and Library keys (under
+[done](#done-since-the-last-consolidation)); whichever merges second adopts or
+replaces the other's card. Today the journey from there still takes seven or
+more steps (Library, Groups, New
 group, name, members, save, back). The journey checks above, and the All
 station decision under
 [Let the radio play subscriptions without a group](#let-the-radio-play-subscriptions-without-a-group),
@@ -598,6 +613,12 @@ rather than a new editing abstraction. Avoid dropping keyboard equivalents for
 unrelated window commands once the focus bridge is proven.
 
 Exercise read-only selections and password fields as well as normal editing.
+
+In the programme, each Up or Down press scrolls the newly selected slip to the
+top of the list (`animateScrollToItem(target)` in `RadioProgramme.kt`), even
+when it was already in view, so the list moves on every press. Scroll only
+when the slip is not fully visible, and test a press inside the view, at its
+bottom edge and at the end of the list.
 Verify the menu's enabled states after focus leaves the window.
 
 Escape is swallowed in text fields: `isRootShortcut` marks it as a root
@@ -653,6 +674,23 @@ retry when the library is available, preserve the distinction between local
 failure and provider failure, and verify that a subscribed podcast still opens
 its library page after recovery.
 [SearchRepositoryImpl.kt](core/data/src/commonMain/kotlin/ch/lkmc/neutrodyne/core/data/discovery/SearchRepositoryImpl.kt)
+
+### Diagnose the Linux YouTube preview handoff
+
+In the Linux unit suite, `ExternalYouTubeModeTest.directoryChannelPreviewHandsOffToAdd`
+timed out waiting for the channel title after opening a YouTube handle through
+`PodcastPreviewKey`. The same assertion failed on main and twice on the
+Discover proposal. The recorded requests reached the channel and both podcast
+directories. On macOS the journey passed with the engine omitted and with the
+bundled engine disabled at runtime.
+[Main failure](https://github.com/L-K-M/Neutrodyne/actions/runs/44355818080/job/135003308524),
+[PR retry](https://github.com/L-K-M/Neutrodyne/actions/runs/44354394984/job/135044613932)
+
+At the timeout, capture every Compose root, the active navigation entries and
+the Add sheet state. Compare the preview route with the passing direct
+`AddPodcastKey` journey in the same Linux suite. Determine whether the
+handoff lost the route or the title assertion missed the active sheet. Verify
+that one Subscribe action creates one channel in the selected group.
 
 ## Library, downloads, and sync defects
 
@@ -898,7 +936,9 @@ Each needs a decision: build it, or correct the document.
   (`navigateFromPlayer` selects tabs for `TopLevelKey`). The macOS tray never
   appears. Completed downloads with a null size are marked missing. A zero-byte
   temp file skips adoption. The host-permit map grows without bound. Manual
-  refresh ignores the interval (intended).
+  refresh ignores the interval (intended). An arrow-key focus request on a
+  slip removed mid-scroll crashes (Compose UI 1.12.1's `requestFocus()` on a
+  detached requester prints a warning and returns false).
 
 ## Native verification on proposed fixes
 

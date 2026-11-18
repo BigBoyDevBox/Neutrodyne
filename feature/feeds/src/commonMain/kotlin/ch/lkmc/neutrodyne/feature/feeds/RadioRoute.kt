@@ -88,6 +88,8 @@ internal fun RadioRoute(model: RadioViewModel = metroViewModel()) {
             skipBack = model::skipBack,
             skipForward = model::skipForward,
             selectPlaylist = model::selectPlaylist,
+            openDiscover = { navigator.selectTab(DiscoverKey) },
+            openLibrary = { navigator.selectTab(LibraryKey) },
             menu = { menu = true },
             loadEpisode = { index ->
                 state.episodes.getOrNull(index)?.id?.let { id ->
