@@ -22,10 +22,28 @@ not fix is folded into the sections below. Claims that verification refuted
 are listed under [Checked and cleared](#checked-and-cleared) so nobody
 re-reports them.
 
+A fourth source review on `ad8dc5399` covered the radio home, the shared radio
+parts and the mini radio against the code and the desktop host tests. Its two
+merged fixes are under
+[Done since the last consolidation](#done-since-the-last-consolidation); the
+rest is folded into the sections below, marked **new** where the earlier passes
+had not recorded it.
+
 ## Done since the last consolidation
 
-- **Transport status while buffering, ended or failed (PR #575, awaiting
-  merge).** The radio prints BUFFERING, ENDED or PLAYBACK ERROR from the
+- **The home’s compact and short layouts follow the usable height (PR #578,
+  merged).** `RadioScreen` chose compact and short from the raw window height
+  while the deck, cabinet and content were sized after the system bars, so an
+  844 dp window with 72 dp of insets kept the tall player with 772 dp of
+  content. The decision now uses the usable height and lives in a pure,
+  unit-tested `radioLayout(width, usableHeight, fontScale)` with the 370/600
+  and 660/800 boundaries pinned. The remaining fit work is under
+  [Make the cabinet fit the useful viewport](#make-the-cabinet-fit-the-useful-viewport).
+- **The home Menu key is announced as a button (PR #579, merged).**
+  `SmallRadioKey`’s click now carries `Role.Button`; swapping its hand-drawn
+  radial cap for `IvoryKeyCap` is still open under
+  [Small finish notes for the radio face](#small-finish-notes-for-the-radio-face).
+- **Transport status while buffering, ended or failed (PR #575, merged).** The radio prints BUFFERING, ENDED or PLAYBACK ERROR from the
   loaded player's phase, with the pilot lamp amber while buffering and red on
   an issue. The phase and issue come from the existing `PlaybackStateSource`
   snapshot; no new source of playback truth.
@@ -80,9 +98,8 @@ playback truth in the UI.
 narrow layout relies on the needle, which requires a known duration and
 cannot apply the listener's skip intervals. Provide a second layout for the
 keys with 48 dp targets and the printed intervals. Use fewer scale labels
-where they would collide. Show a quiet inactive dial when the duration is
-unknown. Test both skip values, unknown durations, three-hour media,
-and 2.0 text at 320 dp. Check German and keyboard access.
+where they would collide. Test both skip values, unknown durations, three-hour
+media, and 2.0 text at 320 dp. Check German and keyboard access.
 
 Window width also matters. At 390 × 844 both keys flank the counter. At
 700 × 900 the right pane narrows enough to hide them. Retain the 600 dp
@@ -90,12 +107,6 @@ two-column transition. Compare a second compact bank with reallocating pane
 width at 599, 600 and 700 dp and 1×, 1.3× and 2× text. Keep the four Nixie
 digits legible. [Phone](core/ui/screenshots/desktop/radio_phone.png) ·
 [Tablet](core/ui/screenshots/desktop/radio_tablet.png)
-
-For unknown duration, `RadioPlayer` prints five `00:00` labels, repeats the end time on tall
-screens, and exposes a SetProgress action that returns false. Compare blank graduations with a single
-localized duration-unavailable legend. Let the inactive dial pass vertical
-scrolling through and retain elapsed time. Verify an empty playlist, a live
-stream, a downloaded recording, and duration arriving after playback starts.
 
 At the 600 × 800 desktop minimum the home already takes the two-column layout:
 the speaker grille takes half the width, both skip keys disappear, and slip
@@ -171,9 +182,6 @@ test in `playback/impl` (Robolectric harness in `LifecycleHarness.kt`) or
   reaches `StartOutcome.AlreadyCurrent` and calls `play()` in `STATE_IDLE`, so
   nothing resumes. The desktop re-prepares (`DesktopPlaybackController.startLocked`).
   See `AndroidServiceBridge.kt:296-309` and `ErrorRecovery.kt:306-330`.
-- The desktop's Previous within three seconds (`PreviousAction.GoBack`) passes
-  0 to `projectStart`, so the previous episode restarts instead of resuming at
-  its stored position as on Android (`DesktopPlaybackController.kt:811`).
 - The desktop persists a user seek before the engine confirms it
   (`DesktopPlaybackController.kt:745`). A seek during a network drop stores a
   position that was never heard.
@@ -201,23 +209,27 @@ test in `playback/impl` (Robolectric harness in `LifecycleHarness.kt`) or
 
 ### Make the cabinet fit the useful viewport
 
-`RadioScreen.RadioCabinet` sizes compact and short variants from window height
-while sizing the deck from local constraints. In the narrow desktop fixture
-the transport and deck leave roughly one full slip. The small layout permits
-nested vertical scrolling once the cabinet exceeds its viewport. Keep the
-valves and selection visible, but measure the usable space inside the insets
-and define a minimum for the slip list. Reduce the speaker opening and panel
-padding first, then use a more compact arrangement of the dial and transport.
-Choose an intentional scroll mode if the total still cannot fit. Test 600 ×
-480, 800 × 500, 1200 × 800, and the phone and tabletop presets at 1.0, 1.3, and
-2.0 font scales. Include a two-line title, retry alongside Undo, and enough
-episodes to require scrolling. Count whole usable rows and exercise focus at
-the bottom of the cabinet.
+`RadioScreen.RadioCabinet` sized compact and short variants from the raw
+window height while sizing the deck from local constraints; the decision now
+follows the usable height after the system bars ([done](#done-since-the-last-consolidation)).
+In the narrow desktop fixture the transport and deck leave roughly one full
+slip. The small layout permits nested vertical scrolling once the cabinet
+exceeds its viewport. Keep the valves and selection visible, but measure the
+usable space inside the insets and define a minimum for the slip list. Reduce
+the speaker opening and panel padding first, then use a more compact arrangement
+of the dial and transport. Choose an intentional scroll mode if the total still
+cannot fit. Test 600 × 480, 800 × 500, 1200 × 800, and the phone and tabletop
+presets at 1.0, 1.3, and 2.0 font scales. Include a two-line title, retry
+alongside Undo, and enough episodes to require scrolling. Count whole usable
+rows and exercise focus at the bottom of the cabinet.
 
-Exercise both the 660 and 800 dp thresholds. An 844 dp window with 72 dp of
-system insets has 772 dp of content but still selects the tall player. Compare
-gesture and three-button navigation and a root banner. Verify the deck,
-focused slip and play switch remain reachable during each transition.
+The 660 and 800 dp thresholds are half-open and unit-tested; an 844 dp window
+with 72 dp of insets now selects the compact player. Compare gesture and
+three-button navigation and a root banner. Verify the deck, focused slip and
+play switch remain reachable during each transition. The mode thresholds are
+absolute dp while the cabinet minimum grows with text (deliberate, documented
+in `RadioLayout`); when both compact and wide hold, rows follow compact and the
+minimum follows wide.
 
 ### Give the playlist sign room and a legible fallback
 
@@ -320,12 +332,16 @@ For rows that own their switch action, retain one accessible target.
 ### Place the Mac window in the display’s usable coordinates
 
 A live AWT probe on this Mac reported primary bounds 1920 × 1080, an identity
-display transform, 69 DPI, and top/bottom insets of 30/90.
-`WindowIcons.primaryScreen` passes the bounds and physical DPI to
-`defaultWindowBounds`, which multiplies by 96/69. This computes a first-window
-origin near (736, 351) for a 1200 × 800 cabinet. Its bottom extends beyond the
-screen even before accounting for the Dock. The calculation was reproduced
-independently of a real window launch.
+default display transform, a normalizing transform of 0.9583, 69 DPI, and
+top/bottom insets of 30/90. `WindowIcons.primaryScreen` passes the bounds and
+physical DPI to `defaultWindowBounds`, which multiplies by 96/69. This
+computes a first-window origin near (736, 351) for a 1200 × 800 cabinet; the
+window then spans 736–1936 of a 1920 px screen, so its right and bottom edges
+extend past the display even before accounting for the Dock. The calculation
+was reproduced independently of a real window launch, and the probe values
+were reproduced again in the fourth review. The normalizing transform and the
+physical DPI are two descriptions of the same scale; applying both is the
+suspected defect.
 
 Verify the Compose-to-AWT position on a clean launch at 1× and Retina 2×, with
 the Dock on two edges. Convert from the native usable coordinate space exactly
@@ -383,7 +399,27 @@ resize.
   wraps grows the column and shifts the sign.
 - **The home's Menu key has no click feedback.** `SmallRadioKey` uses a plain
   `clickable` while the EnamelSelector beside it sounds; when the control
-  sounds land, give the key the same press.
+  sounds land, give the key the same press. Its click already carries
+  `Role.Button` ([done](#done-since-the-last-consolidation)); its hand-drawn
+  radial cap could become the shared `IvoryKeyCap`, but that is a visual change
+  to the golden-covered radio home, so record the goldens first.
+- **`ninePatch` can draw overlapping slices on a very narrow node** (new).
+  `RadioPanels.drawNinePatch` builds `dstX = [0, edge, width - edge, width]`,
+  which is not monotonic when the node is narrower than `2 * edge`; the middle
+  slice is skipped and the edge slices overlap. Only reachable below about
+  22 dp. Clamp the drawn inset to half the node’s width and height.
+- **The deck constants are duplicated** (new). `DECK_MIN_HEIGHT`,
+  `DECK_HEIGHT_SHARE` and `DECK_OVERHANG` exist in both `RadioScreen` and
+  `RadioCabinetPage`; move them to `RadioMaterials` beside `VALVE_DECK_ASPECT`
+  so a change is made once.
+- **`ValveDeck`'s tiling has no unit test** (new). The mirrored-tile path
+  (`extra > 0`, the forced odd count, the narrow-node branch) is covered only
+  by goldens; extract the slice plan into a pure function and test the branches.
+- **The player can show stale metadata for the selected episode** (new).
+  `RadioState.selected` prefers `nowPlayingEpisode` over the row from the
+  programme list, so a title or podcast changed by a refresh shows the old
+  value on the player while the slip shows the new one. The `NowPlaying.loadId`
+  occurrence token can distinguish a reload; low impact today.
 
 ## Performance measurements
 
@@ -401,6 +437,12 @@ composition counts, and idle CPU against the baseline. Measure with and without
 artwork cached. Separate programme recomposition from needle and digit draws.
 Hold window size, episode and playback interval constant.
 [Radio route](feature/feeds/src/commonMain/kotlin/ch/lkmc/neutrodyne/feature/feeds/RadioRoute.kt)
+
+Include a live episode playing outside the tuned programme. In a 200-entry
+Compose fixture, 25 elapsed-time updates caused 5,000 duration-lookup reads
+with a direct lookup and zero after the initially cached lookup. Use this
+case when profiling frame time or changing the lookup's inputs.
+[Duration lookup measurement](https://github.com/L-K-M/Neutrodyne/pull/595#discussion_r4618549364)
 
 The one-second desktop ticker also calls `DesktopPlaybackController.publish()`,
 and `PlayerViewModel.position` switches its tick subscription on each new
@@ -470,7 +512,12 @@ Two more cheap wins to measure first:
 
 On this Mac the focused Roborazzi verification of `RadioScreenshotTest.presets`
 failed at `radio_phone.png` on clean main and on the accessibility change. The
-two freshly rendered phone PNGs had identical SHA-256 digests.
+two freshly rendered phone PNGs had identical SHA-256 digests. The fourth
+review reproduced the mismatch again, and also confirmed the desktop and
+Robolectric host insets are both zero, so a layout change that depends on
+insets does not alter the committed goldens; a visual change to a
+golden-covered screen still needs the `record-screenshots` workflow, because
+the local render cannot be used as the reference.
 
 Compare the main render on the reference CI OS against the committed PNG. Record
 its JDK, rasterizer, density, fonts and renderer configuration, then decide
@@ -583,24 +630,29 @@ under "Native verification" below ([Tuned playlist indicator](#native-verificati
 Compare a long group name, a non-first active group, Escape, and returning to
 the chooser.
 
-### Identify retained results during a new search
+### Explain short searches and episode counts
 
-DiscoverViewModel deliberately retains previous hits during the 600 ms
-debounce and while the next provider response is pending. DiscoverRoute
-leaves those rows actionable. Prototype a compact, accessible pending
-indicator alongside the old results, retaining the existing anti-flicker
-behavior. The current signal is a Material `LinearProgressIndicator` at the
-top of the results and carries no accessible live-region announcement, so a
-screen reader user cannot tell that the old hits are stale. With a fake slow
-provider, enter two unrelated queries and try to open a result with both
-keyboard and pointer. Check whether listeners can correctly identify which
-query produced the visible list and whether the final list retains a sensible
-focus target.
-[DiscoverViewModel.kt](feature/discover/src/commonMain/kotlin/ch/lkmc/neutrodyne/feature/discover/DiscoverViewModel.kt)
+For a one- or two-character search, show a localized hint that three characters
+start an automatic search. Keep Enter available for an explicit short search.
+Test typing, deleting back to two characters and clearing the field.
 
-Discover shows nothing for queries under three characters; add a hint. Its
-list shows Apple's episode count (2784) while the preview shows the feed's
-(71); label which one each is or show the feed's.
+The Discover list can show Apple's episode count (for example 2,784) while
+the feed preview shows 71. Compare both for the same podcast. Label the source
+of each count, or use the feed count when it is available.
+
+### Recover when a directory search cannot read the local library
+
+Discover and Directory use `SearchRepositoryImpl.annotate` to mark incoming
+hits as subscribed. A desktop probe closed the test database before a recorded
+search. The flow emitted Pending, then threw `IllegalStateException` on the
+subscription lookup before it could emit a final result. Provider failures
+and eight-second timeouts already produce a final provider status.
+
+Exercise both screens with a failing local lookup. Give the listener a way to
+retry when the library is available, preserve the distinction between local
+failure and provider failure, and verify that a subscribed podcast still opens
+its library page after recovery.
+[SearchRepositoryImpl.kt](core/data/src/commonMain/kotlin/ch/lkmc/neutrodyne/core/data/discovery/SearchRepositoryImpl.kt)
 
 ## Library, downloads, and sync defects
 
@@ -678,6 +730,18 @@ Keep it quiet when off and honour the existing timer controls.
 - The programme header reserves a full key's width to centre the enamel sign;
   at large font scales that spacer can be what pushes the sign into ellipsis
   (see "Give the playlist sign room").
+- The dial needles are drawn on top of the glass sheen: `dialWindow` is a
+  `drawBehind` on the parent while `TuningDial`, `NeedleWindow` and
+  `StepCounter` draw their needles afterwards, so the needle never sits under
+  the reflection. Cosmetic, but it is the difference between glass and a
+  printed line.
+- `MaterialPlate(METAL)` draws two screws at the top corners only; the rendered
+  faceplates carry four. The home's plinth feet are plain `Chassis` rectangles
+  with no shadow or recess, so on the dark stage they read as floating bars.
+- `NdTopAppBar.FaceplateRow` falls back to the “between” position even when
+  `betweenRoom < signWidth`, so at very narrow widths the sign can run under a
+  key (it ellipsizes instead). Document the fallback or clamp the sign’s
+  minimum width.
 
 ## Prototypes
 
@@ -802,6 +866,13 @@ Each needs a decision: build it, or correct the document.
 - `CHANGELOG.md` still reads `[Unreleased]` with only M0a.1 at version 1.0.0.
 - Transcripts are parsed and stored but never shown; the documents defer them.
 - Not documented anywhere, an idea: OPML auto-sync from a remote list.
+- The radio's `fontScale` rule contradicts 08's platform table (new). The
+  Android table says layouts switch on `fontScale >= 1.5` and never compute
+  sizes from it; the radio home scales `minimumHeight`, key widths, cap sizes
+  and the Nixie glass from `fontScale`. The radio’s own rules (“cabinet
+  fitting includes font scale”) justify it, but the documents disagree. Record
+  a dated amendment or align the table; the pure `radioLayout` now makes the
+  absolute-threshold/scaled-minimum split explicit and tested.
 
 ## Checked and cleared
 
@@ -831,6 +902,26 @@ Each needs a decision: build it, or correct the document.
 
 ## Native verification on proposed fixes
 
+- With VoiceOver on macOS and TalkBack on Android, change a populated Discover
+  search while a slow provider responds. Check that the label names the search
+  that produced the visible rows and that rapid typing avoids repeated
+  announcements. Focus an old row as it disappears and verify where focus
+  lands. The desktop regression covers pointer and keyboard activation, the
+  pinned label, More and preserving focus in the search field.
+  [Discover retained results](https://github.com/L-K-M/Neutrodyne/pull/594)
+
+- Play a stream with no announced duration. Check that the radio shows one
+  duration legend, the elapsed counter advances and a screen reader skips the
+  inactive dial. On a short screen, scroll the cabinet by swiping over the
+  legend. When the feed or player supplies a length, seek the same episode.
+  Repeat with a downloaded recording.
+  [Unknown-duration dial](https://github.com/L-K-M/Neutrodyne/pull/595)
+- On macOS, leave a podcast with a saved position in the middle. Press the
+  system Previous command within three seconds of the next episode starting
+  and listen for the saved passage. Press Previous again after three seconds
+  and check that it restarts the current episode. With playback paused,
+  check that returning through history preserves the pause.
+  [Desktop Previous](https://github.com/L-K-M/Neutrodyne/pull/596)
 - Scrub a streaming and a downloaded episode on macOS. Check pointer
   cancellation, playback resumption, and the number of engine seeks and
   writes. Include a duration correction while dragging. Compare the two proposals
