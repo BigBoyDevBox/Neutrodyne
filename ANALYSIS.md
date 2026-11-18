@@ -98,9 +98,8 @@ playback truth in the UI.
 narrow layout relies on the needle, which requires a known duration and
 cannot apply the listener's skip intervals. Provide a second layout for the
 keys with 48 dp targets and the printed intervals. Use fewer scale labels
-where they would collide. Show a quiet inactive dial when the duration is
-unknown. Test both skip values, unknown durations, three-hour media,
-and 2.0 text at 320 dp. Check German and keyboard access.
+where they would collide. Test both skip values, unknown durations, three-hour
+media, and 2.0 text at 320 dp. Check German and keyboard access.
 
 Window width also matters. At 390 × 844 both keys flank the counter. At
 700 × 900 the right pane narrows enough to hide them. Retain the 600 dp
@@ -108,12 +107,6 @@ two-column transition. Compare a second compact bank with reallocating pane
 width at 599, 600 and 700 dp and 1×, 1.3× and 2× text. Keep the four Nixie
 digits legible. [Phone](core/ui/screenshots/desktop/radio_phone.png) ·
 [Tablet](core/ui/screenshots/desktop/radio_tablet.png)
-
-For unknown duration, `RadioPlayer` prints five `00:00` labels, repeats the end time on tall
-screens, and exposes a SetProgress action that returns false. Compare blank graduations with a single
-localized duration-unavailable legend. Let the inactive dial pass vertical
-scrolling through and retain elapsed time. Verify an empty playlist, a live
-stream, a downloaded recording, and duration arriving after playback starts.
 
 At the 600 × 800 desktop minimum the home already takes the two-column layout:
 the speaker grille takes half the width, both skip keys disappear, and slip
@@ -189,9 +182,6 @@ test in `playback/impl` (Robolectric harness in `LifecycleHarness.kt`) or
   reaches `StartOutcome.AlreadyCurrent` and calls `play()` in `STATE_IDLE`, so
   nothing resumes. The desktop re-prepares (`DesktopPlaybackController.startLocked`).
   See `AndroidServiceBridge.kt:296-309` and `ErrorRecovery.kt:306-330`.
-- The desktop's Previous within three seconds (`PreviousAction.GoBack`) passes
-  0 to `projectStart`, so the previous episode restarts instead of resuming at
-  its stored position as on Android (`DesktopPlaybackController.kt:811`).
 - The desktop persists a user seek before the engine confirms it
   (`DesktopPlaybackController.kt:745`). A seek during a network drop stores a
   position that was never heard.
@@ -447,6 +437,12 @@ composition counts, and idle CPU against the baseline. Measure with and without
 artwork cached. Separate programme recomposition from needle and digit draws.
 Hold window size, episode and playback interval constant.
 [Radio route](feature/feeds/src/commonMain/kotlin/ch/lkmc/neutrodyne/feature/feeds/RadioRoute.kt)
+
+Include a live episode playing outside the tuned programme. In a 200-entry
+Compose fixture, 25 elapsed-time updates caused 5,000 duration-lookup reads
+with a direct lookup and zero after the initially cached lookup. Use this
+case when profiling frame time or changing the lookup's inputs.
+[Duration lookup measurement](https://github.com/L-K-M/Neutrodyne/pull/595#discussion_r4618549364)
 
 The one-second desktop ticker also calls `DesktopPlaybackController.publish()`,
 and `PlayerViewModel.position` switches its tick subscription on each new
@@ -914,6 +910,18 @@ Each needs a decision: build it, or correct the document.
   pinned label, More and preserving focus in the search field.
   [Discover retained results](https://github.com/L-K-M/Neutrodyne/pull/594)
 
+- Play a stream with no announced duration. Check that the radio shows one
+  duration legend, the elapsed counter advances and a screen reader skips the
+  inactive dial. On a short screen, scroll the cabinet by swiping over the
+  legend. When the feed or player supplies a length, seek the same episode.
+  Repeat with a downloaded recording.
+  [Unknown-duration dial](https://github.com/L-K-M/Neutrodyne/pull/595)
+- On macOS, leave a podcast with a saved position in the middle. Press the
+  system Previous command within three seconds of the next episode starting
+  and listen for the saved passage. Press Previous again after three seconds
+  and check that it restarts the current episode. With playback paused,
+  check that returning through history preserves the pause.
+  [Desktop Previous](https://github.com/L-K-M/Neutrodyne/pull/596)
 - Scrub a streaming and a downloaded episode on macOS. Check pointer
   cancellation, playback resumption, and the number of engine seeks and
   writes. Include a duration correction while dragging. Compare the two proposals
