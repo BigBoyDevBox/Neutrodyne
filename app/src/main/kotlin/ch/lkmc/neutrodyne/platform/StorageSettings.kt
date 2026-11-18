@@ -28,7 +28,7 @@ internal fun openStorageSettings(
         }
     }
 
-internal fun storageSettingsIntents(packageName: String): List<Intent> =
+private fun storageSettingsIntents(packageName: String): List<Intent> =
     listOf(
         Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS),
         Intent(StorageManager.ACTION_MANAGE_STORAGE),
