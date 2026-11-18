@@ -16,6 +16,15 @@ alongside the shared cabinet.
 
 ## Done since the last consolidation
 
+- **Transport status while buffering, ended or failed (PR #575, awaiting
+  merge).** The radio prints BUFFERING, ENDED or PLAYBACK ERROR from the
+  loaded player's phase, with the pilot lamp amber while buffering and red on
+  an issue. The phase and issue come from the existing `PlaybackStateSource`
+  snapshot; no new source of playback truth.
+- **Arrow-key tuning (PR #576, awaiting merge).** With a slip focused, Up and
+  Down move the selection, scroll it into view and carry focus, stopping at
+  the ends. Chords pass through to the root and the handler bubbles, so a
+  descendant that learns arrows later wins.
 - **Global shortcuts stood down in sync fields (PR #577, awaiting merge).** The linking
   flow's address, invite, username and password fields, the approve sheet's
   code field, the Settings › Sync server-address field, and the device-rename
@@ -44,15 +53,15 @@ complete the write with success and failure. Reconcile the page in both
 cases. Give rapid repeated discards explicit feedback while the first write
 is pending.
 
-### Make buffering and errors intelligible on the radio
+### Add a recovery route and Cancel while buffering
 
-`RadioPlayer` distinguishes cleared, ready, playing, and paused. The transport
-can also be waiting for a stream, retrying, or blocked on an error. Extend the
-presentation using the existing playback snapshot and event bridge. Add text
-next to the lamp and a route to the existing recovery action where applicable.
-Keep Cancel available while buffering. Test a delayed stream, metered consent,
-engine refusal, replay, and a switch from a failing item to a healthy one. Avoid
-inventing a new source of playback truth in the UI.
+The status and lamp now read BUFFERING, ENDED and PLAYBACK ERROR from the
+loaded player's phase and issue ([landed](#landed)). What is still missing is
+the way out: a route to the existing recovery action where applicable, and
+Cancel staying available while a stream buffers. Test a delayed stream,
+metered consent, engine refusal, replay, and a switch from a failing item to
+a healthy one, on top of the status tests. Avoid inventing a new source of
+playback truth in the UI.
 
 ### Keep all transport functions reachable at high text scales
 
@@ -88,7 +97,21 @@ the episode's ordinal is known. Check whether the count can come from the same
 paging generation or can be shared across append events. A failed count should
 leave the total unknown. The existing failure path reports a write error for
 this read. Test successive append, invalidation, count failure, discard and
-Undo, and a playing episode outside the selected group.
+Undo, and a playing episode outside the selected group. `RadioPlaylist` already
+carries `podcastCount` into the radio state and `radio_meta` ("%1$d podcasts ·
+%2$d episodes") is defined in EN and DE, but neither is drawn, so the tuned
+playlist's size is invisible; use both when the count is shown.
+
+### Do not call an empty first page All clear
+
+`RadioProgramme` shows `All clear.` whenever `episodes.isEmpty()` and
+`!loading && !loadError`, but `loading` is only true while `refresh` is
+`Loading` with an empty snapshot. A fast empty refresh after a slow append, or
+a group whose first loaded window is empty while later pages exist, briefly
+claims there is nothing left. Gate the empty state on `complete` or on
+`episodeCount == 0`, and keep the spinner for a first page that is still on
+its way. PR #580 already gives the no-playlist case its own sign and routes;
+this is the remaining paging race.
 
 ### Replace the last Material buttons on the radio home
 
@@ -215,6 +238,27 @@ proportions without an obvious seam or a distracting jump during live
 resize.
 [RadioMaterials.kt](core/designsystem/src/commonMain/kotlin/ch/lkmc/neutrodyne/core/designsystem/radio/RadioMaterials.kt)
 
+## Confirmed small defects
+
+- **A swipe that starts on a slip's play key can discard it.** The horizontal
+  drag detector is attached to the whole `MaterialPlate`, including the 48 dp
+  play key, which is the most tapped target on the slip. A horizontal drag
+  that begins on the key consumes it and commits a discard. Restrict the
+  gesture to the cover and text, or ignore drags that begin on the key.
+- **`RadioInsert` restores no focus target after process death.** The saver
+  keeps `chooserOpen` and `playlistId` but not `restoreFocus`, so a restored
+  chooser opens with no focused row. Cheap to save.
+- **`RadioInsert` positioning is inset-sensitive.** It places the paper from
+  the faceplate's `boundsInWindow` and a hand-computed dialog inset; re-check
+  it on a wide pane row and with different dialog insets.
+- **The Menu key label can wrap and un-centre the sign.** `SmallRadioKey`'s
+  label has no `maxLines`, and `RadioProgramme` reserves a fixed
+  `radioKeyWidth()` spacer to centre the enamel sign; a long translation that
+  wraps grows the column and shifts the sign.
+- **The home's Menu key has no click feedback.** `SmallRadioKey` uses a plain
+  `clickable` while the EnamelSelector beside it sounds; when the control
+  sounds land, give the key the same press.
+
 ## Performance measurements
 
 ### Measure the work done by playback ticks
@@ -260,6 +304,17 @@ whole cabinet even though `LazyColumn` keys isolate unchanged rows. Map only
 the diff or keep the mapping behind the snapshot identity. `Speaker` redraws
 its fixed grille pattern on every invalidation; a cached draw is safe because
 only the size is an input.
+
+Two more cheap wins to measure first:
+
+- `feeds.countUnplayed` is launched for every incomplete paging snapshot,
+  guarded by `rowsRevision`. While a long playlist streams pages in, that is
+  one count query per page; count once per generation, or only when the
+  visible window nears the end.
+- Every nine-patch and three-patch slice draws with `FilterQuality.High`,
+  including the small slices of every key on every slip. A fling composes
+  hundreds of slips; try `FilterQuality.Low` for slices under a few pixels and
+  measure the difference at Retina.
 
 ### Make desktop screenshot failures reproducible
 
@@ -426,6 +481,21 @@ a brief warm change. Use the same accessible status text and honor reduced
 motion. Keep normal playback static and never introduce button sounds into the
 audio. Prototype a single transition and compare idle CPU and distraction over
 a listening session.
+
+### Give the signal meter a buffering job
+
+The status lamp now says BUFFERING, but a needle is a better fit for an
+uncertain stream: rest it while ready, let it hunt while buffering, and park
+it on an issue. Reuse `NeedleGauge` beside the status lamp, drive it from the
+same phase, and honour reduced motion. Measure idle CPU; if the needle
+animates, it must stop the moment the stream settles.
+
+### Recall the last tuned station
+
+A small ivory key that returns to the previous playlist is the radio
+equivalent of a station preset and costs nothing when unused. Keep it
+explicit (a long press or a dedicated key) so it cannot fire by accident, and
+remember only within the session until a persistence decision is made.
 
 ### Design an evening listening experience
 
