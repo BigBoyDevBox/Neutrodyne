@@ -261,7 +261,10 @@ grows above that scale to keep its label inside. Content titles use at most
 two lines with ellipsis and retain their full accessible text. Large text never
 stows the deck (2026-11-17); the cabinet scrolls instead.
 The printed needle scale retains uncapped minutes and seconds; only the
-four-tube counter uses PO-53's capped hours format.
+four-tube counter uses PO-53's capped hours format. The scale uses the player's
+positive duration when available, then the selected episode's feed duration.
+While both are unknown, the dial shows a localized duration legend, the
+counter continues to show elapsed time, and the dial accepts no seek input.
 
 **Implementation notes (2026-11-04).** The shared radio primitives and resources
 live in `:core:ui`; the production adapter lives in `:feature:feeds`. A queued

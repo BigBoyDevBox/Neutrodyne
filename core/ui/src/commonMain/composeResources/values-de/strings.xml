@@ -695,6 +695,7 @@
     <string name="radio_skip_back_value">%1$d</string>
     <string name="radio_skip_forward_value">%1$d</string>
     <string name="radio_no_playlists">Noch keine Playlists. Lege in der Bibliothek eine Gruppe an.</string>
+    <string name="radio_duration_unknown">Dauer unbekannt</string>
     <string name="radio_elapsed">Verstrichen</string>
     <string name="radio_playlists">Deine Playlists</string>
     <string name="radio_all_clear">Alles erledigt.</string>

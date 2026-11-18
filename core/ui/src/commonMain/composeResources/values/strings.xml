@@ -717,6 +717,7 @@
     <string name="radio_skip_back_value">%1$d</string>
     <string name="radio_skip_forward_value">%1$d</string>
     <string name="radio_no_playlists">No playlists yet. Create a group in the Library to fill one.</string>
+    <string name="radio_duration_unknown">Duration unknown</string>
     <string name="radio_elapsed">Elapsed</string>
     <string name="radio_playlists">Your playlists</string>
     <string name="radio_all_clear">All clear.</string>

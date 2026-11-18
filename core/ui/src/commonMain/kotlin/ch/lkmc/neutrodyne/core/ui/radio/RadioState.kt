@@ -45,6 +45,14 @@ public data class RadioState(
     public val selected: RadioEpisode? get() =
         nowPlayingEpisode?.takeIf { it.id == selectedId }
             ?: episodes.find { it.id == selectedId }
+
+    /** Prefer the player's measurement while allowing its metadata to arrive after the programme. */
+    public val selectedDurationMs: Long?
+        get() {
+            val id = selectedId ?: return null
+            val measured = nowPlayingEpisode?.takeIf { it.id == id }?.durationMs
+            return measured?.takeIf { it > 0 } ?: episodes.find { it.id == id }?.durationMs?.takeIf { it > 0 }
+        }
 }
 
 /** Four tubes: minute pairs, or an hour digit and H followed by a minute pair. */
