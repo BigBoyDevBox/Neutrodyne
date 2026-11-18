@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.Dp
@@ -63,7 +64,13 @@ public fun BatToggle(
     plate: SwitchPlate = SwitchPlate.BRASS,
 ) {
     val currentOn by rememberUpdatedState(on)
-    val toggle by rememberUpdatedState(onToggle)
+    val onToggleNow by rememberUpdatedState(onToggle)
+    val haptics = LocalHapticFeedback.current
+    // The lever's thunk: the toggle about to happen, felt only when the listener throws it.
+    val toggle = {
+        haptics.feelSwitch(!currentOn)
+        onToggleNow()
+    }
     BatToggleFace(
         on,
         onLabel,

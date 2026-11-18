@@ -16,8 +16,11 @@ import androidx.compose.runtime.saveable.SaveableStateRegistry
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -63,6 +66,39 @@ import kotlin.test.assertEquals
 
 @OptIn(ExperimentalTestApi::class)
 class RadioInteractionTest {
+    @Test
+    fun aSlipTicksOnceAsItCrossesIntoReleaseToDiscard() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val felt = mutableListOf<HapticFeedbackType>()
+            val haptics =
+                object : HapticFeedback {
+                    override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {
+                        felt += hapticFeedbackType
+                    }
+                }
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    CompositionLocalProvider(LocalHapticFeedback provides haptics) {
+                        RadioScreen(radioFixture(), RadioActions())
+                    }
+                }
+            }
+            onNodeWithTag("radio_episode_1").performTouchInput {
+                down(Offset(width - 10f, height / 2f))
+                moveBy(Offset(-40f, 0f))
+            }
+            assertEquals(emptyList(), felt, "short of the threshold")
+            onNodeWithTag("radio_episode_1").performTouchInput {
+                moveBy(Offset(-60f, 0f))
+                moveBy(Offset(-20f, 0f))
+                moveBy(Offset(50f, 0f))
+                moveBy(Offset(-30f, 0f))
+                cancel()
+            }
+            // -100 arms, -120 stays armed, -70 disarms, -100 arms again: a tick each time it arms.
+            assertEquals(List(2) { HapticFeedbackType.GestureThresholdActivate }, felt)
+        }
+
     @Test
     fun swipeCommitsOnlyOnReleaseAtExactThresholdAndUndoRestores() =
         runDesktopComposeUiTest(width = 390, height = 844) {

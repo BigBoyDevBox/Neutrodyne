@@ -30,6 +30,7 @@ import ch.lkmc.neutrodyne.core.designsystem.components.NdButton
 import ch.lkmc.neutrodyne.core.designsystem.components.NdTextButton
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbar
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbarColor
+import ch.lkmc.neutrodyne.core.designsystem.radio.withSwitchHaptics
 import ch.lkmc.neutrodyne.core.model.ExportFormat
 import ch.lkmc.neutrodyne.core.model.ExportLayout
 import ch.lkmc.neutrodyne.core.ui.LocalPlatformKind
@@ -275,8 +276,12 @@ private fun SwitchRow(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .toggleable(value = checked, onValueChange = onToggle, enabled = enabled, role = Role.Switch)
-                .padding(vertical = ROW_GAP),
+                .toggleable(
+                    value = checked,
+                    onValueChange = withSwitchHaptics(onToggle),
+                    enabled = enabled,
+                    role = Role.Switch,
+                ).padding(vertical = ROW_GAP),
     ) {
         Column(Modifier.weight(1f).padding(end = SWITCH_LABEL_GAP)) {
             Text(label, style = MaterialTheme.typography.bodyLarge)
