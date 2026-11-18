@@ -120,8 +120,9 @@ internal fun RadioPlayer(
     val duration = selected?.durationMs ?: 0L
     val status =
         when {
-            // Playback started elsewhere keeps its own status while no playlist exists.
-            state.untuned && selected == null -> Res.string.radio_untuned
+            // Playback started elsewhere keeps its own status while no playlist exists. Until the
+            // groups are read, nothing has been cleared either.
+            selected == null && (state.untuned || !state.playlistsLoaded) -> Res.string.radio_untuned
 
             selected == null -> Res.string.radio_cleared
 

@@ -57,6 +57,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
+import ch.lkmc.neutrodyne.core.ui.resources.radio_cleared
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
 import ch.lkmc.neutrodyne.core.ui.resources.radio_episodes
 import ch.lkmc.neutrodyne.core.ui.resources.radio_first_hint
@@ -92,6 +93,8 @@ class RadioInteractionTest {
             // Until the repository answers, an empty list is "not read yet", not "none".
             onNodeWithTag("radio_first_tuning").assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_cleared)).assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_untuned)).assertIsDisplayed()
 
             state = RadioState(playlistsLoaded = true)
             onNodeWithTag("radio_first_tuning").assertIsDisplayed()
@@ -131,6 +134,7 @@ class RadioInteractionTest {
             onNodeWithText(getString(Res.string.radio_untuned)).assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_playing)).assertIsDisplayed()
             onNodeWithText(playing.podcast).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
         }
 
     @Test
