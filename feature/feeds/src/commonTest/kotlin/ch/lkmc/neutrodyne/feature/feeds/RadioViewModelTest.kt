@@ -134,6 +134,13 @@ class RadioViewModelTest : MainDispatcherTest() {
                 val after = controller.calls.drop(before)
                 assertTrue(after.none { it is FakePlaybackController.Call.Feed }, "resumes, not restarts: $after")
                 assertTrue(
+                    after.any {
+                        it is FakePlaybackController.Call.Transport &&
+                            it.action == FakePlaybackController.Action.PLAY
+                    },
+                    "resumes playback: $after",
+                )
+                assertTrue(
                     after.none {
                         it is FakePlaybackController.Call.Transport &&
                             it.action == FakePlaybackController.Action.SEEK

@@ -363,19 +363,20 @@ public class RadioViewModel(
     private fun start(id: Long) {
         val group = knownGroups.find { it.id == state.value.playlistId } ?: return
         playback.play(UiText.Raw(group.name)) {
+            // The guard also spans the parked seek's use, so a load seen in between cannot drop it.
             starting = id
             val result =
                 try {
-                    controller.playFeed(FeedSource.Group(group.id), FILTERS, group.playOrder, id)
+                    controller.playFeed(FeedSource.Group(group.id), FILTERS, group.playOrder, id).also {
+                        if (it == PlayResult.Started) {
+                            seeks.remove(id)?.let(controller::seekTo)
+                            if (state.value.selectedId == id) mutableState.value = state.value.copy(hasPlayed = true)
+                        }
+                    }
                 } finally {
                     starting = null
                 }
-            if (result == PlayResult.Started) {
-                seeks.remove(id)?.let(controller::seekTo)
-                if (state.value.selectedId == id) mutableState.value = state.value.copy(hasPlayed = true)
-            } else if (state.value.selectedId == id) {
-                recoverTransportAfterFailedStart()
-            }
+            if (result != PlayResult.Started && state.value.selectedId == id) recoverTransportAfterFailedStart()
             result
         }
     }
