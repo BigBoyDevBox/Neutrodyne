@@ -37,6 +37,13 @@ class LinkInputTest {
             "[::1]",
             "2001:db8:0:0:0:0:0:1",
             "UC" + "a".repeat(22),
+            // Pasted prose: no-break spaces and typographic punctuation around an address.
+            "Listen on\u00A0example.com",
+            "check\u202Fhttps://private.test/x",
+            "\u201Cexample.com\u201D",
+            "\u2026https://private.test/x",
+            "\u00ABpod.link/1234\u00BB",
+            "Listen https://private.test/x.",
         )) {
             assertTrue(isLinkInput(input), "expected a link: $input")
         }
@@ -60,8 +67,26 @@ class LinkInputTest {
             "Q&A",
             "News at 10:30",
             "What's new?",
+            "\u201CStar Wars: The Clone Wars\u201D",
+            "\u201CAC/DC\u201D",
+            "\u201CQ&A: Live\u201D",
+            "Star\u00A0Wars: The Clone Wars",
         )) {
             assertFalse(isLinkInput(input), "expected a search: $input")
+        }
+    }
+
+    /**
+     * Word-local rules cannot separate every address from every title, so these are the accepted
+     * costs, pinned so a refactor does not shift them unnoticed. A single-label host with a bare
+     * path has the shape of "AC/DC" and searches; colon codes, time ranges and "~" approximations
+     * read as links and are kept from the directory.
+     */
+    @Test
+    fun acceptedTradeOffsStayAsDecided() {
+        assertFalse(isLinkInput("myserver/feed"))
+        for (input in listOf("S1:E5", "9:00-10:00", "~50 episodes")) {
+            assertTrue(isLinkInput(input), "kept from the directory: $input")
         }
     }
 }
