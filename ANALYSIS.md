@@ -938,8 +938,9 @@ Each needs a decision: build it, or correct the document.
   mirrors it). Go menu items push top-level keys onto the current stack
   (`navigateFromPlayer` selects tabs for `TopLevelKey`). The macOS tray never
   appears. Completed downloads with a null size are marked missing. A zero-byte
-  temp file skips adoption. The host-permit map grows without bound. Manual
-  refresh ignores the interval (intended). An arrow-key focus request on a
+  temp file skips adoption. The host-permit map grows without bound. A manual
+  refresh that ignores the interval is a bug (the bypass is intended). An
+  arrow-key focus request on a
   slip removed mid-scroll crashes (Compose UI 1.12.1's `requestFocus()` on a
   detached requester prints a warning and returns false).
 
