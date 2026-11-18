@@ -58,7 +58,7 @@ had not recorded it.
   `Modifier.ndTextFieldFocus()` like every other field. Typing in them no
   longer toggles playback or skips, and the desktop menu accelerators clear
   again. Regression cover: `SyncApproveSheetTest`'s focus-tracker tests.
-- **An empty radio offers its two filling routes (PR #580, awaiting merge).** With no groups,
+- **An empty radio offers its two filling routes (PR #580, merged).** With no groups,
   the programme said "All clear" as if a station had been emptied. It now
   says "No playlists yet." and offers momentary keys to Discover and Library;
   a genuinely cleared playlist keeps its All clear sign without route keys.
