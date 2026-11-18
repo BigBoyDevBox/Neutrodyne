@@ -818,6 +818,8 @@ class DesktopAppGraphTest {
      */
     @Test
     fun theRefreshControllerCannotResolveOnTheEventThreadBeforeTheOpen() {
+        // Each test builds its own graph, and the database opens only on awaitOpen().
+        assertThat(graph.databaseOpener.openState.value).isNotInstanceOf(DatabaseOpenState.Opened::class.java)
         var failure: Throwable? = null
         java.awt.EventQueue.invokeAndWait {
             failure = runCatching { graph.refreshController }.exceptionOrNull()
@@ -837,6 +839,7 @@ class DesktopAppGraphTest {
                 controller
             }
 
+        assertThat(graph.databaseOpener.openState.value).isNotInstanceOf(DatabaseOpenState.Opened::class.java)
         java.awt.EventQueue.invokeAndWait { refresh() }
         assertThat(resolved).isEqualTo(0)
 

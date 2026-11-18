@@ -456,7 +456,8 @@ internal fun ApplicationScope.NeutrodyneWindow(
  * The window's Refresh action (11 Menus' Refresh, Ctrl/Cmd+R, F5). It resolves [controller] only
  * once [opener] reports the database open: the refresh controller is database-backed, and
  * resolving it on the event thread before the start-up gate throws. Before the gate the action
- * does nothing; the menu item is disabled then anyway.
+ * does nothing: the menu item is disabled then anyway, and Ctrl/Cmd+R and F5 share this action,
+ * so they do nothing until the gate opens too.
  */
 internal fun gatedRefresh(
     opener: DatabaseOpener,
