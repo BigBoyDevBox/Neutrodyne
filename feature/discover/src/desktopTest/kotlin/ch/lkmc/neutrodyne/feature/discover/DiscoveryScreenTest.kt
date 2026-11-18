@@ -6,19 +6,32 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performMouseInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.test.v2.runComposeUiTest
 import androidx.lifecycle.viewModelScope
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
@@ -46,9 +59,11 @@ import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.collections.immutable.persistentSetOf
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -117,6 +132,87 @@ class DiscoveryScreenTest {
                 vm.viewModelScope.cancel()
                 Dispatchers.resetMain()
                 mainClock.autoAdvance = true
+            }
+        }
+
+    @Test
+    fun retainedRowsIdentifyTheirSearchUntilNewHitsArrive() =
+        runComposeUiTest {
+            val dispatcher = StandardTestDispatcher()
+            Dispatchers.setMain(dispatcher)
+            val release = CompletableDeferred<Unit>()
+            val repository = FakeSearchRepository()
+            repository.searchAnswer = { query ->
+                flow {
+                    val pending =
+                        SearchResults(
+                            query,
+                            persistentListOf(),
+                            persistentMapOf(ProviderId.APPLE to ProviderStatus.Pending),
+                            false,
+                        )
+                    emit(pending)
+                    if (query == "space") release.await()
+                    emit(
+                        pending.copy(
+                            hits = (1..11).map { hit("$query $it") }.toImmutableList(),
+                            statuses = persistentMapOf(ProviderId.APPLE to ProviderStatus.Ok),
+                            complete = true,
+                        ),
+                    )
+                }
+            }
+            val vm = DiscoverViewModel(repository, FakeGroupRepository())
+            try {
+                dispatcher.scheduler.advanceUntilIdle()
+                setContent {
+                    CompositionLocalProvider(LocalAppNavigator provides navigator) {
+                        NeutrodyneTheme(SystemUiState.DEFAULT) { DiscoverRoute(vm) }
+                    }
+                }
+                waitForIdle()
+                val field = onNode(hasSetTextAction())
+                field.performTextInput("opera")
+                runOnIdle { dispatcher.scheduler.advanceUntilIdle() }
+                onNodeWithText("opera 1").assertIsDisplayed()
+
+                field.performTextReplacement("space")
+                val label = onNodeWithText("Updating search. Showing results for ‘opera’.")
+                label.assertIsDisplayed().assert(
+                    SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite),
+                )
+                assertEquals(listOf("opera"), repository.queries)
+                runOnIdle { dispatcher.scheduler.advanceUntilIdle() }
+                assertEquals(listOf("opera", "space"), repository.queries)
+                label.assertIsDisplayed()
+                onNodeWithText("opera 1").performMouseInput { click() }
+                onNodeWithText("opera 2").requestFocus().performKeyInput { pressKey(Key.Enter) }
+                assertEquals<List<RecordingAppNavigator.Call>>(
+                    listOf("opera 1", "opera 2").map {
+                        RecordingAppNavigator.Call.PushDetail(PodcastPreviewKey("https://example.test/$it"))
+                    },
+                    navigator.calls,
+                )
+                val tray = onNode(hasScrollToIndexAction())
+                tray.performScrollToNode(hasText("opera 10"))
+                onNodeWithText("More").assertDoesNotExist()
+                label.assertIsDisplayed()
+                tray.performScrollToIndex(0)
+                field.requestFocus()
+                runOnIdle {
+                    release.complete(Unit)
+                    dispatcher.scheduler.advanceUntilIdle()
+                }
+                field.assertIsFocused()
+                label.assertDoesNotExist()
+                onNodeWithText("opera 1").assertDoesNotExist()
+                onNodeWithText("space 1").assertIsDisplayed()
+                tray.performScrollToNode(hasText("More"))
+                onNodeWithText("More").performClick()
+                assertEquals(RecordingAppNavigator.Call.PushDetail(DirectoryKey("space", null)), navigator.calls.last())
+            } finally {
+                vm.viewModelScope.cancel()
+                Dispatchers.resetMain()
             }
         }
 
