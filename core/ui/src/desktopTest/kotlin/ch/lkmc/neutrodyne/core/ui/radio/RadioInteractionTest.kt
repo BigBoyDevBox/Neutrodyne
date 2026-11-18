@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.LocalSaveableStateRegistry
@@ -52,17 +53,31 @@ import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
-import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
 import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists
 import ch.lkmc.neutrodyne.core.ui.resources.radio_paused
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_back
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward
 import org.jetbrains.compose.resources.getString
+import java.util.Locale
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 @OptIn(ExperimentalTestApi::class)
 class RadioInteractionTest {
+    private var previousLocale: Locale = Locale.getDefault()
+
+    // Some assertions read the English plural forms, whatever the host's locale.
+    @BeforeTest fun english() {
+        previousLocale = Locale.getDefault()
+        Locale.setDefault(Locale.ENGLISH)
+    }
+
+    @AfterTest fun restoreLocale() {
+        Locale.setDefault(previousLocale)
+    }
+
     @Test
     fun swipeCommitsOnlyOnReleaseAtExactThresholdAndUndoRestores() =
         runDesktopComposeUiTest(width = 390, height = 844) {
@@ -125,6 +140,20 @@ class RadioInteractionTest {
             assertEquals(0, selections)
         }
 
+    /** The Nixie's spoken time uses plural forms and leaves out empty parts. */
+    @Test fun theElapsedTimeIsSpokenInPluralForms() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var elapsed by mutableLongStateOf(3_661_000L)
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(radioFixture().copy(elapsedMs = elapsed, hasPlayed = true), RadioActions())
+                }
+            }
+            onNodeWithContentDescription("Elapsed: 1 hour 1 minute 1 second").assertIsDisplayed()
+            elapsed = 125_000L
+            onNodeWithContentDescription("Elapsed: 2 minutes 5 seconds").assertIsDisplayed()
+        }
+
     @Test fun savedResumeIsPausedAndElapsedAccessibilityIsUncapped() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             val fixture =
@@ -140,7 +169,7 @@ class RadioInteractionTest {
                 }
             }
             onNodeWithText(getString(Res.string.radio_paused)).assertIsDisplayed()
-            onNodeWithContentDescription(getString(Res.string.radio_elapsed_full, 12L, 0L, 0L)).assertIsDisplayed()
+            onNodeWithContentDescription("Elapsed: 12 hours").assertIsDisplayed()
             onAllNodes(hasText("900:00")).assertCountEquals(2)
         }
 
