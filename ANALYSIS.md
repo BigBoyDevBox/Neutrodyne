@@ -24,8 +24,7 @@ re-reports them.
 
 ## Done since the last consolidation
 
-- **Transport status while buffering, ended or failed (PR #575, awaiting
-  merge).** The radio prints BUFFERING, ENDED or PLAYBACK ERROR from the
+- **Transport status while buffering, ended or failed (PR #575, merged).** The radio prints BUFFERING, ENDED or PLAYBACK ERROR from the
   loaded player's phase, with the pilot lamp amber while buffering and red on
   an issue. The phase and issue come from the existing `PlaybackStateSource`
   snapshot; no new source of playback truth.
