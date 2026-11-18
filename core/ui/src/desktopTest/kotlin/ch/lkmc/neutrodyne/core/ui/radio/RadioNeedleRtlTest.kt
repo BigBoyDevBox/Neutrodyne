@@ -28,12 +28,13 @@ class RadioNeedleRtlTest {
     @Test
     fun rtlKeepsQuarterLabelsChronologicalAndSeekMappedFromTheLeft() =
         runDesktopComposeUiTest(width = 390, height = 844) {
+            val episode = RadioEpisode(1, "Schedule", "Station", durationMs = 38 * 60_000L)
             val seeks = mutableListOf<Long>()
             setContent {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                     NeutrodyneTheme(SystemUiState.DEFAULT) {
                         RadioPlayer(
-                            radioFixture(),
+                            RadioState(episodes = listOf(episode), selectedId = episode.id),
                             RadioActions(seek = { seeks += it }),
                             compact = false,
                             short = false,
@@ -43,7 +44,7 @@ class RadioNeedleRtlTest {
             }
             val seekBounds = onNodeWithTag("radio_seek").fetchSemanticsNode().boundsInRoot
             val labels = listOf("00:00", "09:30", "19:00", "28:30", "38:00")
-            // The full duration is also printed under the counter; the quarter labels are the
+            // The full duration is also printed under the needle; the quarter labels are the
             // copies above the seek canvas.
             val labelBounds =
                 labels.map { label ->
