@@ -234,6 +234,17 @@ order and test tags are unchanged, and Back, Escape or a tap outside still
 closes it. Added labels: Playback (Wiedergabe), Go to (Gehe zu), Close
 (Schliessen), Speed (Tempo) and Sleep (Schlaf).
 
+**First tuning (2026-11-18).** While the listener has no playlist (a first
+run, or every group deleted) the paper shows "Nothing to tune in yet." (Noch
+nichts eingestellt.) with a line on how a playlist is made and three ivory keys
+printed in ink: Discover, Import (Importieren; the import dialog) and Library.
+The dial reads NOT TUNED (NICHT EINGESTELLT) and "Add podcasts to start
+listening." instead of PLAYLIST CLEARED. The card waits for the first groups
+emission, so a radio with playlists never flashes it on start; a compact paper
+drops the explanation and narrows the keys so all three stay on one row. Test
+tags `radio_first_tuning`, `radio_first_discover`, `radio_first_import` and
+`radio_first_library`.
+
 **Selection fallback (2026-11-04).** Deleting the selected group falls back
 to the first remaining playlist, or the empty radio if none remain. This
 adapts the old All-feed fallback to the group-only home. Undoing group deletion

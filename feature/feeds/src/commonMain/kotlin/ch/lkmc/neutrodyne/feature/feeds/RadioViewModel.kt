@@ -129,7 +129,10 @@ public class RadioViewModel(
             }.collect { (all, uuid) ->
                 knownGroups = all
                 mutableState.value =
-                    state.value.copy(playlists = all.map { RadioPlaylist(it.id, it.name, it.memberCount) })
+                    state.value.copy(
+                        playlists = all.map { RadioPlaylist(it.id, it.name, it.memberCount) },
+                        playlistsLoaded = true,
+                    )
                 val requested = uuid.takeUnless { it == rejectedUuid }
                 val id =
                     all.find { it.uuid == requested }?.id

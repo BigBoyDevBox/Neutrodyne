@@ -15,6 +15,9 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.LoadState
 import androidx.paging.compose.collectAsLazyPagingItems
+import ch.lkmc.neutrodyne.core.navigation.DiscoverKey
+import ch.lkmc.neutrodyne.core.navigation.ImportFileKey
+import ch.lkmc.neutrodyne.core.navigation.LibraryKey
 import ch.lkmc.neutrodyne.core.navigation.LocalAppNavigator
 import ch.lkmc.neutrodyne.core.navigation.SettingsKey
 import ch.lkmc.neutrodyne.core.navigation.SettingsPage
@@ -93,6 +96,9 @@ internal fun RadioRoute(model: RadioViewModel = metroViewModel()) {
             },
             visibleEpisodes = model::onVisibleIds,
             retry = items::retry,
+            discover = { navigator.selectTab(DiscoverKey) },
+            importSubscriptions = { navigator.push(ImportFileKey) },
+            library = { navigator.selectTab(LibraryKey) },
         ),
     )
     if (menu) RadioDestinationMenu(onDismiss = { menu = false })

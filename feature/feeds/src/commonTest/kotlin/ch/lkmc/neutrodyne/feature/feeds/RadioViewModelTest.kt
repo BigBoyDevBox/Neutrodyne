@@ -324,6 +324,17 @@ class RadioViewModelTest : MainDispatcherTest() {
             }
         }
 
+    @Test fun theRadioIsUntunedOnlyOnceTheRepositoryReportsNoPlaylist() =
+        runTest {
+            withRadio { model, id ->
+                assertTrue(model.state.value.playlistsLoaded)
+                assertFalse(model.state.value.untuned)
+                groups.delete(id)
+                runCurrent()
+                assertTrue(model.state.value.untuned)
+            }
+        }
+
     @Test fun playbackRemainsControllableBeforeAnyPlaylistExists() =
         runTest {
             withRadio { model, id ->

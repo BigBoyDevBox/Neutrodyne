@@ -723,6 +723,11 @@
     <string name="radio_no_episodes">No episodes left in this playlist.</string>
     <string name="radio_nothing">Nothing queued</string>
     <string name="radio_choose_other">Choose another playlist to listen.</string>
+    <string name="radio_untuned">NOT TUNED</string>
+    <string name="radio_first_hint">Add podcasts to start listening.</string>
+    <string name="radio_first_title">Nothing to tune in yet.</string>
+    <string name="radio_first_body">Find podcasts in Discover or import a subscription list, then gather them into a playlist in the Library.</string>
+    <string name="radio_first_import">Import</string>
     <string name="radio_release">Release</string>
     <string name="radio_discard">to discard</string>
     <string name="radio_elapsed_full">Elapsed: %1$d hours, %2$d minutes, %3$d seconds</string>

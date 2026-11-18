@@ -88,6 +88,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.radio_choose_other
 import ch.lkmc.neutrodyne.core.ui.resources.radio_cleared
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
+import ch.lkmc.neutrodyne.core.ui.resources.radio_first_hint
 import ch.lkmc.neutrodyne.core.ui.resources.radio_nothing
 import ch.lkmc.neutrodyne.core.ui.resources.radio_paused
 import ch.lkmc.neutrodyne.core.ui.resources.radio_play
@@ -99,6 +100,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward_value
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_off
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_on
+import ch.lkmc.neutrodyne.core.ui.resources.radio_untuned
 import org.jetbrains.compose.resources.stringResource
 import kotlin.math.PI
 import kotlin.math.cos
@@ -118,6 +120,7 @@ internal fun RadioPlayer(
     val duration = selected?.durationMs ?: 0L
     val status =
         when {
+            state.untuned -> Res.string.radio_untuned
             selected == null -> Res.string.radio_cleared
             state.playing -> Res.string.radio_playing
             state.hasPlayed || state.elapsedMs > 0 -> Res.string.radio_paused
@@ -195,7 +198,10 @@ internal fun RadioPlayer(
                         ),
                 )
                 RadioText(
-                    selected?.podcast ?: stringResource(Res.string.radio_choose_other),
+                    selected?.podcast
+                        ?: stringResource(
+                            if (state.untuned) Res.string.radio_first_hint else Res.string.radio_choose_other,
+                        ),
                     11,
                     mono = false,
                     maxLines = 1,

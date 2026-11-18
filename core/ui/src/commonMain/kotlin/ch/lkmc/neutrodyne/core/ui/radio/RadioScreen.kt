@@ -65,6 +65,10 @@ public data class RadioActions(
     val loadEpisode: (Int) -> Unit = {},
     val visibleEpisodes: (Set<Long>) -> Unit = {},
     val retry: () -> Unit = {},
+    /** The first-tuning card's keys, shown while the listener has no playlist. */
+    val discover: () -> Unit = {},
+    val importSubscriptions: () -> Unit = {},
+    val library: () -> Unit = {},
 )
 
 /** The physical home is shared by Android and desktop; system bars belong to the host. */

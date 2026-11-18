@@ -52,17 +52,57 @@ import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
+import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
+import ch.lkmc.neutrodyne.core.ui.resources.radio_first_hint
 import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists
 import ch.lkmc.neutrodyne.core.ui.resources.radio_paused
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_back
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward
+import ch.lkmc.neutrodyne.core.ui.resources.radio_untuned
 import org.jetbrains.compose.resources.getString
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 @OptIn(ExperimentalTestApi::class)
 class RadioInteractionTest {
+    @Test
+    fun aRadioWithoutPlaylistsOffersItsFirstTuningKeys() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var state by mutableStateOf(RadioState())
+            val opened = mutableListOf<String>()
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        state,
+                        RadioActions(
+                            discover = { opened += "discover" },
+                            importSubscriptions = { opened += "import" },
+                            library = { opened += "library" },
+                        ),
+                    )
+                }
+            }
+            // Until the repository answers, an empty list is "not read yet", not "none".
+            onNodeWithTag("radio_first_tuning").assertDoesNotExist()
+
+            state = RadioState(playlistsLoaded = true)
+            onNodeWithTag("radio_first_tuning").assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_untuned)).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_first_hint)).assertIsDisplayed()
+            onNodeWithTag(
+                "radio_first_discover",
+            ).assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+            onNodeWithTag("radio_first_discover").performClick()
+            onNodeWithTag("radio_first_import").performClick()
+            onNodeWithTag("radio_first_library").performClick()
+            assertEquals(listOf("discover", "import", "library"), opened)
+
+            state = radioFixture().copy(episodes = emptyList(), playlistsLoaded = true)
+            onNodeWithTag("radio_first_tuning").assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertIsDisplayed()
+        }
+
     @Test
     fun swipeCommitsOnlyOnReleaseAtExactThresholdAndUndoRestores() =
         runDesktopComposeUiTest(width = 390, height = 844) {
