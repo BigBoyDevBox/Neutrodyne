@@ -68,7 +68,8 @@ public fun TuningDial(
     val target = centres[tuned]
     val reducedMotion = LocalReducedMotion.current
 
-    LaunchedEffect(target, viewport) {
+    // Keyed on reduced motion too, so switching it on stops a sweep in flight.
+    LaunchedEffect(target, viewport, reducedMotion) {
         if (target == null || viewport == 0) return@LaunchedEffect
         val visible = (target - viewport / 2f).toInt().coerceIn(0, scroll.maxValue)
         if (needle.value.isNaN() || reducedMotion) {
