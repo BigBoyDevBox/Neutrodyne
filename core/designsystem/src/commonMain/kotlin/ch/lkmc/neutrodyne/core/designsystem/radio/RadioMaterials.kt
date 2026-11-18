@@ -2,9 +2,9 @@
 
 package ch.lkmc.neutrodyne.core.designsystem.radio
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -337,16 +338,19 @@ public fun ValveDeck(
 ) {
     val art = imageResource(Res.drawable.radio_valve_deck)
     val reducedMotion = LocalReducedMotion.current
-    val warmth =
-        animateFloatAsState(
+    val warmth = remember { Animatable(if (lit) 1f else 0f) }
+    // Keyed on reduced motion too: switching it on mid-warm-up finishes the change at once, which
+    // a spec change alone would not do to a tween in flight.
+    LaunchedEffect(lit, reducedMotion) {
+        warmth.animateTo(
             if (lit) 1f else 0f,
             when {
                 reducedMotion -> snap()
                 lit -> tween(VALVE_WARM_UP_MS, easing = LinearOutSlowInEasing)
                 else -> tween(VALVE_COOL_DOWN_MS, easing = FastOutLinearInEasing)
             },
-            label = "valve warmth",
         )
+    }
     Box(
         modifier.drawWithCache {
             val fit = deckFit(art, size)

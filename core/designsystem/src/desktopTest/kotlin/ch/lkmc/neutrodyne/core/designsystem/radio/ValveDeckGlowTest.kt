@@ -22,7 +22,8 @@ import kotlin.test.assertTrue
 
 /**
  * The valves warm up while the radio is ON: the glass above each filament brightens over about
- * two seconds, at once with reduced motion, and the unlit deck stays the artwork as rendered.
+ * two seconds and dims over one, at once with reduced motion, and the unlit deck stays the
+ * artwork as rendered.
  */
 @OptIn(ExperimentalTestApi::class)
 class ValveDeckGlowTest {
@@ -30,7 +31,7 @@ class ValveDeckGlowTest {
     fun theValvesWarmUpGraduallyWhenTheRadioIsSwitchedOn() =
         runDesktopComposeUiTest(width = DECK_WIDTH, height = DECK_HEIGHT) {
             var lit by mutableStateOf(false)
-            setDeck(reducedMotion = false) { lit }
+            setDeck({ false }) { lit }
             val cold = glassBrightness()
 
             mainClock.autoAdvance = false
@@ -48,7 +49,7 @@ class ValveDeckGlowTest {
     fun reducedMotionLightsTheValvesAtOnce() =
         runDesktopComposeUiTest(width = DECK_WIDTH, height = DECK_HEIGHT) {
             var lit by mutableStateOf(false)
-            setDeck(reducedMotion = true) { lit }
+            setDeck({ true }) { lit }
             val cold = glassBrightness()
 
             mainClock.autoAdvance = false
@@ -58,12 +59,53 @@ class ValveDeckGlowTest {
             assertTrue(glassBrightness() > cold + MIN_GLOW, "reduced motion skips the warm-up")
         }
 
+    @Test
+    fun turningOnReducedMotionFinishesAWarmUpAtOnce() =
+        runDesktopComposeUiTest(width = DECK_WIDTH, height = DECK_HEIGHT) {
+            var lit by mutableStateOf(false)
+            var reduced by mutableStateOf(false)
+            setDeck({ reduced }) { lit }
+
+            mainClock.autoAdvance = false
+            lit = true
+            mainClock.advanceTimeBy(FRAME_MS * 3)
+            val warming = glassBrightness()
+            reduced = true
+            mainClock.advanceTimeBy(FRAME_MS * 2)
+            val switched = glassBrightness()
+            mainClock.advanceTimeBy(WARM_UP_MS)
+            val warm = glassBrightness()
+
+            assertTrue(
+                switched > warm - 1f,
+                "reduced motion ends a warm-up in flight: warming $warming, switched $switched, warm $warm",
+            )
+        }
+
+    @Test
+    fun theValvesCoolDownGraduallyWhenTheRadioIsSwitchedOff() =
+        runDesktopComposeUiTest(width = DECK_WIDTH, height = DECK_HEIGHT) {
+            var lit by mutableStateOf(true)
+            setDeck({ false }) { lit }
+            val warm = glassBrightness()
+
+            mainClock.autoAdvance = false
+            lit = false
+            mainClock.advanceTimeBy(FRAME_MS * 3)
+            val cooling = glassBrightness()
+            mainClock.advanceTimeBy(COOL_DOWN_MS)
+            val dark = glassBrightness()
+
+            assertTrue(cooling > dark + 1f, "cooling takes time: warm $warm, cooling $cooling, dark $dark")
+            assertTrue(dark < warm - MIN_GLOW, "a switched-off valve goes dark: warm $warm, dark $dark")
+        }
+
     private fun DesktopComposeUiTest.setDeck(
-        reducedMotion: Boolean,
+        reducedMotion: () -> Boolean,
         lit: () -> Boolean,
     ) {
         setContent {
-            NeutrodyneTheme(SystemUiState.DEFAULT.copy(reducedMotion = reducedMotion)) {
+            NeutrodyneTheme(SystemUiState.DEFAULT.copy(reducedMotion = reducedMotion())) {
                 ValveDeck(Modifier.testTag(TAG).size(DECK_WIDTH.dp, DECK_HEIGHT.dp), lit = lit())
             }
         }
@@ -92,7 +134,10 @@ class ValveDeckGlowTest {
         const val DECK_WIDTH = 550
         const val DECK_HEIGHT = 212
         const val FRAME_MS = 16L
+
+        // Past the 1.8 s warm-up and 0.9 s cool-down, so each tween has certainly finished.
         const val WARM_UP_MS = 2_000L
+        const val COOL_DOWN_MS = 1_000L
         const val MIN_GLOW = 15f
     }
 }
