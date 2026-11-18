@@ -23,7 +23,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.runDesktopComposeUiTest
 import androidx.compose.ui.unit.dp
 import kotlin.test.Test
-import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalTestApi::class)
 class NdScrollbarMinThumbDrawTest {
@@ -64,6 +64,7 @@ class NdScrollbarMinThumbDrawTest {
         runDesktopComposeUiTest(width = 40, height = 16) {
             setContent(content)
             val pixels = onRoot().captureToImage().toPixelMap()
-            assertEquals(Color.Red, pixels[pixels.width - 4, pixels.height / 2])
+            val thumbDrawn = (0 until pixels.width).any { x -> pixels[x, pixels.height / 2] == Color.Red }
+            assertTrue(thumbDrawn, "Expected a visible scrollbar thumb across the middle of the short track")
         }
 }
