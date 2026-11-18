@@ -241,7 +241,10 @@ dialog) and Library. The dial reads NOT TUNED (NICHT EINGESTELLT) and "Add
 podcasts to start listening." instead of PLAYLIST CLEARED. Neither the sign
 nor "All clear" appears before the first groups emission, so a radio with
 playlists never flashes either on start; until then the dial reads NOT TUNED.
-Playback started elsewhere keeps its own status. Test tags
+Playback started elsewhere keeps its own status. Keys that outgrow the paper
+(German, large text, a 320 dp phone) wrap onto a second row instead of
+scrolling sideways. The sign, a heading, shows only when it fits above the
+keys, and a paper too short for the keys scrolls. Test tags
 `radio_empty_discover`, `radio_empty_import` and `radio_empty_library`.
 
 **Selection fallback (2026-11-04).** Deleting the selected group falls back

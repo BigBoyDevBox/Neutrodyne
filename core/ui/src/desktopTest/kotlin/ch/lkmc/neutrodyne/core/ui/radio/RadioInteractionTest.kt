@@ -74,6 +74,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.radio_untuned
 import ch.lkmc.neutrodyne.playback.api.PlaybackIssue
 import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 import org.jetbrains.compose.resources.getString
+import java.util.Locale
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -97,7 +98,9 @@ class RadioInteractionTest {
             onNodeWithText(getString(Res.string.radio_untuned)).assertIsDisplayed()
 
             state = RadioState(playlistsLoaded = true)
-            onNodeWithText(getString(Res.string.radio_no_playlists_empty)).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty))
+                .assertIsDisplayed()
+                .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
             onNodeWithText(getString(Res.string.radio_untuned)).assertIsDisplayed()
             onNodeWithText(getString(Res.string.radio_first_hint)).assertIsDisplayed()
             onNodeWithTag("radio_empty_import")
@@ -111,19 +114,53 @@ class RadioInteractionTest {
         }
 
     @Test
-    fun aSmallPhoneKeepsTheEmptyRadiosKeysInView() =
-        runDesktopComposeUiTest(width = 320, height = 568) {
-            setContent {
-                NeutrodyneTheme(SystemUiState.DEFAULT) {
-                    RadioScreen(RadioState(playlistsLoaded = true), RadioActions())
+    fun theEmptyRadiosKeysStayWholeOnSmallPhonesAndAtLargeText() {
+        // A sideways-scrolling bank pushed Library past the paper's edge from 320 x 800 dp, on
+        // most German phones, and at 130 % and 200 % text. The radio reads the window size and
+        // the resources read the default locale, so each case gets its own window and locale.
+        val papers =
+            listOf(
+                EmptyPaper(320, 568, 1f),
+                EmptyPaper(320, 800, 1f),
+                EmptyPaper(360, 800, 1.3f),
+                EmptyPaper(320, 640, 2f),
+                EmptyPaper(360, 640, 1f, Locale.GERMANY),
+                EmptyPaper(390, 800, 1f, Locale.GERMANY),
+            )
+        val saved = Locale.getDefault()
+        try {
+            for (paper in papers) {
+                Locale.setDefault(paper.locale)
+                runDesktopComposeUiTest(width = paper.width, height = paper.height) {
+                    setContent {
+                        CompositionLocalProvider(LocalDensity provides Density(1f, paper.fontScale)) {
+                            NeutrodyneTheme(SystemUiState.DEFAULT) {
+                                RadioScreen(RadioState(playlistsLoaded = true), RadioActions())
+                            }
+                        }
+                    }
+                    // boundsInRoot is clipped, so a key cut off by the paper reads smaller than it is.
+                    for (tag in listOf("radio_empty_discover", "radio_empty_import", "radio_empty_library")) {
+                        val key = onNodeWithTag(tag).fetchSemanticsNode()
+                        assertEquals(
+                            key.size.width.toFloat(),
+                            key.boundsInRoot.width,
+                            1f,
+                            "$tag is cut sideways at $paper",
+                        )
+                        assertEquals(
+                            key.size.height.toFloat(),
+                            key.boundsInRoot.height,
+                            1f,
+                            "$tag is cut off at $paper",
+                        )
+                    }
                 }
             }
-            // boundsInRoot is clipped, so a key cut off by the short paper reads shorter than it is.
-            for (tag in listOf("radio_empty_discover", "radio_empty_import", "radio_empty_library")) {
-                val key = onNodeWithTag(tag).fetchSemanticsNode()
-                assertEquals(key.size.height.toFloat(), key.boundsInRoot.height, 1f, "$tag is cut off")
-            }
+        } finally {
+            Locale.setDefault(saved)
         }
+    }
 
     @Test
     fun playbackFromElsewhereKeepsItsStatusWithoutAPlaylist() =
@@ -782,3 +819,11 @@ class RadioInteractionTest {
             onNodeWithTag("radio_playlist").assertIsFocused()
         }
 }
+
+/** A window for the empty radio: its size in dp, its text scale and the listener's locale. */
+private data class EmptyPaper(
+    val width: Int,
+    val height: Int,
+    val fontScale: Float,
+    val locale: Locale = Locale.ENGLISH,
+)
