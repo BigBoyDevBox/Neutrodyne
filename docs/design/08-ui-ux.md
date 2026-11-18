@@ -2384,9 +2384,15 @@ label roles. The radio's textures, fonts, `MaterialPlate`, `ValveDeck`, `EnamelS
 and `IvoryKeyCap` moved to `:core:designsystem`. Every navigation entry except the
 radio home (`FeedsKey`) and overlays renders inside `RadioCabinetPage`: the charcoal
 stage, the valve deck as the cabinet's lid, sized like the home's (stowed below 560 dp
-of height and on later panes of a pane row), walnut walls and a recessed paper tray. The frame consumes
-the status bar, cutout and navigation bar insets, so the status bar keeps light icons
-on every page and page headers no longer lease it. `NdTopAppBar` is a metal faceplate
+of height), walnut walls and a recessed paper tray. Panes shown side by side share one
+cabinet (2026-11-17): the scaffold leaves no spacer between them, one deck lies across the
+whole row at 22 % of the window's height and stows below 560 dp like a single page's (each
+pane draws the deck and clips it to its own slice), every pane keeps its roof line, the walls
+between trays meet as one partition, and only the row's outer walls have gaps, rounded corners
+and lit or shaded edges. The panes of a row draw no stage of their own; they stand on the
+charcoal stage `NeutrodyneRoot` draws behind every page. The frame
+consumes the status bar, cutout and navigation bar insets, so the status bar keeps light
+icons on every page and page headers no longer lease it. `NdTopAppBar` is a metal faceplate
 with the title on an enamel sign; `NdIconButton` and `NdTooltipIconButton` on a
 faceplate draw ivory key caps, and a page without its own navigation key gets the
 cabinet's Back key, which returns to the radio from a destination's root. Mockups:
