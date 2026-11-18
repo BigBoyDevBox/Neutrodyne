@@ -969,8 +969,13 @@ class DesktopPlaybackController(
             EngineError.Network, EngineError.LocalFileMissing, is EngineError.Output, is EngineError.Engine -> null
         }
 
+    /** 06: a 401 or 403 on an enclosure asks for the feed's password, as on Android. */
     private fun httpReason(status: Int): UnplayableReason =
-        if (status == HTTP_UNAUTHORIZED) UnplayableReason.AuthRequired else UnplayableReason.Http(status)
+        if (status == HTTP_UNAUTHORIZED || status == HTTP_FORBIDDEN) {
+            UnplayableReason.AuthRequired
+        } else {
+            UnplayableReason.Http(status)
+        }
 
     /**
      * Skips an unplayable item with 06's rules: a Skipped event, then the next
@@ -1757,6 +1762,7 @@ class DesktopPlaybackController(
         const val DEFAULT_SKIP_BACK_MS = 30_000L
         const val DEFAULT_SKIP_FORWARD_MS = 30_000L
         const val HTTP_UNAUTHORIZED = 401
+        const val HTTP_FORBIDDEN = 403
         const val HTTP_RANGE_NOT_SATISFIABLE = 416
 
         /** 06 Error recovery: the automatic network re-prepare window. */

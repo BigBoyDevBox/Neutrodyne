@@ -34,6 +34,7 @@ import ch.lkmc.neutrodyne.core.testing.testEpisodeRow
 import ch.lkmc.neutrodyne.playback.api.PlayOrigin
 import ch.lkmc.neutrodyne.playback.api.PlayResult
 import ch.lkmc.neutrodyne.playback.api.PlaybackEvent
+import ch.lkmc.neutrodyne.playback.api.UnplayableReason
 import ch.lkmc.neutrodyne.playback.core.EffectivePlaybackSettings
 import ch.lkmc.neutrodyne.playback.core.PlayStarter
 import ch.lkmc.neutrodyne.playback.core.PlayedRule
@@ -550,6 +551,28 @@ class DesktopPlaybackTimingTest {
                 fixture.engine.ready()
                 runCurrent()
                 assertEquals(SleepTimerState.EndOfEpisode(1), fixture.controller.sleepTimer.value)
+            } finally {
+                fixture.close()
+            }
+        }
+
+    /** 06: a refused enclosure (401 or 403) is skipped as AuthRequired, so the password prompt shows. */
+    @Test
+    fun aForbiddenEnclosureAsksForThePassword() =
+        runTest {
+            val fixture = TimingFixture(this)
+            try {
+                val events = mutableListOf<PlaybackEvent>()
+                backgroundScope.launch { fixture.controller.events.collect { events += it } }
+                fixture.controller.play()
+                fixture.engine.ready()
+                runCurrent()
+                fixture.engine.state.value = EngineState.Error(1, EngineError.Http(403))
+                runCurrent()
+                assertEquals(
+                    listOf<UnplayableReason>(UnplayableReason.AuthRequired),
+                    events.filterIsInstance<PlaybackEvent.Skipped>().map { it.reason },
+                )
             } finally {
                 fixture.close()
             }
