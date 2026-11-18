@@ -293,6 +293,7 @@ class ImportRouteTest {
             podcasts.detail.value = detail
             val id = kotlinx.coroutines.runBlocking { seed(listOf(item(0).copy(podcastId = 12))) }
             setRouteContent(ImportKey(id.toString()))
+            onNode(hasScrollToIndexAction()).performScrollToNode(hasTestTag("import-toggle-0"))
             onNodeWithTag("import-monogram-0", useUnmergedTree = true).assertExists()
             setState(id, ImportState.DONE)
             waitUntil {
@@ -797,6 +798,7 @@ class ImportRouteTest {
             val id = seed(sessionItems = listOf(item(0, title = "Listen at $privateUrl")))
             setRouteContent(ImportKey(id.toString()))
 
+            onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Listen at host0.example.com"))
             onNodeWithText("Listen at $privateUrl").assertDoesNotExist()
             onNodeWithText("Listen at host0.example.com").assertExists()
             assertEquals(
@@ -823,7 +825,7 @@ class ImportRouteTest {
                     .isEmpty()
             }
             onNodeWithText("Rename").performClick()
-            onNodeWithText("Group name").performTextReplacement("News")
+            onNodeWithTag("import-name-input").performTextReplacement("News")
             onNodeWithText("Save").performClick()
             waitUntil(timeoutMillis = 5_000) {
                 imports.sessions.value[id]!!
@@ -846,22 +848,27 @@ class ImportRouteTest {
         runComposeUiTest {
             val id = seed()
             setRouteContent(ImportKey(id.toString()))
-            val checkbox = onNodeWithTag("import-toggle-0").fetchSemanticsNode()
-            assertTrue(
-                checkbox.config
-                    .getOrElseNullable(
-                        SemanticsProperties.ContentDescription,
-                    ) { null }
-                    ?.any(String::isNotBlank) ==
-                    true,
-                "Selection checkbox must have an accessible name",
-            )
+            // The per-row selection is a RadioSwitch too, so the option switches are the
+            // ones named by the three settings labels.
+            val treatPlayedLabel = "Treat existing episodes as played (except the newest per podcast)"
+            val optionLabels =
+                setOf(
+                    "Import folders as groups",
+                    treatPlayedLabel,
+                    "Notify me about new episodes for these podcasts",
+                )
             val switches =
                 onAllNodes(
                     SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Switch),
                 ).fetchSemanticsNodes()
-            assertEquals(3, switches.size)
-            for (node in switches) {
+            val optionSwitches =
+                switches.filter { node ->
+                    node.config
+                        .getOrElseNullable(SemanticsProperties.ContentDescription) { null }
+                        ?.any { it in optionLabels } == true
+                }
+            assertEquals(3, optionSwitches.size)
+            for (node in optionSwitches) {
                 assertTrue(
                     node.config
                         .getOrElseNullable(
@@ -872,11 +879,23 @@ class ImportRouteTest {
                     "Every option switch must have an accessible name",
                 )
             }
-            onNodeWithContentDescription("Select Show 0").assertExists()
             onNodeWithContentDescription("Import folders as groups").assertExists()
-            val treatPlayedLabel = "Treat existing episodes as played (except the newest per podcast)"
             onNodeWithContentDescription(treatPlayedLabel).assertExists()
             onNodeWithContentDescription("Notify me about new episodes for these podcasts").assertExists()
+
+            // The rows sit below the options, out of a 768 px window: check them last.
+            onNode(hasScrollToIndexAction()).performScrollToNode(hasTestTag("import-toggle-0"))
+            val selection = onNodeWithTag("import-toggle-0").fetchSemanticsNode()
+            assertTrue(
+                selection.config
+                    .getOrElseNullable(
+                        SemanticsProperties.ContentDescription,
+                    ) { null }
+                    ?.any(String::isNotBlank) ==
+                    true,
+                "Selection switch must have an accessible name",
+            )
+            onNodeWithContentDescription("Select Show 0").assertExists()
         }
 
     @Test fun privateFeedIconHasLocalizedAccessibleName() =
@@ -884,6 +903,7 @@ class ImportRouteTest {
             val id = seed(sessionItems = listOf(item(0).copy(isPrivate = true)))
             setRouteContent(ImportKey(id.toString()))
 
+            onNode(hasScrollToIndexAction()).performScrollToNode(hasContentDescription("Private feed"))
             onNodeWithContentDescription("Private feed").assertExists()
         }
 
@@ -939,6 +959,7 @@ class ImportRouteTest {
             val id = seed(sessionItems = listOf(existing))
             setRouteContent(ImportKey(id.toString()))
 
+            onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Already subscribed"))
             onNodeWithText("Already subscribed").assertExists()
         }
 
@@ -1029,10 +1050,13 @@ class ImportRouteTest {
             setRouteContent(ImportKey(id.toString()))
 
             onNodeWithText("2 podcasts in feeds.opml").assertExists()
+            // The options and key banks above the rows fill a 768 px window; scroll to the rows.
+            onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Show 0"))
             onNodeWithText("Show 0").assertExists()
             onNodeWithText("host0.example.com").assertExists()
 
-            onNodeWithTag("import-toggle-0").performClick()
+            // The radio slips are taller than the old list rows; bring the toggle into view.
+            onNodeWithTag("import-toggle-0").performScrollTo().performClick()
             waitUntil(timeoutMillis = 5_000) {
                 imports.items.value
                     .getValue(id)
@@ -1399,7 +1423,7 @@ class ImportRouteTest {
     private fun androidx.compose.ui.test.ComposeUiTest.enterTargetName() {
         onNodeWithText("Put everything into group…").performClick()
         onNodeWithText("New group…").performClick()
-        onNodeWithText("Group name").performTextReplacement("News")
+        onNodeWithTag("import-name-input").performTextReplacement("News")
     }
 
     @Test fun settledNoMatchSearchAndFilterDoNotShowLoading() =
@@ -1500,7 +1524,7 @@ class ImportRouteTest {
             }
             waitForIdle()
             assertEquals(1, writes.get())
-            onNodeWithText("Group name").assertDoesNotExist()
+            onNodeWithTag("import-name-input").assertDoesNotExist()
             onNodeWithText("No group").assertDoesNotExist()
         }
 
@@ -1518,7 +1542,7 @@ class ImportRouteTest {
             enterTargetName()
             onNodeWithText("Save").performClick()
             waitUntil(timeoutMillis = 5_000) { host.currentSnackbarData != null }
-            onNodeWithText("Group name").assertExists()
+            onNodeWithTag("import-name-input").assertExists()
             assertNull(options(id).targetGroupName)
             fail.set(false)
             onNodeWithText("Save").performClick()
@@ -1526,7 +1550,7 @@ class ImportRouteTest {
                 options(id).targetGroupName == "News"
             }
             waitForIdle()
-            onNodeWithText("Group name").assertDoesNotExist()
+            onNodeWithTag("import-name-input").assertDoesNotExist()
         }
 
     @Test fun cancellingNewNameReturnsToTheExistingGroupChoices() =
@@ -1568,14 +1592,14 @@ class ImportRouteTest {
             }
             runOnIdle { visible.value = true }
             waitForIdle()
-            onNodeWithText("Group name").assertTextContains("News")
-            onNodeWithText("Group name").performTextReplacement("Updated")
+            onNodeWithTag("import-name-input").assertTextContains("News")
+            onNodeWithTag("import-name-input").performTextReplacement("Updated")
             onNodeWithText("Save").performClick()
             waitUntil(timeoutMillis = 5_000) {
                 options(id).targetGroupName == "Updated"
             }
             waitForIdle()
-            onNodeWithText("Group name").assertDoesNotExist()
+            onNodeWithTag("import-name-input").assertDoesNotExist()
         }
 
     @Test fun cancelledNameValidationCanBeRetried() =
