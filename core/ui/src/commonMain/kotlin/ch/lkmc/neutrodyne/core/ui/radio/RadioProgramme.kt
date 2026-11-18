@@ -86,12 +86,15 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.Cream
 import ch.lkmc.neutrodyne.core.designsystem.radio.EnamelSelector
 import ch.lkmc.neutrodyne.core.designsystem.radio.Faceplate
 import ch.lkmc.neutrodyne.core.designsystem.radio.Ink
+import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioSounds
 import ch.lkmc.neutrodyne.core.designsystem.radio.MaterialPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioMaterial
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
 import ch.lkmc.neutrodyne.core.designsystem.radio.SlipKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.barlow
 import ch.lkmc.neutrodyne.core.designsystem.radio.courier
 import ch.lkmc.neutrodyne.core.designsystem.radio.recess
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberClickSound
 import ch.lkmc.neutrodyne.core.ui.ReportVisibleEpisodeIds
 import ch.lkmc.neutrodyne.core.ui.rememberMonogram
 import ch.lkmc.neutrodyne.core.ui.resources.Res
@@ -314,6 +317,13 @@ private fun RadioSlip(
 ) {
     val focus = remember { FocusRequester() }
     val focusRestored by rememberUpdatedState(onFocusRestore)
+    // The slip slides off the radio with a paper sound, by swipe or by the Delete key. Read through
+    // a state: the swipe detector outlives recompositions.
+    val sounds by rememberUpdatedState(LocalRadioSounds.current)
+    val discard = {
+        sounds.play(RadioSound.SLIP_DISCARD)
+        actions.discard(episode.id)
+    }
     val inputMode = LocalInputModeManager.current
     LaunchedEffect(restoreRowFocus, inputMode) {
         if (restoreRowFocus == episode.id) {
@@ -349,7 +359,7 @@ private fun RadioSlip(
                 .focusProperties { canFocus = true }
                 .onKeyEvent {
                     if (it.type == KeyEventType.KeyDown && it.key == Key.Delete) {
-                        actions.discard(episode.id)
+                        discard()
                         true
                     } else {
                         false
@@ -377,7 +387,7 @@ private fun RadioSlip(
                                     change.consume()
                                 }
                                 if (!change.pressed) {
-                                    if (horizontal && -drag >= threshold) actions.discard(episode.id)
+                                    if (horizontal && -drag >= threshold) discard()
                                     break
                                 }
                             }
@@ -441,7 +451,11 @@ private fun SlipPlayKey(
             .size(SLIP_KEY_TARGET)
             .clip(CircleShape)
             .semantics { contentDescription = label }
-            .clickable(role = Role.Button, onClickLabel = label, onClick = onClick),
+            .clickable(
+                role = Role.Button,
+                onClickLabel = label,
+                onClick = rememberClickSound(RadioSound.KEY_PRESS, onClick),
+            ),
         contentAlignment = Alignment.Center,
     ) {
         SlipKeyCap(if (playing) NdIcons.Pause else NdIcons.PlayArrow, null, Modifier.size(SLIP_KEY_CAP))

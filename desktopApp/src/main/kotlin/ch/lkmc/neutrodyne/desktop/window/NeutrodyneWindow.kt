@@ -42,6 +42,8 @@ import ch.lkmc.neutrodyne.core.database.DatabaseOpenState
 import ch.lkmc.neutrodyne.core.database.DatabaseOpener
 import ch.lkmc.neutrodyne.core.designsystem.components.DesktopScrollbars
 import ch.lkmc.neutrodyne.core.designsystem.components.LocalScrollbars
+import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioSounds
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberRadioSounds
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.RadioScheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
@@ -155,6 +157,7 @@ internal fun ApplicationScope.NeutrodyneWindow(
     updateNotices: UpdateNotices? = null,
     settings: SettingsRepository? = null,
     rowArt: YouTubeRowArt = YouTubeRowArt.VIDEO_THUMBNAIL,
+    controlSounds: Boolean = false,
     refreshController: ch.lkmc.neutrodyne.core.domain.RefreshController? = null,
     desktopPlaybackController: ch.lkmc.neutrodyne.playback.desktop.DesktopPlaybackController? = null,
     repoUrl: String = "",
@@ -386,6 +389,7 @@ internal fun ApplicationScope.NeutrodyneWindow(
         val content: @Composable () -> Unit = {
             NeutrodyneWindowContent(
                 rowArt = rowArt,
+                controlSounds = controlSounds,
                 installers = installers,
                 menuActions = menuActions,
                 banners = banners,
@@ -668,6 +672,7 @@ internal fun NeutrodyneWindowContent(
     updateNotices: UpdateNotices? = null,
     settings: SettingsRepository? = null,
     rowArt: YouTubeRowArt = YouTubeRowArt.VIDEO_THUMBNAIL,
+    controlSounds: Boolean = false,
     refresh: () -> Unit = {},
     onTextFieldFocusChange: (Boolean) -> Unit = {},
     volumeUp: () -> Unit = {},
@@ -678,6 +683,8 @@ internal fun NeutrodyneWindowContent(
 ) {
     val systemUi = SystemUiState.DEFAULT.copy(dark = isSystemInDarkTheme())
     val platformActions = rememberDesktopPlatformActions(portal)
+    // PO-56: off unless the shell passes Appearance › Control sounds, so window tests stay silent.
+    val radioSounds = rememberRadioSounds(controlSounds)
     val nowPlaying by playbackState.nowPlaying.collectAsState()
     val updates =
         if (updateChecker != null && updateNotices != null && settings != null) {
@@ -790,6 +797,7 @@ internal fun NeutrodyneWindowContent(
         // 07 Storage rows: without a provider the local falls back to ANDROID wording.
         LocalPlatformKind provides PlatformKind.DESKTOP,
         LocalYouTubeRowArt provides rowArt,
+        LocalRadioSounds provides radioSounds,
         LocalScrollbars provides DesktopScrollbars.style,
         // 01 Feature entry installers: metroViewModel()/assistedMetroViewModel() resolve here.
         LocalMetroViewModelFactory provides viewModelFactory,

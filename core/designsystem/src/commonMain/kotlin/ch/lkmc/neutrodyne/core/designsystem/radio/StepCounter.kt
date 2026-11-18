@@ -44,7 +44,7 @@ import org.jetbrains.compose.resources.imageResource
  * when set, makes the window a button too (for example to type an exact value). [spokenValue]
  * replaces an abbreviated [value] for screen readers. With [engraved] false the label is not
  * printed (a paper slip around the counter already names it) but still names it for screen
- * readers.
+ * readers. A step sounds the wheels turning a notch ([RadioSound.DIAL_TICK]).
  */
 @Composable
 public fun StepCounter(
@@ -74,7 +74,10 @@ public fun StepCounter(
                         if (onWindowClick !=
                             null
                         ) {
-                            it.clickable(role = Role.Button, onClick = onWindowClick)
+                            it.clickable(
+                                role = Role.Button,
+                                onClick = rememberClickSound(RadioSound.KEY_PRESS, onWindowClick),
+                            )
                         } else {
                             it
                         }
@@ -134,11 +137,13 @@ private fun StepKey(
     description: String,
     onClick: (() -> Unit)?,
 ) {
+    // The number wheels turn one notch: the key itself is only the lever that turns them.
+    val step = rememberClickSound(RadioSound.DIAL_TICK) { onClick?.invoke() }
     Box(
         Modifier
             .size(STEP_TARGET)
             .clip(CircleShape)
-            .clickable(enabled = onClick != null, role = Role.Button) { onClick?.invoke() }
+            .clickable(enabled = onClick != null, role = Role.Button, onClick = step)
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {

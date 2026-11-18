@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ch.lkmc.neutrodyne.core.common.Outcome
 import ch.lkmc.neutrodyne.core.common.PlatformKind
@@ -29,6 +30,8 @@ import ch.lkmc.neutrodyne.core.ui.SettingsChoiceRow
 import ch.lkmc.neutrodyne.core.ui.SettingsSwitchRow
 import ch.lkmc.neutrodyne.core.ui.root.LocalSnackbarHost
 import ch.lkmc.neutrodyne.feature.settings.resources.Res
+import ch.lkmc.neutrodyne.feature.settings.resources.appearance_control_sounds
+import ch.lkmc.neutrodyne.feature.settings.resources.appearance_control_sounds_summary
 import ch.lkmc.neutrodyne.feature.settings.resources.appearance_cover_large
 import ch.lkmc.neutrodyne.feature.settings.resources.appearance_cover_medium
 import ch.lkmc.neutrodyne.feature.settings.resources.appearance_cover_size
@@ -48,7 +51,8 @@ import org.jetbrains.compose.resources.stringResource
 
 /**
  * Settings › Appearance (08 Settings screen structure, M0a): the Library's cover size and title
- * switch, the YouTube row-art chooser where channels exist, and the Android gesture rows. The
+ * switch, the Control sounds switch (PO-56), the YouTube row-art chooser where channels exist,
+ * and the Android gesture rows. The
  * rows write `appearance.*` keys straight through [SettingsRepository]. The retired theme,
  * wallpaper-colour, artwork-tint and pure-black preferences have no UI here any more.
  */
@@ -66,6 +70,9 @@ internal fun AppearancePage(
         settings
             .observe(AppearanceSettingKeys.LIBRARY_TITLES)
             .collectAsStateWithLifecycle(initialValue = AppearanceSettingKeys.LIBRARY_TITLES.default)
+    val controlSounds by settings
+        .observe(AppearanceSettingKeys.CONTROL_SOUNDS)
+        .collectAsStateWithLifecycle(initialValue = AppearanceSettingKeys.CONTROL_SOUNDS.default)
     val channelsExist by hasChannels.collectAsStateWithLifecycle(initialValue = false)
     val rowArt by settings
         .observe(AppearanceSettingKeys.YOUTUBE_ROW_ART)
@@ -113,6 +120,13 @@ internal fun AppearancePage(
                 summary = stringResource(Res.string.appearance_titles_summary),
                 checked = titles,
                 onCheckedChange = { save(AppearanceSettingKeys.LIBRARY_TITLES, it) },
+            )
+            SettingsSwitchRow(
+                title = stringResource(Res.string.appearance_control_sounds),
+                summary = stringResource(Res.string.appearance_control_sounds_summary),
+                checked = controlSounds,
+                onCheckedChange = { save(AppearanceSettingKeys.CONTROL_SOUNDS, it) },
+                modifier = Modifier.testTag("appearance_control_sounds"),
             )
             if (channelsExist) {
                 SettingsChoiceRow(

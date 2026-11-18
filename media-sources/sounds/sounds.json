@@ -1,0 +1,10 @@
+{
+  "sounds": [
+    {"name": "switch_on", "source": "freesound-795663-toggle-switch-1.ogg", "start": 0.025, "end": 0.265, "fade_out": 0.100},
+    {"name": "switch_off", "source": "freesound-795663-toggle-switch-1.ogg", "start": 0.889, "end": 1.129, "fade_out": 0.100},
+    {"name": "key_latch", "source": "freesound-403247-tape-deck-buttons-and-switches.ogg", "start": 4.194, "end": 4.445, "fade_out": 0.060},
+    {"name": "key_press", "source": "freesound-403247-tape-deck-buttons-and-switches.ogg", "start": 6.785, "end": 6.975, "fade_out": 0.070},
+    {"name": "dial_tick", "source": "freesound-877301-rotary-selector-ticks.ogg", "start": 0.2585, "end": 0.3285, "fade_out": 0.030},
+    {"name": "slip_discard", "source": "freesound-730078-paper-slide.ogg", "start": 0.000, "end": 0.420, "fade_out": 0.140}
+  ]
+}

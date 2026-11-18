@@ -2269,6 +2269,17 @@ bundles without widening the Gradle dependency licence allow-list. The wood,
 paper, metal and valve-deck assets are the project's own owner-supplied assets;
 third-party radio photographs and their branding are excluded.
 
+**Control sounds (2026-11-18, PO-56).** The radio's control sounds are
+recordings dedicated to the public domain under CC0-1.0 (the permissive class
+above), cut and levelled by `tools/sounds/build_sounds.py` into the shared
+compose resources of `:core:designsystem`. Attribution-only (CC BY) and more
+restrictive sound licences are excluded. Each recording has a manual component
+entry naming its author and source page, with the CC0-1.0 text, in
+`app/config`, `app/config/engine` and `desktopApp/config`; `check-apk.sh`
+section 7 claims the APK's `files/sounds/*.wav` against those entries, and
+`THIRD_PARTY_NOTICES.md` credits them. The source recordings stay in
+`media-sources/sounds/sources/`.
+
 **Named cases approved by the owner (PO-48, 2026-11-07).** (1) python-build-standalone's own MPL-2.0 build patches, compiled into the CPython it ships (for example `patch-posixmodule-remove-system.patch`), unmodified by us: `python-build-standalone-{pbsTag}-src.tar.gz` (the PBS repository archive at the pinned tag) is attached to every release from MD3 and named in `RUNTIME-SOURCES.md` ([PBS LICENSE](https://github.com/astral-sh/python-build-standalone/blob/main/LICENSE); MPL-2.0 §3.2). (2) MS-RL: the unmodified WiX components jpackage embeds in every MSI — WiX Util's custom action behind `RemoveFolderEx`, which jpackage always adds for the install directory ([`WixAppImageFragmentBuilder.java`](https://github.com/openjdk/jdk25u/blob/master/src/jdk.jpackage/windows/classes/jdk/jpackage/internal/WixAppImageFragmentBuilder.java); [RemoveFolderEx](https://docs.firegiant.com/wix/schema/util/removefolderex/) is implemented by a custom action), and, because `licenseFile` is set, the WixUI dialog library and bitmaps ([`WixUiFragmentBuilder.java`](https://github.com/openjdk/jdk25u/blob/master/src/jdk.jpackage/windows/classes/jdk/jpackage/internal/WixUiFragmentBuilder.java)); WiX is pinned in the Windows job, `wix-{wix}-src.tar.gz` is attached to every release with an MSI, and the MS-RL text is in `THIRD_PARTY_NOTICES.md` and the desktop Licences screen (MS-RL §3(A): "you must provide recipients the source code to that file along with a copy of this license", [LICENSE.TXT](https://github.com/wixtoolset/wix/blob/main/LICENSE.TXT)). Microsoft's VC++ runtime DLLs ship unmodified under Microsoft's redistribution terms wherever the OpenJDK runtime or python-build-standalone brings them.
 
 The Classpath Exception, the GCC Runtime Library Exception and mere aggregation keep our own licence unaffected; this is the plan's reading of the licence texts and the [FSF FAQ](https://www.gnu.org/licenses/gpl-faq.html), not legal advice. **No other GPL and no AGPL code anywhere**, in any artefact or build step that ships output: no ProGuard (GPL-2.0; Android uses R8, BSD-3-Clause, and the desktop JARs stay unminified), no jextract (GPL-2.0), no JavaCPP `-gpl` artefacts, no distribution builds of FFmpeg or libmpv, no copied GPL code (the mpv-skipsilence script included). LGPL Java libraries with permissive substitutes stay out of every classpath (logback → slf4j-simple, argon2-jvm → Bouncy Castle, MariaDB Connector/J); a Gradle dependency is never LGPL or MPL except JNA, which is dual-licensed and used under Apache-2.0.

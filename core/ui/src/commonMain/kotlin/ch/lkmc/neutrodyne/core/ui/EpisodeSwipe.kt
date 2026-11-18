@@ -18,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,6 +31,8 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import ch.lkmc.neutrodyne.core.common.PlatformKind
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
+import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioSounds
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
 import ch.lkmc.neutrodyne.core.model.EpisodeRow
 import ch.lkmc.neutrodyne.core.model.SwipeAction
 import ch.lkmc.neutrodyne.core.ui.resources.Res
@@ -59,7 +62,10 @@ internal fun swipeCommits(
     width: Int,
 ): Boolean = width > 0 && abs(offset) > width * SWIPE_COMMIT_FRACTION
 
-/** A release threshold, rather than fling velocity, decides whether a row action commits. */
+/**
+ * A release threshold, rather than fling velocity, decides whether a row action commits; a
+ * committed swipe sounds the slip sliding ([RadioSound.SLIP_DISCARD]).
+ */
 @Composable
 internal fun EpisodeSwipe(
     row: EpisodeRow,
@@ -74,6 +80,8 @@ internal fun EpisodeSwipe(
     var offset by remember(row.id, config, enabled) { mutableFloatStateOf(0f) }
     var width by remember { mutableIntStateOf(0) }
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    // Read through a state: the drag detector outlives recompositions.
+    val sounds by rememberUpdatedState(LocalRadioSounds.current)
 
     fun actionAt(displacement: Float): EpisodeAction.SetPlayed? {
         val startToEnd = (displacement > 0) != rtl
@@ -89,7 +97,10 @@ internal fun EpisodeSwipe(
                         onDragEnd = {
                             val committed = actionAt(offset).takeIf { swipeCommits(offset, width) }
                             offset = 0f
-                            committed?.let(onAction)
+                            if (committed != null) {
+                                sounds.play(RadioSound.SLIP_DISCARD)
+                                onAction(committed)
+                            }
                         },
                         onDragCancel = { offset = 0f },
                         onHorizontalDrag = { change, amount ->

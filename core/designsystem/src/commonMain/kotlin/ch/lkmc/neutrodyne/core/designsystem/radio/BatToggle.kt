@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,7 +51,8 @@ import org.jetbrains.compose.resources.painterResource
  * The radio's panel toggle switch: a chrome bat lever through a hex nut on a plate printed
  * [onLabel] (red) and [offLabel] (black). Lever up means on. Tap it, or flick the lever toward
  * the other label. The caller sizes it (the radio home uses 54 x 64 dp and larger) and supplies
- * its accessible name and state; it is announced as a switch.
+ * its accessible name and state; it is announced as a switch. The lever sounds as it is thrown
+ * ([RadioSound.SWITCH_ON], [RadioSound.SWITCH_OFF]).
  */
 @Composable
 public fun BatToggle(
@@ -62,8 +64,17 @@ public fun BatToggle(
     enabled: Boolean = true,
     plate: SwitchPlate = SwitchPlate.BRASS,
 ) {
+    // Read through states: the flick detector below outlives recompositions.
     val currentOn by rememberUpdatedState(on)
-    val toggle by rememberUpdatedState(onToggle)
+    val sounds by rememberUpdatedState(LocalRadioSounds.current)
+    val onToggleNow by rememberUpdatedState(onToggle)
+    val toggle =
+        remember {
+            {
+                sounds.play(if (currentOn) RadioSound.SWITCH_OFF else RadioSound.SWITCH_ON)
+                onToggleNow()
+            }
+        }
     BatToggleFace(
         on,
         onLabel,
@@ -94,10 +105,11 @@ public fun BatToggle(
 
 /**
  * [BatToggle]'s plate and lever as a picture of [on], for a row whose whole line is the toggle
- * and carries the switch semantics. The plate is a photographic render (owner-approved look,
- * 2026-11-17) in two states, lever up and lever down; the app prints [onLabel] and [offLabel] on
- * its blank enamel so they follow the user's language. The printed labels stay silent: the
- * switch's state, not its plate, is what a screen reader announces.
+ * and carries the switch semantics; that row sounds the lever with [rememberSwitchSound]. The
+ * plate is a photographic render (owner-approved look, 2026-11-17) in two states, lever up and
+ * lever down; the app prints [onLabel] and [offLabel] on its blank enamel so they follow the
+ * user's language. The printed labels stay silent: the switch's state, not its plate, is what a
+ * screen reader announces.
  */
 @Composable
 public fun BatToggleFace(

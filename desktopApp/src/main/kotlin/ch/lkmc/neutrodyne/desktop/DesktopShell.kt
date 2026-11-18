@@ -324,8 +324,13 @@ internal object DesktopShell {
                 graph.settingsRepository
                     .observe(AppearanceSettingKeys.YOUTUBE_ROW_ART)
                     .collectAsState(initial = AppearanceSettingKeys.YOUTUBE_ROW_ART.default)
+            val controlSounds =
+                graph.settingsRepository
+                    .observe(AppearanceSettingKeys.CONTROL_SOUNDS)
+                    .collectAsState(initial = AppearanceSettingKeys.CONTROL_SOUNDS.default)
             NeutrodyneWindow(
                 rowArt = rowArt.value,
+                controlSounds = controlSounds.value,
                 installers = graph.entryInstallers,
                 failedDownloads =
                     kotlinx.coroutines.flow.flow {

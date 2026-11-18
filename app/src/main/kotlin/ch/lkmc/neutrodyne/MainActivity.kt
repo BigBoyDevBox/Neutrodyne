@@ -27,6 +27,8 @@ import ch.lkmc.neutrodyne.core.database.DatabaseOpenException
 import ch.lkmc.neutrodyne.core.database.DatabaseOpenState
 import ch.lkmc.neutrodyne.core.designsystem.components.NdDialog
 import ch.lkmc.neutrodyne.core.designsystem.components.NdDialogAction
+import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioSounds
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberRadioSounds
 import ch.lkmc.neutrodyne.core.designsystem.rememberAndroidSystemUiState
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.domain.SettingsRepository
@@ -103,6 +105,10 @@ class MainActivity : AppCompatActivity() {
             val rowArt by graph.settingsRepository
                 .observe(AppearanceSettingKeys.YOUTUBE_ROW_ART)
                 .collectAsStateWithLifecycle(initialValue = AppearanceSettingKeys.YOUTUBE_ROW_ART.default)
+            val controlSounds by graph.settingsRepository
+                .observe(AppearanceSettingKeys.CONTROL_SOUNDS)
+                .collectAsStateWithLifecycle(initialValue = AppearanceSettingKeys.CONTROL_SOUNDS.default)
+            val radioSounds = rememberRadioSounds(controlSounds)
 
             val systemUi = rememberAndroidSystemUiState()
             val platformActions = rememberAndroidPlatformActions()
@@ -143,6 +149,8 @@ class MainActivity : AppCompatActivity() {
                 // 07 Storage rows pick per-platform wording from this local.
                 LocalPlatformKind provides PlatformKind.ANDROID,
                 LocalYouTubeRowArt provides rowArt,
+                // PO-56: the radio's control sounds, while Appearance › Control sounds is on.
+                LocalRadioSounds provides radioSounds,
                 // 08 Feeds / 09 ColdStartToFeeds: ReportDrawnWhen once the feed settles.
                 LocalDrawnReporter provides AndroidDrawnReporter,
                 // 01 Feature entry installers: metroViewModel()/assistedMetroViewModel() resolve here.

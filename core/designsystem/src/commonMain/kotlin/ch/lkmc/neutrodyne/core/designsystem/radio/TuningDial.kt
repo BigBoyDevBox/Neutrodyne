@@ -50,7 +50,7 @@ import org.jetbrains.compose.resources.imageResource
  * red needle on the [tuned] station. The scale scrolls sideways and keeps the tuned station in
  * view; tapping a station tunes to it and the needle travels there. Each station is a tab in one
  * selectable group, read as written (the printed capitals are decoration). [tag] names a
- * station for tests.
+ * station for tests. Tuning sounds the knob's detent ([RadioSound.DIAL_TICK]).
  */
 @Composable
 public fun TuningDial(
@@ -60,6 +60,7 @@ public fun TuningDial(
     modifier: Modifier = Modifier,
     tag: (Int) -> String? = { null },
 ) {
+    val sounds = LocalRadioSounds.current
     val scroll = rememberScrollState()
     val centres = remember { mutableStateMapOf<Int, Float>() }
     var viewport by remember { mutableIntStateOf(0) }
@@ -104,7 +105,10 @@ public fun TuningDial(
                         .fillMaxHeight()
                         .widthIn(min = STATION_MIN_WIDTH)
                         .onPlaced { centres[index] = it.positionInParent().x + it.size.width / 2f }
-                        .selectable(index == tuned, role = Role.Tab, onClick = { onTune(index) })
+                        .selectable(index == tuned, role = Role.Tab, onClick = {
+                            sounds.play(RadioSound.DIAL_TICK)
+                            onTune(index)
+                        })
                         .padding(horizontal = 10.dp),
                     contentAlignment = Alignment.TopCenter,
                 ) {

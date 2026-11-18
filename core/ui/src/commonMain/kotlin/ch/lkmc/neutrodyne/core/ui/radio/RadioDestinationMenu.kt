@@ -53,7 +53,9 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.Faceplate
 import ch.lkmc.neutrodyne.core.designsystem.radio.IvoryKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.MaterialPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioMaterial
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
 import ch.lkmc.neutrodyne.core.designsystem.radio.barlow
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberClickSound
 import ch.lkmc.neutrodyne.core.navigation.DiscoverKey
 import ch.lkmc.neutrodyne.core.navigation.DownloadsKey
 import ch.lkmc.neutrodyne.core.navigation.LibraryKey
@@ -201,7 +203,7 @@ private fun MenuKey(
             .width(KEY_WIDTH)
             .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(6.dp))
-            .clickable(role = Role.Button, onClick = onClick)
+            .clickable(role = Role.Button, onClick = rememberClickSound(RadioSound.KEY_PRESS, onClick))
             .semantics { if (spokenAs != null) contentDescription = spokenAs }
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

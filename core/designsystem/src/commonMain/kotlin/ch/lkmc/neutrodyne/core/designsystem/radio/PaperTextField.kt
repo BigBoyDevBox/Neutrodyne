@@ -183,7 +183,8 @@ private fun PaperStrip(
 
 /**
  * An ivory key on the faceplate with its name engraved beside it, for header actions whose word
- * matters, such as Save. The key and its name are one button, read by the name.
+ * matters, such as Save. The key and its name are one button, read by the name. It sounds
+ * [RadioSound.KEY_PRESS].
  */
 @Composable
 public fun FaceplateKey(
@@ -196,8 +197,11 @@ public fun FaceplateKey(
     Row(
         modifier
             .heightIn(min = 48.dp)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 6.dp),
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = rememberClickSound(RadioSound.KEY_PRESS, onClick),
+            ).padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
