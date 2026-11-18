@@ -582,24 +582,29 @@ under "Native verification" below ([Tuned playlist indicator](#native-verificati
 Compare a long group name, a non-first active group, Escape, and returning to
 the chooser.
 
-### Identify retained results during a new search
+### Explain short searches and episode counts
 
-DiscoverViewModel deliberately retains previous hits during the 600 ms
-debounce and while the next provider response is pending. DiscoverRoute
-leaves those rows actionable. Prototype a compact, accessible pending
-indicator alongside the old results, retaining the existing anti-flicker
-behavior. The current signal is a Material `LinearProgressIndicator` at the
-top of the results and carries no accessible live-region announcement, so a
-screen reader user cannot tell that the old hits are stale. With a fake slow
-provider, enter two unrelated queries and try to open a result with both
-keyboard and pointer. Check whether listeners can correctly identify which
-query produced the visible list and whether the final list retains a sensible
-focus target.
-[DiscoverViewModel.kt](feature/discover/src/commonMain/kotlin/ch/lkmc/neutrodyne/feature/discover/DiscoverViewModel.kt)
+For a one- or two-character search, show a localized hint that three characters
+start an automatic search. Keep Enter available for an explicit short search.
+Test typing, deleting back to two characters and clearing the field.
 
-Discover shows nothing for queries under three characters; add a hint. Its
-list shows Apple's episode count (2784) while the preview shows the feed's
-(71); label which one each is or show the feed's.
+The Discover list can show Apple's episode count (for example 2,784) while
+the feed preview shows 71. Compare both for the same podcast. Label the source
+of each count, or use the feed count when it is available.
+
+### Recover when a directory search cannot read the local library
+
+Discover and Directory use `SearchRepositoryImpl.annotate` to mark incoming
+hits as subscribed. A desktop probe closed the test database before a recorded
+search. The flow emitted Pending, then threw `IllegalStateException` on the
+subscription lookup before it could emit a final result. Provider failures
+and eight-second timeouts already produce a final provider status.
+
+Exercise both screens with a failing local lookup. Give the listener a way to
+retry when the library is available, preserve the distinction between local
+failure and provider failure, and verify that a subscribed podcast still opens
+its library page after recovery.
+[SearchRepositoryImpl.kt](core/data/src/commonMain/kotlin/ch/lkmc/neutrodyne/core/data/discovery/SearchRepositoryImpl.kt)
 
 ## Library, downloads, and sync defects
 
@@ -837,6 +842,14 @@ Each needs a decision: build it, or correct the document.
   refresh ignores the interval (intended).
 
 ## Native verification on proposed fixes
+
+- With VoiceOver on macOS and TalkBack on Android, change a populated Discover
+  search while a slow provider responds. Check that the label names the search
+  that produced the visible rows and that rapid typing avoids repeated
+  announcements. Focus an old row as it disappears and verify where focus
+  lands. The desktop regression covers pointer and keyboard activation, the
+  pinned label, More and preserving focus in the search field.
+  [Discover retained results](https://github.com/L-K-M/Neutrodyne/pull/594)
 
 - Scrub a streaming and a downloaded episode on macOS. Check pointer
   cancellation, playback resumption, and the number of engine seeks and
