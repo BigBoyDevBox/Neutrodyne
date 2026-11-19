@@ -209,8 +209,11 @@ private fun isLinkWord(raw: String): Boolean {
     // A scheme ("https:", "feed:", "itpc:") or a host and port: a letter, then a colon with
     // something after it. A colon that ends a word ("Wars:") or a clock time ("10:30") is text.
     if (SCHEME_OR_PORT.containsMatchIn(word)) return true
-    val host = word.substringBefore('?').substringBefore(':')
-    return host.equals("localhost", ignoreCase = true) || IPV4.matches(host) || DOMAIN.matches(host)
+    // A pasted Markdown link can contain several runs of DNS characters, e.g. [feed](nas.example).
+    return HOST_TOKEN.findAll(word).any { match ->
+        val host = match.value.trim('.', '。', '．', '｡')
+        host.equals("localhost", ignoreCase = true) || IPV4.matches(host) || DOMAIN.matches(host)
+    }
 }
 
 // Pasted text often joins words with a no-break space (U+00A0, U+202F), which \s does not match;
@@ -220,8 +223,9 @@ private val WHITESPACE = Regex("[\\s\\p{Z}]+")
 // Marks that wrap or end a word in prose, typographic ones included, so a quoted or trailing
 // address ("“example.com”", "…https://x") is still seen whole.
 private val WORD_PUNCTUATION =
-    ".,;!?\"'()[]<>\u2018\u2019\u201C\u201D\u201E\u00AB\u00BB\u2039\u203A\u2026\u2013\u2014\u2022".toCharArray()
+    ".,;!?\"'`*|()[]{}<>\u2018\u2019\u201C\u201D\u201E\u00AB\u00BB\u2039\u203A\u2026\u2013\u2014\u2022".toCharArray()
 private val SCHEME_OR_PORT = Regex("^[A-Za-z][A-Za-z0-9+.-]*:.")
+private val HOST_TOKEN = Regex("""[\p{L}\p{N}\p{M}.。．｡-]+""")
 private val IPV4 = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
 
 // Internationalized host names can use the ASCII, ideographic, fullwidth or halfwidth dot.

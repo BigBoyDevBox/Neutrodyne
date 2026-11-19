@@ -83,6 +83,13 @@ class DiscoveryViewModelTest : MainDispatcherTest() {
                 "localhost/feed",
                 "myserver/feed",
                 "internal/HR",
+                "`private.example`",
+                "*private.example*",
+                "|localhost|",
+                "__bücher.example__",
+                "[feed](private.example)",
+                "private.example#payroll",
+                "`192.168.1.2`",
                 "bücher.example",
                 "例え。テスト",
             )) {
