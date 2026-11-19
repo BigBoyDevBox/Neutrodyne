@@ -108,6 +108,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward_value
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_off
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_on
 import ch.lkmc.neutrodyne.core.ui.resources.radio_untuned
+import ch.lkmc.neutrodyne.core.ui.root.spokenPosition
 import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 import org.jetbrains.compose.resources.stringResource
 import kotlin.math.PI
@@ -503,7 +504,8 @@ private fun Nixie(
     val scale = LocalDensity.current.fontScale.coerceAtLeast(1f)
     val glowBlur = with(LocalDensity.current) { 4.dp.toPx() }
     val elapsed = elapsedMs.coerceAtLeast(0) / 1000
-    val accessible = stringResource(Res.string.radio_elapsed_full, elapsed / 3600, (elapsed / 60) % 60, elapsed % 60)
+    // Spoken in full and in plural forms ("1 hour 1 minute"), beyond the four tubes' cap.
+    val accessible = stringResource(Res.string.radio_elapsed_full, spokenPosition(elapsed * 1000))
     Box(modifier, contentAlignment = Alignment.Center) {
         Column(
             Modifier.widthIn(max = (if (compact) 134.dp else 150.dp) * scale).fillMaxWidth().clearAndSetSemantics {

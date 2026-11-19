@@ -194,10 +194,10 @@ internal fun ContinueOnThisDeviceCard(
 
 /**
  * Words a position for speech ("23 minutes 14 seconds", 08), omitting zero parts; a position under
- * one second reads as "0 seconds".
+ * one second reads as "0 seconds". The radio's Nixie speaks its elapsed time with it too.
  */
 @Composable
-private fun spokenPosition(positionMs: Long): String {
+internal fun spokenPosition(positionMs: Long): String {
     val totalSeconds = positionMs.coerceAtLeast(0) / MILLIS_PER_SECOND
     val hours = (totalSeconds / SECONDS_PER_HOUR).toInt()
     val minutes = (totalSeconds % SECONDS_PER_HOUR / SECONDS_PER_MINUTE).toInt()
