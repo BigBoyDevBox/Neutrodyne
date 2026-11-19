@@ -29,6 +29,10 @@ class LinkInputTest {
             "(example.com).",
             "pod.link/1234",
             "user@example.com",
+            "myserver/feed",
+            "NAS/HR",
+            "Listen on bücher.example",
+            "例え。テスト",
             "nas/feed.xml",
             "x/rss?id=1",
             "/Users/me/feed.xml",
@@ -54,8 +58,6 @@ class LinkInputTest {
         for (input in listOf(
             "Star Wars: The Clone Wars",
             "Radiolab: Extra",
-            "AC/DC",
-            "9/11 stories",
             "Web 2.0",
             "The A.I. Show",
             "U.S.A. history",
@@ -68,7 +70,6 @@ class LinkInputTest {
             "News at 10:30",
             "What's new?",
             "\u201CStar Wars: The Clone Wars\u201D",
-            "\u201CAC/DC\u201D",
             "\u201CQ&A: Live\u201D",
             "Star\u00A0Wars: The Clone Wars",
         )) {
@@ -79,13 +80,12 @@ class LinkInputTest {
     /**
      * Word-local rules cannot separate every address from every title, so these are the accepted
      * costs, pinned so a refactor does not shift them unnoticed. A single-label host with a bare
-     * path has the shape of "AC/DC" and searches; colon codes, time ranges and "~" approximations
+     * path has the shape of "AC/DC". Slash names, colon codes, time ranges and "~" approximations
      * read as links and are kept from the directory.
      */
     @Test
     fun acceptedTradeOffsStayAsDecided() {
-        assertFalse(isLinkInput("myserver/feed"))
-        for (input in listOf("S1:E5", "9:00-10:00", "~50 episodes")) {
+        for (input in listOf("AC/DC", "9/11 stories", "\u201CAC/DC\u201D", "S1:E5", "9:00-10:00", "~50 episodes")) {
             assertTrue(isLinkInput(input), "kept from the directory: $input")
         }
     }

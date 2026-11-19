@@ -188,10 +188,8 @@ internal class DiscoverViewModel(
 
 // Conservatively keep addresses, handles and pasted link-bearing prose out of directory queries.
 // Add owns normalization and validation; this boundary only decides whether disclosure is enough.
-// A word is a link when it carries an address signal: a scheme, a host (a dotted name ending in a
-// two-letter label, an IPv4 or IPv6 address, localhost), a path, a query or a handle. Punctuation
-// that titles use on their own stays text: "Star Wars: The Clone Wars", "AC/DC", "Web 2.0", "The
-// A.I. Show".
+// A slash can introduce a private path on a single-label host. Colons between words and
+// punctuation in names such as "Web 2.0" and "The A.I. Show" still allow a title search.
 internal fun isLinkInput(text: String): Boolean = text.split(WHITESPACE).any(::isLinkWord)
 
 private fun isLinkWord(raw: String): Boolean {
@@ -199,15 +197,12 @@ private fun isLinkWord(raw: String): Boolean {
     if (word.isEmpty()) return false
     if (word.startsWith("UC") && word.length == YOUTUBE_CHANNEL_ID_LENGTH) return true
     if ('@' in word || '\\' in word || '=' in word || word.count { it == ':' } >= 2) return true
-    if (word.first() in PATH_STARTS) return true
+    if ('/' in word || word.startsWith('~')) return true
     // A scheme ("https:", "feed:", "itpc:") or a host and port: a letter, then a colon with
     // something after it. A colon that ends a word ("Wars:") or a clock time ("10:30") is text.
     if (SCHEME_OR_PORT.containsMatchIn(word)) return true
-    val host = word.substringBefore('/').substringBefore('?').substringBefore(':')
-    if (host.equals("localhost", ignoreCase = true) || IPV4.matches(host) || DOMAIN.matches(host)) return true
-    // A path whose last segment names a file or carries a query ("nas/feed.xml", "x/rss?id=1").
-    val last = word.substringAfterLast('/', missingDelimiterValue = "")
-    return '.' in last || '?' in last
+    val host = word.substringBefore('?').substringBefore(':')
+    return host.equals("localhost", ignoreCase = true) || IPV4.matches(host) || DOMAIN.matches(host)
 }
 
 // Pasted text often joins words with a no-break space (U+00A0, U+202F), which \s does not match;
@@ -218,10 +213,12 @@ private val WHITESPACE = Regex("[\\s\\p{Z}]+")
 // address ("“example.com”", "…https://x") is still seen whole.
 private val WORD_PUNCTUATION =
     ".,;!?\"'()[]<>\u2018\u2019\u201C\u201D\u201E\u00AB\u00BB\u2039\u203A\u2026\u2013\u2014\u2022".toCharArray()
-private val PATH_STARTS = setOf('/', '~')
 private val SCHEME_OR_PORT = Regex("^[A-Za-z][A-Za-z0-9+.-]*:.")
 private val IPV4 = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
-private val DOMAIN = Regex("^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z][A-Za-z0-9-]+$")
+
+// Internationalized host names can use the ASCII, ideographic, fullwidth or halfwidth dot.
+private val DOMAIN =
+    Regex("""^[\p{L}\p{N}\p{M}-]+([.。．｡][\p{L}\p{N}\p{M}-]+)*[.。．｡]\p{L}[\p{L}\p{N}\p{M}-]+$""")
 
 internal const val MIN_QUERY_LENGTH = 3
 internal const val SEARCH_DEBOUNCE_MS = 600L

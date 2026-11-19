@@ -81,6 +81,10 @@ class DiscoveryViewModelTest : MainDispatcherTest() {
                 "Listen https://private.test/x",
                 "192.168.1.2",
                 "localhost/feed",
+                "myserver/feed",
+                "internal/HR",
+                "bücher.example",
+                "例え。テスト",
             )) {
                 vm.inputChanged(input)
                 advanceUntilIdle()
