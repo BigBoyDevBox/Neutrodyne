@@ -565,7 +565,7 @@ class RadioInteractionTest {
             }
             assertEquals(emptyList(), seeks)
             needle.assertContentDescriptionEquals(getString(Res.string.chapter_seek, "28:30"))
-            onNodeWithContentDescription(getString(Res.string.radio_elapsed_full, 0L, 28L, 30L))
+            onNodeWithContentDescription("Elapsed: 28 minutes 30 seconds")
                 .assertIsDisplayed()
             needle.performTouchInput { up() }
             waitForIdle()
