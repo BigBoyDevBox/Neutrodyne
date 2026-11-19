@@ -170,6 +170,26 @@ class SyncSetupConfirmationTest {
             assertEquals(listOf(FirstLinkChoice.USE_SERVER), harness.controller.firstLinkChoices)
         }
 
+    /** The Merge card names the server it combines with, as the choice's title does. */
+    @Test
+    fun theMergeChoiceNamesTheServer() =
+        runComposeUiTest {
+            setPage(Harness())
+
+            onNodeWithText("sync.example.org: 5 podcasts, 2 groups.", substring = true).assertIsDisplayed()
+        }
+
+    /** The address step's field is labelled as the address it asks for, not as the screen. */
+    @Test
+    fun theAddressFieldIsLabelledAsTheServerAddress() =
+        runComposeUiTest {
+            val harness = Harness()
+            harness.link.setState(LinkState.Address)
+            setPage(harness)
+
+            onNodeWithText("Server address").assertIsDisplayed()
+        }
+
     @Test
     fun cancellingWhileTheBackupRunsNeverMerges() =
         runComposeUiTest {

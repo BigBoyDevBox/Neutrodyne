@@ -56,12 +56,20 @@ import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
+import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
+import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
+import ch.lkmc.neutrodyne.core.ui.resources.radio_ended
 import ch.lkmc.neutrodyne.core.ui.resources.radio_episodes
+import ch.lkmc.neutrodyne.core.ui.resources.radio_error
 import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists
+import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists_empty
 import ch.lkmc.neutrodyne.core.ui.resources.radio_paused
+import ch.lkmc.neutrodyne.core.ui.resources.radio_playing
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_back
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward
+import ch.lkmc.neutrodyne.playback.api.PlaybackIssue
+import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 import org.jetbrains.compose.resources.getString
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -147,6 +155,45 @@ class RadioInteractionTest {
             onNodeWithText(getString(Res.string.radio_paused)).assertIsDisplayed()
             onNodeWithContentDescription(getString(Res.string.radio_elapsed_full, 12L, 0L, 0L)).assertIsDisplayed()
             onAllNodes(hasText("900:00")).assertCountEquals(2)
+        }
+
+    @Test
+    fun transportStatusFollowsTheLoadedPhase() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var phase by mutableStateOf<PlayerPhase?>(null)
+            var issue by mutableStateOf<PlaybackIssue?>(null)
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        radioFixture().copy(playing = true, phase = phase, issue = issue),
+                        RadioActions(),
+                    )
+                }
+            }
+            onNodeWithText(getString(Res.string.radio_playing)).assertIsDisplayed()
+            runOnIdle { phase = PlayerPhase.BUFFERING }
+            onNodeWithText(getString(Res.string.radio_buffering)).assertIsDisplayed()
+            runOnIdle { phase = PlayerPhase.ENDED }
+            onNodeWithText(getString(Res.string.radio_ended)).assertIsDisplayed()
+            runOnIdle {
+                phase = PlayerPhase.ERROR
+                issue = null
+            }
+            onNodeWithText(getString(Res.string.radio_error)).assertIsDisplayed()
+            // An issue with a ready phase keeps the transport status but lights the red lamp,
+            // as the mini player's error dot does.
+            runOnIdle {
+                phase = null
+                issue = PlaybackIssue.NETWORK_LOST
+            }
+            onNodeWithText(getString(Res.string.radio_playing)).assertIsDisplayed()
+            // An issue during buffering keeps the BUFFERING status text; the lamp treats any
+            // issue as red regardless of the buffering branch order.
+            runOnIdle {
+                phase = PlayerPhase.BUFFERING
+                issue = PlaybackIssue.NETWORK_LOST
+            }
+            onNodeWithText(getString(Res.string.radio_buffering)).assertIsDisplayed()
         }
 
     @Test
@@ -417,6 +464,67 @@ class RadioInteractionTest {
             onNodeWithText(getString(Res.string.radio_no_playlists)).assertIsDisplayed()
         }
 
+    @Test fun anEmptyRadioOffersDiscoverAndTheGroupWorkflow() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var discover = 0
+            var library = 0
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        RadioState(),
+                        RadioActions(openDiscover = { discover++ }, openLibrary = { library++ }),
+                    )
+                }
+            }
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty)).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
+            onNodeWithTag("radio_empty_discover").performClick()
+            onNodeWithTag("radio_empty_library").performClick()
+            assertEquals(1, discover)
+            assertEquals(1, library)
+        }
+
+    @Test fun anEmptyRadioHidesRouteKeysWhileLoading() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(RadioState(loading = true), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_empty_discover").assertDoesNotExist()
+            onNodeWithTag("radio_empty_library").assertDoesNotExist()
+        }
+
+    @Test fun anEmptyRadioHidesRouteKeysWhenLoadFails() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(RadioState(loadError = true), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_empty_discover").assertDoesNotExist()
+            onNodeWithTag("radio_empty_library").assertDoesNotExist()
+        }
+
+    @Test fun aClearedPlaylistKeepsItsAllClearSignWithoutRouteKeys() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        RadioState(
+                            playlists = listOf(RadioPlaylist(1, "Tech", 0)),
+                            playlistId = 1,
+                        ),
+                        RadioActions(),
+                    )
+                }
+            }
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty)).assertDoesNotExist()
+            onNodeWithTag("radio_empty_discover").assertDoesNotExist()
+            onNodeWithTag("radio_empty_library").assertDoesNotExist()
+        }
+
     @Test fun pagingFailureOffersRetryAndRetainsTheProgramme() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             var retries = 0
@@ -428,6 +536,18 @@ class RadioInteractionTest {
             onNodeWithTag("radio_episode_1").assertIsDisplayed()
             onNodeWithTag("radio_retry").performClick()
             assertEquals(1, retries)
+        }
+
+    @Test fun theHomeMenuKeyIsAButtonOnAnIvoryCap() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(radioFixture(), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_menu").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button),
+            )
         }
 
     @Test fun doubleTextScaleKeepsHeaderAndTransportReachable() =
