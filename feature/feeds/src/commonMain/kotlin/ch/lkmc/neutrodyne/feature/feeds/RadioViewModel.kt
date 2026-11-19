@@ -423,7 +423,7 @@ public class RadioViewModel(
     public fun seek(positionMs: Long) {
         val current = state.value
         val selected = current.selected ?: return
-        val position = positionMs.coerceIn(0L, selected.durationMs ?: Long.MAX_VALUE)
+        val position = positionMs.coerceIn(0L, current.selectedDurationMs ?: Long.MAX_VALUE)
         if (playbackStates.nowPlaying.value?.episodeId == selected.id) {
             controller.seekTo(position)
         } else {

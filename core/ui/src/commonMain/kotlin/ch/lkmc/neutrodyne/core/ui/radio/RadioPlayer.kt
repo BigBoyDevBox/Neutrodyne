@@ -33,6 +33,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -87,6 +88,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.chapter_seek
 import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
 import ch.lkmc.neutrodyne.core.ui.resources.radio_choose_other
 import ch.lkmc.neutrodyne.core.ui.resources.radio_cleared
+import ch.lkmc.neutrodyne.core.ui.resources.radio_duration_unknown
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
 import ch.lkmc.neutrodyne.core.ui.resources.radio_ended
@@ -121,7 +123,7 @@ internal fun RadioPlayer(
     val selected = state.selected
     // Retain the reference cap through 1.3x text; larger type needs a larger physical key.
     val capScale = (LocalDensity.current.fontScale / FIXED_CAP_FONT_SCALE).coerceAtLeast(1f)
-    val duration = selected?.durationMs ?: 0L
+    val duration = remember(state.selectedId, state.nowPlayingEpisode, state.episodes) { state.selectedDurationMs }
     val status =
         when {
             // Playback started elsewhere keeps its own status while no playlist exists. Until the
@@ -225,8 +227,16 @@ internal fun RadioPlayer(
                     mono = false,
                     maxLines = 1,
                 )
-                Needle(state.elapsedMs, duration, selected != null && duration > 0, actions.seek)
-                if (!compact) RadioText(radioTimeline(duration), 11, modifier = Modifier.align(Alignment.End))
+                if (duration != null) {
+                    Needle(state.elapsedMs, duration, actions.seek)
+                    if (!compact) RadioText(radioTimeline(duration), 11, modifier = Modifier.align(Alignment.End))
+                } else if (selected != null) {
+                    RadioText(
+                        stringResource(Res.string.radio_duration_unknown),
+                        11,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
             }
         }
         Faceplate(Modifier.padding(top = if (compact) 6.dp else 8.dp).fillMaxWidth()) {
@@ -372,10 +382,9 @@ private fun PlaySwitch(
 private fun Needle(
     elapsedMs: Long,
     durationMs: Long,
-    enabled: Boolean,
     onSeek: (Long) -> Unit,
 ) {
-    val progress = if (durationMs > 0) (elapsedMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+    val progress = (elapsedMs.toFloat() / durationMs).coerceIn(0f, 1f)
     val seekLabel = stringResource(Res.string.chapter_seek, radioTimeline(elapsedMs))
     Column(Modifier.padding(top = 8.dp)) {
         // The canvas and pointer both measure time from the physical left edge.
@@ -391,26 +400,17 @@ private fun Needle(
                     contentDescription = seekLabel
                     progressBarRangeInfo = ProgressBarRangeInfo(progress, 0f..1f)
                     setProgress {
-                        if (enabled) onSeek((it.coerceIn(0f, 1f) * durationMs).toLong())
-                        enabled
+                        onSeek((it.coerceIn(0f, 1f) * durationMs).toLong())
+                        true
                     }
-                }.pointerInput(durationMs, enabled) {
+                }.pointerInput(durationMs) {
                     detectTapGestures {
-                        if (enabled) {
-                            onSeek(
-                                (it.x / size.width * durationMs).toLong().coerceIn(
-                                    0,
-                                    durationMs,
-                                ),
-                            )
-                        }
+                        onSeek((it.x / size.width * durationMs).toLong().coerceIn(0, durationMs))
                     }
-                }.pointerInput(durationMs, enabled) {
+                }.pointerInput(durationMs) {
                     detectDragGestures { change, _ ->
-                        if (enabled) {
-                            change.consume()
-                            onSeek((change.position.x / size.width * durationMs).toLong().coerceIn(0, durationMs))
-                        }
+                        change.consume()
+                        onSeek((change.position.x / size.width * durationMs).toLong().coerceIn(0, durationMs))
                     }
                 },
         ) {

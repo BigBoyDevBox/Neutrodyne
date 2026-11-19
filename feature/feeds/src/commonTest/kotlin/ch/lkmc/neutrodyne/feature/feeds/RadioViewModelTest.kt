@@ -189,6 +189,22 @@ class RadioViewModelTest : MainDispatcherTest() {
             }
         }
 
+    @Test fun seekUsesTheSameDurationAsTheRadioScale() =
+        runTest {
+            withRadio { model, _ ->
+                val now = testNowPlaying(1)
+                controller.state.nowPlaying.value = now.copy(position = now.position.copy(durationMs = -1))
+                runCurrent()
+                model.seek(90_000)
+                assertEquals(60_000L, model.state.value.elapsedMs)
+
+                controller.state.nowPlaying.value = now.copy(position = now.position.copy(durationMs = 75_000))
+                runCurrent()
+                model.seek(90_000)
+                assertEquals(75_000L, model.state.value.elapsedMs)
+            }
+        }
+
     @Test fun skipKeysMoveByTheListenersIntervalsAndStopAtTheEnds() =
         runTest {
             settings.set(PlaybackSettingKeys.SKIP_BACK_MS, 15_000L)
