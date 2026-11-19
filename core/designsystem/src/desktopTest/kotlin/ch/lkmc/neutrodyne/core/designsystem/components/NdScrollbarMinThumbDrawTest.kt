@@ -27,7 +27,7 @@ import kotlin.test.assertTrue
 
 @OptIn(ExperimentalTestApi::class)
 class NdScrollbarMinThumbDrawTest {
-    private val style = NdScrollbarStyle(enabled = true)
+    private val style = NdScrollbarStyle(enabled = true, minThumb = 24.dp)
 
     @Test
     fun shortList() =
