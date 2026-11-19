@@ -79,9 +79,11 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -112,6 +114,7 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.rememberClickSound
 import ch.lkmc.neutrodyne.core.ui.ReportVisibleEpisodeIds
 import ch.lkmc.neutrodyne.core.ui.rememberMonogram
 import ch.lkmc.neutrodyne.core.ui.resources.Res
+import ch.lkmc.neutrodyne.core.ui.resources.action_mark_played
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
 import ch.lkmc.neutrodyne.core.ui.resources.action_retry
@@ -450,9 +453,10 @@ private fun RadioSlip(
     // The slip slides off the radio with a paper sound, by swipe or by the Delete key. Read through
     // a state: the swipe detector outlives recompositions.
     val sounds by rememberUpdatedState(LocalRadioSounds.current)
+    val currentDiscard by rememberUpdatedState(actions.discard)
     val discard = {
         sounds.play(RadioSound.SLIP_DISCARD)
-        actions.discard(episode.id)
+        currentDiscard(episode.id)
     }
     val inputMode = LocalInputModeManager.current
     LaunchedEffect(restoreRowFocus, inputMode) {
@@ -464,7 +468,8 @@ private fun RadioSlip(
         }
     }
     val monogram = rememberMonogram(episode.podcast)
-    val haptics = LocalHapticFeedback.current
+    val haptics by rememberUpdatedState(LocalHapticFeedback.current)
+    val markPlayed = stringResource(Res.string.action_mark_played)
     BoxWithConstraints(Modifier.fillMaxWidth().clipToBounds().background(Color(0xFF38291B))) {
         val density = LocalDensity.current
         val threshold = with(density) { radioDiscardThreshold(maxWidth.value).dp.toPx() }
@@ -496,6 +501,14 @@ private fun RadioSlip(
                     } else {
                         false
                     }
+                }.semantics {
+                    customActions =
+                        listOf(
+                            CustomAccessibilityAction(markPlayed) {
+                                discard()
+                                true
+                            },
+                        )
                 }.selectable(selected, onClick = { actions.selectEpisode(episode.id) })
                 .pointerInput(episode.id, width, windowSize) {
                     awaitEachGesture {

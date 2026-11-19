@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.ui.resources.Res
+import ch.lkmc.neutrodyne.core.ui.resources.action_mark_played
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
@@ -81,6 +82,7 @@ import org.jetbrains.compose.resources.getString
 import java.util.Locale
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalTestApi::class)
 class RadioInteractionTest {
@@ -261,6 +263,50 @@ class RadioInteractionTest {
             onNodeWithTag("radio_episode_1").assertDoesNotExist()
             onNodeWithTag("radio_undo").assertIsFocused().performClick()
             onNodeWithTag("radio_episode_1").assertIsDisplayed().assertIsFocused()
+        }
+
+    @Test
+    fun aSlipCanBeMarkedPlayedAndRestoredThroughSemantics() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val original = radioFixture()
+            var state by mutableStateOf(original)
+            val selected = mutableListOf<Long>()
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        state,
+                        RadioActions(
+                            selectEpisode = { selected += it },
+                            discard = { id ->
+                                state =
+                                    state.copy(
+                                        episodes = state.episodes.filterNot { it.id == id },
+                                        removed = state.episodes.first { it.id == id },
+                                    )
+                            },
+                            undo = { state = original },
+                        ),
+                    )
+                }
+            }
+
+            val row = onNodeWithTag("radio_episode_1")
+            val markPlayed = getString(Res.string.action_mark_played)
+            val action =
+                row.fetchSemanticsNode().config[SemanticsActions.CustomActions].single {
+                    it.label == markPlayed
+                }
+            runOnIdle { assertTrue(action.action()) }
+
+            assertEquals(emptyList(), selected)
+            row.assertDoesNotExist()
+            onNodeWithTag("radio_episode_2").assertIsDisplayed()
+            onNodeWithTag("radio_undo").assertIsFocused().performClick()
+            row.assertIsDisplayed().assertIsFocused()
+            onNodeWithTag("radio_episode_2").performClick()
+            assertEquals(listOf(2L), selected)
+            onNodeWithTag("radio_episode_2").assertIsDisplayed()
+            onNodeWithTag("radio_undo").assertDoesNotExist()
         }
 
     @Test
