@@ -31,9 +31,13 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -56,6 +60,7 @@ import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
+import ch.lkmc.neutrodyne.core.ui.resources.dismiss
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
 import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
 import ch.lkmc.neutrodyne.core.ui.resources.radio_choose_other
@@ -480,6 +485,42 @@ class RadioInteractionTest {
             onNodeWithTag("radio_playlist_option_1").assertIsFocused()
         }
 
+    @Test fun chooserFocusesTheActivePlaylistAndPrintsItsCheck() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(radioFixture().copy(playlistId = 2), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_playlist").performClick()
+            onNodeWithTag("radio_playlist_option_2").assertIsFocused().assertIsSelected()
+            onNodeWithTag("radio_playlist_option_1").assertIsNotSelected()
+            onNodeWithTag("radio_playlist_active_check", useUnmergedTree = true).assertIsDisplayed()
+        }
+
+    @Test fun chooserFallsBackToTheFirstPlaylistWhenNoneIsActive() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(radioFixture().copy(playlistId = null), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_playlist").performClick()
+            onNodeWithTag("radio_playlist_option_1").assertIsFocused()
+            onNodeWithTag("radio_playlist_active_check", useUnmergedTree = true).assertDoesNotExist()
+        }
+
+    @Test fun emptyChooserFocusesClose() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(RadioState(), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_playlist").performClick()
+            onNodeWithContentDescription(getString(Res.string.dismiss)).assertIsFocused()
+        }
+
     @Test fun homeOffersNoPlaylistCreationOrSwipeHint() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             setContent {
@@ -604,7 +645,9 @@ class RadioInteractionTest {
                 }
             }
             onNodeWithTag("radio_playlist").performClick()
-            onNodeWithText(getString(Res.string.radio_no_playlists)).assertIsDisplayed()
+            onNode(
+                hasText(getString(Res.string.radio_no_playlists)) and hasAnyAncestor(hasTestTag("radio_insert")),
+            ).assertIsDisplayed()
         }
 
     @Test fun anEmptyRadioOffersDiscoverAndTheGroupWorkflow() =

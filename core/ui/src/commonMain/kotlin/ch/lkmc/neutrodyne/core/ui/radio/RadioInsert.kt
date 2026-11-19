@@ -3,7 +3,6 @@
 package ch.lkmc.neutrodyne.core.ui.radio
 
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,8 +11,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,6 +40,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -99,7 +102,11 @@ internal fun RadioInsertDialog(
                             modifier = if (state.playlists.isEmpty()) Modifier.focusRequester(focus) else Modifier,
                         ) { Icon(NdIcons.Close, stringResource(Res.string.dismiss), tint = Ink) }
                     }
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                    // Open on the active playlist; with none active, fall back to the first entry.
+                    val activePlaylistId = state.playlistId
+                    val focusedIndex =
+                        state.playlists.indexOfFirst { it.id == activePlaylistId }.coerceAtLeast(0)
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).selectableGroup()) {
                         if (state.playlists.isEmpty()) {
                             RadioText(
                                 stringResource(Res.string.radio_no_playlists),
@@ -109,21 +116,37 @@ internal fun RadioInsertDialog(
                             )
                         }
                         state.playlists.forEachIndexed { index, playlist ->
-                            RadioText(
-                                playlist.name,
-                                19,
-                                bold = true,
-                                modifier =
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .then(if (index == 0) Modifier.focusRequester(focus) else Modifier)
-                                        .focusProperties { canFocus = true }
-                                        .clickable {
+                            val active = playlist.id == activePlaylistId
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .then(if (index == focusedIndex) Modifier.focusRequester(focus) else Modifier)
+                                    .focusProperties { canFocus = true }
+                                    .selectable(
+                                        selected = active,
+                                        role = Role.RadioButton,
+                                        onClick = {
                                             actions.selectPlaylist(playlist.id)
                                             onDismiss()
-                                        }.testTag("radio_playlist_option_${playlist.id}")
-                                        .padding(vertical = 16.dp),
-                            )
+                                        },
+                                    ).testTag("radio_playlist_option_${playlist.id}")
+                                    .padding(vertical = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RadioText(playlist.name, 19, bold = true, modifier = Modifier.weight(1f))
+                                if (active) {
+                                    Icon(
+                                        NdIcons.Check,
+                                        contentDescription = null,
+                                        tint = Ink,
+                                        modifier =
+                                            Modifier
+                                                .testTag("radio_playlist_active_check")
+                                                .padding(start = 8.dp)
+                                                .size(18.dp),
+                                    )
+                                }
+                            }
                         }
                     }
                 }
