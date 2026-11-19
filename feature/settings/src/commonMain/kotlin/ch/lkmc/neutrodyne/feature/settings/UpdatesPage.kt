@@ -56,6 +56,7 @@ import ch.lkmc.neutrodyne.core.ui.LocalUiClock
 import ch.lkmc.neutrodyne.core.ui.SettingsRow
 import ch.lkmc.neutrodyne.core.ui.SettingsSwitchRow
 import ch.lkmc.neutrodyne.core.ui.asString
+import ch.lkmc.neutrodyne.core.ui.downloadSizeText
 import ch.lkmc.neutrodyne.core.ui.platform.LocalPlatformActions
 import ch.lkmc.neutrodyne.core.ui.platform.NotificationPermissionNotice
 import ch.lkmc.neutrodyne.core.ui.root.LocalSnackbarHost
@@ -285,7 +286,7 @@ private fun UpdateCard(
         )
         val released = DateFormatter.date(Instant.parse(info.publishedAt).toEpochMilliseconds())
         Text(stringResource(Res.string.updates_released, released))
-        if (download != null) Text(download.kind + " · " + download.sizeBytes + " B")
+        if (download != null) Text(download.kind + " · " + downloadSizeText(download.sizeBytes).asString())
         Text(info.notes, maxLines = if (expanded) Int.MAX_VALUE else NOTES_COLLAPSED_LINES)
         if (!expanded) TextButton(onClick = { expanded = true }) { Text(stringResource(Res.string.updates_more)) }
         val selection = info.desktopSelection
