@@ -23,6 +23,7 @@ import ch.lkmc.neutrodyne.core.ui.radio.RadioEpisode
 import ch.lkmc.neutrodyne.playback.api.PlayResult
 import ch.lkmc.neutrodyne.playback.api.PlaybackIssue
 import ch.lkmc.neutrodyne.playback.api.PlayerPhase
+import ch.lkmc.neutrodyne.playback.api.PositionSnapshot
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
@@ -108,6 +109,45 @@ class RadioViewModelTest : MainDispatcherTest() {
                 assertEquals(
                     FakePlaybackController.Call.Transport(FakePlaybackController.Action.SEEK, 25_000),
                     controller.calls.last(),
+                )
+            }
+        }
+
+    /**
+     * A needle seek parked for an episode that is not loaded belongs to the radio's own start.
+     * When Up next or a notification loads that episode instead, the dial must follow its ticks,
+     * and resuming must not jump back to the parked position.
+     */
+    @Test fun aParkedSeekYieldsWhenTheEpisodeStartsElsewhere() =
+        runTest {
+            withRadio { model, _ ->
+                model.seek(25_000)
+                controller.state.nowPlaying.value = testNowPlaying(1)
+                runCurrent()
+                controller.state.positionTicks.emit(PositionSnapshot(1, 40_000, 50_000, 60_000, 1f, true, 0))
+                runCurrent()
+                assertEquals(40_000, model.state.value.elapsedMs)
+
+                controller.state.nowPlaying.value = testNowPlaying(1).copy(isPlaying = false, playWhenReady = false)
+                runCurrent()
+                val before = controller.calls.size
+                model.togglePlay()
+                runCurrent()
+                val after = controller.calls.drop(before)
+                assertTrue(after.none { it is FakePlaybackController.Call.Feed }, "resumes, not restarts: $after")
+                assertTrue(
+                    after.any {
+                        it is FakePlaybackController.Call.Transport &&
+                            it.action == FakePlaybackController.Action.PLAY
+                    },
+                    "resumes playback: $after",
+                )
+                assertTrue(
+                    after.none {
+                        it is FakePlaybackController.Call.Transport &&
+                            it.action == FakePlaybackController.Action.SEEK
+                    },
+                    "no stale seek: $after",
                 )
             }
         }
