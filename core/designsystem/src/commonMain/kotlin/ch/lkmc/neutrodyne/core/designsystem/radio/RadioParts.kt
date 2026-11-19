@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,14 +74,18 @@ public val LocalCabinetBackKey: ProvidableCompositionLocal<(@Composable () -> Un
 /**
  * A navy enamel plaque with brass rivets and cream typewriter lettering: the radio's playlist
  * sign, used as page titles. It is decoration only; a caller that makes it interactive owns the
- * click target and its 48 dp minimum.
+ * click target and its 48 dp minimum. The sign is one accessibility node with its lettering, so a
+ * page title passes `Modifier.semantics { heading() }` to have the title announced as a heading.
  */
 @Composable
 public fun EnamelSign(
     text: String,
     modifier: Modifier = Modifier,
 ) {
-    EnamelPlaque(modifier) { SignText(text, Modifier.weight(1f, fill = false)) }
+    // One node with the lettering, so a caller's heading() is announced as the title itself.
+    EnamelPlaque(modifier.semantics(mergeDescendants = true) {}) {
+        SignText(text, Modifier.weight(1f, fill = false))
+    }
 }
 
 /**
