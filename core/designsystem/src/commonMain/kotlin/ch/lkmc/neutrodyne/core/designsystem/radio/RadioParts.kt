@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.foundation.text.modifiers.TextAutoSizeLayoutScope
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -40,10 +42,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
@@ -68,14 +74,18 @@ public val LocalCabinetBackKey: ProvidableCompositionLocal<(@Composable () -> Un
 /**
  * A navy enamel plaque with brass rivets and cream typewriter lettering: the radio's playlist
  * sign, used as page titles. It is decoration only; a caller that makes it interactive owns the
- * click target and its 48 dp minimum.
+ * click target and its 48 dp minimum. The sign is one accessibility node with its lettering, so a
+ * page title passes `Modifier.semantics { heading() }` to have the title announced as a heading.
  */
 @Composable
 public fun EnamelSign(
     text: String,
     modifier: Modifier = Modifier,
 ) {
-    EnamelPlaque(modifier) { SignText(text, Modifier.weight(1f, fill = false)) }
+    // One node with the lettering, so a caller's heading() is announced as the title itself.
+    EnamelPlaque(modifier.semantics(mergeDescendants = true) {}) {
+        SignText(text, Modifier.weight(1f, fill = false))
+    }
 }
 
 /**
@@ -135,17 +145,42 @@ private fun SignText(
     modifier: Modifier = Modifier,
     small: Boolean = false,
 ) {
+    val size = if (small) SMALL_SIGN_SIZE else SIGN_SIZE
     Text(
         text,
         modifier,
         color = Cream,
+        // A sign in a narrow pane letters its name smaller before it cuts it short.
+        autoSize = SignLettering(min = size * SIGN_MIN_SCALE, max = size),
         fontFamily = courier(),
         fontWeight = FontWeight.Bold,
-        fontSize = if (small) 14.sp else 18.sp,
         lineHeight = if (small) SMALL_SIGN_LINE else SIGN_LINE,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
     )
+}
+
+/**
+ * Steps the lettering down from [max] until the whole name shows, and cuts it short only at
+ * [min]. `TextAutoSize.StepBased` counts a name cut short with an ellipsis as fitting, since the
+ * ellipsis keeps the line within its width, so it would never letter a sign smaller.
+ */
+private data class SignLettering(
+    val min: TextUnit,
+    val max: TextUnit,
+) : TextAutoSize {
+    override fun TextAutoSizeLayoutScope.getFontSize(
+        constraints: Constraints,
+        text: AnnotatedString,
+    ): TextUnit {
+        var size = max.value
+        while (size > min.value) {
+            val layout = performLayout(constraints, text, size.sp)
+            if (layout.getLineEnd(0, visibleEnd = true) >= text.length) return size.sp
+            size -= SIGN_SIZE_STEP
+        }
+        return min
+    }
 }
 
 /**
@@ -277,6 +312,12 @@ private const val ARROW_FRACTION = 0.34f
 private const val ARROW_LIFT = 0.04f
 private val SIGN_LINE = 22.sp
 private val SMALL_SIGN_LINE = 17.sp
+private val SIGN_SIZE = 18.sp
+private val SMALL_SIGN_SIZE = 14.sp
+
+// Smaller lettering than this stops reading as the sign's; the name is cut short instead.
+private const val SIGN_MIN_SCALE = 0.75f
+private const val SIGN_SIZE_STEP = 0.5f
 private val SignShape = RoundedCornerShape(percent = 50)
 
 // The sign picture's rounded end spans its first 85 px; its rivet ends 0.41 of the height in,

@@ -15,11 +15,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isHeading
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
@@ -39,6 +46,10 @@ import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.domain.DiagnosticsError
 import ch.lkmc.neutrodyne.core.domain.DiagnosticsRepository
+import ch.lkmc.neutrodyne.core.model.diagnostics.DiagnosticsLine
+import ch.lkmc.neutrodyne.core.model.diagnostics.DiagnosticsReport
+import ch.lkmc.neutrodyne.core.model.diagnostics.DiagnosticsSection
+import ch.lkmc.neutrodyne.core.model.diagnostics.DiagnosticsSectionId
 import ch.lkmc.neutrodyne.core.navigation.LocalAppNavigator
 import ch.lkmc.neutrodyne.core.testing.FakeDiagnosticsRepository
 import ch.lkmc.neutrodyne.core.testing.FakeSettingsRepository
@@ -81,6 +92,38 @@ class DiagnosticsPageTest {
     fun tearDown() {
         Locale.setDefault(previousLocale)
     }
+
+    /** 08: a collapsed section opens from its whole header, a button that speaks its state. */
+    @Test
+    fun aCollapsedSectionOpensFromItsLabelledHeader() =
+        runComposeUiTest {
+            val diagnostics =
+                FakeDiagnosticsRepository().apply {
+                    report =
+                        DiagnosticsReport(
+                            generatedAt = 0,
+                            sections =
+                                listOf(
+                                    DiagnosticsSection(
+                                        DiagnosticsSectionId.LOG,
+                                        listOf(DiagnosticsLine("", "a log line")),
+                                    ),
+                                ),
+                        )
+                }
+            setDiagnosticsPage(diagnostics, RecordingActions(androidShare = false))
+
+            val header = onNode(hasText("Log") and hasClickAction())
+            header
+                .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+                .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Collapsed"))
+                .assert(isHeading())
+            onNodeWithText("a log line").assertDoesNotExist()
+
+            header.performClick()
+            header.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Expanded"))
+            onNodeWithText("a log line").assertIsDisplayed()
+        }
 
     @Test
     fun exportTapExplainsTheCopyWithoutExporting() =

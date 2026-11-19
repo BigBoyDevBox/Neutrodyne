@@ -234,6 +234,19 @@ order and test tags are unchanged, and Back, Escape or a tap outside still
 closes it. Added labels: Playback (Wiedergabe), Go to (Gehe zu), Close
 (Schliessen), Speed (Tempo) and Sleep (Schlaf).
 
+**First tuning (2026-11-18).** While the listener has no playlist (a first
+run, or every group deleted) the paper's "No playlists yet." sign (#580)
+offers three momentary keys: Discover, Import (Importieren; the import
+dialog) and Library. The dial reads NOT TUNED (NICHT EINGESTELLT) and "Add
+podcasts to start listening." instead of PLAYLIST CLEARED. Neither the sign
+nor "All clear" appears before the first groups emission, so a radio with
+playlists never flashes either on start; until then the dial reads NOT TUNED.
+Playback started elsewhere keeps its own status. Keys that outgrow the paper
+(German, large text, a 320 dp phone) wrap onto a second row instead of
+scrolling sideways. The sign, a heading, shows only when it fits above the
+keys, and a paper too short for the keys scrolls. Test tags
+`radio_empty_discover`, `radio_empty_import` and `radio_empty_library`.
+
 **Selection fallback (2026-11-04).** Deleting the selected group falls back
 to the first remaining playlist, or the empty radio if none remain. This
 adapts the old All-feed fallback to the group-only home. Undoing group deletion
@@ -261,7 +274,10 @@ grows above that scale to keep its label inside. Content titles use at most
 two lines with ellipsis and retain their full accessible text. Large text never
 stows the deck (2026-11-17); the cabinet scrolls instead.
 The printed needle scale retains uncapped minutes and seconds; only the
-four-tube counter uses PO-53's capped hours format.
+four-tube counter uses PO-53's capped hours format. The scale uses the player's
+positive duration when available, then the selected episode's feed duration.
+While both are unknown, the dial shows a localized duration legend, the
+counter continues to show elapsed time, and the dial accepts no seek input.
 
 **Implementation notes (2026-11-04).** The shared radio primitives and resources
 live in `:core:ui`; the production adapter lives in `:feature:feeds`. A queued
@@ -293,7 +309,11 @@ below 370; compact header/player below 800 high. The tubes stay on every
 screen (owner decision 2026-11-17): the deck shows on every window at least
 560 high, up to 22 % of the height, and on wider windows its chassis grows
 longer instead of the tubes growing; the cabinet takes the rest and scrolls
-when that falls short of its minimum. Extremely short narrow surfaces scroll
+when that falls short of its minimum. While the radio is ON the home's valves
+warm up (2026-11-18): an amber glow on each filament and inside its glass fades
+in over 1.8 s and cools over 0.9 s when it is switched off, at once with reduced
+motion; it redraws the deck without recomposing it, and the unlit deck is the
+artwork as rendered. Cabinet pages' decks stay unlit. Extremely short narrow surfaces scroll
 outside; font scaling must not clip or hide controls. Materials ignore theme
 and dynamic colour; other screens retained Appearance until PO-55 (2026-11-17) gave every
 screen the radio's materials ([Theming and colour](#theming-and-colour)). Bundle Barlow
@@ -509,7 +529,7 @@ On the desktop a click on the selected rail item and Ctrl/Cmd+1 … 5 on the sel
 
 ### Pane roles and detail placeholders
 
-Metadata (01's `ListDetailSceneStrategy.listPane()/detailPane()/extraPane()`) per key is the "Pane role" column of the [Screen inventory](#screen-inventory). Detail placeholders when a list key is alone on ≥ 2 partitions: Feeds — the selected group's mosaic at 240 dp with "Select an episode"; Library — "Select a podcast" with the four most recently updated covers; Settings home — the Appearance page's content rendered as the placeholder (not a back-stack entry, so back never re-opens it in a loop; tapping a page row then uses `pushDetail(SettingsKey(page))`); other lists — none (the list takes the full width). `EpisodeKey` is an extra pane so that Library → Podcast → Episode shows three panes on ≥ 1,200 dp of content. Unverified (spike S5): that `ListDetailSceneStrategy` in `adaptive-navigation3` 1.3.0 places an extra-pane entry directly after a list entry (Feeds → Episode) beside the list; fallback: register `EpisodeKey` as `detailPane()`, accepting Podcast → Episode replacing the podcast in the detail pane.
+Metadata (01's `ListDetailSceneStrategy.listPane()/detailPane()/extraPane()`) per key is the "Pane role" column of the [Screen inventory](#screen-inventory). Detail placeholders when a list key is alone on ≥ 2 partitions: Feeds — the selected group's mosaic at 240 dp with "Select an episode"; Library — none (amended 2026-11-18: the planned "Select a podcast" placeholder was never built, and the Library left the panes beside it empty; it now takes the full width like the other lists, and its grid gains columns); Settings home — the Appearance page's content rendered as the placeholder (not a back-stack entry, so back never re-opens it in a loop; tapping a page row then uses `pushDetail(SettingsKey(page))`); other lists — none (the list takes the full width). A list takes the full width because the pane strategy lays a scene of list entries without a placeholder out on one partition; that scene keeps the row's scene identity, so opening a detail splits the window inside one scaffold, as a window resize does. In the radio's cabinet a placeholder stands in the detail pane's place in the row, beside its list (2026-11-18). `EpisodeKey` is an extra pane so that Library → Podcast → Episode shows three panes on ≥ 1,200 dp of content. Unverified (spike S5): that `ListDetailSceneStrategy` in `adaptive-navigation3` 1.3.0 places an extra-pane entry directly after a list entry (Feeds → Episode) beside the list; fallback: register `EpisodeKey` as `detailPane()`, accepting Podcast → Episode replacing the podcast in the detail pane.
 
 ### Sheets and dialogs
 
@@ -581,7 +601,7 @@ Serves R1.1–R1.9 (screens), R2.1–R2.8, R3.1, R3.7, R3.9 (display), R4.6, R5.
 - Top-level screens: `NdTopAppBar` (pinned, small) with the destination title, screen actions and `(gear)` last (`SettingsGearButton`, which carries the update dot from M11a, [Settings gear badge](#updates-settings)). Pushed screens: back arrow, title, actions. The bar's container switches to `surfaceContainer` when the content is scrolled (`elevated = listState.canScrollBackward`).
 - State shape follows 01 ([ViewModels and UI state](01-foundation.md#viewmodels-and-ui-state)): `Loading` (skeleton rows in `surfaceContainer`, no shimmer), `Ready`, `Failed(error, retryable)` (an [`EmptyState`](#banners-snackbars-and-undo) with the message and "Try again"). Paged lists show `LoadState.Error` as a footer row with "Retry".
 - **Offline** ([N6](../PLAN.md#22-non-functional-requirements)): `NetworkMonitor.status.isConnected == false` → Feeds, Library and Up next show the offline banner; rows that are not downloaded dim their play button to `cloud_off` (tap → "You're offline — downloaded episodes still play"); nothing blocks on the network.
-- Lists reserve bottom padding `LocalMiniPlayerInset.current` (80 dp while the mini player is shown) plus navigation insets.
+- Lists reserve bottom padding `LocalMiniPlayerInset.current` (80 dp while the mini player is shown) plus navigation insets. In the radio's cabinet the frame reserves both: the tray ends above the bar, and the page reads an inset of 0 (2026-11-18).
 - All strings are Compose resources (`Res.string`, [D83](../PLAN.md#3-key-decisions)); numbers and dates use the app's locale — Android's per-app language, the desktop's `desktop.language` ([09 Localisation](09-quality-and-release.md#localisation)).
 - **Desktop conventions** (from M0b, completed in MD4): every row, tile and chip that has a long-press, swipe or overflow action also has a context menu ([Keyboard and mouse](#keyboard-and-mouse)); every scrolling list shows an `NdScrollbar`; actions that need a share sheet show "Copy link" instead, and "Share file" becomes "Show in Explorer / Finder / Files" (`RevealInFolder`); Android-only rows (metered network, charging, Android backup, notification permission, battery settings) are hidden, with 11's one-line explanation where users may look for them ([11 Desktop settings](11-desktop.md#desktop-settings)).
 
@@ -2068,7 +2088,8 @@ the desktop part of the M4 boundary below and adds no home/navigation design.
 ### The docked bar
 
 **Mini radio (PO-55, 2026-11-17).** The bar is a mini radio set into the cabinet's
-base: a metal plate with a brass edge, lined up with the paper tray (15 dp side
+base (the tray's bottom wall grows to the 80 dp reservation while the bar shows,
+so the bar never covers a page or pane; 2026-11-18): a metal plate with a brass edge, lined up with the paper tray (15 dp side
 insets), holding the recessed cover, the episode typed on a paper label with
 the podcast below and a small needle window (`NeedleWindow`) showing progress,
 and the radio's ON/OFF bat-handle switch (`BatToggle`, shared with the radio home)
@@ -2080,7 +2101,7 @@ ring. Artwork no longer tints the bar. Tap, context menu, swipe-to-dismiss,
 TalkBack node and actions are unchanged.
 
 
-`PlayerRoute` (`:feature:player`, hosted by `NeutrodyneRoot` beside `NavDisplay`) renders the mini player on every screen except the radio home: the root passes `PlayerPresentation.RADIO_HOME` when the selected tab is Feeds and its stack is the root, and the bar hides because the radio is the player. The bar is 64 dp high with 8 dp side insets and 16 dp corners (`NeutrodyneShapes`), floating 8 dp above the navigation chrome (the navigation bar on compact, `WindowInsets.navigationBars` under a rail, the window bottom inset on the desktop). Contents: 48 dp `CoverArt` (10 dp corners; YouTube and other non-RSS items use the 16:9 crop), episode title `titleSmall` and podcast title `bodySmall` (one line each, ellipsis, no marquee), skip back, play/pause and skip forward, each 48 dp, and a 2 dp `primary` progress line on the bottom edge driven by `positionTicks`. Lists reserve `LocalMiniPlayerInset` (80 dp while the bar shows; 88 dp while the [Continue on this device](#continue-on-this-device) card replaces it).
+`PlayerRoute` (`:feature:player`, hosted by `NeutrodyneRoot` beside `NavDisplay`) renders the mini player on every screen except the radio home: the root passes `PlayerPresentation.RADIO_HOME` when the selected tab is Feeds and its stack is the root, and the bar hides because the radio is the player. The bar is 64 dp high with 15 dp side insets that line it up with the cabinet's paper tray ([The docked bar](#the-docked-bar)), floating 8 dp above the navigation chrome (the navigation bar on compact, `WindowInsets.navigationBars` under a rail, the window bottom inset on the desktop). Contents: 48 dp `CoverArt` (10 dp corners; YouTube and other non-RSS items use the 16:9 crop), episode title `titleSmall` and podcast title `bodySmall` (one line each, ellipsis, no marquee), skip back, play/pause and skip forward, each 48 dp, and a 2 dp `primary` progress line on the bottom edge driven by `positionTicks`. Lists reserve `LocalMiniPlayerInset` (80 dp while the bar shows; 88 dp while the [Continue on this device](#continue-on-this-device) card replaces it).
 
 Phases: `BUFFERING` → a 2 dp ring around the play button; `ERROR` or a non-null `issue` → an 8 dp `error` dot on the art; `NOT_LOADED` (service stopped, 06) → play resumes via `play()`. The bar shows no banners; playback results and events still surface as the snackbars of [Issues, results and events](#issues-results-and-events).
 
@@ -2432,9 +2453,14 @@ whole row at 22 % of the window's height and stows below 560 dp like a single pa
 pane draws the deck and clips it to its own slice), every pane keeps its roof line, the walls
 between trays meet as one partition, and only the row's outer walls have gaps, rounded corners
 and lit or shaded edges. The panes of a row draw no stage of their own; they stand on the
-charcoal stage `NeutrodyneRoot` draws behind every page. The frame
+charcoal stage `NeutrodyneRoot` draws behind every page. A list with nothing beside it is no
+row: it fills the window as a single page, and a detail placeholder joins the row as its
+detail pane ([Pane roles and detail placeholders](#pane-roles-and-detail-placeholders)). The frame
 consumes the status bar, cutout and navigation bar insets, so the status bar keeps light
-icons on every page and page headers no longer lease it. `NdTopAppBar` is a metal faceplate
+icons on every page and page headers no longer lease it. While the mini player shows, the frame
+also takes the root's `LocalMiniPlayerInset`: each tray, in a row every pane's and a detail
+placeholder's, ends above the bar set into the cabinet's base, and the page inside reads an
+inset of 0, so nothing hides under the bar and nothing pads for it twice (2026-11-18). `NdTopAppBar` is a metal faceplate
 with the title on an enamel sign; `NdIconButton` and `NdTooltipIconButton` on a
 faceplate draw ivory key caps, and a page without its own navigation key gets the
 cabinet's Back key, which returns to the radio from a destination's root. Mockups:
@@ -2904,7 +2930,7 @@ The desktop window is resizable between the minimum 600 × 480 dp ([PO-19](../PL
 
 - Height is never compact (the minimum is 480 dp), so the radio home is full-bleed and the mini player docks above the navigation chrome at every width; tabletop and book postures do not exist.
 - Window resizes recompute `ndPaneLayout` without recreating anything (no configuration change on the desktop); detail entries stay on their stacks when the pane count drops, exactly as on an unfolding phone.
-- Lists cap their row width at 720 dp and centre inside wider panes, as on tablets; the Library grid and the Discover rows use the extra width for more columns.
+- Lists cap their row width at 720 dp and centre inside wider panes, as on tablets; the Library grid uses the extra width for more columns. Up next, Downloads, Discover and Manage groups keep their whole column (headers, slips, the storage meter, which stops at 480 dp) within 720 dp, centred, while the list itself spans the page so it scrolls from anywhere and its scrollbar stays at the edge (`PageColumnInset` and `pageColumn` in `:core:ui`, 2026-11-18).
 - MD4 AC2's screenshot widths 600, 900 and 1,400 dp cover the one-pane, two-pane and three-pane cases.
 
 ### Pane directive
@@ -3009,7 +3035,7 @@ screenshot matrix (MD4 AC2) captures the episode-row states in light and dark at
 
 ### Insets and edge-to-edge
 
-**Android.** `enableEdgeToEdge()` in `MainActivity` (01). Screens use `Scaffold` insets or `WindowInsets.safeDrawing`; list content pads `navigationBars` + `LocalMiniPlayerInset`; the radio home pads `safeDrawing` itself; the IME pads text-field sheets (`imePadding()`; `adjustResize` is set by 01). Display cutouts are respected in landscape (`displayCutout` in `safeDrawing`). **Desktop:** the window has OS decorations and no insets (`WindowInsets` are zero), so the same code pads nothing; the IME is the OS's.
+**Android.** `enableEdgeToEdge()` in `MainActivity` (01). Screens use `Scaffold` insets or `WindowInsets.safeDrawing`; list content pads `navigationBars` + `LocalMiniPlayerInset` (in the radio's cabinet the frame applies both, [Theming and colour](#theming-and-colour)); the radio home pads `safeDrawing` itself; the IME pads text-field sheets (`imePadding()`; `adjustResize` is set by 01). Display cutouts are respected in landscape (`displayCutout` in `safeDrawing`). **Desktop:** the window has OS decorations and no insets (`WindowInsets` are zero), so the same code pads nothing; the IME is the OS's.
 
 ---
 

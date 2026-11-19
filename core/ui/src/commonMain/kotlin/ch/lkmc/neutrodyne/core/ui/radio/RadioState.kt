@@ -4,6 +4,8 @@ package ch.lkmc.neutrodyne.core.ui.radio
 
 import ch.lkmc.neutrodyne.core.model.ArtworkRef
 import ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys
+import ch.lkmc.neutrodyne.playback.api.PlaybackIssue
+import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 
 /** Immutable presentation data; production adapters retain repository IDs, never fixture indices. */
 public data class RadioEpisode(
@@ -25,6 +27,11 @@ public data class RadioPlaylist(
 
 public data class RadioState(
     val playlists: List<RadioPlaylist> = emptyList(),
+    /**
+     * Whether [playlists] reflects the repository yet. Until it does, an empty list means
+     * "not read", not "none", so the radio does not flash its first-tuning card on start.
+     */
+    val playlistsLoaded: Boolean = false,
     val playlistId: Long? = null,
     val episodes: List<RadioEpisode> = emptyList(),
     val episodeCount: Int? = null,
@@ -36,15 +43,33 @@ public data class RadioState(
     val elapsedMs: Long = 0,
     val playing: Boolean = false,
     val hasPlayed: Boolean = false,
+    /**
+     * The loaded player's phase, so the transport can say BUFFERING, ENDED or ERROR instead of
+     * guessing from [playing]. Null when nothing is loaded or the phase is not tracked.
+     */
+    val phase: PlayerPhase? = null,
+    /** The loaded player's current issue, such as a lost network or a metered block. */
+    val issue: PlaybackIssue? = null,
     val removed: RadioEpisode? = null,
     /** The listener's skip intervals (Playback settings), printed on the keys beside the counter. */
     val skipBackMs: Long = PlaybackSettingKeys.SKIP_BACK_MS.default,
     val skipForwardMs: Long = PlaybackSettingKeys.SKIP_FORWARD_MS.default,
 ) {
     public val playlist: RadioPlaylist? get() = playlists.find { it.id == playlistId }
+
+    /** The listener has no playlist yet: a first run, or every group deleted. */
+    public val untuned: Boolean get() = playlistsLoaded && playlists.isEmpty()
     public val selected: RadioEpisode? get() =
         nowPlayingEpisode?.takeIf { it.id == selectedId }
             ?: episodes.find { it.id == selectedId }
+
+    /** Prefer the player's measurement while allowing its metadata to arrive after the programme. */
+    public val selectedDurationMs: Long?
+        get() {
+            val id = selectedId ?: return null
+            val measured = nowPlayingEpisode?.takeIf { it.id == id }?.durationMs
+            return measured?.takeIf { it > 0 } ?: episodes.find { it.id == id }?.durationMs?.takeIf { it > 0 }
+        }
 }
 
 /** Four tubes: minute pairs, or an hour digit and H followed by a minute pair. */

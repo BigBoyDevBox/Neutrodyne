@@ -366,7 +366,9 @@ internal object DesktopShell {
                     ),
                 updateNotices = graph.updateNotices,
                 settings = graph.settingsRepository,
-                refreshController = graph.refreshController,
+                // Deferred until the open gate, like the sync controller: resolving it builds the
+                // database-backed refresh scheduler, which throws on this thread before the open.
+                refreshController = { graph.refreshController },
                 desktopPlaybackController = graph.desktopPlaybackController,
                 repoUrl = buildInfo.repoUrl,
                 onQuitRequest = ::exitApplication,
