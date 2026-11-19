@@ -20,7 +20,6 @@ import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import ch.lkmc.neutrodyne.core.common.Outcome
 import ch.lkmc.neutrodyne.core.common.PlatformKind
-import ch.lkmc.neutrodyne.core.designsystem.theme.AppearancePrefs
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.domain.BackupError
@@ -169,6 +168,26 @@ class SyncSetupConfirmationTest {
             onNodeWithText("Replace").performClick()
             waitForIdle()
             assertEquals(listOf(FirstLinkChoice.USE_SERVER), harness.controller.firstLinkChoices)
+        }
+
+    /** The Merge card names the server it combines with, as the choice's title does. */
+    @Test
+    fun theMergeChoiceNamesTheServer() =
+        runComposeUiTest {
+            setPage(Harness())
+
+            onNodeWithText("sync.example.org: 5 podcasts, 2 groups.", substring = true).assertIsDisplayed()
+        }
+
+    /** The address step's field is labelled as the address it asks for, not as the screen. */
+    @Test
+    fun theAddressFieldIsLabelledAsTheServerAddress() =
+        runComposeUiTest {
+            val harness = Harness()
+            harness.link.setState(LinkState.Address)
+            setPage(harness)
+
+            onNodeWithText("Server address").assertIsDisplayed()
         }
 
     @Test
@@ -353,7 +372,7 @@ class SyncSetupConfirmationTest {
                     androidx.compose.ui.unit
                         .Density(original.density, fontScale),
             ) {
-                NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) { content() }
+                NeutrodyneTheme(SystemUiState.DEFAULT) { content() }
             }
         }
         waitForIdle()

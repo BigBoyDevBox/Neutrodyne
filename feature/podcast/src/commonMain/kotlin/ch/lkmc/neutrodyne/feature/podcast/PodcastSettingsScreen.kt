@@ -2,21 +2,14 @@
 
 package ch.lkmc.neutrodyne.feature.podcast
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -25,13 +18,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import ch.lkmc.neutrodyne.core.designsystem.components.LocalScrollbars
@@ -43,6 +31,7 @@ import ch.lkmc.neutrodyne.core.designsystem.components.NdTopAppBar
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbar
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbarColor
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
+import ch.lkmc.neutrodyne.core.designsystem.radio.EngravedHeading
 import ch.lkmc.neutrodyne.core.model.AliasReason
 import ch.lkmc.neutrodyne.core.model.BasicCredentials
 import ch.lkmc.neutrodyne.core.model.FeedInfo
@@ -60,9 +49,11 @@ import ch.lkmc.neutrodyne.core.ui.FeedErrorText
 import ch.lkmc.neutrodyne.core.ui.LocalPlatformKind
 import ch.lkmc.neutrodyne.core.ui.LocalUiClock
 import ch.lkmc.neutrodyne.core.ui.NavBackButton
+import ch.lkmc.neutrodyne.core.ui.SettingsChoiceRow
+import ch.lkmc.neutrodyne.core.ui.SettingsRow
+import ch.lkmc.neutrodyne.core.ui.SettingsSwitchRow
 import ch.lkmc.neutrodyne.core.ui.UiText
 import ch.lkmc.neutrodyne.core.ui.asString
-import ch.lkmc.neutrodyne.core.ui.radio.RadioSwitch
 import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.action_cancel
 import ch.lkmc.neutrodyne.core.ui.resources.action_copy
@@ -172,6 +163,7 @@ internal fun PodcastSettingsScreen(
                 val variants = detail.youtubeVariants
                 SettingsSwitchRow(
                     icon = NdIcons.Settings,
+                    summary = null,
                     title = stringResource(Res.string.yt_include_shorts),
                     checked = variants and YouTubeVariantBits.SHORTS != 0,
                     onCheckedChange = { enabled ->
@@ -180,6 +172,7 @@ internal fun PodcastSettingsScreen(
                 )
                 SettingsSwitchRow(
                     icon = NdIcons.Settings,
+                    summary = null,
                     title = stringResource(Res.string.yt_include_live),
                     checked = variants and YouTubeVariantBits.LIVE != 0,
                     onCheckedChange = { enabled ->
@@ -206,7 +199,6 @@ private fun GeneralSection(
     onOrderChange: (FeedOrder) -> Unit,
 ) {
     var titleDialog by rememberSaveable { mutableStateOf(false) }
-    var orderDialog by rememberSaveable { mutableStateOf(false) }
 
     Column(Modifier.fillMaxWidth()) {
         SettingsRow(
@@ -218,22 +210,30 @@ private fun GeneralSection(
         )
         SettingsSwitchRow(
             icon = NdIcons.DynamicFeed,
+            summary = null,
             title = stringResource(Res.string.ps_show_in_all),
             checked = detail.includeInAll,
             onCheckedChange = onIncludeInAll,
         )
-        SettingsRow(
+        SettingsChoiceRow(
             icon = NdIcons.Sort,
             title = stringResource(Res.string.ps_episode_order),
-            summary =
+            summary = null,
+            options = FeedOrder.entries,
+            selected = order,
+            label = {
                 stringResource(
-                    if (order == FeedOrder.NEWEST_FIRST) {
+                    if (it ==
+                        FeedOrder.NEWEST_FIRST
+                    ) {
                         Res.string.order_newest
                     } else {
                         Res.string.order_oldest
                     },
-                ),
-            onClick = { orderDialog = true },
+                )
+            },
+            onSelect = onOrderChange,
+            tag = { "order:${it.name}" },
         )
     }
 
@@ -245,16 +245,6 @@ private fun GeneralSection(
                 onCustomTitle(it)
             },
             onDismiss = { titleDialog = false },
-        )
-    }
-    if (orderDialog) {
-        OrderDialog(
-            current = order,
-            onPick = {
-                orderDialog = false
-                onOrderChange(it)
-            },
-            onDismiss = { orderDialog = false },
         )
     }
 }
@@ -283,59 +273,53 @@ private fun FeedSection(
     var credentialsDialog by rememberSaveable { mutableStateOf(false) }
 
     Column(Modifier.fillMaxWidth()) {
-        ListItem(
-            headlineContent = { Text(stringResource(Res.string.ps_feed_address)) },
-            supportingContent = {
-                Text(
-                    if (revealed) {
-                        feedInfo.feedUrl
-                    } else {
-                        feedInfo.redactedUrl + " · " + stringResource(Res.string.ps_feed_reveal)
-                    },
-                )
-            },
-            leadingContent = { Icon(NdIcons.RssFeed, contentDescription = null) },
-            trailingContent = {
+        SettingsRow(
+            icon = NdIcons.RssFeed,
+            title = stringResource(Res.string.ps_feed_address),
+            summary =
                 if (revealed) {
-                    NdIconButton(
-                        onClick = {
-                            clipboard.setText(AnnotatedString(feedInfo.feedUrl))
-                            scope.launch { snackbar.showSnackbar(copiedLabel) }
-                        },
-                        icon = NdIcons.Link,
-                        contentDescription = stringResource(Res.string.action_copy),
-                    )
-                }
-            },
-            modifier =
-                Modifier
-                    .clickable {
-                        if (revealed) return@clickable
-                        if (feedInfo.isPrivate) {
-                            revealWarning = true
-                        } else {
-                            revealed = true
-                        }
-                    }.semantics { role = Role.Button },
+                    feedInfo.feedUrl
+                } else {
+                    feedInfo.redactedUrl + " · " + stringResource(Res.string.ps_feed_reveal)
+                },
+            onClick =
+                if (revealed) {
+                    null
+                } else {
+                    {
+                        if (feedInfo.isPrivate) revealWarning = true else revealed = true
+                    }
+                },
+            trailing =
+                if (revealed) {
+                    {
+                        NdIconButton(
+                            onClick = {
+                                clipboard.setText(AnnotatedString(feedInfo.feedUrl))
+                                scope.launch { snackbar.showSnackbar(copiedLabel) }
+                            },
+                            icon = NdIcons.Link,
+                            contentDescription = stringResource(Res.string.action_copy),
+                        )
+                    }
+                } else {
+                    null
+                },
         )
 
-        ListItem(
-            headlineContent = { Text(stringResource(Res.string.ps_last_refresh)) },
-            supportingContent = { Text(lastRefreshSummary(feedInfo, nowMs).asString()) },
-            leadingContent = { Icon(NdIcons.History, contentDescription = null) },
+        SettingsRow(
+            icon = NdIcons.History,
+            title = stringResource(Res.string.ps_last_refresh),
+            summary = lastRefreshSummary(feedInfo, nowMs).asString(),
+            onClick = null,
         )
 
         if (feedInfo.moves.isNotEmpty()) {
-            ListItem(
-                headlineContent = { Text(stringResource(Res.string.ps_feed_moves)) },
-                supportingContent = {
-                    Column {
-                        feedInfo.moves.forEach { move ->
-                            Text(moveLine(move, nowMs).asString())
-                        }
-                    }
-                },
-                leadingContent = { Icon(NdIcons.ArrowForward, contentDescription = null) },
+            SettingsRow(
+                icon = NdIcons.ArrowForward,
+                title = stringResource(Res.string.ps_feed_moves),
+                summary = feedInfo.moves.map { moveLine(it, nowMs).asString() }.joinToString("\n"),
+                onClick = null,
             )
         }
 
@@ -430,55 +414,9 @@ private fun moveLine(
         ),
     )
 
-/** A settings row identical to `:feature:settings`'s internal one (modules cannot share internals). */
-@Composable
-private fun SettingsRow(
-    icon: ImageVector,
-    title: String,
-    summary: String?,
-    onClick: () -> Unit,
-) {
-    ListItem(
-        headlineContent = { Text(title) },
-        supportingContent = { if (summary != null) Text(summary) },
-        leadingContent = { Icon(icon, contentDescription = null) },
-        trailingContent = { Icon(NdIcons.ArrowForwardIos, contentDescription = null) },
-        modifier =
-            Modifier
-                .clickable(onClick = onClick)
-                .semantics { role = Role.Button },
-    )
-}
-
-/** The settings module's switch row with this section's leading icon; the whole row toggles. */
-@Composable
-private fun SettingsSwitchRow(
-    icon: ImageVector,
-    title: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    ListItem(
-        headlineContent = { Text(title) },
-        leadingContent = { Icon(icon, contentDescription = null) },
-        trailingContent = { RadioSwitch(checked = checked, onCheckedChange = null) },
-        modifier =
-            Modifier.toggleable(
-                value = checked,
-                role = Role.Switch,
-                onValueChange = onCheckedChange,
-            ),
-    )
-}
-
 @Composable
 internal fun SectionHeader(title: String) {
-    Text(
-        title,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(SECTION_PADDING),
-    )
+    EngravedHeading(title, Modifier.padding(start = 20.dp, end = 16.dp, top = 12.dp, bottom = 4.dp))
 }
 
 @Composable
@@ -505,43 +443,6 @@ private fun CustomTitleDialog(
             singleLine = true,
             modifier = Modifier.ndTextFieldFocus(),
         )
-    }
-}
-
-@Composable
-private fun OrderDialog(
-    current: FeedOrder,
-    onPick: (FeedOrder) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    NdDialog(onDismissRequest = onDismiss, title = stringResource(Res.string.ps_episode_order)) {
-        Column {
-            for (option in FeedOrder.entries) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .selectable(
-                                selected = option == current,
-                                role = Role.RadioButton,
-                                onClick = { onPick(option) },
-                            ).padding(ROW_PADDING),
-                ) {
-                    RadioButton(selected = option == current, onClick = null)
-                    Text(
-                        stringResource(
-                            if (option == FeedOrder.NEWEST_FIRST) {
-                                Res.string.order_newest
-                            } else {
-                                Res.string.order_oldest
-                            },
-                        ),
-                        modifier = Modifier.padding(start = RADIO_GAP),
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -622,9 +523,6 @@ internal fun SettingsCredentialsDialog(
     }
 }
 
-private val SECTION_PADDING = 16.dp
-private val ROW_PADDING = 16.dp
-private val RADIO_GAP = 16.dp
 private val LOADING_PADDING = 32.dp
 private val LOADING_TEXT_GAP = 16.dp
 

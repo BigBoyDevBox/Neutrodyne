@@ -3,38 +3,25 @@
 package ch.lkmc.neutrodyne.feature.settings
 
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ch.lkmc.neutrodyne.core.common.PlatformKind
 import ch.lkmc.neutrodyne.core.designsystem.components.LocalScrollbars
-import ch.lkmc.neutrodyne.core.designsystem.components.NdDialog
 import ch.lkmc.neutrodyne.core.designsystem.components.NdTopAppBar
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbar
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbarColor
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
 import ch.lkmc.neutrodyne.core.model.settings.FeedsSettingKeys
 import ch.lkmc.neutrodyne.core.model.settings.ShowNotesImages
-import ch.lkmc.neutrodyne.core.ui.SettingsChoiceDialog
+import ch.lkmc.neutrodyne.core.ui.SettingsChoiceRow
+import ch.lkmc.neutrodyne.core.ui.SettingsRow
+import ch.lkmc.neutrodyne.core.ui.SettingsSwitchRow
 import ch.lkmc.neutrodyne.core.ui.asString
 import ch.lkmc.neutrodyne.core.ui.feedsIntervalText
 import ch.lkmc.neutrodyne.core.ui.platform.LocalPlatformActions
@@ -46,9 +33,6 @@ import ch.lkmc.neutrodyne.core.ui.resources.feeds_backfill_summary
 import ch.lkmc.neutrodyne.core.ui.resources.feeds_images_always
 import ch.lkmc.neutrodyne.core.ui.resources.feeds_images_tap
 import ch.lkmc.neutrodyne.core.ui.resources.feeds_images_wifi
-import ch.lkmc.neutrodyne.core.ui.resources.feeds_interval_hour
-import ch.lkmc.neutrodyne.core.ui.resources.feeds_interval_hours
-import ch.lkmc.neutrodyne.core.ui.resources.feeds_interval_manual
 import ch.lkmc.neutrodyne.core.ui.resources.feeds_not_on_desktop
 import ch.lkmc.neutrodyne.core.ui.resources.feeds_notes_images
 import ch.lkmc.neutrodyne.core.ui.resources.feeds_on_open
@@ -77,8 +61,6 @@ internal fun FeedsPage(
     notificationRequester: NotificationPermissionRequester? = LocalPlatformActions.current.notifications,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var showIntervalDialog by rememberSaveable { mutableStateOf(false) }
-    var showImagesDialog by rememberSaveable { mutableStateOf(false) }
 
     ShowUserMessages(state.messages, viewModel::onMessageShown)
 
@@ -97,11 +79,14 @@ internal fun FeedsPage(
                 .verticalScroll(scroll)
                 .ndScrollbar(scroll, bars, barColor),
         ) {
-            SettingsRow(
+            SettingsChoiceRow(
                 icon = NdIcons.Schedule,
                 title = stringResource(Res.string.feeds_refresh_interval),
-                summary = feedsIntervalText(state.intervalMinutes).asString(),
-                onClick = { showIntervalDialog = true },
+                summary = null,
+                options = FeedsSettingKeys.REFRESH_INTERVAL_CHOICES,
+                selected = state.intervalMinutes,
+                label = { feedsIntervalText(it).asString() },
+                onSelect = viewModel::setRefreshIntervalMinutes,
             )
             if (platform == PlatformKind.ANDROID) {
                 SettingsSwitchRow(
@@ -117,12 +102,11 @@ internal fun FeedsPage(
                     onCheckedChange = viewModel::setRefreshOnAppOpen,
                 )
             } else {
-                ListItem(
-                    headlineContent = { Text(stringResource(Res.string.feeds_wifi_only)) },
-                    supportingContent = {
-                        Text(stringResource(Res.string.feeds_not_on_desktop))
-                    },
-                    leadingContent = { Icon(NdIcons.Wifi, contentDescription = null) },
+                SettingsRow(
+                    icon = NdIcons.Wifi,
+                    title = stringResource(Res.string.feeds_wifi_only),
+                    summary = stringResource(Res.string.feeds_not_on_desktop),
+                    onClick = null,
                 )
             }
             SettingsSwitchRow(
@@ -138,42 +122,16 @@ internal fun FeedsPage(
                 checked = state.backfillPagedFeeds,
                 onCheckedChange = viewModel::setBackfillPagedFeeds,
             )
-            SettingsRow(
+            SettingsChoiceRow(
                 icon = NdIcons.Image,
                 title = stringResource(Res.string.feeds_notes_images),
-                summary = stringResource(showNotesImagesLabel(state.showNotesImages)),
-                onClick = { showImagesDialog = true },
+                summary = null,
+                options = FeedsSettingKeys.SHOW_NOTES_IMAGES.values,
+                selected = state.showNotesImages,
+                label = { stringResource(showNotesImagesLabel(it)) },
+                onSelect = viewModel::setShowNotesImages,
             )
         }
-    }
-
-    if (showIntervalDialog) {
-        SettingsChoiceDialog(
-            icon = NdIcons.Schedule,
-            title = stringResource(Res.string.feeds_refresh_interval),
-            options = FeedsSettingKeys.REFRESH_INTERVAL_CHOICES,
-            selected = state.intervalMinutes,
-            label = { feedsIntervalText(it).asString() },
-            onSelect = { minutes ->
-                showIntervalDialog = false
-                viewModel.setRefreshIntervalMinutes(minutes)
-            },
-            onDismissRequest = { showIntervalDialog = false },
-        )
-    }
-    if (showImagesDialog) {
-        SettingsChoiceDialog(
-            icon = NdIcons.Image,
-            title = stringResource(Res.string.feeds_notes_images),
-            options = FeedsSettingKeys.SHOW_NOTES_IMAGES.values,
-            selected = state.showNotesImages,
-            label = { stringResource(showNotesImagesLabel(it)) },
-            onSelect = { choice ->
-                showImagesDialog = false
-                viewModel.setShowNotesImages(choice)
-            },
-            onDismissRequest = { showImagesDialog = false },
-        )
     }
 }
 

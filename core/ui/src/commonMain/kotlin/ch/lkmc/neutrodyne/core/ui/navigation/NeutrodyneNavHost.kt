@@ -18,6 +18,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
 import androidx.navigation3.runtime.NavEntry
 import androidx.navigation3.runtime.NavEntryDecorator
@@ -32,6 +33,7 @@ import androidx.navigation3.ui.defaultPopTransitionSpec
 import androidx.navigation3.ui.defaultPredictivePopTransitionSpec
 import androidx.navigation3.ui.defaultTransitionSpec
 import ch.lkmc.neutrodyne.core.designsystem.radio.CabinetDeck
+import ch.lkmc.neutrodyne.core.designsystem.radio.CabinetSpan
 import ch.lkmc.neutrodyne.core.designsystem.radio.LocalCabinetBackKey
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioCabinetPage
 import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
@@ -42,6 +44,7 @@ import ch.lkmc.neutrodyne.core.navigation.LocalNavTab
 import ch.lkmc.neutrodyne.core.navigation.NdSceneMetadata
 import ch.lkmc.neutrodyne.core.navigation.TopLevelKey
 import ch.lkmc.neutrodyne.core.ui.NavBackButton
+import ch.lkmc.neutrodyne.core.ui.root.LocalMiniPlayerInset
 
 /**
  * How the host frames each page. The app root builds every page except the radio home into the
@@ -97,7 +100,7 @@ public fun NeutrodyneNavHost(
                             rememberHeaderBarDecorator(state, tab, directive.maxHorizontalPartitions, pageFrame),
                             rememberCabinetDecorator(directive.maxHorizontalPartitions, pageFrame),
                         ),
-                    entryProvider = { key -> withPaneRole(key, provider(key), tab) },
+                    entryProvider = { key -> withPaneRole(key, provider(key), tab, pageFrame) },
                 )
             }
         }
@@ -106,8 +109,8 @@ public fun NeutrodyneNavHost(
 
     val adaptive = rememberListDetailSceneStrategy<NavKey>(directive = directive)
     val panes =
-        remember(state, provider) {
-            PaneSceneStrategy(state) { key, tab -> withPaneRole(key, provider(key), tab) }
+        remember(state, provider, pageFrame) {
+            PaneSceneStrategy(state) { key, tab -> withPaneRole(key, provider(key), tab, pageFrame) }
         }
     panes.updateCurrent(
         adaptive,
@@ -290,12 +293,14 @@ public fun rememberTabLocalNavEntryDecorator(tab: TopLevelKey): NavEntryDecorato
  * produce the same rendered entries, so the transition spec needs the recorded owner — and
  * translates the platform-neutral [NdSceneMetadata.KEY_PANE] marker into
  * `ListDetailSceneStrategy`'s metadata with [tab] as the `sceneKey`, so a scene never merges
- * entries from two stacks.
+ * entries from two stacks. A detail placeholder stands in the cabinet beside its list, framed
+ * like the pages under [pageFrame].
  */
 private fun withPaneRole(
     key: NavKey,
     entry: NavEntry<NavKey>,
     tab: TopLevelKey,
+    pageFrame: PageFrame,
 ): NavEntry<NavKey> {
     val role = entry.metadata[NdSceneMetadata.KEY_PANE] as? String
     val placeholder =
@@ -307,8 +312,13 @@ private fun withPaneRole(
                 if (placeholder != null) {
                     ListDetailSceneStrategy.listPane(
                         sceneKey = tab,
-                        detailPlaceholder = { placeholder() },
-                    )
+                        detailPlaceholder =
+                            if (pageFrame == PageFrame.RADIO_CABINET) {
+                                { CabinetPlaceholder(placeholder) }
+                            } else {
+                                { placeholder() }
+                            },
+                    ) + mapOf(PANE_HAS_PLACEHOLDER to true)
                 } else {
                     ListDetailSceneStrategy.listPane(sceneKey = tab)
                 }
@@ -336,6 +346,22 @@ private fun withPaneRole(
     )
 }
 
+/**
+ * A detail placeholder is no back-stack entry, so no entry decorator frames it: in the radio's
+ * cabinet it takes the detail pane's place in the row, under the deck its list carries.
+ */
+@Composable
+@Suppress("FunctionNaming") // Compose functions use PascalCase.
+private fun CabinetPlaceholder(placeholder: @Composable () -> Unit) {
+    RadioCabinetPage(
+        CabinetDeck.HIDDEN,
+        span = cabinetSpan(NdSceneMetadata.PANE_DETAIL, LocalPaneRow.current),
+        dock = LocalMiniPlayerInset.current,
+    ) {
+        CompositionLocalProvider(LocalMiniPlayerInset provides 0.dp) { placeholder() }
+    }
+}
+
 @Composable
 private fun rememberHeaderBarDecorator(
     state: NavigationState,
@@ -356,8 +382,11 @@ private fun rememberHeaderBarDecorator(
 
 /**
  * Builds every page except the radio home into the radio's cabinet (owner decision 2026-11-17).
- * Sheets and dialogs keep their own containers. In a pane row only the list pane, which leads
- * the row, carries the valve deck, so a two-pane window shows one deck as one radio would.
+ * Sheets and dialogs keep their own containers. Panes shown side by side share one cabinet: each
+ * takes its [CabinetSpan] from its place in the scene's pane row, and one valve deck lies across
+ * the whole row, as on one radio; the list pane, which leads the row, carries it. The docked mini
+ * radio spans the window below every pane, so each cabinet's base holds the root's
+ * [LocalMiniPlayerInset] and the page inside sees none left to reserve.
  */
 @Composable
 private fun rememberCabinetDecorator(
@@ -374,8 +403,15 @@ private fun rememberCabinetDecorator(
                     } else {
                         CabinetDeck.HIDDEN
                     }
-                RadioCabinetPage(deck) {
-                    CompositionLocalProvider(LocalCabinetBackKey provides CabinetBackKey) { entry.Content() }
+                RadioCabinetPage(
+                    deck,
+                    span = cabinetSpan(role, LocalPaneRow.current),
+                    dock = LocalMiniPlayerInset.current,
+                ) {
+                    CompositionLocalProvider(
+                        LocalCabinetBackKey provides CabinetBackKey,
+                        LocalMiniPlayerInset provides 0.dp,
+                    ) { entry.Content() }
                 }
             } else {
                 entry.Content()
@@ -384,6 +420,20 @@ private fun rememberCabinetDecorator(
     }
 
 private val CabinetBackKey: @Composable () -> Unit = { NavBackButton() }
+
+/** A page's place in its scene's pane row; a page outside a row of two or more stands alone. */
+internal fun cabinetSpan(
+    role: Any?,
+    row: List<String>,
+): CabinetSpan {
+    val index = row.indexOf(role)
+    return when {
+        row.size < 2 || index < 0 -> CabinetSpan.ALONE
+        index == 0 -> CabinetSpan.LEADING
+        index == row.lastIndex -> CabinetSpan.TRAILING
+        else -> CabinetSpan.MIDDLE
+    }
+}
 
 /**
  * Cabinet pages sit below the valve deck on the charcoal stage, so the status bar always has

@@ -4,11 +4,13 @@ package ch.lkmc.neutrodyne.core.ui.radio
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.LocalSaveableStateRegistry
@@ -24,6 +26,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
@@ -32,6 +35,7 @@ import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -44,15 +48,28 @@ import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.runDesktopComposeUiTest
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.test.withKeyDown
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import ch.lkmc.neutrodyne.core.designsystem.theme.AppearancePrefs
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.ui.resources.Res
+import ch.lkmc.neutrodyne.core.ui.resources.action_pause
+import ch.lkmc.neutrodyne.core.ui.resources.action_play
+import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
+import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
+import ch.lkmc.neutrodyne.core.ui.resources.radio_ended
+import ch.lkmc.neutrodyne.core.ui.resources.radio_episodes
+import ch.lkmc.neutrodyne.core.ui.resources.radio_error
 import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists
+import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists_empty
 import ch.lkmc.neutrodyne.core.ui.resources.radio_paused
+import ch.lkmc.neutrodyne.core.ui.resources.radio_playing
+import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_back
+import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward
+import ch.lkmc.neutrodyne.playback.api.PlaybackIssue
+import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 import org.jetbrains.compose.resources.getString
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -66,7 +83,7 @@ class RadioInteractionTest {
             var discarded: Long? = null
             val original = state
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(
                         state,
                         RadioActions(discard = { id ->
@@ -100,7 +117,7 @@ class RadioInteractionTest {
             var discards = 0
             var selections = 0
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(
                         radioFixture(),
                         RadioActions(discard = { discards++ }, selectEpisode = { selections++ }),
@@ -131,13 +148,162 @@ class RadioInteractionTest {
                     )
                 }
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(fixture, RadioActions())
                 }
             }
             onNodeWithText(getString(Res.string.radio_paused)).assertIsDisplayed()
             onNodeWithContentDescription(getString(Res.string.radio_elapsed_full, 12L, 0L, 0L)).assertIsDisplayed()
             onAllNodes(hasText("900:00")).assertCountEquals(2)
+        }
+
+    @Test
+    fun transportStatusFollowsTheLoadedPhase() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var phase by mutableStateOf<PlayerPhase?>(null)
+            var issue by mutableStateOf<PlaybackIssue?>(null)
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        radioFixture().copy(playing = true, phase = phase, issue = issue),
+                        RadioActions(),
+                    )
+                }
+            }
+            onNodeWithText(getString(Res.string.radio_playing)).assertIsDisplayed()
+            runOnIdle { phase = PlayerPhase.BUFFERING }
+            onNodeWithText(getString(Res.string.radio_buffering)).assertIsDisplayed()
+            runOnIdle { phase = PlayerPhase.ENDED }
+            onNodeWithText(getString(Res.string.radio_ended)).assertIsDisplayed()
+            runOnIdle {
+                phase = PlayerPhase.ERROR
+                issue = null
+            }
+            onNodeWithText(getString(Res.string.radio_error)).assertIsDisplayed()
+            // An issue with a ready phase keeps the transport status but lights the red lamp,
+            // as the mini player's error dot does.
+            runOnIdle {
+                phase = null
+                issue = PlaybackIssue.NETWORK_LOST
+            }
+            onNodeWithText(getString(Res.string.radio_playing)).assertIsDisplayed()
+            // An issue during buffering keeps the BUFFERING status text; the lamp treats any
+            // issue as red regardless of the buffering branch order.
+            runOnIdle {
+                phase = PlayerPhase.BUFFERING
+                issue = PlaybackIssue.NETWORK_LOST
+            }
+            onNodeWithText(getString(Res.string.radio_buffering)).assertIsDisplayed()
+        }
+
+    @Test
+    fun arrowKeysMoveTheSelectionAndFocusThroughTheProgramme() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var selected by mutableLongStateOf(1L)
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        radioFixture().copy(selectedId = selected),
+                        RadioActions(selectEpisode = { selected = it }),
+                    )
+                }
+            }
+            onNodeWithTag("radio_episode_1").performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            onNodeWithTag("radio_episode_1").performKeyInput { pressKey(Key.DirectionDown) }
+            assertEquals(2L, selected)
+            onNodeWithTag("radio_episode_2").assertIsFocused()
+            onNodeWithTag("radio_episode_2").performKeyInput { pressKey(Key.DirectionDown) }
+            assertEquals(3L, selected)
+            onNodeWithTag("radio_episode_3").assertIsFocused()
+            onNodeWithTag("radio_episode_3").performKeyInput { pressKey(Key.DirectionUp) }
+            assertEquals(2L, selected)
+            onNodeWithTag("radio_episode_2").assertIsFocused()
+            onNodeWithTag("radio_episode_2").performKeyInput { pressKey(Key.DirectionUp) }
+            assertEquals(1L, selected)
+            onNodeWithTag("radio_episode_1").assertIsFocused()
+            // The top stops instead of wrapping.
+            onNodeWithTag("radio_episode_1").performKeyInput { pressKey(Key.DirectionUp) }
+            assertEquals(1L, selected)
+        }
+
+    @Test
+    fun arrowKeysScrollALongProgrammeToTheSelection() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var selected by mutableLongStateOf(1L)
+            val episodes =
+                (1..40).map { RadioEpisode(it.toLong(), "Episode $it", "Podcast", 20 * 60_000L) }
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        RadioState(
+                            playlists = listOf(RadioPlaylist(1, "Rotation", 1)),
+                            playlistId = 1,
+                            episodes = episodes,
+                            selectedId = selected,
+                        ),
+                        RadioActions(selectEpisode = { selected = it }),
+                    )
+                }
+            }
+            onNodeWithTag("radio_episode_1").performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            repeat(12) {
+                onNode(isFocused()).performKeyInput { pressKey(Key.DirectionDown) }
+            }
+            assertEquals(13L, selected)
+            onNodeWithTag("radio_episode_13").assertIsFocused().assertIsDisplayed()
+        }
+
+    @Test
+    fun arrowChordsPassThroughToTheRoot() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var selected by mutableLongStateOf(1L)
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        radioFixture().copy(selectedId = selected),
+                        RadioActions(selectEpisode = { selected = it }),
+                    )
+                }
+            }
+            onNodeWithTag("radio_episode_1").performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            onNodeWithTag("radio_episode_1").performKeyInput {
+                withKeyDown(Key.CtrlLeft) { pressKey(Key.DirectionDown) }
+                withKeyDown(Key.MetaLeft) { pressKey(Key.DirectionUp) }
+            }
+            assertEquals(1L, selected)
+            // A plain Shift+Arrow still tunes, as it did before the chord guard.
+            onNodeWithTag("radio_episode_1").performKeyInput {
+                withKeyDown(Key.ShiftLeft) { pressKey(Key.DirectionDown) }
+            }
+            assertEquals(2L, selected)
+        }
+
+    @Test
+    fun arrowKeysSurviveTheListShiftingUnderTheFocusedSlip() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var episodes by
+                mutableStateOf(
+                    (1..6).map { RadioEpisode(it.toLong(), "Episode $it", "Podcast", 20 * 60_000L) },
+                )
+            var selected by mutableLongStateOf(3L)
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        RadioState(
+                            playlists = listOf(RadioPlaylist(1, "Rotation", 1)),
+                            playlistId = 1,
+                            episodes = episodes,
+                            selectedId = selected,
+                        ),
+                        RadioActions(selectEpisode = { selected = it }),
+                    )
+                }
+            }
+            onNodeWithTag("radio_episode_3").performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            // The row above the focused slip goes away, so the focused index no longer names it.
+            runOnIdle { episodes = episodes.filterNot { it.id == 1L } }
+            onNode(isFocused()).performKeyInput { pressKey(Key.DirectionDown) }
+            assertEquals(4L, selected)
         }
 
     @Test fun openChooserSurvivesColumnSwitchAndRecreation() =
@@ -151,7 +317,7 @@ class RadioInteractionTest {
                     val current = remember { SaveableStateRegistry(saved) { true } }
                     registry = current
                     CompositionLocalProvider(LocalSaveableStateRegistry provides current) {
-                        NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                        NeutrodyneTheme(SystemUiState.DEFAULT) {
                             Box(Modifier.width(width.dp).fillMaxHeight()) {
                                 RadioScreen(radioFixture(), RadioActions())
                             }
@@ -174,7 +340,7 @@ class RadioInteractionTest {
     @Test fun homeOffersNoPlaylistCreationOrSwipeHint() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(radioFixture(), RadioActions())
                 }
             }
@@ -189,7 +355,7 @@ class RadioInteractionTest {
             var playing by mutableStateOf(false)
             var toggles = 0
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(
                         radioFixture().copy(playing = playing),
                         RadioActions(togglePlay = {
@@ -219,7 +385,7 @@ class RadioInteractionTest {
         runDesktopComposeUiTest(width = 390, height = 844) {
             var toggles = 0
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(radioFixture().copy(selectedId = null), RadioActions(togglePlay = { toggles++ }))
                 }
             }
@@ -228,10 +394,69 @@ class RadioInteractionTest {
             assertEquals(0, toggles)
         }
 
+    @Test fun skipKeysFlankTheCounterWithTheListenersIntervals() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var back = 0
+            var forward = 0
+            var selected by mutableStateOf<Long?>(radioFixture().selectedId)
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        radioFixture().copy(selectedId = selected, skipBackMs = 15_000, skipForwardMs = 45_000),
+                        RadioActions(skipBack = { back++ }, skipForward = { forward++ }),
+                    )
+                }
+            }
+            onNodeWithTag(
+                "radio_skip_back",
+            ).assertContentDescriptionEquals(getString(Res.string.radio_skip_back, 15L)).performClick()
+            onNodeWithTag(
+                "radio_skip_forward",
+            ).assertContentDescriptionEquals(getString(Res.string.radio_skip_forward, 45L)).performClick()
+            assertEquals(1, back)
+            assertEquals(1, forward)
+
+            selected = null
+            onNodeWithTag("radio_skip_back").assertIsNotEnabled().performClick()
+            onNodeWithTag("radio_skip_forward").assertIsNotEnabled().performClick()
+            assertEquals(1, back)
+            assertEquals(1, forward)
+        }
+
+    @Test fun eachSlipHasAPlayKeyThatPausesThePlayingSlip() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val played = mutableListOf<Long>()
+            val state = radioFixture(true)
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(state, RadioActions(playEpisode = { played += it }))
+                }
+            }
+            val playing = state.selectedId!!
+            val other = state.episodes.first { it.id != playing }.id
+            onNodeWithTag("radio_slip_play_$playing").assertContentDescriptionEquals(getString(Res.string.action_pause))
+            onNodeWithTag("radio_slip_play_$other")
+                .assertContentDescriptionEquals(getString(Res.string.action_play))
+                .performClick()
+            onNodeWithTag("radio_slip_play_$playing").performClick()
+            assertEquals(listOf(other, playing), played)
+        }
+
+    @Test fun doubleTextScaleOnANarrowScreenLeavesSkippingToTheNeedle() =
+        runDesktopComposeUiTest(width = 320, height = 568) {
+            setContent {
+                CompositionLocalProvider(LocalDensity provides Density(1f, 2f)) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) { RadioScreen(radioFixture(), RadioActions()) }
+                }
+            }
+            onNodeWithTag("radio_skip_back").assertDoesNotExist()
+            onNodeWithTag("radio_skip_forward").assertDoesNotExist()
+        }
+
     @Test fun emptyChooserExplainsWhereToCreatePlaylists() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(RadioState(), RadioActions())
                 }
             }
@@ -239,11 +464,72 @@ class RadioInteractionTest {
             onNodeWithText(getString(Res.string.radio_no_playlists)).assertIsDisplayed()
         }
 
+    @Test fun anEmptyRadioOffersDiscoverAndTheGroupWorkflow() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var discover = 0
+            var library = 0
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        RadioState(),
+                        RadioActions(openDiscover = { discover++ }, openLibrary = { library++ }),
+                    )
+                }
+            }
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty)).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
+            onNodeWithTag("radio_empty_discover").performClick()
+            onNodeWithTag("radio_empty_library").performClick()
+            assertEquals(1, discover)
+            assertEquals(1, library)
+        }
+
+    @Test fun anEmptyRadioHidesRouteKeysWhileLoading() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(RadioState(loading = true), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_empty_discover").assertDoesNotExist()
+            onNodeWithTag("radio_empty_library").assertDoesNotExist()
+        }
+
+    @Test fun anEmptyRadioHidesRouteKeysWhenLoadFails() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(RadioState(loadError = true), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_empty_discover").assertDoesNotExist()
+            onNodeWithTag("radio_empty_library").assertDoesNotExist()
+        }
+
+    @Test fun aClearedPlaylistKeepsItsAllClearSignWithoutRouteKeys() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        RadioState(
+                            playlists = listOf(RadioPlaylist(1, "Tech", 0)),
+                            playlistId = 1,
+                        ),
+                        RadioActions(),
+                    )
+                }
+            }
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty)).assertDoesNotExist()
+            onNodeWithTag("radio_empty_discover").assertDoesNotExist()
+            onNodeWithTag("radio_empty_library").assertDoesNotExist()
+        }
+
     @Test fun pagingFailureOffersRetryAndRetainsTheProgramme() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             var retries = 0
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(radioFixture().copy(loadError = true), RadioActions(retry = { retries++ }))
                 }
             }
@@ -252,12 +538,24 @@ class RadioInteractionTest {
             assertEquals(1, retries)
         }
 
+    @Test fun theHomeMenuKeyIsAButtonOnAnIvoryCap() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(radioFixture(), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_menu").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button),
+            )
+        }
+
     @Test fun doubleTextScaleKeepsHeaderAndTransportReachable() =
         runDesktopComposeUiTest(width = 320, height = 568) {
             var menuClicks = 0
             setContent {
                 CompositionLocalProvider(LocalDensity provides Density(1f, 2f)) {
-                    NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
                         RadioScreen(radioFixture(), RadioActions(menu = { menuClicks++ }))
                     }
                 }
@@ -267,11 +565,11 @@ class RadioInteractionTest {
             onNodeWithTag("radio_play").performScrollTo().assertIsDisplayed()
         }
 
-    @Test fun aLongSelectedTitleStowsTheDeckWithoutOscillating() =
+    @Test fun aLongSelectedTitleKeepsTheDeckAndThePlayer() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             var state by mutableStateOf(radioFixture())
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(state, RadioActions(), Modifier.padding(top = 48.dp, bottom = 24.dp))
                 }
             }
@@ -289,8 +587,64 @@ class RadioInteractionTest {
                             },
                     )
             }
-            onNodeWithTag("radio_valve_deck").assertDoesNotExist()
-            mainClock.advanceTimeBy(500)
+            onNodeWithTag("radio_valve_deck").assertIsDisplayed()
+            onNodeWithTag("radio_play").assertIsDisplayed()
+        }
+
+    // The tubes stay on every screen (owner decision 2026-11-17): large text and small phones keep
+    // the deck, with the play switch still on screen; only windows too short for it stow it.
+    @Test fun largeTextKeepsTheDeckAndThePlaySwitch() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                CompositionLocalProvider(LocalDensity provides Density(1f, 1.3f)) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) { RadioScreen(radioFixture(), RadioActions()) }
+                }
+            }
+            onNodeWithTag("radio_valve_deck").assertIsDisplayed()
+            onNodeWithTag("radio_play").assertIsDisplayed()
+        }
+
+    @Test fun aSmallPhoneKeepsTheDeckAndThePlaySwitch() =
+        runDesktopComposeUiTest(width = 320, height = 568) {
+            setContent { NeutrodyneTheme(SystemUiState.DEFAULT) { RadioScreen(radioFixture(), RadioActions()) } }
+            onNodeWithTag("radio_valve_deck").assertIsDisplayed()
+            onNodeWithTag("radio_play").assertIsDisplayed()
+        }
+
+    @Test fun largeTextOnASmallPhoneKeepsALongTitledPlayerReachable() =
+        runDesktopComposeUiTest(width = 320, height = 568) {
+            val state =
+                radioFixture().let { fixture ->
+                    fixture.copy(
+                        episodes =
+                            fixture.episodes.map { episode ->
+                                if (episode.id == fixture.selectedId) {
+                                    episode.copy(title = "A longer programme title that needs room. ".repeat(6))
+                                } else {
+                                    episode
+                                }
+                            },
+                    )
+                }
+            setContent {
+                CompositionLocalProvider(LocalDensity provides Density(1f, 1.3f)) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) { RadioScreen(state, RadioActions()) }
+                }
+            }
+            onNodeWithTag("radio_valve_deck").assertIsDisplayed()
+            onNodeWithTag("radio_play").performScrollTo().assertIsDisplayed()
+        }
+
+    @Test fun aWideWindowKeepsTheDeck() =
+        runDesktopComposeUiTest(width = 1200, height = 800) {
+            setContent { NeutrodyneTheme(SystemUiState.DEFAULT) { RadioScreen(radioFixture(), RadioActions()) } }
+            onNodeWithTag("radio_valve_deck").assertIsDisplayed()
+            onNodeWithTag("radio_play").assertIsDisplayed()
+        }
+
+    @Test fun aShortWindowStowsTheDeck() =
+        runDesktopComposeUiTest(width = 700, height = 360) {
+            setContent { NeutrodyneTheme(SystemUiState.DEFAULT) { RadioScreen(radioFixture(), RadioActions()) } }
             onNodeWithTag("radio_valve_deck").assertDoesNotExist()
             onNodeWithTag("radio_play").assertIsDisplayed()
         }
@@ -300,7 +654,7 @@ class RadioInteractionTest {
             var width by mutableIntStateOf(390)
             var discards = 0
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     Box(Modifier.width(width.dp).fillMaxHeight()) {
                         RadioScreen(radioFixture(), RadioActions(discard = { discards++ }))
                     }
@@ -315,11 +669,30 @@ class RadioInteractionTest {
             assertEquals(0, discards)
         }
 
+    // The deck and the cabinet are sized from the usable height; the transport must follow it,
+    // not the raw window. The test window is 844 dp tall, but the screen is pinned to 772 dp
+    // of content (844 dp with 72 dp of insets), which is the compact home.
+    @Test fun theTransportFollowsTheUsableHeightNotTheWindow() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val heading = getString(Res.string.radio_episodes).uppercase()
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    Box(Modifier.height(772.dp)) {
+                        RadioScreen(radioFixture(), RadioActions())
+                    }
+                }
+            }
+            // The compact home is really on screen: its transport and programme are present.
+            onNodeWithTag("radio_play").assertIsDisplayed()
+            onNodeWithTag("radio_episodes").assertIsDisplayed()
+            onNodeWithText(heading).assertDoesNotExist()
+        }
+
     @Test fun focusedDeleteAndChooserEscapeRestoreFocus() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             var removed: Long? = null
             setContent {
-                NeutrodyneTheme(AppearancePrefs(dynamicColor = false), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(radioFixture(), RadioActions(discard = { removed = it }))
                 }
             }

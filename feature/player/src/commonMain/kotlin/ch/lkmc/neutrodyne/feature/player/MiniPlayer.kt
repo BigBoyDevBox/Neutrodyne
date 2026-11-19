@@ -45,8 +45,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isShiftPressed
@@ -75,15 +75,16 @@ import ch.lkmc.neutrodyne.core.designsystem.components.NdIconButton
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
 import ch.lkmc.neutrodyne.core.designsystem.radio.BatToggle
 import ch.lkmc.neutrodyne.core.designsystem.radio.Brass
+import ch.lkmc.neutrodyne.core.designsystem.radio.Faceplate
 import ch.lkmc.neutrodyne.core.designsystem.radio.Ink
+import ch.lkmc.neutrodyne.core.designsystem.radio.IvoryKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.MaterialPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.NeedleWindow
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioMaterial
+import ch.lkmc.neutrodyne.core.designsystem.radio.SwitchPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.barlow
 import ch.lkmc.neutrodyne.core.designsystem.radio.courier
 import ch.lkmc.neutrodyne.core.designsystem.radio.recess
-import ch.lkmc.neutrodyne.core.designsystem.theme.ArtworkSurface
-import ch.lkmc.neutrodyne.core.designsystem.theme.ArtworkTheme
 import ch.lkmc.neutrodyne.core.model.SourceType
 import ch.lkmc.neutrodyne.core.navigation.EpisodeKey
 import ch.lkmc.neutrodyne.core.navigation.PodcastKey
@@ -197,8 +198,7 @@ private fun MiniBar(
     val openRadio: () -> Unit = slot.openRadio
     val navigate: (NavKey) -> Unit = slot.navigate
 
-    MaterialPlate(
-        RadioMaterial.METAL,
+    Faceplate(
         modifier =
             modifier
                 .offset { IntOffset(0, dragOffset.roundToInt()) }
@@ -215,8 +215,6 @@ private fun MiniBar(
                         animate(dragOffset, 0f) { value, _ -> dragOffset = value }
                     },
                 ).shadow(MINI_ELEVATION, StripShape)
-                .clip(StripShape)
-                .border(1.dp, Brass, StripShape)
                 .testTag("player_sheet"),
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -269,10 +267,12 @@ private fun MiniBar(
                 if (wide) {
                     SkipKey(
                         stringResource(Res.string.player_back_value, ui.skipBackMs / MILLIS_PER_SECOND),
+                        NdIcons.ArrowBack,
                         back,
                     )
                     SkipKey(
                         stringResource(Res.string.player_forward_value, ui.skipForwardMs / MILLIS_PER_SECOND),
+                        NdIcons.ArrowForward,
                         forward,
                     )
                 }
@@ -289,7 +289,7 @@ private fun MiniBar(
                 shape = RoundedCornerShape(MINI_ART_CORNER),
                 modifier =
                     Modifier
-                        .offset(MINI_ART_OFFSET, MINI_ART_OFFSET)
+                        .offset(MINI_ART_START, MINI_ART_OFFSET)
                         .size(MINI_ART)
                         .recess(RoundedCornerShape(MINI_ART_CORNER))
                         .testTag("playerArtwork"),
@@ -297,7 +297,7 @@ private fun MiniBar(
             if (now.issue != null || now.phase == PlayerPhase.ERROR) {
                 Box(
                     Modifier
-                        .offset(MINI_ART_OFFSET + 4.dp, MINI_ART_OFFSET + 4.dp)
+                        .offset(MINI_ART_START + 4.dp, MINI_ART_OFFSET + 4.dp)
                         .size(8.dp)
                         .clip(RoundedCornerShape(4.dp))
                         .background(SignalRed),
@@ -381,23 +381,18 @@ private fun PaperLabel(
     }
 }
 
-/** A small ivory skip key ("-30", "+30"); its action is also a custom accessibility action. */
+/**
+ * A small ivory skip key, its [arrow] over the seconds it skips, like the radio's skip keys; its
+ * action is also a custom accessibility action.
+ */
 @Composable
 private fun SkipKey(
     text: String,
+    arrow: ImageVector,
     onClick: () -> Unit,
 ) {
     Box(Modifier.size(SKIP_KEY_TARGET).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-        Box(
-            Modifier
-                .size(SKIP_KEY_CAP)
-                .shadow(2.dp, CircleShape)
-                .background(Brush.radialGradient(listOf(Color(0xFFF6EBD0), Color(0xFFD4BC90))), CircleShape)
-                .border(1.dp, Brass, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(text, color = Ink, fontFamily = barlow(), fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-        }
+        IvoryKeyCap(text, size = SKIP_KEY_CAP, icon = arrow)
     }
 }
 
@@ -419,6 +414,7 @@ private fun PlayToggle(
             onLabel = stringResource(Res.string.player_switch_on),
             offLabel = stringResource(Res.string.player_switch_off),
             modifier = Modifier.size(TOGGLE_WIDTH, TOGGLE_HEIGHT).semantics { contentDescription = label },
+            plate = SwitchPlate.NICKEL,
         )
         if (now.phase == PlayerPhase.BUFFERING) {
             Box(
@@ -438,11 +434,13 @@ private val LabelShape = RoundedCornerShape(3.dp)
 private val SignalRed = Color(0xFFB3261E)
 private val Amber = Color(0xFFF3881C)
 private val MINI_ELEVATION = 6.dp
-private val MINI_END_GAP = 6.dp
+
+// The art and the switch keep clear of the faceplate's corner screws.
+private val MINI_END_GAP = 12.dp
 private val NEEDLE_HEIGHT = 14.dp
 private val SKIP_KEYS_MIN_WIDTH = 520.dp
 private val SKIP_KEY_TARGET = 48.dp
-private val SKIP_KEY_CAP = 34.dp
+private val SKIP_KEY_CAP = 40.dp
 private val TOGGLE_WIDTH = 40.dp
 private val TOGGLE_HEIGHT = 52.dp
 private val MINI_HEIGHT = 64.dp
@@ -452,8 +450,9 @@ private val MINI_ANCHOR_SPACE = 72.dp
 private val MINI_INSET = 15.dp
 private val MINI_ART = 48.dp
 private val MINI_ART_OFFSET = 8.dp
+private val MINI_ART_START = 12.dp
 private val MINI_ART_CORNER = 3.dp
-private val MINI_TEXT_START = 64.dp
+private val MINI_TEXT_START = 68.dp
 private val DISMISS_DISTANCE = 96.dp
 private const val DISMISS_FRACTION = 0.5f
 private const val MILLIS_PER_SECOND = 1_000L

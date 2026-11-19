@@ -40,6 +40,7 @@ import ch.lkmc.neutrodyne.core.model.InstallKind
 import ch.lkmc.neutrodyne.core.model.update.UpdateInfo
 import ch.lkmc.neutrodyne.core.model.update.UpdateRuntimeTarget
 import ch.lkmc.neutrodyne.core.model.update.VerificationPhase
+import ch.lkmc.neutrodyne.core.ui.SettingsRow
 import ch.lkmc.neutrodyne.core.ui.platform.LocalPlatformActions
 import ch.lkmc.neutrodyne.core.ui.platform.OpenResult
 import ch.lkmc.neutrodyne.feature.settings.resources.Res
@@ -57,7 +58,6 @@ import ch.lkmc.neutrodyne.feature.settings.resources.help_check_body
 import ch.lkmc.neutrodyne.feature.settings.resources.help_check_title
 import ch.lkmc.neutrodyne.feature.settings.resources.help_collapsed
 import ch.lkmc.neutrodyne.feature.settings.resources.help_copy
-import ch.lkmc.neutrodyne.feature.settings.resources.help_developer_options
 import ch.lkmc.neutrodyne.feature.settings.resources.help_download_android
 import ch.lkmc.neutrodyne.feature.settings.resources.help_download_body
 import ch.lkmc.neutrodyne.feature.settings.resources.help_download_title

@@ -44,6 +44,7 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
@@ -55,6 +56,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.test.runDesktopComposeUiTest
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.dp
 import androidx.navigationevent.DirectNavigationEventInput
 import androidx.navigationevent.NavigationEvent
 import androidx.navigationevent.NavigationEventDispatcher
@@ -65,7 +67,6 @@ import ch.lkmc.neutrodyne.core.designsystem.components.NdTopAppBar
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
 import ch.lkmc.neutrodyne.core.designsystem.radio.CABINET_DECK_TAG
 import ch.lkmc.neutrodyne.core.designsystem.radio.CABINET_TRAY_TAG
-import ch.lkmc.neutrodyne.core.designsystem.theme.AppearancePrefs
 import ch.lkmc.neutrodyne.core.designsystem.theme.RadioScheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.model.BuildInfo
@@ -153,7 +154,6 @@ class NeutrodyneRootTest {
                             actions = testActions { true },
                             slots = TestSlots,
                             installers = TestInstallers,
-                            prefs = AppearancePrefs(dynamicColor = false),
                             systemUi = SystemUiState(dark, 0.0, true),
                             platform = BuildInfo.Platform.DESKTOP,
                             initialTab = LibraryKey,
@@ -186,6 +186,157 @@ class NeutrodyneRootTest {
             }
         }
     }
+
+    /**
+     * PO-55 follow-up: a wide window's list and detail panes share one cabinet. Their trays sit
+     * under one roof line and only the cabinet's walls part them (no stage gap), and the row
+     * carries a single valve deck.
+     */
+    @Test
+    fun aPaneRowSharesOneCabinet() =
+        runDesktopComposeUiTest(width = 1200, height = 800) {
+            val pending = Channel<Route>(Channel.UNLIMITED)
+            pending.trySend(Route.Navigate(LibraryKey, listOf(ImportKey("7"))))
+            setContent { TestRoot(routes = pending.receiveAsFlow(), initialTab = LibraryKey) }
+            onNodeWithText("import-7").assertIsDisplayed()
+            onNodeWithText("count:0", useUnmergedTree = true).assertIsDisplayed()
+
+            val trays =
+                onAllNodesWithTag(CABINET_TRAY_TAG)
+                    .fetchSemanticsNodes()
+                    .map { it.boundsInRoot }
+                    .sortedBy { it.left }
+            kotlin.test.assertEquals(2, trays.size)
+            kotlin.test.assertEquals(trays[0].top, trays[1].top, "one roof line")
+            val partition = with(density) { (trays[1].left - trays[0].right).toDp() }
+            // Two 9 dp walls meet; a stage gap or side gaps would make the partition wider.
+            kotlin.test.assertTrue(partition <= 20.dp, "partition $partition")
+            onAllNodesWithTag(CABINET_DECK_TAG).assertCountEquals(1)
+        }
+
+    /**
+     * 08 Pane roles and detail placeholders: a list with nothing beside it fills a wide window
+     * as one cabinet under its own deck, instead of standing in a narrow pane beside empty ones.
+     */
+    @Test
+    fun aLoneListFillsAWideWindow() {
+        for (width in listOf(840, 1200)) {
+            runDesktopComposeUiTest(width = width, height = 800) {
+                setContent { TestRoot(initialTab = LibraryKey) }
+                onNodeWithText("count:0", useUnmergedTree = true).assertIsDisplayed()
+
+                val window = onNodeWithTag("root-box").fetchSemanticsNode().boundsInRoot
+                val tray = onAllNodesWithTag(CABINET_TRAY_TAG).fetchSemanticsNodes().single().boundsInRoot
+                val share = tray.width / window.width
+                kotlin.test.assertTrue(share > LONE_TRAY_MIN_SHARE, "width $width: the tray covers $share")
+                onAllNodesWithTag(CABINET_DECK_TAG).assertCountEquals(1)
+            }
+        }
+    }
+
+    /** Opening a detail splits the window into a cabinet row; closing it gives the list it all. */
+    @Test
+    fun aListFillsTheWindowAgainWhenItsDetailCloses() =
+        runDesktopComposeUiTest(width = 1200, height = 800) {
+            val pending = Channel<Route>(Channel.UNLIMITED)
+            pending.trySend(Route.Navigate(LibraryKey, listOf(PodcastKey(3))))
+            setContent { TestRoot(routes = pending.receiveAsFlow(), initialTab = LibraryKey) }
+            onNodeWithText("podcast-3").assertIsDisplayed()
+            onAllNodesWithTag(CABINET_TRAY_TAG).assertCountEquals(2)
+
+            pressEscape()
+            onNodeWithText("podcast-3").assertDoesNotExist()
+            onNodeWithText("count:0", useUnmergedTree = true).assertIsDisplayed()
+            val window = onNodeWithTag("root-box").fetchSemanticsNode().boundsInRoot
+            val tray = onAllNodesWithTag(CABINET_TRAY_TAG).fetchSemanticsNodes().single().boundsInRoot
+            kotlin.test.assertTrue(tray.width / window.width > LONE_TRAY_MIN_SHARE, "the tray covers ${tray.width}")
+            onAllNodesWithTag(CABINET_DECK_TAG).assertCountEquals(1)
+        }
+
+    /**
+     * A detail placeholder is no back-stack entry, yet it stands in the cabinet beside its list:
+     * one roof line, one deck, and the placeholder inside the second tray.
+     */
+    @Test
+    fun aDetailPlaceholderStandsInTheCabinetRow() =
+        runDesktopComposeUiTest(width = 1200, height = 800) {
+            setContent { TestRoot() }
+            onAllNodesWithContentDescription("Settings").onFirst().performClick()
+            onNodeWithText("settings-home").assertIsDisplayed()
+            onNodeWithText("settings-placeholder").assertIsDisplayed()
+
+            val trays =
+                onAllNodesWithTag(CABINET_TRAY_TAG)
+                    .fetchSemanticsNodes()
+                    .map { it.boundsInRoot }
+                    .sortedBy { it.left }
+            kotlin.test.assertEquals(2, trays.size)
+            kotlin.test.assertEquals(trays[0].top, trays[1].top, "one roof line")
+            val placeholder = onNodeWithText("settings-placeholder").fetchSemanticsNode().boundsInRoot
+            kotlin.test.assertTrue(placeholder.left >= trays[1].left && placeholder.right <= trays[1].right)
+            onAllNodesWithTag(CABINET_DECK_TAG).assertCountEquals(1)
+        }
+
+    /**
+     * 08 The docked bar: the mini radio is set into the cabinet's base. While it shows, every
+     * tray (a lone page, both panes of a row, a detail placeholder) ends above the root's
+     * reservation, so nothing on a page hides under the bar. The cabinet consumes the reservation,
+     * so the page inside does not pad for it a second time.
+     */
+    @Test
+    fun theMiniPlayerSitsBelowEveryCabinetTray() {
+        val playing = RootUiState.READY.copy(hasNowPlaying = true)
+        val single: ComposeUiTest.() -> Unit = {
+            setContent { TestRoot(state = playing, initialTab = LibraryKey) }
+            onNodeWithText("count:0", useUnmergedTree = true).assertIsDisplayed()
+        }
+        val row: ComposeUiTest.() -> Unit = {
+            val pending = Channel<Route>(Channel.UNLIMITED)
+            pending.trySend(Route.Navigate(LibraryKey, listOf(ImportKey("7"))))
+            setContent { TestRoot(routes = pending.receiveAsFlow(), state = playing, initialTab = LibraryKey) }
+            onNodeWithText("import-7").assertIsDisplayed()
+        }
+        val placeholder: ComposeUiTest.() -> Unit = {
+            setContent { TestRoot(state = playing) }
+            onAllNodesWithContentDescription("Settings").onFirst().performClick()
+            onNodeWithText("settings-placeholder").assertIsDisplayed()
+        }
+        for ((name, size, open) in listOf(
+            Triple("single", 400 to 600, single),
+            Triple("row", 1200 to 800, row),
+            Triple("placeholder", 1200 to 800, placeholder),
+        )) {
+            runDesktopComposeUiTest(width = size.first, height = size.second) {
+                open()
+                waitForIdle()
+                val window = onNodeWithTag("root-box").fetchSemanticsNode().boundsInRoot
+                val trays = onAllNodesWithTag(CABINET_TRAY_TAG).fetchSemanticsNodes().map { it.boundsInRoot }
+                kotlin.test.assertTrue(trays.isNotEmpty(), name)
+                for (tray in trays) {
+                    val clearance = with(density) { (window.bottom - tray.bottom).toDp() }
+                    kotlin.test.assertTrue(
+                        clearance >= MINI_PLAYER_RESERVE,
+                        "$name: the tray ends $clearance above the bottom",
+                    )
+                }
+                // The cabinet consumed the reservation: the page or placeholder inside has none left.
+                val inset = if (name == "placeholder") "placeholder-inset:0" else "mini-inset:0"
+                onNodeWithText(inset, useUnmergedTree = true).assertExists()
+            }
+        }
+    }
+
+    /** Without a mini player the tray reaches down to the cabinet's bottom wall. */
+    @Test
+    fun aTrayReachesTheCabinetBottomWithoutAMiniPlayer() =
+        runDesktopComposeUiTest(width = 400, height = 600) {
+            setContent { TestRoot(initialTab = LibraryKey) }
+            onNodeWithText("count:0", useUnmergedTree = true).assertIsDisplayed()
+            val window = onNodeWithTag("root-box").fetchSemanticsNode().boundsInRoot
+            val tray = onAllNodesWithTag(CABINET_TRAY_TAG).fetchSemanticsNodes().single().boundsInRoot
+            val clearance = with(density) { (window.bottom - tray.bottom).toDp() }
+            kotlin.test.assertTrue(clearance <= 12.dp, "the tray ends $clearance above the bottom")
+        }
 
     @Test
     fun playerDeepLinkOpensTheRadioHomeWithoutASidePanel() =
@@ -1076,7 +1227,19 @@ private val TestInstallers: Set<EntryProviderInstaller> =
                 Text("verification-notice")
             }
         }
-        add { entry<SettingsHomeKey>(metadata = NdSceneMetadata.paneList()) { Text("settings-home") } }
+        add {
+            entry<SettingsHomeKey>(
+                metadata =
+                    NdSceneMetadata.paneList(
+                        detailPlaceholder = {
+                            Column {
+                                Text("settings-placeholder")
+                                Text("placeholder-inset:${LocalMiniPlayerInset.current.value.toInt()}")
+                            }
+                        },
+                    ),
+            ) { Text("settings-home") }
+        }
         add {
             entry<PodcastKey>(metadata = NdSceneMetadata.paneDetail()) { key ->
                 Text("podcast-${key.podcastId}")
@@ -1114,6 +1277,7 @@ private fun LibraryStub() {
     Column(Modifier.fillMaxSize()) {
         TestTopBar(Res.string.nav_library)
         Text("count:$count")
+        Text("mini-inset:${LocalMiniPlayerInset.current.value.toInt()}")
         NdButton(label = "inc", onClick = { count++ })
     }
 }
@@ -1166,3 +1330,9 @@ private fun TestTopBar(title: StringResource) {
 
 // The stage's radial gradient stays darker than this everywhere; paper is far above it.
 private const val STAGE_MAX_LUMINANCE = 0.1f
+
+// A lone cabinet keeps only its side gaps and walls off the window's width.
+private const val LONE_TRAY_MIN_SHARE = 0.9f
+
+// 08 Mini player: the root reserves 80 dp at the content's bottom edge while the bar shows.
+private val MINI_PLAYER_RESERVE = 80.dp

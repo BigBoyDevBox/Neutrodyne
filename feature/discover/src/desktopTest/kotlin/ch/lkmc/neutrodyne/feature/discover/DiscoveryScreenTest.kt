@@ -21,7 +21,6 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.v2.runComposeUiTest
 import androidx.lifecycle.viewModelScope
-import ch.lkmc.neutrodyne.core.designsystem.theme.AppearancePrefs
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.model.ChartGenre
@@ -87,7 +86,7 @@ class DiscoveryScreenTest {
                 dispatcher.scheduler.advanceUntilIdle()
                 setContent {
                     CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                        NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                        NeutrodyneTheme(SystemUiState.DEFAULT) {
                             DiscoverRoute(vm)
                         }
                     }
@@ -126,7 +125,7 @@ class DiscoveryScreenTest {
         runComposeUiTest {
             setContent {
                 CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                    NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
                         DiscoverScreen(DiscoverState(), {}, {}, navigator)
                     }
                 }
@@ -140,7 +139,7 @@ class DiscoveryScreenTest {
         runComposeUiTest {
             setContent {
                 CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                    NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
                         DiscoverScreen(DiscoverState(input = "AI"), {}, {}, navigator)
                     }
                 }
@@ -158,7 +157,7 @@ class DiscoveryScreenTest {
         runComposeUiTest {
             setContent {
                 CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                    NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
                         DiscoverScreen(DiscoverState(input = "https://private.test/feed"), {}, {}, navigator)
                     }
                 }
@@ -180,7 +179,7 @@ class DiscoveryScreenTest {
             val hits = persistentListOf(hit("Subscribed show", 7L), hit("New show"))
             setContent {
                 CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                    NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
                         DirectoryScreen(
                             DirectoryKey("news", null),
                             DirectoryState(loading = false, hits = hits),
@@ -202,12 +201,73 @@ class DiscoveryScreenTest {
         }
 
     @Test
+    fun repeatedFeedUrlsListEveryHit() =
+        runComposeUiTest {
+            // Apple's charts can list one feed under two shows; a repeated lazy-list key crashes.
+            val hits =
+                persistentListOf(
+                    hit("Listing A").copy(feedUrl = SHARED_FEED),
+                    hit("Listing B").copy(feedUrl = SHARED_FEED),
+                )
+            setContent {
+                CompositionLocalProvider(LocalAppNavigator provides navigator) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
+                        DirectoryScreen(
+                            DirectoryKey("", null),
+                            DirectoryState(loading = false, hits = hits),
+                            {},
+                            navigator,
+                        )
+                    }
+                }
+            }
+            onNodeWithText("Listing A").assertIsDisplayed()
+            onNodeWithText("Listing B").assertIsDisplayed()
+        }
+
+    @Test
+    fun repeatedFeedUrlsInTheTunedChartListEveryHit() =
+        runComposeUiTest {
+            val hits =
+                listOf(hit("Listing A").copy(feedUrl = SHARED_FEED), hit("Listing B").copy(feedUrl = SHARED_FEED))
+            setContent {
+                CompositionLocalProvider(LocalAppNavigator provides navigator) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
+                        DiscoverScreen(DiscoverState(chart = TunedChart(null, hits)), {}, {}, navigator)
+                    }
+                }
+            }
+            onNodeWithText("Listing A").performScrollTo().assertIsDisplayed()
+            onNodeWithText("Listing B").performScrollTo().assertIsDisplayed()
+        }
+
+    @Test
+    fun addByUrlWaitsUntilTheDirectoryHasAnswered() =
+        runComposeUiTest {
+            var state by mutableStateOf(DirectoryState(loading = true))
+            setContent {
+                CompositionLocalProvider(LocalAppNavigator provides navigator) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
+                        DirectoryScreen(DirectoryKey("", null), state, {}, navigator)
+                    }
+                }
+            }
+            onNodeWithText(ADD_BY_URL).assertDoesNotExist()
+
+            state = DirectoryState(loading = false)
+            onNodeWithText(ADD_BY_URL).assertIsDisplayed()
+
+            state = DirectoryState(loading = false, chartError = ProviderStatus.RateLimited)
+            onNodeWithText(ADD_BY_URL).assertIsDisplayed()
+        }
+
+    @Test
     fun explicitChartFailureOffersRetry() =
         runComposeUiTest {
             var retries = 0
             setContent {
                 CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                    NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
                         DirectoryScreen(
                             DirectoryKey(
                                 "",
@@ -242,7 +302,7 @@ class DiscoveryScreenTest {
                 )
             setContent {
                 CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                    NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
                         DiscoverScreen(
                             DiscoverState(
                                 input = "news",
@@ -271,7 +331,7 @@ class DiscoveryScreenTest {
         runComposeUiTest {
             setContent {
                 CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                    NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
                         SearchStatus(
                             SearchResults(
                                 "news",
@@ -296,7 +356,7 @@ class DiscoveryScreenTest {
             val visible = mutableListOf<ChartGenre?>()
             setContent {
                 CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                    NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
                         DiscoverScreen(
                             DiscoverState(
                                 presets = listOf(null, ChartGenre.TECHNOLOGY),
@@ -338,7 +398,7 @@ class DiscoveryScreenTest {
             var retried = 0
             setContent {
                 CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                    NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
                         DiscoverScreen(state, {}, {}, navigator, onChartRetry = { retried++ })
                     }
                 }
@@ -384,6 +444,8 @@ class DiscoveryScreenTest {
     )
 
     private companion object {
+        const val SHARED_FEED = "https://example.test/shared"
+        const val ADD_BY_URL = "Add by URL"
         const val CHARTS_OFF = "Charts come from Apple, which is switched off in Discover settings"
     }
 }

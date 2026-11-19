@@ -10,6 +10,7 @@ import androidx.compose.animation.core.snap
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.adaptive.layout.PaneAdaptedValue
 import androidx.compose.material3.adaptive.layout.ThreePaneScaffoldDestinationItem
 import androidx.compose.material3.adaptive.layout.ThreePaneScaffoldRole
 import androidx.compose.material3.adaptive.layout.ThreePaneScaffoldValue
@@ -25,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -53,12 +55,16 @@ import ch.lkmc.neutrodyne.core.navigation.TopLevelKey
 private const val PANE_ENTRY_SOURCE = "ndPaneEntrySource"
 internal const val PANE_NAV_KEY = "ndPaneNavKey"
 
+/** Marks a list entry that shows a detail placeholder beside it while it is alone. */
+internal const val PANE_HAS_PLACEHOLDER = "ndPaneHasPlaceholder"
+
 /** Scene retention owns the animation; the real stacks remain the only navigation membership. */
 internal class PaneSceneStrategy(
     private val navigation: NavigationState,
     private val entryProvider: (NavKey, TopLevelKey) -> NavEntry<NavKey>,
 ) : SceneStrategy<NavKey> {
     private lateinit var adaptive: ListDetailSceneStrategy<NavKey>
+    private lateinit var alone: ListDetailSceneStrategy<NavKey>
     private val rendering = mutableMapOf<TopLevelKey, PaneRendering>()
     private var activeKey by mutableStateOf<PaneSceneKey?>(null)
     private var selectedTab: TopLevelKey? = null
@@ -79,7 +85,7 @@ internal class PaneSceneStrategy(
     ) {
         if (generation != selectionGeneration || origin != currentTab) return
         val live = liveEntries()
-        val scene = with(adaptive) { SceneStrategyScope<NavKey>().calculateScene(live) }
+        val scene = SceneStrategyScope<NavKey>().paneScene(live)
         val internalBack = scene?.previousEntries?.lastOrNull() in scene?.entries.orEmpty()
         val target = if (internalBack) requireNotNull(scene).previousEntries else live.dropLast(1)
 
@@ -91,7 +97,7 @@ internal class PaneSceneStrategy(
 
     internal fun isCurrentEntry(contentKey: Any): Boolean {
         val live = liveEntries()
-        val scene = with(adaptive) { SceneStrategyScope<NavKey>().calculateScene(live) }
+        val scene = SceneStrategyScope<NavKey>().paneScene(live)
         if (scene == null) return live.lastOrNull()?.contentKey == contentKey
         return PaneRole.entries.any { role ->
             scene.entries.lastOrNull { paneRole(it) == role }?.contentKey == contentKey
@@ -109,7 +115,10 @@ internal class PaneSceneStrategy(
         entriesByTab: Map<TopLevelKey, List<NavEntry<NavKey>>>,
         paneAnimations: Map<String, Any>,
     ) {
-        this.adaptive = adaptive
+        if (!this::adaptive.isInitialized || this.adaptive !== adaptive) {
+            this.adaptive = adaptive
+            alone = loneListStrategy(adaptive)
+        }
         this.paneAnimations = paneAnimations
         val switchingTabs = selectedTab != null && selectedTab != navigation.selectedTab
         selectedTab = navigation.selectedTab
@@ -123,8 +132,7 @@ internal class PaneSceneStrategy(
         for ((tab, entries) in entriesByTab) {
             // An overlay does not change the adaptive scene underneath its window.
             val underlying = entries.dropLastWhile { it.metadata.containsKey(NdSceneMetadata.KEY_OVERLAY) }
-            val scope = SceneStrategyScope<NavKey>()
-            val scene = with(adaptive) { scope.calculateScene(underlying) } ?: continue
+            val scene = SceneStrategyScope<NavKey>().paneScene(underlying) ?: continue
             val snapshot = snapshot(scene.entries)
             val previous = rendering[tab]
             val current =
@@ -142,13 +150,13 @@ internal class PaneSceneStrategy(
             entriesByTab
                 .getValue(navigation.selectedTab)
                 .dropLastWhile { it.metadata.containsKey(NdSceneMetadata.KEY_OVERLAY) }
-        val selectedScene = with(adaptive) { SceneStrategyScope<NavKey>().calculateScene(selected) }
+        val selectedScene = SceneStrategyScope<NavKey>().paneScene(selected)
         activeKey = if (selectedScene == null) null else rendering[navigation.selectedTab]?.key
     }
 
     override fun SceneStrategyScope<NavKey>.calculateScene(entries: List<NavEntry<NavKey>>): Scene<NavKey>? {
         val prepared = entries.map(::prepareEntry)
-        val delegate = with(adaptive) { calculateScene(prepared) } ?: return null
+        val delegate = paneScene(prepared) ?: return null
         val tab = delegate.entries.last().metadata[NdSceneMetadata.KEY_TAB] as TopLevelKey
         val snapshot = snapshot(delegate.entries)
         val render = rendering.getValue(tab)
@@ -167,6 +175,18 @@ internal class PaneSceneStrategy(
         return PaneScene(delegate, key, snapshot, claims, previous, entering) { activeKey }
     }
 
+    /**
+     * Material's scene for [entries], except that a list with nothing beside it (no detail or
+     * extra entry, no placeholder) takes the window alone instead of leaving the panes beside
+     * it empty (08 Pane roles and detail placeholders). Both share one scene identity, so
+     * opening a detail pane animates the panes inside one scaffold, as a window resize does.
+     */
+    private fun SceneStrategyScope<NavKey>.paneScene(entries: List<NavEntry<NavKey>>): Scene<NavKey>? {
+        val wide = with(adaptive) { calculateScene(entries) } ?: return null
+        if (!standsAlone(wide.entries)) return wide
+        return with(alone) { calculateScene(entries) }
+    }
+
     private fun prepareEntry(entry: NavEntry<NavKey>): NavEntry<NavKey> {
         val original = (entry.metadata[PANE_ENTRY_SOURCE] as? PaneEntrySource)?.entry ?: entry
         val role = paneRole(original) ?: return original
@@ -179,6 +199,7 @@ internal class PaneSceneStrategy(
     }
 
     private fun snapshot(entries: List<NavEntry<NavKey>>): PaneSnapshot {
+        val strategy = if (standsAlone(entries)) alone else adaptive
         val tops =
             PaneRole.entries.associateWith { role ->
                 entries.lastOrNull { paneRole(it) == role }?.contentKey
@@ -190,14 +211,41 @@ internal class PaneSceneStrategy(
         return PaneSnapshot(
             tops,
             calculateThreePaneScaffoldValue(
-                maxHorizontalPartitions = adaptive.directive.maxHorizontalPartitions,
-                maxVerticalPartitions = adaptive.directive.maxVerticalPartitions,
-                adaptStrategies = adaptive.adaptStrategies,
+                maxHorizontalPartitions = strategy.directive.maxHorizontalPartitions,
+                maxVerticalPartitions = strategy.directive.maxVerticalPartitions,
+                adaptStrategies = strategy.adaptStrategies,
                 destinationHistory = history,
             ),
         )
     }
 }
+
+/** [adaptive] on one partition, so a list that stands alone fills the window. */
+private fun loneListStrategy(adaptive: ListDetailSceneStrategy<NavKey>): ListDetailSceneStrategy<NavKey> =
+    ListDetailSceneStrategy(
+        shouldHandleSinglePaneLayout = true,
+        backNavigationBehavior = adaptive.backNavigationBehavior,
+        directive = adaptive.directive.copy(maxHorizontalPartitions = 1),
+        adaptStrategies = adaptive.adaptStrategies,
+        paneExpansionDragHandle = adaptive.paneExpansionDragHandle,
+        paneExpansionState = adaptive.paneExpansionState,
+    )
+
+/** A scene of list entries only, whose top list shows no placeholder beside it. */
+private fun standsAlone(entries: List<NavEntry<NavKey>>): Boolean =
+    entries.isNotEmpty() &&
+        entries.all { paneRole(it) == PaneRole.List } &&
+        entries.last().metadata[PANE_HAS_PLACEHOLDER] != true
+
+/**
+ * The pane roles (`NdSceneMetadata.PANE_*`) a scene shows side by side, from start to end, so a
+ * page can tell where it sits in the row; empty outside a pane scene.
+ */
+internal val LocalPaneRow = staticCompositionLocalOf<List<String>> { emptyList() }
+
+/** The list, detail and extra panes lie start to end in the list-detail scaffold. */
+private fun PaneSnapshot.paneRow(): List<String> =
+    PaneRole.entries.filter { value[it.scaffoldRole] == PaneAdaptedValue.Expanded }.map { it.marker }
 
 private enum class PaneRole(
     val marker: String,
@@ -308,7 +356,10 @@ private class PaneScene(
         // These dispatchers seek native preview only; real completion is owned outside NavDisplay.
         Box(Modifier.fillMaxSize().then(if (exiting) Modifier.clearAndSetSemantics {} else Modifier)) {
             // A committed exit is no longer an accessible screen; a cancellable source remains active.
-            CompositionLocalProvider(LocalPaneSceneMotion provides PaneSceneMotion(key, enteringRoles)) {
+            CompositionLocalProvider(
+                LocalPaneSceneMotion provides PaneSceneMotion(key, enteringRoles),
+                LocalPaneRow provides snapshot.paneRow(),
+            ) {
                 if (owner == null) {
                     delegate.content()
                 } else {

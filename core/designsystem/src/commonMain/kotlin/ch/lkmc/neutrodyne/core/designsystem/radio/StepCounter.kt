@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -33,6 +32,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
+import ch.lkmc.neutrodyne.core.designsystem.resources.Res
+import ch.lkmc.neutrodyne.core.designsystem.resources.radio_dial_window
+import org.jetbrains.compose.resources.imageResource
 
 /**
  * A mechanical counter on a metal panel: [label] engraved above, [value] printed on cream number
@@ -40,7 +42,9 @@ import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
  * [onIncrease] or [onDecrease] dims that key (the end of the range). The label and value read
  * together; each key is a button named by [increaseLabel] or [decreaseLabel]. [onWindowClick],
  * when set, makes the window a button too (for example to type an exact value). [spokenValue]
- * replaces an abbreviated [value] for screen readers.
+ * replaces an abbreviated [value] for screen readers. With [engraved] false the label is not
+ * printed (a paper slip around the counter already names it) but still names it for screen
+ * readers.
  */
 @Composable
 public fun StepCounter(
@@ -53,17 +57,19 @@ public fun StepCounter(
     modifier: Modifier = Modifier,
     onWindowClick: (() -> Unit)? = null,
     spokenValue: String = value,
+    engraved: Boolean = true,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // The window reads the label with the value.
-        PanelEngraving(label, Modifier.clearAndSetSemantics {})
+        if (engraved) PanelEngraving(label, Modifier.clearAndSetSemantics {})
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Box(
                 Modifier
                     .widthIn(min = WINDOW_MIN_WIDTH)
                     .heightIn(min = WINDOW_HEIGHT)
-                    .recess(WindowShape)
-                    .background(Brush.verticalGradient(WheelPaper), WindowShape)
+                    .dialWindow(imageResource(Res.drawable.radio_dial_window))
+                    // The number wheels turn behind the glass: their drum shades away top and bottom.
+                    .background(Brush.verticalGradient(WheelPaper))
                     .let {
                         if (onWindowClick !=
                             null
@@ -146,14 +152,13 @@ private fun StepKey(
     }
 }
 
-private val WindowShape = RoundedCornerShape(4.dp)
 private val WheelPaper = listOf(Color(0xFFD9C7A0), Color(0xFFF8EFD8), Color(0xFFD9C7A0))
 private val WINDOW_MIN_WIDTH = 88.dp
 private val WINDOW_HEIGHT = 56.dp
 
-// Two keys stack beside the window; each keeps a 40 dp target around the cap's 30 dp. Two 48 dp
-// targets would stand 96 dp tall beside the 56 dp window and stop reading as one counter.
-private val STEP_TARGET = 40.dp
+// Two keys stack beside the window; each keeps a 48 dp target around the cap's 30 dp, so the
+// stack stands taller than the 56 dp window and the window centres on it.
+private val STEP_TARGET = 48.dp
 private val STEP_KEY = 30.dp
 private const val UP_DEGREES = -90f
 private const val DOWN_DEGREES = 90f

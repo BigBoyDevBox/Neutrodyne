@@ -15,22 +15,30 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import ch.lkmc.neutrodyne.core.designsystem.resources.Res
+import ch.lkmc.neutrodyne.core.designsystem.resources.arvo_bold
 import ch.lkmc.neutrodyne.core.designsystem.resources.barlow_bold
 import ch.lkmc.neutrodyne.core.designsystem.resources.barlow_medium
 import ch.lkmc.neutrodyne.core.designsystem.resources.barlow_regular
@@ -45,6 +53,8 @@ import ch.lkmc.neutrodyne.core.designsystem.resources.radio_wood
 import org.jetbrains.compose.resources.Font
 import org.jetbrains.compose.resources.imageResource
 import org.jetbrains.compose.resources.painterResource
+import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 /** Ink printed on the radio's paper and keys. */
 public val Ink: Color = Color(0xFF4B3521)
@@ -73,6 +83,10 @@ public fun courier(): FontFamily =
         Font(Res.font.courierprime_regular, FontWeight.Normal),
         Font(Res.font.courierprime_bold, FontWeight.Bold),
     )
+
+/** Heavy slab lettering printed on switch plates. */
+@Composable
+public fun slab(): FontFamily = FontFamily(Font(Res.font.arvo_bold, FontWeight.Bold))
 
 @Composable
 public fun dosis(): FontFamily = FontFamily(Font(Res.font.dosis_light, FontWeight.Light))
@@ -112,7 +126,7 @@ public fun MaterialPlate(
             val bitmap = imageResource(texture)
             val brush = remember(bitmap) { ShaderBrush(ImageShader(bitmap, TileMode.Repeated, TileMode.Repeated)) }
             Canvas(Modifier.matchParentSize()) {
-                val tileWidth = if (material == RadioMaterial.PAPER) 256.dp else 160.dp
+                val tileWidth = if (material == RadioMaterial.PAPER) PAPER_TILE_WIDTH else 160.dp
                 val scale = tileWidth.toPx() / bitmap.width
                 withTransform({ scale(scale, scale, Offset.Zero) }) {
                     drawRect(brush, size = Size(size.width / scale, size.height / scale))
@@ -136,7 +150,7 @@ public fun MaterialPlate(
                         }
 
                         RadioMaterial.PAPER -> {
-                            listOf(Color(0x1F695123), Color.Transparent, Color(0x2EFFF2D0))
+                            PaperLight
                         }
                     },
                 ),
@@ -164,21 +178,78 @@ public fun MaterialPlate(
     }
 }
 
-/** Light catches the cabinet's top edge and left wall; the right wall and base fall into shade. */
-public fun Modifier.cabinetEdges(): Modifier =
+/** The radio's paper texture, for surfaces drawn with [paper]. */
+@Composable
+public fun paperTexture(): ImageBitmap = imageResource(Res.drawable.radio_paper)
+
+/**
+ * Draws the radio's paper ([texture], from [paperTexture]) behind a node, as [MaterialPlate] does
+ * for [RadioMaterial.PAPER], for surfaces built from modifiers such as a list's slips. [tint]
+ * washes over the paper, to mark a slip.
+ */
+public fun Modifier.paper(
+    texture: ImageBitmap,
+    tint: Color = Color.Transparent,
+): Modifier =
+    drawWithCache {
+        val grain = ShaderBrush(ImageShader(texture, TileMode.Repeated, TileMode.Repeated))
+        val scale = PAPER_TILE_WIDTH.toPx() / texture.width
+        val light = Brush.linearGradient(PaperLight)
+        onDrawBehind {
+            withTransform({ scale(scale, scale, Offset.Zero) }) {
+                drawRect(grain, size = Size(size.width / scale, size.height / scale))
+            }
+            drawRect(light)
+            drawRect(tint)
+        }
+    }
+
+private val PAPER_TILE_WIDTH = 256.dp
+private val PaperLight = listOf(Color(0x1F695123), Color.Transparent, Color(0x2EFFF2D0))
+
+/**
+ * Light catches the cabinet's top edge and left wall; the right wall and base fall into shade. A
+ * pane inside a wider cabinet passes false for a wall it does not have, so only the cabinet's
+ * outer walls are lit or shaded.
+ */
+public fun Modifier.cabinetEdges(
+    leftWall: Boolean = true,
+    rightWall: Boolean = true,
+): Modifier =
     drawWithContent {
         drawContent()
-        drawRect(Brush.horizontalGradient(listOf(Color(0x88311507), Color.Transparent, Color(0x88230E06))))
+        // The walls turn away from the light at the sides; the shade stays on the wood and off the
+        // panels, keys and dials inside.
+        val wall = (CABINET_SHADE_WIDTH.toPx() / size.width).coerceAtMost(0.5f)
+        drawRect(
+            Brush.horizontalGradient(
+                0f to if (leftWall) Color(0x88311507) else Color.Transparent,
+                wall to Color.Transparent,
+                1f - wall to Color.Transparent,
+                1f to if (rightWall) Color(0x88230E06) else Color.Transparent,
+            ),
+        )
         drawLine(Color(0xBFE8B56E), Offset.Zero, Offset(size.width, 0f), 2.dp.toPx())
         drawLine(Color(0x992D1609), Offset(0f, size.height), Offset(size.width, size.height), 5.dp.toPx())
-        drawLine(Color(0x88D39C58), Offset(5.dp.toPx(), 20.dp.toPx()), Offset(5.dp.toPx(), size.height), 3.dp.toPx())
-        drawLine(
-            Color(0xBB32170B),
-            Offset(size.width - 5.dp.toPx(), 20.dp.toPx()),
-            Offset(size.width - 5.dp.toPx(), size.height),
-            5.dp.toPx(),
-        )
+        if (leftWall) {
+            drawLine(
+                Color(0x88D39C58),
+                Offset(5.dp.toPx(), 20.dp.toPx()),
+                Offset(5.dp.toPx(), size.height),
+                3.dp.toPx(),
+            )
+        }
+        if (rightWall) {
+            drawLine(
+                Color(0xBB32170B),
+                Offset(size.width - 5.dp.toPx(), 20.dp.toPx()),
+                Offset(size.width - 5.dp.toPx(), size.height),
+                5.dp.toPx(),
+            )
+        }
     }
+
+private val CABINET_SHADE_WIDTH = 16.dp
 
 /** Shadow falls inside a routed opening, over the contents beneath its wooden lip. */
 public fun Modifier.recess(shape: Shape = RoundedCornerShape(3.dp)): Modifier =
@@ -240,10 +311,104 @@ public fun Modifier.radioStage(): Modifier =
 public const val VALVE_DECK_ASPECT: Float = 1100f / 423f
 
 /**
- * The radio's valve deck: two glowing tubes on a metal chassis. The home shows it across the
- * cabinet; every other page carries a smaller one on its cabinet roof (owner decision 2026-11-17).
+ * The radio's valve deck: two glowing tubes on a metal chassis, the lid across every cabinet
+ * (owner decisions 2026-11-17).
+ *
+ * The deck fills the node's height. A node wider than the artwork gets a longer chassis rather
+ * than larger tubes: the plain stretches of plate beside the outer terminals repeat, mirrored so
+ * their lighting meets without seams, until the plate spans the node. A narrower node fits the
+ * whole deck to its width, resting on its lower edge.
  */
 @Composable
 public fun ValveDeck(modifier: Modifier = Modifier) {
-    Image(painterResource(Res.drawable.radio_valve_deck), null, modifier, contentScale = ContentScale.Fit)
+    val art = imageResource(Res.drawable.radio_valve_deck)
+    Box(modifier.drawBehind { drawValveDeck(art) })
 }
+
+private fun DrawScope.drawValveDeck(art: ImageBitmap) {
+    if (size.width <= 0f || size.height <= 0f) return
+    // A node within half a pixel of the artwork's proportions (the home's full-width deck, sized
+    // from VALVE_DECK_ASPECT) fits it whole rather than tiling a rounding error.
+    val long = art.width * size.height / art.height < size.width - 0.5f
+    val scale = if (long) size.height / art.height else size.width / art.width
+    val extra = if (long) size.width - art.width * scale else 0f
+    // A deck fitted to a narrow node rests on its lower edge, where the cabinet's roof is.
+    val top = size.height - art.height * scale
+    val height = art.height * scale
+    // Source columns: the left end, a plain stretch, the tubes and circuit, a plain stretch, the
+    // right end. Only the plain stretches grow, each by half of the extra width.
+    val columns =
+        intArrayOf(
+            0,
+            DECK_PLAIN_LEFT.first,
+            DECK_PLAIN_LEFT.last,
+            DECK_PLAIN_RIGHT.first,
+            DECK_PLAIN_RIGHT.last,
+            art.width,
+        )
+    var x = 0f
+    for (segment in 0 until columns.size - 1) {
+        val from = columns[segment]
+        val to = columns[segment + 1]
+        val natural = (to - from) * scale
+        if ((segment == 1 || segment == 3) && extra > 0f) {
+            drawMirroredTiles(art, from, to, x, top, natural + extra / 2f, height, natural)
+            x += natural + extra / 2f
+        } else {
+            drawPart(art, from, to, x, top, natural, height, mirrored = false)
+            x += natural
+        }
+    }
+}
+
+/** Fills [width] from [left] with copies of the [from]..[to] columns, every other one mirrored. */
+private fun DrawScope.drawMirroredTiles(
+    art: ImageBitmap,
+    from: Int,
+    to: Int,
+    left: Float,
+    top: Float,
+    width: Float,
+    height: Float,
+    tile: Float,
+) {
+    // An odd count ends on an unmirrored copy, whose outer edge is the column the fixed artwork
+    // beyond it continues from; ending on a mirrored copy would leave a seam there.
+    val count = ceil(width / tile).toInt().coerceAtLeast(1).let { if (it % 2 == 0) it + 1 else it }
+    val each = width / count
+    for (index in 0 until count) {
+        drawPart(art, from, to, left + index * each, top, each, height, mirrored = index % 2 == 1)
+    }
+}
+
+private fun DrawScope.drawPart(
+    art: ImageBitmap,
+    from: Int,
+    to: Int,
+    left: Float,
+    top: Float,
+    width: Float,
+    height: Float,
+    mirrored: Boolean,
+) {
+    val dstLeft = left.roundToInt()
+    val dstTop = top.roundToInt()
+    val dstSize = IntSize((left + width).roundToInt() - dstLeft, (top + height).roundToInt() - dstTop)
+    if (dstSize.width <= 0 || dstSize.height <= 0) return
+    val center = Offset(dstLeft + dstSize.width / 2f, 0f)
+    scale(if (mirrored) -1f else 1f, 1f, center) {
+        drawImage(
+            art,
+            IntOffset(from, 0),
+            IntSize(to - from, art.height),
+            IntOffset(dstLeft, dstTop),
+            dstSize,
+            filterQuality = FilterQuality.High,
+        )
+    }
+}
+
+// Columns of plain chassis plate in the deck artwork, between each outer terminal and the plate's
+// end: only plate texture and its front edge, so they repeat without showing.
+private val DECK_PLAIN_LEFT = 86..100
+private val DECK_PLAIN_RIGHT = 998..1010

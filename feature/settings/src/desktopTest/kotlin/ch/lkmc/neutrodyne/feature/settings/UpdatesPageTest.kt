@@ -32,7 +32,6 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.v2.runComposeUiTest
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
-import ch.lkmc.neutrodyne.core.designsystem.theme.AppearancePrefs
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.model.DesktopArch
@@ -113,6 +112,8 @@ class UpdatesPageTest {
                 )
             }
             onNodeWithText("Update available: 1.0.0").assertExists()
+            // The asset size reads in the app's units, never as raw bytes ("1234 B").
+            onNodeWithText("APK · 1 KB").assertExists()
             onNodeWithText("<b>plain text, not HTML</b>", substring = true).assertExists()
             onNodeWithContentDescription("SHA-256 checksum").assertExists()
             onNodeWithText("Download APK for this device").performScrollTo().performClick()
@@ -438,7 +439,7 @@ class UpdatesPageTest {
                 LocalPlatformActions provides actions,
                 LocalSnackbarHost provides snackbar,
             ) {
-                NeutrodyneTheme(AppearancePrefs(), SystemUiState.DEFAULT) {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
                     Column {
                         androidx.compose.foundation.layout
                             .Box(Modifier.weight(1f)) { content() }

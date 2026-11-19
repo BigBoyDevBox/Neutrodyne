@@ -7,6 +7,7 @@ import ch.lkmc.neutrodyne.core.common.Outcome
 import ch.lkmc.neutrodyne.core.model.FeedSource
 import ch.lkmc.neutrodyne.core.model.GroupDraft
 import ch.lkmc.neutrodyne.core.model.RowLive
+import ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys
 import ch.lkmc.neutrodyne.core.testing.FakeEpisodeLiveStateSource
 import ch.lkmc.neutrodyne.core.testing.FakeEpisodeRepository
 import ch.lkmc.neutrodyne.core.testing.FakeFeedRepository
@@ -20,6 +21,8 @@ import ch.lkmc.neutrodyne.core.testing.testNowPlaying
 import ch.lkmc.neutrodyne.core.testing.testPlatformInfo
 import ch.lkmc.neutrodyne.core.ui.radio.RadioEpisode
 import ch.lkmc.neutrodyne.playback.api.PlayResult
+import ch.lkmc.neutrodyne.playback.api.PlaybackIssue
+import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
@@ -106,6 +109,107 @@ class RadioViewModelTest : MainDispatcherTest() {
                     FakePlaybackController.Call.Transport(FakePlaybackController.Action.SEEK, 25_000),
                     controller.calls.last(),
                 )
+            }
+        }
+
+    @Test fun aSlipsPlayKeyPlaysThatEpisodeAndPausesItWhilePlaying() =
+        runTest {
+            withRadio { model, id ->
+                // A silent radio: the key selects the slip and starts it.
+                model.playEpisode(2)
+                runCurrent()
+                assertEquals(2L, model.state.value.selectedId)
+                val start = controller.calls.filterIsInstance<FakePlaybackController.Call.Feed>().last()
+                assertEquals(FeedSource.Group(id), start.source)
+                assertEquals(2L, start.startId)
+
+                // The playing slip's key pauses it.
+                controller.state.nowPlaying.value = testNowPlaying(2).copy(isPlaying = true)
+                runCurrent()
+                assertTrue(model.state.value.playing)
+                model.playEpisode(2)
+                assertEquals(
+                    FakePlaybackController.Call.Transport(FakePlaybackController.Action.PAUSE),
+                    controller.calls.last(),
+                )
+
+                // Another slip's key, while the radio plays, switches to that episode.
+                controller.state.nowPlaying.value = testNowPlaying(2).copy(isPlaying = true)
+                runCurrent()
+                model.playEpisode(3)
+                runCurrent()
+                assertEquals(3L, model.state.value.selectedId)
+                assertEquals(
+                    3L,
+                    controller.calls
+                        .filterIsInstance<FakePlaybackController.Call.Feed>()
+                        .last()
+                        .startId,
+                )
+            }
+        }
+
+    @Test fun skipKeysMoveByTheListenersIntervalsAndStopAtTheEnds() =
+        runTest {
+            settings.set(PlaybackSettingKeys.SKIP_BACK_MS, 15_000L)
+            settings.set(PlaybackSettingKeys.SKIP_FORWARD_MS, 45_000L)
+            withRadio { model, _ ->
+                assertEquals(15_000L, model.state.value.skipBackMs)
+                assertEquals(45_000L, model.state.value.skipForwardMs)
+
+                // Not loaded yet: the position waits for play, like a needle seek.
+                model.skipForward()
+                assertEquals(45_000L, model.state.value.elapsedMs)
+                model.skipForward()
+                assertEquals(60_000L, model.state.value.elapsedMs)
+                model.skipBack()
+                assertEquals(45_000L, model.state.value.elapsedMs)
+
+                // Loaded at 10 s: one skip back stops at the start and seeks the player there.
+                controller.state.nowPlaying.value = testNowPlaying(1)
+                runCurrent()
+                model.skipBack()
+                assertEquals(0L, model.state.value.elapsedMs)
+                assertEquals(
+                    FakePlaybackController.Call.Transport(FakePlaybackController.Action.SEEK, 0),
+                    controller.calls.last(),
+                )
+            }
+        }
+
+    @Test fun transportPhaseAndIssueReachTheRadioState() =
+        runTest {
+            withRadio { model, _ ->
+                controller.state.nowPlaying.value =
+                    testNowPlaying(1).copy(isPlaying = false, phase = PlayerPhase.BUFFERING)
+                runCurrent()
+                assertEquals(PlayerPhase.BUFFERING, model.state.value.phase)
+                controller.state.nowPlaying.value =
+                    testNowPlaying(1)
+                        .copy(isPlaying = false, phase = PlayerPhase.ERROR, issue = PlaybackIssue.NETWORK_LOST)
+                runCurrent()
+                assertEquals(PlayerPhase.ERROR, model.state.value.phase)
+                assertEquals(PlaybackIssue.NETWORK_LOST, model.state.value.issue)
+                controller.state.nowPlaying.value = null
+                runCurrent()
+                assertNull(model.state.value.phase)
+                assertNull(model.state.value.issue)
+            }
+        }
+
+    @Test fun aPagingSnapshotDoesNotKeepAStaleTransportPhase() =
+        runTest {
+            withRadio { model, id ->
+                controller.state.nowPlaying.value =
+                    testNowPlaying(1).copy(phase = PlayerPhase.ERROR, issue = PlaybackIssue.PLAYER_ERROR)
+                runCurrent()
+                assertEquals(PlayerPhase.ERROR, model.state.value.phase)
+                controller.state.nowPlaying.value = null
+                runCurrent()
+                model.onRows(id, rows)
+                runCurrent()
+                assertNull(model.state.value.phase)
+                assertNull(model.state.value.issue)
             }
         }
 

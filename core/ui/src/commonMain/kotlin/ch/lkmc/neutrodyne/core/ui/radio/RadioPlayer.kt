@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -36,6 +37,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -45,6 +47,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -52,7 +55,9 @@ import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
@@ -66,8 +71,11 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.BatToggle
 import ch.lkmc.neutrodyne.core.designsystem.radio.Brass
 import ch.lkmc.neutrodyne.core.designsystem.radio.Cream
 import ch.lkmc.neutrodyne.core.designsystem.radio.DialOpening
+import ch.lkmc.neutrodyne.core.designsystem.radio.Faceplate
+import ch.lkmc.neutrodyne.core.designsystem.radio.IvoryKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.MaterialPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioMaterial
+import ch.lkmc.neutrodyne.core.designsystem.radio.SwitchPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.barlow
 import ch.lkmc.neutrodyne.core.designsystem.radio.dialPaper
 import ch.lkmc.neutrodyne.core.designsystem.radio.dosis
@@ -76,17 +84,25 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.recess
 import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
 import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.chapter_seek
+import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
 import ch.lkmc.neutrodyne.core.ui.resources.radio_choose_other
 import ch.lkmc.neutrodyne.core.ui.resources.radio_cleared
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
+import ch.lkmc.neutrodyne.core.ui.resources.radio_ended
+import ch.lkmc.neutrodyne.core.ui.resources.radio_error
 import ch.lkmc.neutrodyne.core.ui.resources.radio_nothing
 import ch.lkmc.neutrodyne.core.ui.resources.radio_paused
 import ch.lkmc.neutrodyne.core.ui.resources.radio_play
 import ch.lkmc.neutrodyne.core.ui.resources.radio_playing
 import ch.lkmc.neutrodyne.core.ui.resources.radio_ready
+import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_back
+import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_back_value
+import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward
+import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward_value
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_off
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_on
+import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 import org.jetbrains.compose.resources.stringResource
 import kotlin.math.PI
 import kotlin.math.cos
@@ -107,6 +123,9 @@ internal fun RadioPlayer(
     val status =
         when {
             selected == null -> Res.string.radio_cleared
+            state.phase == PlayerPhase.BUFFERING -> Res.string.radio_buffering
+            state.phase == PlayerPhase.ENDED -> Res.string.radio_ended
+            state.phase == PlayerPhase.ERROR -> Res.string.radio_error
             state.playing -> Res.string.radio_playing
             state.hasPlayed || state.elapsedMs > 0 -> Res.string.radio_paused
             else -> Res.string.radio_ready
@@ -140,19 +159,18 @@ internal fun RadioPlayer(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
+                        val lamp =
+                            when {
+                                state.phase == PlayerPhase.ERROR || state.issue != null -> Brush.radialGradient(LampRed)
+                                state.phase == PlayerPhase.BUFFERING -> Brush.radialGradient(LampAmber)
+                                state.playing -> Brush.radialGradient(LampLit)
+                                else -> Brush.radialGradient(LampDim)
+                            }
                         Box(
                             Modifier
                                 .size(7.dp)
-                                .background(
-                                    Brush.radialGradient(
-                                        if (state.playing) {
-                                            listOf(Color(0xFFFFE9AD), Color(0xFF995017))
-                                        } else {
-                                            listOf(Color(0xFFBDA177), Color(0xFF664422))
-                                        },
-                                    ),
-                                    CircleShape,
-                                ).border(0.5.dp, Color(0xFF654A24), CircleShape),
+                                .background(lamp, CircleShape)
+                                .border(0.5.dp, Color(0xFF654A24), CircleShape),
                         )
                         RadioText(statusText, 11, mono = false, modifier = Modifier.weight(1f))
                         val index = state.episodes.indexOfFirst { it.id == state.selectedId }
@@ -192,33 +210,107 @@ internal fun RadioPlayer(
                 if (!compact) RadioText(radioTimeline(duration), 11, modifier = Modifier.align(Alignment.End))
             }
         }
-        MaterialPlate(
-            RadioMaterial.METAL,
-            Modifier.padding(top = if (compact) 6.dp else 8.dp).fillMaxWidth().border(
-                1.dp,
-                Brass,
-            ),
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(
-                    vertical = 7.dp,
-                    horizontal = 9.dp,
-                ),
-                horizontalArrangement = Arrangement.SpaceAround,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Nixie(state.elapsedMs, selected != null, compact, Modifier.weight(1f))
-                PlaySwitch(
-                    on = state.playing,
-                    enabled = selected != null,
-                    description = "${stringResource(Res.string.radio_play)} ${selected?.title.orEmpty()}".trim(),
-                    status = statusText,
-                    compact = compact,
-                    scale = capScale,
-                    onToggle = actions.togglePlay,
-                )
+        Faceplate(Modifier.padding(top = if (compact) 6.dp else 8.dp).fillMaxWidth()) {
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                // The skip keys flank the counter while the counter keeps room for legible tubes;
+                // the needle still seeks when very large text leaves no room for them.
+                val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+                val skipKeys = maxWidth >= SKIP_ROW_RESERVE * capScale + NIXIE_MIN_WIDTH * fontScale
+                // Clear of the faceplate's corner screws.
+                Row(
+                    Modifier.fillMaxWidth().padding(
+                        vertical = 10.dp,
+                        horizontal = 12.dp,
+                    ),
+                    horizontalArrangement = Arrangement.SpaceAround,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // The keys line up with the counter's glass, not with the glass and its caption.
+                    val keyDrop = (nixieGlassHeight(compact, fontScale) - SKIP_TARGET * capScale) / 2
+                    Row(
+                        Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        if (skipKeys) {
+                            SkipKey(
+                                legend =
+                                    stringResource(
+                                        Res.string.radio_skip_back_value,
+                                        state.skipBackMs / MILLIS_PER_SECOND,
+                                    ),
+                                description =
+                                    stringResource(
+                                        Res.string.radio_skip_back,
+                                        state.skipBackMs / MILLIS_PER_SECOND,
+                                    ),
+                                enabled = selected != null,
+                                scale = capScale,
+                                arrow = NdIcons.ArrowBack,
+                                tag = "radio_skip_back",
+                                modifier = Modifier.offset(y = keyDrop),
+                                onClick = actions.skipBack,
+                            )
+                        }
+                        Nixie(state.elapsedMs, selected != null, compact, Modifier.weight(1f, fill = false))
+                        if (skipKeys) {
+                            SkipKey(
+                                legend =
+                                    stringResource(
+                                        Res.string.radio_skip_forward_value,
+                                        state.skipForwardMs / MILLIS_PER_SECOND,
+                                    ),
+                                description =
+                                    stringResource(
+                                        Res.string.radio_skip_forward,
+                                        state.skipForwardMs / MILLIS_PER_SECOND,
+                                    ),
+                                enabled = selected != null,
+                                scale = capScale,
+                                arrow = NdIcons.ArrowForward,
+                                tag = "radio_skip_forward",
+                                modifier = Modifier.offset(y = keyDrop),
+                                onClick = actions.skipForward,
+                            )
+                        }
+                    }
+                    PlaySwitch(
+                        on = state.playing,
+                        enabled = selected != null,
+                        description = "${stringResource(Res.string.radio_play)} ${selected?.title.orEmpty()}".trim(),
+                        status = statusText,
+                        compact = compact,
+                        scale = capScale,
+                        onToggle = actions.togglePlay,
+                    )
+                }
             }
         }
+    }
+}
+
+/** A round ivory key beside the counter, engraved with an [arrow] over the seconds it skips. */
+@Composable
+private fun SkipKey(
+    legend: String,
+    description: String,
+    enabled: Boolean,
+    scale: Float,
+    arrow: ImageVector,
+    tag: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier
+            .size(SKIP_TARGET * scale)
+            .clip(CircleShape)
+            .semantics { contentDescription = description }
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .testTag(tag),
+        contentAlignment = Alignment.Center,
+    ) {
+        IvoryKeyCap(legend, enabled = enabled, size = SKIP_CAP * scale, icon = arrow)
     }
 }
 
@@ -253,6 +345,7 @@ private fun PlaySwitch(
                     stateDescription = status
                 }.testTag("radio_play"),
         enabled = enabled,
+        plate = SwitchPlate.NICKEL,
     )
 }
 
@@ -356,9 +449,8 @@ private fun Nixie(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .height(
-                        (if (compact) 44.dp else 48.dp) * scale,
-                    ).background(Color(0xFF171A13))
+                    .height(nixieGlassHeight(compact, scale))
+                    .background(Color(0xFF171A13))
                     .recess()
                     .radioGlass()
                     .padding(
@@ -430,7 +522,28 @@ private fun Nixie(
     }
 }
 
+/** The counter's glass grows with the text so its tubes keep their digits. */
+private fun nixieGlassHeight(
+    compact: Boolean,
+    fontScale: Float,
+): Dp = (if (compact) 44.dp else 48.dp) * fontScale
+
 // Unlit wire behind each digit, a material glyph rather than localized copy.
 private const val CATHODE_GHOST = '8'
 
 private const val FIXED_CAP_FONT_SCALE = 1.3f
+private const val MILLIS_PER_SECOND = 1_000L
+private val SKIP_TARGET = 52.dp
+private val SKIP_CAP = 52.dp
+
+// Room the row needs besides the counter when the skip keys show: its padding, the play
+// switch and two key targets (all scaled with the cap), then the narrowest counter whose
+// tubes still hold their digits (scaled with the text).
+private val SKIP_ROW_RESERVE = 24.dp + 58.dp + SKIP_TARGET * 2
+private val NIXIE_MIN_WIDTH = 112.dp
+
+// The pilot lamp: warm while playing, amber while the stream loads, red on a problem.
+private val LampLit = listOf(Color(0xFFFFE9AD), Color(0xFF995017))
+private val LampDim = listOf(Color(0xFFBDA177), Color(0xFF664422))
+private val LampAmber = listOf(Color(0xFFFFE9AD), Color(0xFFB25B12))
+private val LampRed = listOf(Color(0xFFFFB4A9), Color(0xFFB3261E))

@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
@@ -20,7 +19,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -68,9 +66,11 @@ import ch.lkmc.neutrodyne.core.ui.resources.export_passwords
 import ch.lkmc.neutrodyne.core.ui.resources.export_private_links
 import ch.lkmc.neutrodyne.core.ui.resources.group_count
 import ch.lkmc.neutrodyne.core.ui.resources.podcast_count
+import ch.lkmc.neutrodyne.core.ui.root.ndTextFieldFocus
 import ch.lkmc.neutrodyne.feature.sync.resources.Res
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_continue
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_setup_address_hint
+import ch.lkmc.neutrodyne.feature.sync.resources.sync_setup_address_label
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_setup_backup_saved
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_setup_backup_working
 import ch.lkmc.neutrodyne.feature.sync.resources.sync_setup_cancel
@@ -473,10 +473,10 @@ private fun AddressStep(
         OutlinedTextField(
             value = address,
             onValueChange = onAddress,
-            label = { Text(stringResource(Res.string.sync_setup_title)) },
+            label = { Text(stringResource(Res.string.sync_setup_address_label)) },
             placeholder = { Text(stringResource(Res.string.sync_setup_address_hint)) },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().ndTextFieldFocus(),
         )
         Button(onClick = onContinue, enabled = address.isNotBlank()) {
             Text(stringResource(Res.string.sync_continue))
@@ -490,16 +490,12 @@ private fun LocalNetworkDialog(
     onAllow: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    NdDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(Res.string.sync_setup_local_network_title)) },
-        text = { Text(stringResource(Res.string.sync_setup_local_network_body, host)) },
-        confirmButton = {
-            TextButton(onClick = onAllow) { Text(stringResource(Res.string.sync_continue)) }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(Res.string.sync_setup_cancel)) }
-        },
+        title = stringResource(Res.string.sync_setup_local_network_title),
+        text = stringResource(Res.string.sync_setup_local_network_body, host),
+        confirm = NdDialogAction(stringResource(Res.string.sync_continue), onClick = onAllow),
+        dismiss = NdDialogAction(stringResource(Res.string.sync_setup_cancel), onClick = onDismiss),
     )
 }
 
@@ -509,16 +505,12 @@ private fun InsecureDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    NdDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(Res.string.sync_setup_insecure_title)) },
-        text = { Text(stringResource(Res.string.sync_setup_insecure_body, host)) },
-        confirmButton = {
-            TextButton(onClick = onConfirm) { Text(stringResource(Res.string.sync_setup_connect_anyway)) }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(Res.string.sync_setup_cancel)) }
-        },
+        title = stringResource(Res.string.sync_setup_insecure_title),
+        text = stringResource(Res.string.sync_setup_insecure_body, host),
+        confirm = NdDialogAction(stringResource(Res.string.sync_setup_connect_anyway), onClick = onConfirm),
+        dismiss = NdDialogAction(stringResource(Res.string.sync_setup_cancel), onClick = onDismiss),
     )
 }
 
@@ -613,7 +605,7 @@ private fun InviteInput(
             onValueChange = onCode,
             label = { Text(stringResource(Res.string.sync_setup_invite_label)) },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().ndTextFieldFocus(),
         )
         Button(onClick = onSubmit, enabled = code.isNotBlank()) {
             Text(stringResource(Res.string.sync_continue))
@@ -635,7 +627,7 @@ private fun PasswordInput(
             onValueChange = onUsername,
             label = { Text(stringResource(Res.string.sync_setup_username_label)) },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().ndTextFieldFocus(),
         )
         OutlinedTextField(
             value = password,
@@ -643,7 +635,7 @@ private fun PasswordInput(
             label = { Text(stringResource(Res.string.sync_setup_password_label)) },
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().ndTextFieldFocus(),
         )
         Button(
             onClick = onSubmit,
@@ -735,7 +727,7 @@ private fun ChooseFirstLinkStep(
                     Res.string.sync_setup_choice_merge_body,
                     state.localPodcasts,
                     state.localGroups,
-                    "",
+                    host,
                     state.serverPodcasts,
                     state.serverGroups,
                 ),
