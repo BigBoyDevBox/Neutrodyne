@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,9 +25,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -37,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -51,6 +55,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
@@ -59,10 +64,14 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -73,6 +82,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -89,6 +99,8 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.EnamelSelector
 import ch.lkmc.neutrodyne.core.designsystem.radio.Faceplate
 import ch.lkmc.neutrodyne.core.designsystem.radio.Ink
 import ch.lkmc.neutrodyne.core.designsystem.radio.MaterialPlate
+import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKey
+import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKeySlot
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioMaterial
 import ch.lkmc.neutrodyne.core.designsystem.radio.SlipKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.barlow
@@ -103,16 +115,21 @@ import ch.lkmc.neutrodyne.core.ui.resources.action_retry
 import ch.lkmc.neutrodyne.core.ui.resources.action_undo
 import ch.lkmc.neutrodyne.core.ui.resources.date_duration_minutes
 import ch.lkmc.neutrodyne.core.ui.resources.feeds_load_error
+import ch.lkmc.neutrodyne.core.ui.resources.import_title
+import ch.lkmc.neutrodyne.core.ui.resources.nav_discover
+import ch.lkmc.neutrodyne.core.ui.resources.nav_library
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
 import ch.lkmc.neutrodyne.core.ui.resources.radio_discard
 import ch.lkmc.neutrodyne.core.ui.resources.radio_episodes
 import ch.lkmc.neutrodyne.core.ui.resources.radio_menu
 import ch.lkmc.neutrodyne.core.ui.resources.radio_no_episodes
+import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists_empty
 import ch.lkmc.neutrodyne.core.ui.resources.radio_playlists
 import ch.lkmc.neutrodyne.core.ui.resources.radio_release
 import ch.lkmc.neutrodyne.core.ui.resources.radio_removed
 import ch.lkmc.neutrodyne.core.ui.resources.settings_update_available
 import ch.lkmc.neutrodyne.core.ui.root.LocalSettingsBadge
+import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -200,6 +217,16 @@ internal fun RadioProgramme(
             undoFocus.requestFocus()
         }
     }
+    // Arrow keys tune the programme like a station dial: the selection follows and focus travels
+    // with it. Only a focused slip starts it, so the list never takes arrows from a field or a
+    // sheet. Ctrl/Cmd/Alt chords pass through untouched for the root's own shortcuts (its
+    // volume chords are Ctrl/Cmd+Up/Down); a plain Shift+Arrow still tunes, as it did before.
+    // The handler bubbles, so a descendant that learns arrows later wins.
+    val scope = rememberCoroutineScope()
+    var focusedId by remember { mutableStateOf<Long?>(null) }
+    val slipFocus = remember(state.playlistId) { mutableMapOf<Long, FocusRequester>() }
+
+    fun focusFor(id: Long): FocusRequester = slipFocus.getOrPut(id) { FocusRequester() }
     Faceplate(
         modifier
             .onGloballyPositioned {
@@ -236,19 +263,117 @@ internal fun RadioProgramme(
                     }
                     if (state.episodes.isEmpty()) {
                         Column(
-                            Modifier.weight(1f).fillMaxWidth().padding(12.dp),
+                            Modifier.weight(1f).fillMaxWidth().padding(if (compact) 4.dp else 12.dp),
                             Arrangement.Center,
                             Alignment.CenterHorizontally,
                         ) {
                             if (state.loading) {
                                 CircularProgressIndicator(color = Brass, modifier = Modifier.size(24.dp))
-                            } else if (!state.loadError) {
-                                RadioText(stringResource(Res.string.radio_all_clear), 19, bold = true)
-                                RadioText(stringResource(Res.string.radio_no_episodes), 12, mono = false)
+                            } else if (!state.loadError && state.playlistsLoaded) {
+                                // Until the groups are read, an empty paper is neither "none" nor "all clear".
+                                if (state.untuned) {
+                                    // A first listener has no station to tune yet: offer the
+                                    // journeys that fill one instead of an empty paper tray.
+                                    BoxWithConstraints(contentAlignment = Alignment.Center) {
+                                        EmptySign(
+                                            room = constraints.maxHeight,
+                                            sign = {
+                                                RadioText(
+                                                    stringResource(Res.string.radio_no_playlists_empty),
+                                                    19,
+                                                    Modifier.semantics { heading() },
+                                                    bold = true,
+                                                    maxLines = 2,
+                                                )
+                                            },
+                                            modifier = Modifier.verticalScroll(rememberScrollState()),
+                                        ) {
+                                            // The journeys wrap rather than scroll: a sideways bank would
+                                            // hide Library past the paper's edge on a narrow phone.
+                                            PianoKeySlot {
+                                                FlowRow(
+                                                    horizontalArrangement =
+                                                        Arrangement.spacedBy(
+                                                            EMPTY_KEY_GAP,
+                                                            Alignment.CenterHorizontally,
+                                                        ),
+                                                    verticalArrangement = Arrangement.spacedBy(EMPTY_KEY_GAP),
+                                                ) {
+                                                    PianoKey(
+                                                        stringResource(Res.string.nav_discover),
+                                                        pressed = false,
+                                                        onClick = actions.openDiscover,
+                                                        modifier = Modifier.testTag("radio_empty_discover"),
+                                                        role = Role.Button,
+                                                    )
+                                                    PianoKey(
+                                                        stringResource(Res.string.import_title),
+                                                        pressed = false,
+                                                        onClick = actions.openImport,
+                                                        modifier = Modifier.testTag("radio_empty_import"),
+                                                        role = Role.Button,
+                                                    )
+                                                    PianoKey(
+                                                        stringResource(Res.string.nav_library),
+                                                        pressed = false,
+                                                        onClick = actions.openLibrary,
+                                                        modifier = Modifier.testTag("radio_empty_library"),
+                                                        role = Role.Button,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    RadioText(stringResource(Res.string.radio_all_clear), 19, bold = true)
+                                    RadioText(stringResource(Res.string.radio_no_episodes), 12, mono = false)
+                                }
                             }
                         }
                     } else {
-                        LazyColumn(Modifier.weight(1f).testTag("radio_episodes"), state = scroll) {
+                        LazyColumn(
+                            Modifier
+                                .weight(1f)
+                                .testTag("radio_episodes")
+                                .onKeyEvent { event ->
+                                    if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                                    if (event.isCtrlPressed || event.isMetaPressed || event.isAltPressed) {
+                                        return@onKeyEvent false
+                                    }
+                                    val delta =
+                                        when (event.key) {
+                                            Key.DirectionDown -> 1
+                                            Key.DirectionUp -> -1
+                                            else -> 0
+                                        }
+                                    if (delta == 0) return@onKeyEvent false
+                                    // Anchor on the focused episode's identity, not its index: the
+                                    // list shifts under a focused slip when rows are removed.
+                                    val current =
+                                        focusedId
+                                            ?.let { id -> state.episodes.indexOfFirst { it.id == id } }
+                                            ?.takeIf { it >= 0 }
+                                            ?: state.episodes
+                                                .indexOfFirst { it.id == state.selectedId }
+                                                .takeIf { it >= 0 }
+                                            // Neither the focused nor the selected episode is in
+                                            // the list: ignore the press, don't jump to an end.
+                                            ?: return@onKeyEvent false
+                                    val target = current + delta
+                                    if (target !in state.episodes.indices) return@onKeyEvent false
+                                    actions.selectEpisode(state.episodes[target].id)
+                                    focusedId = state.episodes[target].id
+                                    scope.launch {
+                                        scroll.animateScrollToItem(target)
+                                        withFrameNanos { }
+                                        if (scroll.layoutInfo.visibleItemsInfo.any { it.index == target }) {
+                                            focusFor(state.episodes[target].id).requestFocus()
+                                        }
+                                    }
+                                    true
+                                },
+                            state = scroll,
+                        ) {
                             itemsIndexed(state.episodes, key = { _, episode -> episode.id }) { index, episode ->
                                 LaunchedEffect(index) { actions.loadEpisode(index) }
                                 RadioSlip(
@@ -258,6 +383,8 @@ internal fun RadioProgramme(
                                     rows,
                                     actions,
                                     restoreRowFocus,
+                                    focusFor(episode.id),
+                                    { focusedId = episode.id },
                                 ) {
                                     restoreRowFocus = null
                                 }
@@ -312,16 +439,17 @@ private fun RadioSlip(
     rows: RadioRows,
     actions: RadioActions,
     restoreRowFocus: Long?,
+    focusRequester: FocusRequester,
+    onFocus: () -> Unit,
     onFocusRestore: () -> Unit,
 ) {
-    val focus = remember { FocusRequester() }
     val focusRestored by rememberUpdatedState(onFocusRestore)
     val inputMode = LocalInputModeManager.current
     LaunchedEffect(restoreRowFocus, inputMode) {
         if (restoreRowFocus == episode.id) {
             inputMode.requestInputMode(InputMode.Keyboard)
             withFrameNanos { }
-            focus.requestFocus()
+            focusRequester.requestFocus()
             focusRestored()
         }
     }
@@ -348,7 +476,8 @@ private fun RadioSlip(
             Modifier
                 .fillMaxWidth()
                 .testTag("radio_episode_${episode.id}")
-                .focusRequester(focus)
+                .onFocusChanged { if (it.isFocused) onFocus() }
+                .focusRequester(focusRequester)
                 .focusProperties { canFocus = true }
                 .onKeyEvent {
                     if (it.type == KeyEventType.KeyDown && it.key == Key.Delete) {
@@ -456,6 +585,39 @@ private fun SlipPlayKey(
     }
 }
 
+/**
+ * The empty radio's [sign] over its [keys], or the keys alone when both would overflow the
+ * paper's [room] in px (a short phone, large text): the dial's hint still carries the words.
+ * Measuring both, rather than guessing a height, keeps wrapped keys in view. Keys taller than
+ * the room scroll with the [modifier]'s scroll rather than clip.
+ */
+@Composable
+private fun EmptySign(
+    room: Int,
+    sign: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    keys: @Composable () -> Unit,
+) {
+    Layout(listOf(sign, keys), modifier) { (signs, banks), constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val bank = banks.single().measure(loose)
+        val words = signs.single().measure(loose)
+        val gap = EMPTY_SIGN_GAP.roundToPx()
+        val signFits = words.height + gap + bank.height <= room
+        val width = if (signFits) maxOf(words.width, bank.width) else bank.width
+        val height = if (signFits) words.height + gap + bank.height else bank.height
+        layout(width, height) {
+            if (signFits) words.placeRelative((width - words.width) / 2, 0)
+            bank.placeRelative((width - bank.width) / 2, height - bank.height)
+        }
+    }
+}
+
+/** The gap between the empty radio's sign and its keys. */
+private val EMPTY_SIGN_GAP = 10.dp
+
+/** The gap between the empty radio's journey keys, matching a key bank's. */
+private val EMPTY_KEY_GAP = 6.dp
 private val SLIP_KEY_TARGET = 48.dp
 private val SLIP_KEY_CAP = 36.dp
 
@@ -472,7 +634,7 @@ internal fun SmallRadioKey(
             .width(radioKeyWidth())
             .heightIn(min = 48.dp)
             .focusProperties { canFocus = true }
-            .clickable(onClick = onClick)
+            .clickable(role = Role.Button, onClick = onClick)
             .testTag(tag)
             .padding(vertical = 3.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
