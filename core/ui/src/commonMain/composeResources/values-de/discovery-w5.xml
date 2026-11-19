@@ -11,6 +11,7 @@
     <string name="discovery_add_link">Diesen Link hinzufügen</string>
     <string name="discovery_import">Importieren</string>
     <string name="discovery_more">Mehr</string>
+    <string name="discovery_retained_results">Suche läuft. Angezeigt werden Ergebnisse für „%1$s“.</string>
     <string name="discovery_empty">Keine Podcasts für „%1$s“ gefunden</string>
     <string name="discovery_unavailable">Die Suche ist momentan nicht verfügbar</string>
     <string name="discovery_charts_unavailable">Charts nicht verfügbar</string>

@@ -40,6 +40,8 @@
     <string name="appearance_cover_large">Large</string>
     <string name="appearance_titles">Show titles</string>
     <string name="appearance_titles_summary">Podcast names under the covers in the Library</string>
+    <string name="appearance_control_sounds">Control sounds</string>
+    <string name="appearance_control_sounds_summary">Switches, keys, counters and slips sound like a real radio's</string>
 
     <!-- Settings › About (01 About statements: the licence statement is one per platform). -->
     <string name="about_version">Version %1$s (%2$d)</string>

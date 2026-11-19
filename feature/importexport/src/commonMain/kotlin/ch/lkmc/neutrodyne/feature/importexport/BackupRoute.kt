@@ -35,6 +35,7 @@ import ch.lkmc.neutrodyne.core.designsystem.components.NdTextButton
 import ch.lkmc.neutrodyne.core.designsystem.components.NdTopAppBar
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbar
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbarColor
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchFeedback
 import ch.lkmc.neutrodyne.core.navigation.ExportKey
 import ch.lkmc.neutrodyne.core.navigation.ImportKey
 import ch.lkmc.neutrodyne.core.navigation.LocalAppNavigator
@@ -247,7 +248,12 @@ private fun BackupSwitch(
     onToggle: (Boolean) -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().toggleable(checked, enabled = enabled, role = Role.Switch, onValueChange = onToggle),
+        Modifier.fillMaxWidth().toggleable(
+            checked,
+            enabled = enabled,
+            role = Role.Switch,
+            onValueChange = rememberSwitchFeedback(onToggle),
+        ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, Modifier.weight(1f))

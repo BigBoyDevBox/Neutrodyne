@@ -113,6 +113,16 @@ requires = [
 ]
 reason = "Owner-provided radio fonts bundled as compose resources (OFL-1.1)"
 
+[[claim]]
+paths = ["assets/composeResources/*/files/sounds/*.wav"]
+requires = [
+    "neutrodyne:sound-freesound-795663",
+    "neutrodyne:sound-freesound-403247",
+    "neutrodyne:sound-freesound-877301",
+    "neutrodyne:sound-freesound-730078",
+]
+reason = "The radio's control sounds (PO-56): CC0 1.0 recordings from Freesound, cut and levelled by tools/sounds/build_sounds.py and credited in THIRD_PARTY_NOTICES.md"
+
 # JetBrains Compose Multiplatform root modules publish no Android artifact of their own: their
 # Android variant is available-at the androidx.* artifact, which the definitions list and scan
 # checks separately. Gradle may keep only the parsed metadata of such a root module, so scan

@@ -61,6 +61,27 @@ roots identify the font bundles. The owner-supplied wood, paper, metal and
 transparent valve deck are project assets and need no third-party notice.
 Reference photographs are not bundled.
 
+## Control sounds (Android and desktop)
+
+The radio's control sounds ([08 Control sounds](docs/design/08-ui-ux.md#control-sounds), PO-56)
+are excerpts of four recordings from [Freesound](https://freesound.org/), each dedicated to the
+public domain by its author under
+[CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/). CC0 asks for no
+attribution; we credit the authors anyway:
+
+| App sound | Recording | Author | Source |
+|---|---|---|---|
+| `switch_on`, `switch_off` | "toggle switch 1": an old toggle switch with a slight metallic noise | TheTechTinkerer | [Freesound 795663](https://freesound.org/people/TheTechTinkerer/sounds/795663/) |
+| `key_latch`, `key_press` | "Tape Deck Buttons and Switches": button presses recorded from a Sony CFD-9 radio cassette player | Nekkowe | [Freesound 403247](https://freesound.org/people/Nekkowe/sounds/403247/) |
+| `dial_tick` | "Rotary Selector Ticks": the clicking of a rotary selector switch | loganzsound | [Freesound 877301](https://freesound.org/people/loganzsound/sounds/877301/) |
+| `slip_discard` | "paper-slide": a piece of paper sliding | brokenmachinery | [Freesound 730078](https://freesound.org/people/brokenmachinery/sounds/730078/) |
+
+The files we downloaded (Freesound's high-quality Ogg Vorbis previews) are kept in
+`media-sources/sounds/sources/`; `tools/sounds/build_sounds.py` cuts, filters, resamples and
+levels them into the 48 kHz WAV files the apps bundle in `:core:designsystem`. Each recording has
+a Licences entry ("Control sound: … by …") with the CC0 1.0 text in `app/config`,
+`app/config/engine` and `desktopApp/config`.
+
 ## Python components (Android, `youtube/ytdlp/python-components.lock`)
 
 The `:app` APKs bundle the Chaquopy-hosted CPython engine stack; each entry has a manual

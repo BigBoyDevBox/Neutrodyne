@@ -79,10 +79,12 @@ import ch.lkmc.neutrodyne.core.designsystem.components.NdProgress
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
 import ch.lkmc.neutrodyne.core.designsystem.radio.Brass
 import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioFaceplate
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
 import ch.lkmc.neutrodyne.core.designsystem.radio.SlipKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.courier
 import ch.lkmc.neutrodyne.core.designsystem.radio.paper
 import ch.lkmc.neutrodyne.core.designsystem.radio.paperTexture
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberClickSound
 import ch.lkmc.neutrodyne.core.model.Availability
 import ch.lkmc.neutrodyne.core.model.DownloadState
 import ch.lkmc.neutrodyne.core.model.EpisodeRow
@@ -838,8 +840,11 @@ private fun SlipKey(
             .clearAndSetSemantics {}
             .size(TOUCH_TARGET)
             .clip(CircleShape)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .alpha(if (enabled) 1f else DIMMED_ALPHA),
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = rememberClickSound(RadioSound.KEY_PRESS, onClick),
+            ).alpha(if (enabled) 1f else DIMMED_ALPHA),
         contentAlignment = Alignment.Center,
     ) {
         SlipKeyCap(icon, contentDescription, Modifier.size(SLIP_KEY_CAP))

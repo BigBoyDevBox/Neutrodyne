@@ -72,8 +72,10 @@ import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbarColor
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
 import ch.lkmc.neutrodyne.core.designsystem.radio.Brass
 import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioFaceplate
+import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioSounds
 import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKey
 import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKeySlot
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
 import ch.lkmc.neutrodyne.core.designsystem.radio.recess
 import ch.lkmc.neutrodyne.core.model.ArtworkRef
 import ch.lkmc.neutrodyne.core.model.ContextType
@@ -402,7 +404,10 @@ private fun CurrentQueueRow(
     }
 }
 
-/** Touch removal uses the row's existing 40% release threshold; desktop touchpads keep scrolling. */
+/**
+ * Touch removal uses the row's existing 40% release threshold, with the slip's paper sound;
+ * desktop touchpads keep scrolling.
+ */
 @Composable
 private fun QueueSwipe(
     id: Long,
@@ -415,6 +420,7 @@ private fun QueueSwipe(
     var displacement by remember(id) { mutableFloatStateOf(0f) }
     var width by remember { mutableIntStateOf(0) }
     val remove by rememberUpdatedState(onRemove)
+    val sounds by rememberUpdatedState(LocalRadioSounds.current)
     Box(
         modifier.onSizeChanged { width = it.width }.then(
             if (touch) {
@@ -423,7 +429,10 @@ private fun QueueSwipe(
                         onDragEnd = {
                             val commit = swipeCommits(displacement, width)
                             displacement = 0f
-                            if (commit) remove()
+                            if (commit) {
+                                sounds.play(RadioSound.SLIP_DISCARD)
+                                remove()
+                            }
                         },
                         onDragCancel = { displacement = 0f },
                         onHorizontalDrag = { change, amount ->

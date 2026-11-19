@@ -41,6 +41,8 @@ internal data class TunedChart(
 internal data class DiscoverState(
     val input: String = "",
     val results: SearchResults? = null,
+    /** Keeps the source query with the slips still on screen while a replacement is pending. */
+    val retainedResults: SearchResults? = null,
     val providers: List<ProviderInfo>? = null,
     /** Preset stations: the top chart, then each genre a group's name maps to (03), once. */
     val presets: List<ChartGenre?> = listOf(null),
@@ -161,8 +163,14 @@ internal class DiscoverViewModel(
         if (providers == null || disclosedProviders?.configuration() != providers.configuration() ||
             query.length < MIN_QUERY_LENGTH || isLinkInput(query)
         ) {
-            mutableState.update { it.copy(results = null) }
+            mutableState.update { it.copy(results = null, retainedResults = null) }
             return
+        }
+        mutableState.update { state ->
+            state.copy(
+                results = null,
+                retainedResults = state.results?.takeIf { it.hits.isNotEmpty() } ?: state.retainedResults,
+            )
         }
         searchJob =
             viewModelScope.launch {
@@ -171,14 +179,14 @@ internal class DiscoverViewModel(
                     ensureActive()
                     if (run == generation) {
                         mutableState.update { state ->
-                            // Keep the previous list while the new query has only Pending answers.
-                            val visible =
-                                if (!results.complete && results.hits.isEmpty()) {
-                                    results.copy(hits = state.results?.hits ?: results.hits)
-                                } else {
-                                    results
-                                }
-                            state.copy(results = visible)
+                            state.copy(
+                                results = results,
+                                retainedResults =
+                                    state.retainedResults.takeIf {
+                                        !results.complete &&
+                                            results.hits.isEmpty()
+                                    },
+                            )
                         }
                     }
                 }
@@ -188,12 +196,41 @@ internal class DiscoverViewModel(
 
 // Conservatively keep addresses, handles and pasted link-bearing prose out of directory queries.
 // Add owns normalization and validation; this boundary only decides whether disclosure is enough.
-internal fun isLinkInput(text: String): Boolean =
-    text.split(Regex("\\s+")).any {
-        it.contains(':') || it.contains('/') || it.contains('\\') || it.trimEnd('.').contains('.') ||
-            it.contains('@') || it.equals("localhost", ignoreCase = true) ||
-            (it.startsWith("UC") && it.length == YOUTUBE_CHANNEL_ID_LENGTH)
+// A slash can introduce a private path on a single-label host. Colons between words and
+// punctuation in names such as "Web 2.0" and "The A.I. Show" still allow a title search.
+internal fun isLinkInput(text: String): Boolean = text.split(WHITESPACE).any(::isLinkWord)
+
+private fun isLinkWord(raw: String): Boolean {
+    val word = raw.trim(*WORD_PUNCTUATION)
+    if (word.isEmpty()) return false
+    if (word.startsWith("UC") && word.length == YOUTUBE_CHANNEL_ID_LENGTH) return true
+    if ('@' in word || '\\' in word || '=' in word || word.count { it == ':' } >= 2) return true
+    if ('/' in word || word.startsWith('~')) return true
+    // A scheme ("https:", "feed:", "itpc:") or a host and port: a letter, then a colon with
+    // something after it. A colon that ends a word ("Wars:") or a clock time ("10:30") is text.
+    if (SCHEME_OR_PORT.containsMatchIn(word)) return true
+    // A pasted Markdown link can contain several runs of DNS characters, e.g. [feed](nas.example).
+    return HOST_TOKEN.findAll(word).any { match ->
+        val host = match.value.trim('.', '。', '．', '｡')
+        host.equals("localhost", ignoreCase = true) || IPV4.matches(host) || DOMAIN.matches(host)
     }
+}
+
+// Pasted text often joins words with a no-break space (U+00A0, U+202F), which \s does not match;
+// \p{Z} covers every Unicode space separator.
+private val WHITESPACE = Regex("[\\s\\p{Z}]+")
+
+// Marks that wrap or end a word in prose, typographic ones included, so a quoted or trailing
+// address ("“example.com”", "…https://x") is still seen whole.
+private val WORD_PUNCTUATION =
+    ".,;!?\"'`*|()[]{}<>\u2018\u2019\u201C\u201D\u201E\u00AB\u00BB\u2039\u203A\u2026\u2013\u2014\u2022".toCharArray()
+private val SCHEME_OR_PORT = Regex("^[A-Za-z][A-Za-z0-9+.-]*:.")
+private val HOST_TOKEN = Regex("""[\p{L}\p{N}\p{M}.。．｡-]+""")
+private val IPV4 = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
+
+// Internationalized host names can use the ASCII, ideographic, fullwidth or halfwidth dot.
+private val DOMAIN =
+    Regex("""^[\p{L}\p{N}\p{M}-]+([.。．｡][\p{L}\p{N}\p{M}-]+)*[.。．｡]\p{L}[\p{L}\p{N}\p{M}-]+$""")
 
 internal const val MIN_QUERY_LENGTH = 3
 internal const val SEARCH_DEBOUNCE_MS = 600L

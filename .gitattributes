@@ -7,6 +7,8 @@
 *.jar binary
 *.so binary
 *.webp binary
+*.wav binary
+*.ogg binary
 signing/*.keystore binary
 feeds/src/test/resources/opml/leading_newline.opml -text
 # Vendored upstream release files verify by detached signature and SHA-256; they must check

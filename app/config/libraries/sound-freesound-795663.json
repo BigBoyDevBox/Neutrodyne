@@ -1,0 +1,17 @@
+{
+  "uniqueId": "neutrodyne:sound-freesound-795663",
+  "name": "Control sound: toggle switch 1 by TheTechTinkerer",
+  "website": "https://freesound.org/people/TheTechTinkerer/sounds/795663/",
+  "developers": [
+    {
+      "name": "TheTechTinkerer",
+      "organisationUrl": "https://freesound.org/people/TheTechTinkerer/"
+    }
+  ],
+  "licenses": [
+    "CC0-1.0"
+  ],
+  "tag": "bundled",
+  "artifactVersion": "Freesound 795663",
+  "description": "The radio's switch_on and switch_off (the bat toggles): an excerpt of \"toggle switch 1\" by TheTechTinkerer on Freesound, dedicated to the public domain under CC0 1.0, trimmed, filtered, resampled and levelled by tools/sounds/build_sounds.py. Source: https://freesound.org/people/TheTechTinkerer/sounds/795663/"
+}

@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: Unlicense
+import com.android.build.api.dsl.KotlinMultiplatformAndroidLibraryTarget
+
 plugins {
     alias(libs.plugins.neutrodyne.kmp.compose)
 }
 
 kotlin {
+    targets.named("android") {
+        (this as KotlinMultiplatformAndroidLibraryTarget).withHostTest { }
+    }
+
     // currentWindowAdaptiveInfo / WindowSizeClass carry the adaptive opt-in.
     compilerOptions {
         optIn.add("androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi")

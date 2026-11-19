@@ -35,6 +35,8 @@
     <string name="appearance_cover_large">Gross</string>
     <string name="appearance_titles">Titel anzeigen</string>
     <string name="appearance_titles_summary">Podcastnamen unter den Covern in der Bibliothek</string>
+    <string name="appearance_control_sounds">Bediengeräusche</string>
+    <string name="appearance_control_sounds_summary">Schalter, Tasten, Zählwerke und Zettel klingen wie an einem echten Radio</string>
 
     <string name="about_version">Version %1$s (%2$d)</string>
     <string name="about_version_abi">Version %1$s (%2$d) · %3$s</string>

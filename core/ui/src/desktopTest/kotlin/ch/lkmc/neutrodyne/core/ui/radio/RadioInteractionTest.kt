@@ -18,8 +18,11 @@ import androidx.compose.runtime.saveable.SaveableStateRegistry
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -31,9 +34,13 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -54,13 +61,14 @@ import androidx.compose.ui.unit.dp
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.ui.resources.Res
+import ch.lkmc.neutrodyne.core.ui.resources.action_mark_played
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
+import ch.lkmc.neutrodyne.core.ui.resources.dismiss
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
 import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
 import ch.lkmc.neutrodyne.core.ui.resources.radio_choose_other
 import ch.lkmc.neutrodyne.core.ui.resources.radio_cleared
-import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
 import ch.lkmc.neutrodyne.core.ui.resources.radio_ended
 import ch.lkmc.neutrodyne.core.ui.resources.radio_episodes
 import ch.lkmc.neutrodyne.core.ui.resources.radio_error
@@ -76,11 +84,59 @@ import ch.lkmc.neutrodyne.playback.api.PlaybackIssue
 import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 import org.jetbrains.compose.resources.getString
 import java.util.Locale
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalTestApi::class)
 class RadioInteractionTest {
+    private var previousLocale: Locale = Locale.getDefault()
+
+    // Some assertions read the English plural forms, whatever the host's locale.
+    @BeforeTest fun english() {
+        previousLocale = Locale.getDefault()
+        Locale.setDefault(Locale.ENGLISH)
+    }
+
+    @AfterTest fun restoreLocale() {
+        Locale.setDefault(previousLocale)
+    }
+
+    @Test
+    fun aSlipTicksOnceAsItCrossesIntoReleaseToDiscard() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val felt = mutableListOf<HapticFeedbackType>()
+            val haptics =
+                object : HapticFeedback {
+                    override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {
+                        felt += hapticFeedbackType
+                    }
+                }
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    CompositionLocalProvider(LocalHapticFeedback provides haptics) {
+                        RadioScreen(radioFixture(), RadioActions())
+                    }
+                }
+            }
+            onNodeWithTag("radio_episode_1").performTouchInput {
+                down(Offset(width - 10f, height / 2f))
+                moveBy(Offset(-40f, 0f))
+            }
+            assertEquals(emptyList(), felt, "short of the threshold")
+            onNodeWithTag("radio_episode_1").performTouchInput {
+                moveBy(Offset(-60f, 0f))
+                moveBy(Offset(-20f, 0f))
+                moveBy(Offset(50f, 0f))
+                moveBy(Offset(-30f, 0f))
+                cancel()
+            }
+            // -100 arms, -120 stays armed, -70 disarms, -100 arms again: a tick each time it arms.
+            assertEquals(List(2) { HapticFeedbackType.GestureThresholdActivate }, felt)
+        }
+
     @Test
     fun anEmptyRadioWaitsForItsPlaylistsAndOffersAnImport() =
         runDesktopComposeUiTest(width = 390, height = 844) {
@@ -228,6 +284,50 @@ class RadioInteractionTest {
         }
 
     @Test
+    fun aSlipCanBeMarkedPlayedAndRestoredThroughSemantics() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val original = radioFixture()
+            var state by mutableStateOf(original)
+            val selected = mutableListOf<Long>()
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        state,
+                        RadioActions(
+                            selectEpisode = { selected += it },
+                            discard = { id ->
+                                state =
+                                    state.copy(
+                                        episodes = state.episodes.filterNot { it.id == id },
+                                        removed = state.episodes.first { it.id == id },
+                                    )
+                            },
+                            undo = { state = original },
+                        ),
+                    )
+                }
+            }
+
+            val row = onNodeWithTag("radio_episode_1")
+            val markPlayed = getString(Res.string.action_mark_played)
+            val action =
+                row.fetchSemanticsNode().config[SemanticsActions.CustomActions].single {
+                    it.label == markPlayed
+                }
+            runOnIdle { assertTrue(action.action()) }
+
+            assertEquals(emptyList(), selected)
+            row.assertDoesNotExist()
+            onNodeWithTag("radio_episode_2").assertIsDisplayed()
+            onNodeWithTag("radio_undo").assertIsFocused().performClick()
+            row.assertIsDisplayed().assertIsFocused()
+            onNodeWithTag("radio_episode_2").performClick()
+            assertEquals(listOf(2L), selected)
+            onNodeWithTag("radio_episode_2").assertIsDisplayed()
+            onNodeWithTag("radio_undo").assertDoesNotExist()
+        }
+
+    @Test
     fun belowThresholdAndVerticalScrollDoNotDiscardOrSelect() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             var discards = 0
@@ -254,6 +354,20 @@ class RadioInteractionTest {
             assertEquals(0, selections)
         }
 
+    /** The Nixie's spoken time uses plural forms and leaves out empty parts. */
+    @Test fun theElapsedTimeIsSpokenInPluralForms() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var elapsed by mutableLongStateOf(3_661_000L)
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(radioFixture().copy(elapsedMs = elapsed, hasPlayed = true), RadioActions())
+                }
+            }
+            onNodeWithContentDescription("Elapsed: 1 hour 1 minute 1 second").assertIsDisplayed()
+            elapsed = 125_000L
+            onNodeWithContentDescription("Elapsed: 2 minutes 5 seconds").assertIsDisplayed()
+        }
+
     @Test fun savedResumeIsPausedAndElapsedAccessibilityIsUncapped() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             val fixture =
@@ -269,7 +383,7 @@ class RadioInteractionTest {
                 }
             }
             onNodeWithText(getString(Res.string.radio_paused)).assertIsDisplayed()
-            onNodeWithContentDescription(getString(Res.string.radio_elapsed_full, 12L, 0L, 0L)).assertIsDisplayed()
+            onNodeWithContentDescription("Elapsed: 12 hours").assertIsDisplayed()
             onAllNodes(hasText("900:00")).assertCountEquals(2)
         }
 
@@ -453,6 +567,42 @@ class RadioInteractionTest {
             onNodeWithTag("radio_playlist_option_1").assertIsFocused()
         }
 
+    @Test fun chooserFocusesTheActivePlaylistAndPrintsItsCheck() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(radioFixture().copy(playlistId = 2), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_playlist").performClick()
+            onNodeWithTag("radio_playlist_option_2").assertIsFocused().assertIsSelected()
+            onNodeWithTag("radio_playlist_option_1").assertIsNotSelected()
+            onNodeWithTag("radio_playlist_active_check", useUnmergedTree = true).assertIsDisplayed()
+        }
+
+    @Test fun chooserFallsBackToTheFirstPlaylistWhenNoneIsActive() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(radioFixture().copy(playlistId = null), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_playlist").performClick()
+            onNodeWithTag("radio_playlist_option_1").assertIsFocused()
+            onNodeWithTag("radio_playlist_active_check", useUnmergedTree = true).assertDoesNotExist()
+        }
+
+    @Test fun emptyChooserFocusesClose() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(RadioState(), RadioActions())
+                }
+            }
+            onNodeWithTag("radio_playlist").performClick()
+            onNodeWithContentDescription(getString(Res.string.dismiss)).assertIsFocused()
+        }
+
     @Test fun homeOffersNoPlaylistCreationOrSwipeHint() =
         runDesktopComposeUiTest(width = 390, height = 844) {
             setContent {
@@ -577,7 +727,9 @@ class RadioInteractionTest {
                 }
             }
             onNodeWithTag("radio_playlist").performClick()
-            onNodeWithText(getString(Res.string.radio_no_playlists)).assertIsDisplayed()
+            onNode(
+                hasText(getString(Res.string.radio_no_playlists)) and hasAnyAncestor(hasTestTag("radio_insert")),
+            ).assertIsDisplayed()
         }
 
     @Test fun anEmptyRadioOffersDiscoverAndTheGroupWorkflow() =

@@ -50,7 +50,8 @@ import org.jetbrains.compose.resources.painterResource
  * The radio's panel toggle switch: a chrome bat lever through a hex nut on a plate printed
  * [onLabel] (red) and [offLabel] (black). Lever up means on. Tap it, or flick the lever toward
  * the other label. The caller sizes it (the radio home uses 54 x 64 dp and larger) and supplies
- * its accessible name and state; it is announced as a switch.
+ * its accessible name and state; it is announced as a switch. The lever sounds as it is thrown
+ * ([RadioSound.SWITCH_ON], [RadioSound.SWITCH_OFF]).
  */
 @Composable
 public fun BatToggle(
@@ -62,14 +63,15 @@ public fun BatToggle(
     enabled: Boolean = true,
     plate: SwitchPlate = SwitchPlate.BRASS,
 ) {
+    // Read through states: the flick detector below outlives recompositions.
     val currentOn by rememberUpdatedState(on)
-    val toggle by rememberUpdatedState(onToggle)
+    val toggle by rememberUpdatedState(rememberSwitchFeedback { onToggle() })
     BatToggleFace(
         on,
         onLabel,
         offLabel,
         modifier
-            .toggleable(on, enabled = enabled, role = Role.Switch) { toggle() }
+            .toggleable(on, enabled = enabled, role = Role.Switch) { toggle(!currentOn) }
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 var travel = 0f
@@ -83,7 +85,7 @@ public fun BatToggle(
                     // label toggles; a further threshold would swallow short flicks. On a scrolling
                     // (very short) radio, a drag that starts on the switch moves the lever, not the page.
                     onDragEnd = {
-                        if ((travel < 0f && !currentOn) || (travel > 0f && currentOn)) toggle()
+                        if ((travel < 0f && !currentOn) || (travel > 0f && currentOn)) toggle(!currentOn)
                     },
                 )
             },
@@ -94,10 +96,11 @@ public fun BatToggle(
 
 /**
  * [BatToggle]'s plate and lever as a picture of [on], for a row whose whole line is the toggle
- * and carries the switch semantics. The plate is a photographic render (owner-approved look,
- * 2026-11-17) in two states, lever up and lever down; the app prints [onLabel] and [offLabel] on
- * its blank enamel so they follow the user's language. The printed labels stay silent: the
- * switch's state, not its plate, is what a screen reader announces.
+ * and carries the switch semantics; that row sounds the lever with [rememberSwitchFeedback]. The
+ * plate is a photographic render (owner-approved look, 2026-11-17) in two states, lever up and
+ * lever down; the app prints [onLabel] and [offLabel] on its blank enamel so they follow the
+ * user's language. The printed labels stay silent: the switch's state, not its plate, is what a
+ * screen reader announces.
  */
 @Composable
 public fun BatToggleFace(

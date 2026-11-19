@@ -1,0 +1,17 @@
+{
+  "uniqueId": "neutrodyne:sound-freesound-730078",
+  "name": "Control sound: paper-slide by brokenmachinery",
+  "website": "https://freesound.org/people/brokenmachinery/sounds/730078/",
+  "developers": [
+    {
+      "name": "brokenmachinery",
+      "organisationUrl": "https://freesound.org/people/brokenmachinery/"
+    }
+  ],
+  "licenses": [
+    "CC0-1.0"
+  ],
+  "tag": "bundled",
+  "artifactVersion": "Freesound 730078",
+  "description": "The radio's slip_discard (a slip swiped away): an excerpt of \"paper-slide\" by brokenmachinery on Freesound, dedicated to the public domain under CC0 1.0, trimmed, filtered, resampled and levelled by tools/sounds/build_sounds.py. Source: https://freesound.org/people/brokenmachinery/sounds/730078/"
+}

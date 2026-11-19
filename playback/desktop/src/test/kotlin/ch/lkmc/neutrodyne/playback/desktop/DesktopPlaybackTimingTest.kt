@@ -14,6 +14,7 @@ import ch.lkmc.neutrodyne.core.model.QueueOrigin
 import ch.lkmc.neutrodyne.core.model.SettingSource
 import ch.lkmc.neutrodyne.core.model.SleepTimerMode
 import ch.lkmc.neutrodyne.core.model.SleepTimerState
+import ch.lkmc.neutrodyne.core.model.SourceType
 import ch.lkmc.neutrodyne.core.model.VirtualQueue
 import ch.lkmc.neutrodyne.core.testing.FakeAudioEngine
 import ch.lkmc.neutrodyne.core.testing.FakeChapterRepository
@@ -34,6 +35,8 @@ import ch.lkmc.neutrodyne.core.testing.testEpisodeRow
 import ch.lkmc.neutrodyne.playback.api.PlayOrigin
 import ch.lkmc.neutrodyne.playback.api.PlayResult
 import ch.lkmc.neutrodyne.playback.api.PlaybackEvent
+import ch.lkmc.neutrodyne.playback.api.StreamKind
+import ch.lkmc.neutrodyne.playback.api.UnplayableReason
 import ch.lkmc.neutrodyne.playback.core.EffectivePlaybackSettings
 import ch.lkmc.neutrodyne.playback.core.PlayStarter
 import ch.lkmc.neutrodyne.playback.core.PlayedRule
@@ -47,6 +50,9 @@ import ch.lkmc.neutrodyne.playback.engine.EngineEvent
 import ch.lkmc.neutrodyne.playback.engine.EngineState
 import ch.lkmc.neutrodyne.playback.engine.Gapless
 import ch.lkmc.neutrodyne.playback.engine.SpanCache
+import ch.lkmc.neutrodyne.youtube.api.ResolveResult
+import ch.lkmc.neutrodyne.youtube.api.ResolvedAudio
+import ch.lkmc.neutrodyne.youtube.api.YouTubeCapabilities
 import dev.zacsweers.metro.Provider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -621,6 +627,87 @@ class DesktopPlaybackTimingTest {
         }
 
     @Test
+    fun aForbiddenEnclosureAsksForThePassword() = assertHttpSkip(StreamKind.STREAM, 403, UnplayableReason.AuthRequired)
+
+    @Test
+    fun aForbiddenYouTubeStreamKeepsTheHttpReason() =
+        assertHttpSkip(StreamKind.YOUTUBE, 403, UnplayableReason.Http(403))
+
+    @Test
+    fun anUnknownStreamDoesNotAskForAFeedPasswordOn403() = assertHttpSkip(null, 403, UnplayableReason.Http(403))
+
+    @Test
+    fun anUnauthorizedYouTubeStreamKeepsTheExistingAuthReason() =
+        assertHttpSkip(StreamKind.YOUTUBE, 401, UnplayableReason.AuthRequired)
+
+    private fun assertHttpSkip(
+        stream: StreamKind?,
+        status: Int,
+        expected: UnplayableReason,
+    ) = runTest {
+        val fixture = TimingFixture(this)
+        try {
+            if (stream == StreamKind.YOUTUBE) fixture.configureYouTubeCurrent()
+            val events = mutableListOf<PlaybackEvent>()
+            backgroundScope.launch { fixture.controller.events.collect { events += it } }
+            fixture.controller.play()
+            fixture.engine.ready()
+            runCurrent()
+            if (stream != null) fixture.resolver.resolve(fixture.engine.items.first(), 0)
+            assertEquals(stream, fixture.resolver.streamKind(1))
+
+            fixture.engine.state.value = EngineState.Error(1, EngineError.Http(status))
+            runCurrent()
+            assertEquals(listOf(expected), events.filterIsInstance<PlaybackEvent.Skipped>().map { it.reason })
+        } finally {
+            fixture.close()
+        }
+    }
+
+    /** Points the current item at a resolvable YouTube stream before the controller plans it. */
+    private fun TimingFixture.configureYouTubeCurrent() {
+        caps.capabilities.value =
+            YouTubeCapabilities(
+                inAppPlayback = true,
+                downloads = false,
+                channelSearch = false,
+                enrichment = false,
+                backCatalogue = false,
+                externalReason = null,
+            )
+        youtube.result = ResolveResult.Ok(youtubeAudio())
+        media.items.value =
+            media.items.value.toMutableMap().apply {
+                this[1L] =
+                    requireNotNull(this[1L]).copy(
+                        sourceType = SourceType.YOUTUBE_CHANNEL,
+                        externalMediaId = "video-1",
+                    )
+            }
+    }
+
+    private fun youtubeAudio() =
+        ResolvedAudio(
+            videoId = "video-1",
+            url = "https://media.example/1.m4a",
+            itag = 140,
+            formatId = "140",
+            mimeType = "audio/mp4",
+            codecs = "mp4a.40.2",
+            averageBitrate = 128_000,
+            contentLength = 120_000,
+            durationMs = 120_000,
+            expiresAtMs = Long.MAX_VALUE,
+            lastModifiedMicros = null,
+            isDrc = false,
+            audioTrackId = null,
+            trackLabel = null,
+            ipFamily = null,
+            availableAtMs = null,
+            resolvedAtMs = 0,
+        )
+
+    @Test
     fun aStaleSuccessorErrorSkipsNothingAndKeepsPlaying() =
         runTest {
             val fixture = TimingFixture(this)
@@ -935,9 +1022,10 @@ private class TimingFixture(
     val media = FakePlaybackMediaLookup()
     val chapters = FakeChapterRepository()
     val local = FakeLocalMediaIndex()
-    private val caps = FakeYouTubeCapabilitiesSource()
+    val caps = FakeYouTubeCapabilitiesSource()
+    val youtube = FakeYouTubeStreamResolver()
     private val directory = Files.createTempDirectory("md1a2-timing")
-    val resolver = DesktopEpisodeSourceResolver(local, caps, FakeYouTubeStreamResolver(), clock)
+    val resolver = DesktopEpisodeSourceResolver(local, caps, youtube, clock)
     private val rule = PlayedRule()
     private val startPosition = StartPositionRule()
     private val settings = FakeSettingsRepository()

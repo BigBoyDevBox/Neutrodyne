@@ -81,10 +81,12 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.IvoryKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.MaterialPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.NeedleWindow
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioMaterial
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
 import ch.lkmc.neutrodyne.core.designsystem.radio.SwitchPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.barlow
 import ch.lkmc.neutrodyne.core.designsystem.radio.courier
 import ch.lkmc.neutrodyne.core.designsystem.radio.recess
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberClickSound
 import ch.lkmc.neutrodyne.core.model.SourceType
 import ch.lkmc.neutrodyne.core.navigation.EpisodeKey
 import ch.lkmc.neutrodyne.core.navigation.PodcastKey
@@ -391,7 +393,10 @@ private fun SkipKey(
     arrow: ImageVector,
     onClick: () -> Unit,
 ) {
-    Box(Modifier.size(SKIP_KEY_TARGET).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+    Box(
+        Modifier.size(SKIP_KEY_TARGET).clickable(onClick = rememberClickSound(RadioSound.KEY_PRESS, onClick)),
+        contentAlignment = Alignment.Center,
+    ) {
         IvoryKeyCap(text, size = SKIP_KEY_CAP, icon = arrow)
     }
 }

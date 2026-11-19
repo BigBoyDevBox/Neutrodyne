@@ -81,12 +81,73 @@ class DiscoveryViewModelTest : MainDispatcherTest() {
                 "Listen https://private.test/x",
                 "192.168.1.2",
                 "localhost/feed",
+                "myserver/feed",
+                "internal/HR",
+                "`private.example`",
+                "*private.example*",
+                "|localhost|",
+                "__bücher.example__",
+                "[feed](private.example)",
+                "private.example#payroll",
+                "`192.168.1.2`",
+                "bücher.example",
+                "例え。テスト",
             )) {
                 vm.inputChanged(input)
                 advanceUntilIdle()
                 assertNull(vm.state.value.results)
             }
             assertTrue(repository.queries.isEmpty())
+            vm.viewModelScope.cancel()
+        }
+
+    @Test
+    fun repeatedEditsRetainOnlyTheLastVisibleHitsUntilTheNextAnswer() =
+        runTest {
+            repository.searchAnswer = { query ->
+                flow {
+                    if (query == "opera") {
+                        emit(results(query).copy(hits = persistentListOf(hit)))
+                    } else {
+                        emit(
+                            results(query).copy(
+                                complete = false,
+                                statuses =
+                                    persistentMapOf(ProviderId.APPLE to ProviderStatus.Pending),
+                            ),
+                        )
+                        if (query != "empty") awaitCancellation()
+                        emit(results(query))
+                    }
+                }
+            }
+            val vm = DiscoverViewModel(repository, groups)
+            runCurrent()
+            vm.onProvidersVisible(checkNotNull(vm.state.value.providers))
+            vm.inputChanged("opera")
+            advanceUntilIdle()
+            val opera = checkNotNull(vm.state.value.results)
+            for (query in listOf("space", "science", "empty")) {
+                vm.inputChanged(query)
+                assertEquals(opera, vm.state.value.retainedResults)
+                advanceUntilIdle()
+                assertEquals(
+                    query,
+                    vm.state.value.results
+                        ?.query,
+                )
+            }
+            assertNull(vm.state.value.retainedResults)
+            assertTrue(checkNotNull(vm.state.value.results).hits.isEmpty())
+
+            vm.inputChanged("opera")
+            advanceUntilIdle()
+            vm.inputChanged("science")
+            assertEquals(opera, vm.state.value.retainedResults)
+            vm.inputChanged("https://private.test/feed")
+            advanceUntilIdle()
+            assertNull(vm.state.value.retainedResults)
+            assertNull(vm.state.value.results)
             vm.viewModelScope.cancel()
         }
 

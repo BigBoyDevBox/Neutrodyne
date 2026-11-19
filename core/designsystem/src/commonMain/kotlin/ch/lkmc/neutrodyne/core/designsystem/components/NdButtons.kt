@@ -23,6 +23,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import ch.lkmc.neutrodyne.core.designsystem.radio.IvoryKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioFaceplate
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberClickSound
 
 /**
  * The colour role of a text action (08 Dialogs: destructive confirms draw in the error colour;
@@ -105,7 +107,7 @@ public fun NdIconButton(
     enabled: Boolean = true,
 ) {
     IconButton(
-        onClick = onClick,
+        onClick = faceplateKeySound(onClick),
         modifier = modifier.sizeIn(minWidth = ICON_BUTTON_MINIMUM_SIZE, minHeight = ICON_BUTTON_MINIMUM_SIZE),
         enabled = enabled,
     ) {
@@ -131,7 +133,7 @@ public fun NdTooltipIconButton(
         state = rememberTooltipState(),
     ) {
         IconButton(
-            onClick = onClick,
+            onClick = faceplateKeySound(onClick),
             // Keep the clickable layout at 48dp instead of relying on touch expansion.
             modifier = modifier.sizeIn(minWidth = ICON_BUTTON_MINIMUM_SIZE, minHeight = ICON_BUTTON_MINIMUM_SIZE),
             enabled = enabled,
@@ -140,6 +142,11 @@ public fun NdTooltipIconButton(
         }
     }
 }
+
+/** On a radio faceplate the button is an ivory key, which sounds as it is pressed. */
+@Composable
+private fun faceplateKeySound(onClick: () -> Unit): () -> Unit =
+    if (LocalRadioFaceplate.current) rememberClickSound(RadioSound.KEY_PRESS, onClick) else onClick
 
 /** On a radio faceplate the glyph sits on an ivory key cap; elsewhere it is a plain icon. */
 @Composable
