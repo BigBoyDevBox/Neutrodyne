@@ -126,9 +126,22 @@ private fun DrawScope.drawNinePatch(
         image,
         intArrayOf(0, srcInset, image.width - srcInset, image.width),
         intArrayOf(0, srcInset, image.height - srcInset, image.height),
-        floatArrayOf(0f, edge, size.width - edge, size.width),
-        floatArrayOf(0f, edge, size.height - edge, size.height),
+        ninePatchStops(edge, size.width),
+        ninePatchStops(edge, size.height),
     )
+}
+
+/**
+ * Where a nine-patch's slices start and end along a side of [length]: each [edge] keeps its size
+ * while the side has room for both, and a shorter side (the 14 dp needle window of the mini radio)
+ * splits evenly between its two edges instead of drawing them over each other.
+ */
+internal fun ninePatchStops(
+    edge: Float,
+    length: Float,
+): FloatArray {
+    val drawn = minOf(edge, length / 2f)
+    return floatArrayOf(0f, drawn, length - drawn, length)
 }
 
 /**
