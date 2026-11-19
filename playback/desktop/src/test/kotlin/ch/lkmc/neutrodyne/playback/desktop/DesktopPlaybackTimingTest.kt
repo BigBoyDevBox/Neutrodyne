@@ -626,79 +626,43 @@ class DesktopPlaybackTimingTest {
             }
         }
 
-    /** 06: a refused enclosure (401 or 403) is skipped as AuthRequired, so the password prompt shows. */
     @Test
-    fun aForbiddenEnclosureAsksForThePassword() =
-        runTest {
-            val fixture = TimingFixture(this)
-            try {
-                val events = mutableListOf<PlaybackEvent>()
-                backgroundScope.launch { fixture.controller.events.collect { events += it } }
-                fixture.controller.play()
-                fixture.engine.ready()
-                runCurrent()
-                fixture.resolver.resolve(fixture.engine.items.first(), 0)
-                assertEquals(StreamKind.STREAM, fixture.resolver.streamKind(1))
-                fixture.engine.state.value = EngineState.Error(1, EngineError.Http(403))
-                runCurrent()
-                assertEquals(
-                    listOf<UnplayableReason>(UnplayableReason.AuthRequired),
-                    events.filterIsInstance<PlaybackEvent.Skipped>().map { it.reason },
-                )
-            } finally {
-                fixture.close()
-            }
-        }
+    fun aForbiddenEnclosureAsksForThePassword() = assertHttpSkip(StreamKind.STREAM, 403, UnplayableReason.AuthRequired)
 
-    /** 06: a YouTube signed stream's 403 is an HTTP fault, never feed authentication. */
     @Test
     fun aForbiddenYouTubeStreamKeepsTheHttpReason() =
-        runTest {
-            val fixture = TimingFixture(this)
-            try {
-                fixture.configureYouTubeCurrent()
-                val events = mutableListOf<PlaybackEvent>()
-                backgroundScope.launch { fixture.controller.events.collect { events += it } }
-                fixture.controller.play()
-                fixture.engine.ready()
-                runCurrent()
-                fixture.resolver.resolve(fixture.engine.items.first(), 0)
-                assertEquals(StreamKind.YOUTUBE, fixture.resolver.streamKind(1))
-                fixture.engine.state.value = EngineState.Error(1, EngineError.Http(403))
-                runCurrent()
-                assertEquals(
-                    listOf<UnplayableReason>(UnplayableReason.Http(403)),
-                    events.filterIsInstance<PlaybackEvent.Skipped>().map { it.reason },
-                )
-            } finally {
-                fixture.close()
-            }
-        }
+        assertHttpSkip(StreamKind.YOUTUBE, 403, UnplayableReason.Http(403))
 
-    /** 06: 401 keeps asking for the password even on a YouTube stream. */
     @Test
-    fun anUnauthorizedYouTubeStreamStillAsksForThePassword() =
-        runTest {
-            val fixture = TimingFixture(this)
-            try {
-                fixture.configureYouTubeCurrent()
-                val events = mutableListOf<PlaybackEvent>()
-                backgroundScope.launch { fixture.controller.events.collect { events += it } }
-                fixture.controller.play()
-                fixture.engine.ready()
-                runCurrent()
-                fixture.resolver.resolve(fixture.engine.items.first(), 0)
-                assertEquals(StreamKind.YOUTUBE, fixture.resolver.streamKind(1))
-                fixture.engine.state.value = EngineState.Error(1, EngineError.Http(401))
-                runCurrent()
-                assertEquals(
-                    listOf<UnplayableReason>(UnplayableReason.AuthRequired),
-                    events.filterIsInstance<PlaybackEvent.Skipped>().map { it.reason },
-                )
-            } finally {
-                fixture.close()
-            }
+    fun anUnknownStreamDoesNotAskForAFeedPasswordOn403() = assertHttpSkip(null, 403, UnplayableReason.Http(403))
+
+    @Test
+    fun anUnauthorizedYouTubeStreamKeepsTheExistingAuthReason() =
+        assertHttpSkip(StreamKind.YOUTUBE, 401, UnplayableReason.AuthRequired)
+
+    private fun assertHttpSkip(
+        stream: StreamKind?,
+        status: Int,
+        expected: UnplayableReason,
+    ) = runTest {
+        val fixture = TimingFixture(this)
+        try {
+            if (stream == StreamKind.YOUTUBE) fixture.configureYouTubeCurrent()
+            val events = mutableListOf<PlaybackEvent>()
+            backgroundScope.launch { fixture.controller.events.collect { events += it } }
+            fixture.controller.play()
+            fixture.engine.ready()
+            runCurrent()
+            if (stream != null) fixture.resolver.resolve(fixture.engine.items.first(), 0)
+            assertEquals(stream, fixture.resolver.streamKind(1))
+
+            fixture.engine.state.value = EngineState.Error(1, EngineError.Http(status))
+            runCurrent()
+            assertEquals(listOf(expected), events.filterIsInstance<PlaybackEvent.Skipped>().map { it.reason })
+        } finally {
+            fixture.close()
         }
+    }
 
     /** Points the current item at a resolvable YouTube stream before the controller plans it. */
     private fun TimingFixture.configureYouTubeCurrent() {

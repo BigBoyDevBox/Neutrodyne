@@ -991,7 +991,7 @@ class DesktopPlaybackController(
         status: Int,
         stream: StreamKind?,
     ): UnplayableReason =
-        if (status == HTTP_UNAUTHORIZED || (status == HTTP_FORBIDDEN && stream != StreamKind.YOUTUBE)) {
+        if (status == HTTP_UNAUTHORIZED || (status == HTTP_FORBIDDEN && stream == StreamKind.STREAM)) {
             UnplayableReason.AuthRequired
         } else {
             UnplayableReason.Http(status)
