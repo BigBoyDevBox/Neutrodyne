@@ -254,7 +254,9 @@ class RadioViewModelTest : MainDispatcherTest() {
                 runCurrent()
                 model.selectEpisode(3)
                 controller.state.nowPlaying.value =
-                    testNowPlaying(3).copy(isPlaying = false, phase = PlayerPhase.ERROR, issue = PlaybackIssue.NETWORK_LOST)
+                    testNowPlaying(
+                        3,
+                    ).copy(isPlaying = false, phase = PlayerPhase.ERROR, issue = PlaybackIssue.NETWORK_LOST)
                 runCurrent()
                 model.seek(17_500)
                 val calls = controller.calls.toList()
