@@ -127,7 +127,9 @@ public fun PianoKeySlot(
  * makes a momentary key that never latches. A short printed [label] can be read as a fuller
  * [spokenLabel] that contains it (WCAG 2.5.3).
  * A disabled key is dimmed and ignores clicks. At least 48 dp tall. A [destructive] key prints
- * its label in signal red (08 Dialogs: destructive confirms stand out).
+ * its label in signal red (08 Dialogs: destructive confirms stand out). A key pushed in to latch
+ * sounds [RadioSound.KEY_LATCH]; a momentary key, a latched key let go and a pressed tab key
+ * pushed again sound [RadioSound.KEY_PRESS].
  */
 @Composable
 public fun PianoKey(
@@ -140,6 +142,8 @@ public fun PianoKey(
     spokenLabel: String = label,
     destructive: Boolean = false,
 ) {
+    val latches = role != Role.Button && !pressed
+    val sounding = rememberClickSound(if (latches) RadioSound.KEY_LATCH else RadioSound.KEY_PRESS, onClick)
     Column(
         modifier
             // Content-sized unless the bank fixes the width (weights): a lone key never
@@ -150,9 +154,9 @@ public fun PianoKey(
             .let {
                 // A momentary key (Clear, a sort key) is a plain button; it never latches.
                 if (role == Role.Button) {
-                    it.clickable(enabled = enabled, role = role, onClick = onClick)
+                    it.clickable(enabled = enabled, role = role, onClick = sounding)
                 } else {
-                    it.selectable(pressed, enabled = enabled, role = role, onClick = onClick)
+                    it.selectable(pressed, enabled = enabled, role = role, onClick = sounding)
                 }
             },
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -246,7 +250,7 @@ public fun ActionKeySlot(
 /**
  * A tall momentary key for a bank of actions, like a tape deck's transport keys: a symbol over
  * its printed label on raised ivory. Read as a button named [label]; [enabled] dims it. Put
- * several in an [ActionKeySlot]. The [icon] slot draws in ink.
+ * several in an [ActionKeySlot]. The [icon] slot draws in ink. It sounds [RadioSound.KEY_PRESS].
  */
 @Composable
 public fun ActionKey(
@@ -262,8 +266,11 @@ public fun ActionKey(
             .alpha(if (enabled) 1f else DISABLED_ALPHA)
             .threePatch(imageResource(Res.drawable.radio_key_piano_up), KEY_SRC_CAP)
             .clip(KeyShape)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = RAISED_LIP + 5.dp),
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = rememberClickSound(RadioSound.KEY_PRESS, onClick),
+            ).padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = RAISED_LIP + 5.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
     ) {

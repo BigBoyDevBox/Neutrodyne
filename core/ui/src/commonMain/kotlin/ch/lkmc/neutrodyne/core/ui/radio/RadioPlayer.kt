@@ -78,12 +78,14 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.Faceplate
 import ch.lkmc.neutrodyne.core.designsystem.radio.IvoryKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.MaterialPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioMaterial
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
 import ch.lkmc.neutrodyne.core.designsystem.radio.SwitchPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.barlow
 import ch.lkmc.neutrodyne.core.designsystem.radio.dialPaper
 import ch.lkmc.neutrodyne.core.designsystem.radio.dosis
 import ch.lkmc.neutrodyne.core.designsystem.radio.radioGlass
 import ch.lkmc.neutrodyne.core.designsystem.radio.recess
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberClickSound
 import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
 import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.chapter_seek
@@ -352,8 +354,11 @@ private fun SkipKey(
             .size(SKIP_TARGET * scale)
             .clip(CircleShape)
             .semantics { contentDescription = description }
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .testTag(tag),
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = rememberClickSound(RadioSound.KEY_PRESS, onClick),
+            ).testTag(tag),
         contentAlignment = Alignment.Center,
     ) {
         IvoryKeyCap(legend, enabled = enabled, size = SKIP_CAP * scale, icon = arrow)

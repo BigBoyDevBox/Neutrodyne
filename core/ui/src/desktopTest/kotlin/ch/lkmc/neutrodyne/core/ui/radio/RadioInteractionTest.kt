@@ -18,8 +18,11 @@ import androidx.compose.runtime.saveable.SaveableStateRegistry
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -58,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.ui.resources.Res
+import ch.lkmc.neutrodyne.core.ui.resources.action_mark_played
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
 import ch.lkmc.neutrodyne.core.ui.resources.dismiss
@@ -84,6 +88,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalTestApi::class)
 class RadioInteractionTest {
@@ -98,6 +103,39 @@ class RadioInteractionTest {
     @AfterTest fun restoreLocale() {
         Locale.setDefault(previousLocale)
     }
+
+    @Test
+    fun aSlipTicksOnceAsItCrossesIntoReleaseToDiscard() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val felt = mutableListOf<HapticFeedbackType>()
+            val haptics =
+                object : HapticFeedback {
+                    override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {
+                        felt += hapticFeedbackType
+                    }
+                }
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    CompositionLocalProvider(LocalHapticFeedback provides haptics) {
+                        RadioScreen(radioFixture(), RadioActions())
+                    }
+                }
+            }
+            onNodeWithTag("radio_episode_1").performTouchInput {
+                down(Offset(width - 10f, height / 2f))
+                moveBy(Offset(-40f, 0f))
+            }
+            assertEquals(emptyList(), felt, "short of the threshold")
+            onNodeWithTag("radio_episode_1").performTouchInput {
+                moveBy(Offset(-60f, 0f))
+                moveBy(Offset(-20f, 0f))
+                moveBy(Offset(50f, 0f))
+                moveBy(Offset(-30f, 0f))
+                cancel()
+            }
+            // -100 arms, -120 stays armed, -70 disarms, -100 arms again: a tick each time it arms.
+            assertEquals(List(2) { HapticFeedbackType.GestureThresholdActivate }, felt)
+        }
 
     @Test
     fun anEmptyRadioWaitsForItsPlaylistsAndOffersAnImport() =
@@ -243,6 +281,50 @@ class RadioInteractionTest {
             onNodeWithTag("radio_episode_1").assertDoesNotExist()
             onNodeWithTag("radio_undo").assertIsFocused().performClick()
             onNodeWithTag("radio_episode_1").assertIsDisplayed().assertIsFocused()
+        }
+
+    @Test
+    fun aSlipCanBeMarkedPlayedAndRestoredThroughSemantics() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val original = radioFixture()
+            var state by mutableStateOf(original)
+            val selected = mutableListOf<Long>()
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        state,
+                        RadioActions(
+                            selectEpisode = { selected += it },
+                            discard = { id ->
+                                state =
+                                    state.copy(
+                                        episodes = state.episodes.filterNot { it.id == id },
+                                        removed = state.episodes.first { it.id == id },
+                                    )
+                            },
+                            undo = { state = original },
+                        ),
+                    )
+                }
+            }
+
+            val row = onNodeWithTag("radio_episode_1")
+            val markPlayed = getString(Res.string.action_mark_played)
+            val action =
+                row.fetchSemanticsNode().config[SemanticsActions.CustomActions].single {
+                    it.label == markPlayed
+                }
+            runOnIdle { assertTrue(action.action()) }
+
+            assertEquals(emptyList(), selected)
+            row.assertDoesNotExist()
+            onNodeWithTag("radio_episode_2").assertIsDisplayed()
+            onNodeWithTag("radio_undo").assertIsFocused().performClick()
+            row.assertIsDisplayed().assertIsFocused()
+            onNodeWithTag("radio_episode_2").performClick()
+            assertEquals(listOf(2L), selected)
+            onNodeWithTag("radio_episode_2").assertIsDisplayed()
+            onNodeWithTag("radio_undo").assertDoesNotExist()
         }
 
     @Test

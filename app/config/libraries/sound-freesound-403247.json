@@ -1,0 +1,17 @@
+{
+  "uniqueId": "neutrodyne:sound-freesound-403247",
+  "name": "Control sound: Tape Deck Buttons and Switches by Nekkowe",
+  "website": "https://freesound.org/people/Nekkowe/sounds/403247/",
+  "developers": [
+    {
+      "name": "Nekkowe",
+      "organisationUrl": "https://freesound.org/people/Nekkowe/"
+    }
+  ],
+  "licenses": [
+    "CC0-1.0"
+  ],
+  "tag": "bundled",
+  "artifactVersion": "Freesound 403247",
+  "description": "The radio's key_latch and key_press (the piano keys), recorded from a Sony CFD-9 radio cassette player: an excerpt of \"Tape Deck Buttons and Switches\" by Nekkowe on Freesound, dedicated to the public domain under CC0 1.0, trimmed, filtered, resampled and levelled by tools/sounds/build_sounds.py. Source: https://freesound.org/people/Nekkowe/sounds/403247/"
+}

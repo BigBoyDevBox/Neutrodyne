@@ -60,6 +60,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -74,12 +75,15 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -96,17 +100,21 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.Cream
 import ch.lkmc.neutrodyne.core.designsystem.radio.EnamelSelector
 import ch.lkmc.neutrodyne.core.designsystem.radio.Faceplate
 import ch.lkmc.neutrodyne.core.designsystem.radio.Ink
+import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioSounds
 import ch.lkmc.neutrodyne.core.designsystem.radio.MaterialPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKey
 import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKeySlot
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioMaterial
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
 import ch.lkmc.neutrodyne.core.designsystem.radio.SlipKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.barlow
 import ch.lkmc.neutrodyne.core.designsystem.radio.courier
 import ch.lkmc.neutrodyne.core.designsystem.radio.recess
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberClickSound
 import ch.lkmc.neutrodyne.core.ui.ReportVisibleEpisodeIds
 import ch.lkmc.neutrodyne.core.ui.rememberMonogram
 import ch.lkmc.neutrodyne.core.ui.resources.Res
+import ch.lkmc.neutrodyne.core.ui.resources.action_mark_played
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
 import ch.lkmc.neutrodyne.core.ui.resources.action_retry
@@ -442,6 +450,14 @@ private fun RadioSlip(
     onFocusRestore: () -> Unit,
 ) {
     val focusRestored by rememberUpdatedState(onFocusRestore)
+    // The slip slides off the radio with a paper sound, by swipe or by the Delete key. Read through
+    // a state: the swipe detector outlives recompositions.
+    val sounds by rememberUpdatedState(LocalRadioSounds.current)
+    val currentDiscard by rememberUpdatedState(actions.discard)
+    val discard = {
+        sounds.play(RadioSound.SLIP_DISCARD)
+        currentDiscard(episode.id)
+    }
     val inputMode = LocalInputModeManager.current
     LaunchedEffect(restoreRowFocus, inputMode) {
         if (restoreRowFocus == episode.id) {
@@ -452,6 +468,8 @@ private fun RadioSlip(
         }
     }
     val monogram = rememberMonogram(episode.podcast)
+    val haptics by rememberUpdatedState(LocalHapticFeedback.current)
+    val markPlayed = stringResource(Res.string.action_mark_played)
     BoxWithConstraints(Modifier.fillMaxWidth().clipToBounds().background(Color(0xFF38291B))) {
         val density = LocalDensity.current
         val threshold = with(density) { radioDiscardThreshold(maxWidth.value).dp.toPx() }
@@ -478,11 +496,19 @@ private fun RadioSlip(
                 .focusProperties { canFocus = true }
                 .onKeyEvent {
                     if (it.type == KeyEventType.KeyDown && it.key == Key.Delete) {
-                        actions.discard(episode.id)
+                        discard()
                         true
                     } else {
                         false
                     }
+                }.semantics {
+                    customActions =
+                        listOf(
+                            CustomAccessibilityAction(markPlayed) {
+                                discard()
+                                true
+                            },
+                        )
                 }.selectable(selected, onClick = { actions.selectEpisode(episode.id) })
                 .pointerInput(episode.id, width, windowSize) {
                     awaitEachGesture {
@@ -502,11 +528,16 @@ private fun RadioSlip(
                                         abs(delta.x) > viewConfiguration.touchSlop && abs(delta.x) > abs(delta.y)
                                 }
                                 if (horizontal) {
+                                    val armed = -drag >= threshold
                                     drag = delta.x.coerceIn(-size.width.toFloat(), 0f)
+                                    // A tick as the slip crosses into "release to discard".
+                                    if (!armed && -drag >= threshold) {
+                                        haptics.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                    }
                                     change.consume()
                                 }
                                 if (!change.pressed) {
-                                    if (horizontal && -drag >= threshold) actions.discard(episode.id)
+                                    if (horizontal && -drag >= threshold) discard()
                                     break
                                 }
                             }
@@ -570,7 +601,11 @@ private fun SlipPlayKey(
             .size(SLIP_KEY_TARGET)
             .clip(CircleShape)
             .semantics { contentDescription = label }
-            .clickable(role = Role.Button, onClickLabel = label, onClick = onClick),
+            .clickable(
+                role = Role.Button,
+                onClickLabel = label,
+                onClick = rememberClickSound(RadioSound.KEY_PRESS, onClick),
+            ),
         contentAlignment = Alignment.Center,
     ) {
         SlipKeyCap(if (playing) NdIcons.Pause else NdIcons.PlayArrow, null, Modifier.size(SLIP_KEY_CAP))

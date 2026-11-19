@@ -6,6 +6,9 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.v2.runComposeUiTest
@@ -14,6 +17,9 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import ch.lkmc.neutrodyne.core.common.PlatformKind
+import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioSounds
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSounds
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.domain.SettingsError
@@ -78,9 +84,27 @@ class AppearancePageTest {
             assertEquals(storedBefore, runBlocking { settings.get(AppearanceSettingKeys.LIBRARY_DENSITY) })
         }
 
+    /** PO-56: Control sounds is on by default; switching it off stores false with the lever's sound. */
+    @Test
+    fun controlSoundsSwitchStoresOffAndSoundsTheLever() =
+        runComposeUiTest {
+            val settings = FakeSettingsRepository()
+            val played = mutableListOf<RadioSound>()
+            setAppearance(settings, sounds = { played += it })
+
+            onNodeWithTag("appearance_control_sounds").assertIsOn()
+            onNodeWithText("Control sounds").performClick()
+            waitForIdle()
+
+            assertEquals(false, runBlocking { settings.get(AppearanceSettingKeys.CONTROL_SOUNDS) })
+            onNodeWithTag("appearance_control_sounds").assertIsOff()
+            assertEquals(listOf(RadioSound.SWITCH_OFF), played)
+        }
+
     private fun ComposeUiTest.setAppearance(
         settings: FakeSettingsRepository,
         snackbar: SnackbarHostState = SnackbarHostState(),
+        sounds: RadioSounds = RadioSounds.Silent,
     ) {
         val owner =
             object : LifecycleOwner {
@@ -94,6 +118,7 @@ class AppearancePageTest {
                 LocalLifecycleOwner provides owner,
                 LocalAppNavigator provides RecordingAppNavigator(),
                 LocalSnackbarHost provides snackbar,
+                LocalRadioSounds provides sounds,
             ) {
                 NeutrodyneTheme(SystemUiState.DEFAULT) {
                     AppearancePage(settings, PlatformKind.DESKTOP)

@@ -1,0 +1,17 @@
+{
+  "uniqueId": "neutrodyne:sound-freesound-877301",
+  "name": "Control sound: Rotary Selector Ticks by loganzsound",
+  "website": "https://freesound.org/people/loganzsound/sounds/877301/",
+  "developers": [
+    {
+      "name": "loganzsound",
+      "organisationUrl": "https://freesound.org/people/loganzsound/"
+    }
+  ],
+  "licenses": [
+    "CC0-1.0"
+  ],
+  "tag": "bundled",
+  "artifactVersion": "Freesound 877301",
+  "description": "The radio's dial_tick (counters and the tuning dial): an excerpt of \"Rotary Selector Ticks\" by loganzsound on Freesound, dedicated to the public domain under CC0 1.0, trimmed, filtered, resampled and levelled by tools/sounds/build_sounds.py. Source: https://freesound.org/people/loganzsound/sounds/877301/"
+}

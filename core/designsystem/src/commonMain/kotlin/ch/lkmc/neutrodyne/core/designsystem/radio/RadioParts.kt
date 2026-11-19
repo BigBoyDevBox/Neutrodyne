@@ -90,7 +90,8 @@ public fun EnamelSign(
 
 /**
  * An enamel sign that opens a choice, like the radio's playlist sign: the plaque with a cream
- * chevron, read as a drop-down list named [text]. The caller anchors its menu to it.
+ * chevron, read as a drop-down list named [text]. The caller anchors its menu to it. It sounds
+ * [RadioSound.KEY_PRESS].
  */
 @Composable
 public fun EnamelSelector(
@@ -103,7 +104,11 @@ public fun EnamelSelector(
         modifier
             .heightIn(min = 48.dp)
             .alpha(if (enabled) 1f else DISABLED_ALPHA)
-            .clickable(enabled = enabled, role = Role.DropdownList, onClick = onClick),
+            .clickable(
+                enabled = enabled,
+                role = Role.DropdownList,
+                onClick = rememberClickSound(RadioSound.KEY_PRESS, onClick),
+            ),
         contentAlignment = Alignment.Center,
     ) {
         EnamelPlaque(Modifier, small = true) {

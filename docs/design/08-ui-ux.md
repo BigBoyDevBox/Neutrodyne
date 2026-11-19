@@ -326,6 +326,48 @@ Android and desktop goldens for 390×844, 320×568, 700×360, 700×900, large
 text and playing, plus local emulator visual comparison with offline seeded
 data. These are requirements, not claims of completed checks.
 
+### Control sounds
+
+**Owner request, 2026-11-18 ([PO-56](../PLAN.md#radio-home-owner-decisions-2026-11-04)).**
+The radio's controls sound like the mechanisms they draw. Six short sounds
+(`RadioSound` in `:core:designsystem`) cover every control:
+
+| Sound | Played by | Mechanism |
+|---|---|---|
+| `SWITCH_ON`, `SWITCH_OFF` | `BatToggle` (the radio's ON/OFF play switch, `RadioSwitch`) and every row that is a switch (`SettingsSwitchRow`, the Playback page's panel switches, group, backup, export and sync switch rows), by the direction thrown | a bat-lever toggle flipping up or down |
+| `KEY_LATCH` | a `PianoKey` pushed in to latch: a band key (`PianoKeys`, settings choices) or a latching key | a piano key locking down |
+| `KEY_PRESS` | keys that spring back: `MomentaryKey`, `ActionKey`, `FaceplateKey`, faceplate icon keys (`NdIconButton` on a faceplate), the radio's skip keys, the mini player's skip key, the Menu keys, slip play keys, the enamel playlist sign, a counter's window, a latched key let go and a pressed band key pushed again | a key pressed and released |
+| `DIAL_TICK` | `StepCounter` step keys and `TuningDial` stations | one detent of a knob or counter wheel |
+| `SLIP_DISCARD` | a slip swiped or Delete-keyed off the radio, a committed row swipe (Feeds) and a swiped-away Up next row | a paper slip slid across the desk |
+
+Rules:
+
+- A control sounds only when the user works it: touch, mouse, keyboard or the
+  control's accessibility action. A state change the app makes (playback
+  stopping elsewhere, sync, a stored value loading) moves the control silently,
+  and a disabled control is silent. The sound plays before the action runs,
+  like a physical part, and does not depend on the action succeeding.
+- Sounds are feedback, never information: nothing the user needs is conveyed
+  only by a sound, and every control keeps its visual and accessibility state.
+- Android plays them through `SoundPool` with `USAGE_ASSISTANCE_SONIFICATION`:
+  the system volume governs them, silent and vibrate modes mute them, and they
+  never request audio focus, so a playing episode continues at full volume
+  underneath. The desktop plays them through Java Sound clips on the default
+  output device. Without a usable device, or while a sound is still loading,
+  the control stays silent; a player never throws or blocks the UI thread.
+- Appearance › Control sounds (`appearance.control_sounds`, default on) turns
+  them off; the shells then provide `RadioSounds.Silent` and release the
+  players a second later, so the switch's own click plays out. Tests, previews and goldens are silent unless they provide a player.
+- Every sound is a public-domain recording (CC0 1.0) or made by the project.
+  The source recordings, their pages and the processing
+  (`tools/sounds/build_sounds.py`, driven by `media-sources/sounds/sounds.json`)
+  live in [`media-sources/sounds/`](../../media-sources/sounds/README.md); each
+  author and source is credited in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)
+  (Control sounds) and in Settings › About › Licences. The shipped files are 48 kHz mono 16-bit
+  PCM WAV in `core/designsystem/src/commonMain/composeResources/files/sounds/`,
+  each under 0.8 s, faded at both ends and levelled to one loudness
+  (`RadioSoundFilesTest`).
+
 ## Information architecture
 
 Serves R2.4, R5.1, R4.6, R8.1, R8.9. Delivered in M0 (M0a: Android shell; M0b: the same five destinations in the desktop window) and per screen milestone. Honours [D54](../PLAN.md#3-key-decisions), [D83](../PLAN.md#3-key-decisions), [D85](../PLAN.md#3-key-decisions). Both apps have the same destinations, screens and keys; the desktop adds the window menus of 11 ([11 Menus](11-desktop.md#menus)), whose items open the same keys.
@@ -883,6 +925,12 @@ radio's bat-handle switch (`RadioSwitch` in `:core:ui`, Material's `Switch` cont
 import and export options, backup, podcast and group settings, Sync and the speed sheet's skip
 silence. No top bar carries a settings gear any more; Settings opens from the radio's Menu, whose Settings key carries D78's amber update dot and reads "Settings, update available" while an update waits. The
 retired `NdTopAppBarAppearance` header mode is gone, as the faceplate is opaque everywhere.
+
+**Haptics (2026-11-18).** On Android the bat lever lands with ToggleOn or ToggleOff
+when the listener throws it (a lever of its own or a row that is the switch, through
+`withSwitchHaptics`), never when the value changes underneath, such as playback stopping.
+A radio slip ticks (GestureThresholdActivate) each time a swipe arms "release to discard".
+Android's touch-feedback setting applies; the desktop has none.
 
 ### Manage groups
 
@@ -3201,7 +3249,7 @@ Serves R2.7 (settings screens), R3.9 (display), R5.5, R6.2–R6.3 and R6.6 (Sett
 
 | `SettingsPage` | Sections and rows | Keys owned by |
 |---|---|---|
-| `APPEARANCE` | Theme (on the desktop "System" follows the OS, [App scheme](#app-scheme)); Use wallpaper colours (Android API 31+ only; hidden below and on the desktop); Tint with artwork colours (M10); Pure black (M10, enabled only when the theme can be dark); Language (Android: per-app picker listing `BuildInfo.shippedLocales` plus "System default", applied with `AppCompatDelegate.setApplicationLocales`, [09 Localisation](09-quality-and-release.md#localisation); on the desktop the row is in `DESKTOP`); Library: grid size (M10), show titles; Gestures (Android; hidden on the desktop, which has no row swipes): swipe episodes in Feeds, swipe toward the end action (`appearance.swipe_start_action`), swipe toward the start action (`appearance.swipe_end_action`) — labelled "Swipe right"/"Swipe left" in LTR and mirrored in RTL; YouTube rows: video thumbnail or channel picture (M8) | 08, 09 |
+| `APPEARANCE` | Theme (on the desktop "System" follows the OS, [App scheme](#app-scheme)); Use wallpaper colours (Android API 31+ only; hidden below and on the desktop); Tint with artwork colours (M10); Pure black (M10, enabled only when the theme can be dark); Language (Android: per-app picker listing `BuildInfo.shippedLocales` plus "System default", applied with `AppCompatDelegate.setApplicationLocales`, [09 Localisation](09-quality-and-release.md#localisation); on the desktop the row is in `DESKTOP`); Library: grid size (M10), show titles; Control sounds (`appearance.control_sounds`, PO-56, [Control sounds](#control-sounds)); Gestures (Android; hidden on the desktop, which has no row swipes): swipe episodes in Feeds, swipe toward the end action (`appearance.swipe_start_action`), swipe toward the start action (`appearance.swipe_end_action`) — labelled "Swipe right"/"Swipe left" in LTR and mirrored in RTL; YouTube rows: video thumbnail or channel picture (M8) | 08, 09 |
 | `FEEDS` | Refresh interval, Wi-Fi only (Android), refresh on open, load older episodes when subscribing, show-notes images; Notifications: new episodes (with the blocked-permission row on Android); Groups: show Ungrouped tab, Manage groups | 03, 05 |
 | `DISCOVER` | Country; Apple; fyyd; Podcast Index and "Use my own Podcast Index key"; provider disclosure | 03 |
 | `PLAYBACK` | Default speed, skip silence, speed presets, skip back, skip forward (these defaults sync while "Sync playback settings" is on, [Sync screens](#sync-screens)), pause for navigation prompts (Android), streaming on mobile data (Android), rewind after long pauses; Storage: streaming cache size, usage, Clear streaming cache (`PlaybackMaintenance`) | 06 |
@@ -3271,6 +3319,7 @@ Portable keys are added to the backup whitelist automatically (05); `ui.*` keys 
 | `appearance.mini_player_skip` | Bool | true | `settings` | Legacy value retained for settings and backup compatibility; ignored | M4 |
 | `appearance.player_time` | Choice `PlayerTimeDisplay` {REMAINING, TOTAL} | REMAINING | `settings` | tap on the player's time label | M4 |
 | `appearance.youtube_row_art` | Choice `YouTubeRowArt` {VIDEO_THUMBNAIL, CHANNEL_AVATAR} | VIDEO_THUMBNAIL | `settings` | Appearance (shown when YouTube subscriptions exist) | M8 |
+| `appearance.control_sounds` | Bool | true | `settings` | Appearance › Control sounds ([Control sounds](#control-sounds), PO-56) | PO-56 |
 | `ui.feeds_selected_source` | Text (`all`, `ungrouped`, `group:{uuid}`) | `all` | `device_settings` | internal | M2 |
 | `ui.library_segment` | Choice `LibrarySegment` {PODCASTS, GROUPS} | PODCASTS | `device_settings` | internal | M2 |
 | `ui.library_group_filter` | Text (`""` = All, `ungrouped`, group uuid) | `""` | `device_settings` | internal | M2 |

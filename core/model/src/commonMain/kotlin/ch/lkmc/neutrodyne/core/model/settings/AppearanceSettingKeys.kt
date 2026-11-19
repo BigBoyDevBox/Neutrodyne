@@ -102,6 +102,12 @@ public object AppearanceSettingKeys {
             persistentListOf(YouTubeRowArt.VIDEO_THUMBNAIL, YouTubeRowArt.CHANNEL_AVATAR),
         )
 
+    /**
+     * Appearance › Control sounds (PO-56): switches, keys, counters and slips play their short
+     * public-domain recordings (08 Control sounds).
+     */
+    public val CONTROL_SOUNDS: SettingKey.Bool = SettingKey.Bool("appearance.control_sounds", true)
+
     public val ALL: List<SettingKey<*>> =
         listOf(
             YOUTUBE_ROW_ART,
@@ -121,5 +127,6 @@ public object AppearanceSettingKeys {
             LIBRARY_SEGMENT,
             MINI_PLAYER_SKIP,
             PLAYER_TIME,
+            CONTROL_SOUNDS,
         )
 }
