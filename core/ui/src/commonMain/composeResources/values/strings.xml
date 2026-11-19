@@ -719,13 +719,17 @@
     <string name="radio_skip_forward">Forward %1$d seconds</string>
     <string name="radio_skip_back_value">%1$d</string>
     <string name="radio_skip_forward_value">%1$d</string>
+    <string name="radio_no_playlists_empty">No playlists yet.</string>
     <string name="radio_no_playlists">No playlists yet. Create a group in the Library to fill one.</string>
+    <string name="radio_duration_unknown">Duration unknown</string>
     <string name="radio_elapsed">Elapsed</string>
     <string name="radio_playlists">Your playlists</string>
     <string name="radio_all_clear">All clear.</string>
     <string name="radio_no_episodes">No episodes left in this playlist.</string>
     <string name="radio_nothing">Nothing queued</string>
     <string name="radio_choose_other">Choose another playlist to listen.</string>
+    <string name="radio_untuned">NOT TUNED</string>
+    <string name="radio_first_hint">Add podcasts to start listening.</string>
     <string name="radio_release">Release</string>
     <string name="radio_discard">to discard</string>
     <string name="radio_elapsed_full">Elapsed: %1$s</string>

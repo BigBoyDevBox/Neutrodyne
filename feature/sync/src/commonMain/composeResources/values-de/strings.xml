@@ -25,6 +25,7 @@
 
   <string name="sync_setup_title">Gerät verknüpfen</string>
   <string name="sync_setup_address_hint">sync.example.org</string>
+  <string name="sync_setup_address_label">Serveradresse</string>
   <string name="sync_setup_checking">%1$s wird geprüft…</string>
   <string name="sync_setup_linking">Verknüpfung läuft…</string>
   <string name="sync_setup_cancel">Abbrechen</string>

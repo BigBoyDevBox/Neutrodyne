@@ -697,13 +697,17 @@
     <string name="radio_skip_forward">%1$d Sekunden vor</string>
     <string name="radio_skip_back_value">%1$d</string>
     <string name="radio_skip_forward_value">%1$d</string>
+    <string name="radio_no_playlists_empty">Noch keine Playlists.</string>
     <string name="radio_no_playlists">Noch keine Playlists. Lege in der Bibliothek eine Gruppe an.</string>
+    <string name="radio_duration_unknown">Dauer unbekannt</string>
     <string name="radio_elapsed">Verstrichen</string>
     <string name="radio_playlists">Deine Playlists</string>
     <string name="radio_all_clear">Alles erledigt.</string>
     <string name="radio_no_episodes">Keine Folgen mehr in dieser Playlist.</string>
     <string name="radio_nothing">Nichts vorgemerkt</string>
     <string name="radio_choose_other">Wähle zum Hören eine andere Playlist.</string>
+    <string name="radio_untuned">NICHT EINGESTELLT</string>
+    <string name="radio_first_hint">Füge Podcasts hinzu, um zuzuhören.</string>
     <string name="radio_release">Loslassen</string>
     <string name="radio_discard">zum Verwerfen</string>
     <string name="radio_elapsed_full">Verstrichen: %1$s</string>

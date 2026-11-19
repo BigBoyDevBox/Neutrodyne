@@ -282,6 +282,71 @@ class DesktopPlaybackTimingTest {
         }
 
     @Test
+    fun previousReturnsToTheSavedPositionThenRestartsTheCurrentEpisode() =
+        runTest {
+            val fixture = TimingFixture(this)
+            try {
+                fixture.controller.play()
+                fixture.engine.ready()
+                runCurrent()
+                fixture.engine.position = 42_000
+                fixture.engine.transition(2)
+                runCurrent()
+
+                // The recording store leaves publication of the committed queue and position to the test.
+                fixture.positions.positions.value = mapOf(1L to StoredPosition(1, 42_000, 0, null))
+                fixture.sessions.afterGoBack = { previous, generation ->
+                    fixture.sessions.queue =
+                        VirtualQueue(generation, previous, listOf(QueueItem(2, QueueOrigin.UP_NEXT)), emptyList())
+                }
+                fixture.engine.position = 2_000
+                fixture.controller.skipToPrevious()
+                runCurrent()
+                assertEquals(
+                    1L,
+                    fixture.controller.nowPlaying.value
+                        ?.episodeId,
+                )
+                assertEquals(42_000L, fixture.engine.position)
+
+                fixture.engine.ready()
+                runCurrent()
+                fixture.controller.skipToPrevious()
+                runCurrent()
+                assertEquals(
+                    1L,
+                    fixture.controller.nowPlaying.value
+                        ?.episodeId,
+                )
+                assertEquals(0L, fixture.engine.position)
+            } finally {
+                fixture.close()
+            }
+        }
+
+    @Test
+    fun previousDoesNotProjectAQueueThatReplacedItsCommit() =
+        runTest {
+            val fixture = TimingFixture(this)
+            try {
+                fixture.controller.play()
+                fixture.engine.ready()
+                runCurrent()
+                fixture.engine.transition(2)
+                runCurrent()
+                val windows = fixture.engine.windows.size
+                fixture.sessions.afterGoBack = { previous, generation ->
+                    fixture.sessions.queue = VirtualQueue(generation + 1, previous, emptyList(), emptyList())
+                }
+                fixture.controller.skipToPrevious()
+                runCurrent()
+                assertEquals(windows, fixture.engine.windows.size)
+            } finally {
+                fixture.close()
+            }
+        }
+
+    @Test
     fun automaticTransitionReFollowsTheArrivalPodcastSettings() =
         runTest {
             val fixture = TimingFixture(this)

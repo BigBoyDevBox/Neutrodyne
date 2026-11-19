@@ -60,6 +60,10 @@ public data class RadioActions(
     val skipBack: () -> Unit = {},
     val skipForward: () -> Unit = {},
     val selectPlaylist: (Long) -> Unit = {},
+    /** The empty radio's keys, which fill it from Discover, an import or the Library. */
+    val openDiscover: () -> Unit = {},
+    val openLibrary: () -> Unit = {},
+    val openImport: () -> Unit = {},
     val menu: () -> Unit = {},
     val loadEpisode: (Int) -> Unit = {},
     val visibleEpisodes: (Set<Long>) -> Unit = {},
@@ -127,13 +131,15 @@ private fun RadioCabinet(
             Column(Modifier.height(contentHeight).fillMaxWidth().padding(horizontal = if (narrow) 10.dp else 12.dp)) {
                 if (deckVisible) {
                     ValveDeck(
-                        Modifier
-                            .testTag("radio_valve_deck")
-                            .requiredWidth(
-                                deckWidth,
-                            ).height(deckHeight)
-                            .align(Alignment.CenterHorizontally)
-                            .offset(y = 5.dp),
+                        lit = state.playing,
+                        modifier =
+                            Modifier
+                                .testTag("radio_valve_deck")
+                                .requiredWidth(
+                                    deckWidth,
+                                ).height(deckHeight)
+                                .align(Alignment.CenterHorizontally)
+                                .offset(y = 5.dp),
                     )
                 } else {
                     Spacer(Modifier.height(8.dp))
