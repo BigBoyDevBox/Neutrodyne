@@ -118,11 +118,13 @@ class RadioInteractionTest {
         runDesktopComposeUiTest(width = 390, height = 844) {
             val original = radioFixture()
             var state by mutableStateOf(original)
+            val selected = mutableListOf<Long>()
             setContent {
                 NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(
                         state,
                         RadioActions(
+                            selectEpisode = { selected += it },
                             discard = { id ->
                                 state =
                                     state.copy(
@@ -144,10 +146,15 @@ class RadioInteractionTest {
                 }
             runOnIdle { assertTrue(action.action()) }
 
+            assertEquals(emptyList(), selected)
             row.assertDoesNotExist()
             onNodeWithTag("radio_episode_2").assertIsDisplayed()
             onNodeWithTag("radio_undo").assertIsFocused().performClick()
             row.assertIsDisplayed().assertIsFocused()
+            onNodeWithTag("radio_episode_2").performClick()
+            assertEquals(listOf(2L), selected)
+            onNodeWithTag("radio_episode_2").assertIsDisplayed()
+            onNodeWithTag("radio_undo").assertDoesNotExist()
         }
 
     @Test
