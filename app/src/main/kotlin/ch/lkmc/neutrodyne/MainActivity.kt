@@ -3,7 +3,6 @@ package ch.lkmc.neutrodyne
 
 import android.content.Intent
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
@@ -54,6 +53,7 @@ import ch.lkmc.neutrodyne.feature.player.PlayerRoute
 import ch.lkmc.neutrodyne.feature.settings.awaitSettingsFiles
 import ch.lkmc.neutrodyne.feature.settings.rememberSyncRootPresentation
 import ch.lkmc.neutrodyne.feature.settings.rememberUpdateRootPresentation
+import ch.lkmc.neutrodyne.platform.openStorageSettings
 import dev.zacsweers.metrox.viewmodel.LocalMetroViewModelFactory
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -63,7 +63,8 @@ import kotlin.time.Duration.Companion.seconds
  * The one launcher activity (01 Application element and components): AppCompat for per-app language, the system
  * splash, edge-to-edge, then the shared [NeutrodyneRoot]. The start-up gate renders
  * `DatabaseOpener.openState` (01 Splash and start-up gate): "Try again" re-runs `awaitOpen()` (a
- * failed result is never cached), "Manage storage" opens `ACTION_INTERNAL_STORAGE_SETTINGS`.
+ * failed result is never cached), "Manage storage" opens `ACTION_INTERNAL_STORAGE_SETTINGS` or the
+ * next storage screen the build has ([openStorageSettings]).
  * Player state observation does not bind or start the playback service.
  */
 class MainActivity : AppCompatActivity() {
@@ -189,8 +190,9 @@ class MainActivity : AppCompatActivity() {
                             },
                             manageStorage = {
                                 // 01 deviation: the SDK's storage-settings action is
-                                // INTERNAL_STORAGE_SETTINGS (docs say ACTION_MANAGE_STORAGE).
-                                startActivity(Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS))
+                                // INTERNAL_STORAGE_SETTINGS (docs say ACTION_MANAGE_STORAGE); an OEM
+                                // build without it falls back instead of crashing the gate.
+                                openStorageSettings(packageName, ::startActivity)
                             },
                         ),
                     slots = slots,
