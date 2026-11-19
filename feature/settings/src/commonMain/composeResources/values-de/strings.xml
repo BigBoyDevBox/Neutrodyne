@@ -159,4 +159,6 @@
     <string name="diagnostics_section_notifications">Benachrichtigungen</string>
     <string name="diagnostics_section_parse_warnings">Parser-Warnungen</string>
     <string name="diagnostics_section_log">Protokoll</string>
+    <string name="diagnostics_expanded">Erweitert</string>
+    <string name="diagnostics_collapsed">Eingeklappt</string>
 </resources>

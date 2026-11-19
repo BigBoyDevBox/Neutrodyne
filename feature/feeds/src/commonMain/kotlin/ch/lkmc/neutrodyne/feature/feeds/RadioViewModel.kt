@@ -82,7 +82,12 @@ public class RadioViewModel(
     private var writing = false
     private var deferredRows: Rows? = null
     private var rowsRevision = 0
+
+    /** Needle positions chosen for episodes that are not loaded; the radio's own start applies them. */
     private val seeks = mutableMapOf<Long, Long>()
+
+    /** The episode the radio is starting itself, whose pending seek [start] applies. */
+    private var starting: Long? = null
     private val messages = UserMessages()
     private val credentials = MutableStateFlow<Long?>(null)
     public val pendingCredentials = credentials.asStateFlow()
@@ -129,7 +134,10 @@ public class RadioViewModel(
             }.collect { (all, uuid) ->
                 knownGroups = all
                 mutableState.value =
-                    state.value.copy(playlists = all.map { RadioPlaylist(it.id, it.name, it.memberCount) })
+                    state.value.copy(
+                        playlists = all.map { RadioPlaylist(it.id, it.name, it.memberCount) },
+                        playlistsLoaded = true,
+                    )
                 val requested = uuid.takeUnless { it == rejectedUuid }
                 val id =
                     all.find { it.uuid == requested }?.id
@@ -167,6 +175,9 @@ public class RadioViewModel(
         }
         viewModelScope.launch {
             playbackStates.nowPlaying.collect { now ->
+                // Loaded from elsewhere (Up next, a notification, auto-advance): that start chose its
+                // own position, and a parked needle seek would hold the dial and resurface later.
+                if (now != null && now.episodeId != starting) seeks.remove(now.episodeId)
                 val current = state.value
                 if (selectionOrigin == SelectionOrigin.SWITCHING_PLAYLIST) {
                     if (now?.isPlaying == true) return@collect
@@ -364,13 +375,20 @@ public class RadioViewModel(
     private fun start(id: Long) {
         val group = knownGroups.find { it.id == state.value.playlistId } ?: return
         playback.play(UiText.Raw(group.name)) {
-            val result = controller.playFeed(FeedSource.Group(group.id), FILTERS, group.playOrder, id)
-            if (result == PlayResult.Started) {
-                seeks.remove(id)?.let(controller::seekTo)
-                if (state.value.selectedId == id) mutableState.value = state.value.copy(hasPlayed = true)
-            } else if (state.value.selectedId == id) {
-                recoverTransportAfterFailedStart()
-            }
+            // The guard also spans the parked seek's use, so a load seen in between cannot drop it.
+            starting = id
+            val result =
+                try {
+                    controller.playFeed(FeedSource.Group(group.id), FILTERS, group.playOrder, id).also {
+                        if (it == PlayResult.Started) {
+                            seeks.remove(id)?.let(controller::seekTo)
+                            if (state.value.selectedId == id) mutableState.value = state.value.copy(hasPlayed = true)
+                        }
+                    }
+                } finally {
+                    starting = null
+                }
+            if (result != PlayResult.Started && state.value.selectedId == id) recoverTransportAfterFailedStart()
             result
         }
     }
@@ -405,7 +423,7 @@ public class RadioViewModel(
     public fun seek(positionMs: Long) {
         val current = state.value
         val selected = current.selected ?: return
-        val position = positionMs.coerceIn(0L, selected.durationMs ?: Long.MAX_VALUE)
+        val position = positionMs.coerceIn(0L, current.selectedDurationMs ?: Long.MAX_VALUE)
         if (playbackStates.nowPlaying.value?.episodeId == selected.id) {
             controller.seekTo(position)
         } else {
