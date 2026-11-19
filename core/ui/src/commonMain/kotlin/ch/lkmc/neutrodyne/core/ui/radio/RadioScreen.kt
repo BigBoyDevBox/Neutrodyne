@@ -131,13 +131,15 @@ private fun RadioCabinet(
             Column(Modifier.height(contentHeight).fillMaxWidth().padding(horizontal = if (narrow) 10.dp else 12.dp)) {
                 if (deckVisible) {
                     ValveDeck(
-                        Modifier
-                            .testTag("radio_valve_deck")
-                            .requiredWidth(
-                                deckWidth,
-                            ).height(deckHeight)
-                            .align(Alignment.CenterHorizontally)
-                            .offset(y = 5.dp),
+                        lit = state.playing,
+                        modifier =
+                            Modifier
+                                .testTag("radio_valve_deck")
+                                .requiredWidth(
+                                    deckWidth,
+                                ).height(deckHeight)
+                                .align(Alignment.CenterHorizontally)
+                                .offset(y = 5.dp),
                     )
                 } else {
                     Spacer(Modifier.height(8.dp))

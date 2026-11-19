@@ -309,7 +309,11 @@ below 370; compact header/player below 800 high. The tubes stay on every
 screen (owner decision 2026-11-17): the deck shows on every window at least
 560 high, up to 22 % of the height, and on wider windows its chassis grows
 longer instead of the tubes growing; the cabinet takes the rest and scrolls
-when that falls short of its minimum. Extremely short narrow surfaces scroll
+when that falls short of its minimum. While the radio is ON the home's valves
+warm up (2026-11-18): an amber glow on each filament and inside its glass fades
+in over 1.8 s and cools over 0.9 s when it is switched off, at once with reduced
+motion; it redraws the deck without recomposing it, and the unlit deck is the
+artwork as rendered. Cabinet pages' decks stay unlit. Extremely short narrow surfaces scroll
 outside; font scaling must not clip or hide controls. Materials ignore theme
 and dynamic colour; other screens retained Appearance until PO-55 (2026-11-17) gave every
 screen the radio's materials ([Theming and colour](#theming-and-colour)). Bundle Barlow
