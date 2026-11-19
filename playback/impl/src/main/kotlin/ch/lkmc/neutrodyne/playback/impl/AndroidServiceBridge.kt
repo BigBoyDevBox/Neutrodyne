@@ -285,7 +285,7 @@ internal class AndroidServiceBridge(
             val outcome =
                 access.gate.withOrigin(origin) {
                     ports.starter.start(request, player.episodeIdOrNull(), access.prefs.current.value.resumePolicy) {
-                        tracker.capture()?.departure
+                        tracker.capture(PlaybackExit.NEW_START)?.departure
                     }
                 }
             return when (outcome) {
