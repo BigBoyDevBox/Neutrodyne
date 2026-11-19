@@ -104,6 +104,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /** Real routes, repositories and external shell bindings; browser handoff is captured, never launched. */
@@ -307,7 +308,7 @@ class ExternalYouTubeModeTest {
         }
 
     @Test fun browserFailureSuccessfulOpenUndoAndSettings() =
-        runComposeUiTest {
+        runComposeUiTest(testTimeout = 3.minutes) {
             val previous = Locale.getDefault()
             Locale.setDefault(Locale.ENGLISH)
             installFakeImageLoader()

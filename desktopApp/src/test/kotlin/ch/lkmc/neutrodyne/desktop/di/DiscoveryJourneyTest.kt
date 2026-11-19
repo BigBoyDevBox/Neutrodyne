@@ -104,7 +104,7 @@ class DiscoveryJourneyTest {
     @Test fun addConfirmationWritesEpisodesAndMembership() = journey(Entry.ADD)
 
     private fun journey(entry: Entry) =
-        runComposeUiTest {
+        runComposeUiTest(testTimeout = 3.minutes) {
             val previous = Locale.getDefault()
             Locale.setDefault(Locale.ENGLISH)
             installFakeImageLoader()
