@@ -27,6 +27,11 @@ public data class RadioPlaylist(
 
 public data class RadioState(
     val playlists: List<RadioPlaylist> = emptyList(),
+    /**
+     * Whether [playlists] reflects the repository yet. Until it does, an empty list means
+     * "not read", not "none", so the radio does not flash its first-tuning card on start.
+     */
+    val playlistsLoaded: Boolean = false,
     val playlistId: Long? = null,
     val episodes: List<RadioEpisode> = emptyList(),
     val episodeCount: Int? = null,
@@ -51,9 +56,20 @@ public data class RadioState(
     val skipForwardMs: Long = PlaybackSettingKeys.SKIP_FORWARD_MS.default,
 ) {
     public val playlist: RadioPlaylist? get() = playlists.find { it.id == playlistId }
+
+    /** The listener has no playlist yet: a first run, or every group deleted. */
+    public val untuned: Boolean get() = playlistsLoaded && playlists.isEmpty()
     public val selected: RadioEpisode? get() =
         nowPlayingEpisode?.takeIf { it.id == selectedId }
             ?: episodes.find { it.id == selectedId }
+
+    /** Prefer the player's measurement while allowing its metadata to arrive after the programme. */
+    public val selectedDurationMs: Long?
+        get() {
+            val id = selectedId ?: return null
+            val measured = nowPlayingEpisode?.takeIf { it.id == id }?.durationMs
+            return measured?.takeIf { it > 0 } ?: episodes.find { it.id == id }?.durationMs?.takeIf { it > 0 }
+        }
 }
 
 /** Four tubes: minute pairs, or an hour digit and H followed by a minute pair. */

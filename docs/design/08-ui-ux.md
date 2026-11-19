@@ -234,6 +234,19 @@ order and test tags are unchanged, and Back, Escape or a tap outside still
 closes it. Added labels: Playback (Wiedergabe), Go to (Gehe zu), Close
 (Schliessen), Speed (Tempo) and Sleep (Schlaf).
 
+**First tuning (2026-11-18).** While the listener has no playlist (a first
+run, or every group deleted) the paper's "No playlists yet." sign (#580)
+offers three momentary keys: Discover, Import (Importieren; the import
+dialog) and Library. The dial reads NOT TUNED (NICHT EINGESTELLT) and "Add
+podcasts to start listening." instead of PLAYLIST CLEARED. Neither the sign
+nor "All clear" appears before the first groups emission, so a radio with
+playlists never flashes either on start; until then the dial reads NOT TUNED.
+Playback started elsewhere keeps its own status. Keys that outgrow the paper
+(German, large text, a 320 dp phone) wrap onto a second row instead of
+scrolling sideways. The sign, a heading, shows only when it fits above the
+keys, and a paper too short for the keys scrolls. Test tags
+`radio_empty_discover`, `radio_empty_import` and `radio_empty_library`.
+
 **Selection fallback (2026-11-04).** Deleting the selected group falls back
 to the first remaining playlist, or the empty radio if none remain. This
 adapts the old All-feed fallback to the group-only home. Undoing group deletion
@@ -261,7 +274,10 @@ grows above that scale to keep its label inside. Content titles use at most
 two lines with ellipsis and retain their full accessible text. Large text never
 stows the deck (2026-11-17); the cabinet scrolls instead.
 The printed needle scale retains uncapped minutes and seconds; only the
-four-tube counter uses PO-53's capped hours format.
+four-tube counter uses PO-53's capped hours format. The scale uses the player's
+positive duration when available, then the selected episode's feed duration.
+While both are unknown, the dial shows a localized duration legend, the
+counter continues to show elapsed time, and the dial accepts no seek input.
 
 **Implementation notes (2026-11-04).** The shared radio primitives and resources
 live in `:core:ui`; the production adapter lives in `:feature:feeds`. A queued
@@ -293,7 +309,11 @@ below 370; compact header/player below 800 high. The tubes stay on every
 screen (owner decision 2026-11-17): the deck shows on every window at least
 560 high, up to 22 % of the height, and on wider windows its chassis grows
 longer instead of the tubes growing; the cabinet takes the rest and scrolls
-when that falls short of its minimum. Extremely short narrow surfaces scroll
+when that falls short of its minimum. While the radio is ON the home's valves
+warm up (2026-11-18): an amber glow on each filament and inside its glass fades
+in over 1.8 s and cools over 0.9 s when it is switched off, at once with reduced
+motion; it redraws the deck without recomposing it, and the unlit deck is the
+artwork as rendered. Cabinet pages' decks stay unlit. Extremely short narrow surfaces scroll
 outside; font scaling must not clip or hide controls. Materials ignore theme
 and dynamic colour; other screens retained Appearance until PO-55 (2026-11-17) gave every
 screen the radio's materials ([Theming and colour](#theming-and-colour)). Bundle Barlow

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,9 +25,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -67,6 +70,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -78,6 +82,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -93,9 +98,9 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.Cream
 import ch.lkmc.neutrodyne.core.designsystem.radio.EnamelSelector
 import ch.lkmc.neutrodyne.core.designsystem.radio.Faceplate
 import ch.lkmc.neutrodyne.core.designsystem.radio.Ink
-import ch.lkmc.neutrodyne.core.designsystem.radio.KeyBank
 import ch.lkmc.neutrodyne.core.designsystem.radio.MaterialPlate
 import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKey
+import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKeySlot
 import ch.lkmc.neutrodyne.core.designsystem.radio.RadioMaterial
 import ch.lkmc.neutrodyne.core.designsystem.radio.SlipKeyCap
 import ch.lkmc.neutrodyne.core.designsystem.radio.barlow
@@ -111,6 +116,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.action_retry
 import ch.lkmc.neutrodyne.core.ui.resources.action_undo
 import ch.lkmc.neutrodyne.core.ui.resources.date_duration_minutes
 import ch.lkmc.neutrodyne.core.ui.resources.feeds_load_error
+import ch.lkmc.neutrodyne.core.ui.resources.import_title
 import ch.lkmc.neutrodyne.core.ui.resources.nav_discover
 import ch.lkmc.neutrodyne.core.ui.resources.nav_library
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
@@ -258,38 +264,66 @@ internal fun RadioProgramme(
                     }
                     if (state.episodes.isEmpty()) {
                         Column(
-                            Modifier.weight(1f).fillMaxWidth().padding(12.dp),
+                            Modifier.weight(1f).fillMaxWidth().padding(if (compact) 4.dp else 12.dp),
                             Arrangement.Center,
                             Alignment.CenterHorizontally,
                         ) {
                             if (state.loading) {
                                 CircularProgressIndicator(color = Brass, modifier = Modifier.size(24.dp))
-                            } else if (!state.loadError) {
-                                if (state.playlists.isEmpty()) {
-                                    RadioText(
-                                        stringResource(Res.string.radio_no_playlists_empty),
-                                        19,
-                                        bold = true,
-                                        maxLines = 2,
-                                    )
-                                    Spacer(Modifier.height(10.dp))
-                                    // A first listener has no station to tune yet: offer the two
+                            } else if (!state.loadError && state.playlistsLoaded) {
+                                // Until the groups are read, an empty paper is neither "none" nor "all clear".
+                                if (state.untuned) {
+                                    // A first listener has no station to tune yet: offer the
                                     // journeys that fill one instead of an empty paper tray.
-                                    KeyBank {
-                                        PianoKey(
-                                            stringResource(Res.string.nav_discover),
-                                            pressed = false,
-                                            onClick = actions.openDiscover,
-                                            modifier = Modifier.testTag("radio_empty_discover"),
-                                            role = Role.Button,
-                                        )
-                                        PianoKey(
-                                            stringResource(Res.string.nav_library),
-                                            pressed = false,
-                                            onClick = actions.openLibrary,
-                                            modifier = Modifier.testTag("radio_empty_library"),
-                                            role = Role.Button,
-                                        )
+                                    BoxWithConstraints(contentAlignment = Alignment.Center) {
+                                        EmptySign(
+                                            room = constraints.maxHeight,
+                                            sign = {
+                                                RadioText(
+                                                    stringResource(Res.string.radio_no_playlists_empty),
+                                                    19,
+                                                    Modifier.semantics { heading() },
+                                                    bold = true,
+                                                    maxLines = 2,
+                                                )
+                                            },
+                                            modifier = Modifier.verticalScroll(rememberScrollState()),
+                                        ) {
+                                            // The journeys wrap rather than scroll: a sideways bank would
+                                            // hide Library past the paper's edge on a narrow phone.
+                                            PianoKeySlot {
+                                                FlowRow(
+                                                    horizontalArrangement =
+                                                        Arrangement.spacedBy(
+                                                            EMPTY_KEY_GAP,
+                                                            Alignment.CenterHorizontally,
+                                                        ),
+                                                    verticalArrangement = Arrangement.spacedBy(EMPTY_KEY_GAP),
+                                                ) {
+                                                    PianoKey(
+                                                        stringResource(Res.string.nav_discover),
+                                                        pressed = false,
+                                                        onClick = actions.openDiscover,
+                                                        modifier = Modifier.testTag("radio_empty_discover"),
+                                                        role = Role.Button,
+                                                    )
+                                                    PianoKey(
+                                                        stringResource(Res.string.import_title),
+                                                        pressed = false,
+                                                        onClick = actions.openImport,
+                                                        modifier = Modifier.testTag("radio_empty_import"),
+                                                        role = Role.Button,
+                                                    )
+                                                    PianoKey(
+                                                        stringResource(Res.string.nav_library),
+                                                        pressed = false,
+                                                        onClick = actions.openLibrary,
+                                                        modifier = Modifier.testTag("radio_empty_library"),
+                                                        role = Role.Button,
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
                                 } else {
                                     RadioText(stringResource(Res.string.radio_all_clear), 19, bold = true)
@@ -555,6 +589,39 @@ private fun SlipPlayKey(
     }
 }
 
+/**
+ * The empty radio's [sign] over its [keys], or the keys alone when both would overflow the
+ * paper's [room] in px (a short phone, large text): the dial's hint still carries the words.
+ * Measuring both, rather than guessing a height, keeps wrapped keys in view. Keys taller than
+ * the room scroll with the [modifier]'s scroll rather than clip.
+ */
+@Composable
+private fun EmptySign(
+    room: Int,
+    sign: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    keys: @Composable () -> Unit,
+) {
+    Layout(listOf(sign, keys), modifier) { (signs, banks), constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val bank = banks.single().measure(loose)
+        val words = signs.single().measure(loose)
+        val gap = EMPTY_SIGN_GAP.roundToPx()
+        val signFits = words.height + gap + bank.height <= room
+        val width = if (signFits) maxOf(words.width, bank.width) else bank.width
+        val height = if (signFits) words.height + gap + bank.height else bank.height
+        layout(width, height) {
+            if (signFits) words.placeRelative((width - words.width) / 2, 0)
+            bank.placeRelative((width - bank.width) / 2, height - bank.height)
+        }
+    }
+}
+
+/** The gap between the empty radio's sign and its keys. */
+private val EMPTY_SIGN_GAP = 10.dp
+
+/** The gap between the empty radio's journey keys, matching a key bank's. */
+private val EMPTY_KEY_GAP = 6.dp
 private val SLIP_KEY_TARGET = 48.dp
 private val SLIP_KEY_CAP = 36.dp
 
