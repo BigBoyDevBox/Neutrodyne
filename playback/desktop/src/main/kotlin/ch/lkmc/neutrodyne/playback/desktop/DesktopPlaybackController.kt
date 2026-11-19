@@ -540,7 +540,7 @@ class DesktopPlaybackController(
 
     private suspend fun projectStart(
         queue: VirtualQueue,
-        startMs: Long,
+        requestedStartMs: Long? = null,
         ticket: Long? = null,
     ): Boolean {
         val value = requireNotNull(runtime)
@@ -552,7 +552,19 @@ class DesktopPlaybackController(
                 .first()
                 ?.context
         val entries = value.planner.window(queue, media)
-        require(entries.firstOrNull()?.media != null) { "Current episode is missing" }
+        val row = requireNotNull(entries.firstOrNull()?.media) { "Current episode is missing" }
+        // An explicit play already has a planned start. Next and Previous resume the committed item.
+        val startMs =
+            requestedStartMs ?: run {
+                val saved = value.positions.observe(row.episodeId).first()
+                StartPositionRule().startPositionMs(
+                    saved?.positionMs,
+                    saved?.updatedAt,
+                    row.measuredDurationMs ?: row.durationMs,
+                    row.playedAt != null || saved?.playedAt != null,
+                    clock.now(),
+                )
+            }
         value.engine.pause()
         wantPlaying = false
         prepareSettings(entries)
@@ -808,8 +820,15 @@ class DesktopPlaybackController(
                     val departure =
                         value.saver.capture(position(), durationMs, PlaybackExit.SEEK)?.departure ?: return@command
                     val playing = wantPlaying
-                    value.sessions.goBack(action.item, departure, clock.now())
-                    if (!projectStart(value.sessions.virtualQueue(QueueWindowPlanner.CONTEXT_SIZE), 0)) return@command
+                    val generation = value.sessions.goBack(action.item, departure, clock.now())
+                    value.planner.appliedOwnGeneration(generation)
+                    val committed = value.sessions.virtualQueue(QueueWindowPlanner.CONTEXT_SIZE)
+                    if (committed.generation != generation ||
+                        committed.current?.episodeId != action.item.episodeId
+                    ) {
+                        return@command
+                    }
+                    if (!projectStart(committed)) return@command
                     history.consume(action.item)
                     // The goBack transaction committed and the previous item is installed.
                     transitionBoundary(action.item.episodeId)
@@ -859,17 +878,7 @@ class DesktopPlaybackController(
         }
         // The transition transaction committed with the departure saved (06's Transition).
         transitionBoundary(next.episodeId)
-        val row = requireNotNull(entries[1].media)
-        val saved = value.positions.observe(next.episodeId).first()
-        val startMs =
-            StartPositionRule().startPositionMs(
-                saved?.positionMs,
-                saved?.updatedAt,
-                row.measuredDurationMs ?: row.durationMs,
-                row.playedAt != null || saved?.playedAt != null,
-                clock.now(),
-            )
-        if (!projectStart(committed, startMs)) return
+        if (!projectStart(committed)) return
         history.record(current)
         wantPlaying = playing
         if (playing) value.engine.play()
