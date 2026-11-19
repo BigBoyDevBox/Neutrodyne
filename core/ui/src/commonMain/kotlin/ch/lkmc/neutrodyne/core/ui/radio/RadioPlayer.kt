@@ -91,6 +91,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
 import ch.lkmc.neutrodyne.core.ui.resources.radio_ended
 import ch.lkmc.neutrodyne.core.ui.resources.radio_error
+import ch.lkmc.neutrodyne.core.ui.resources.radio_first_hint
 import ch.lkmc.neutrodyne.core.ui.resources.radio_nothing
 import ch.lkmc.neutrodyne.core.ui.resources.radio_paused
 import ch.lkmc.neutrodyne.core.ui.resources.radio_play
@@ -102,6 +103,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward_value
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_off
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_on
+import ch.lkmc.neutrodyne.core.ui.resources.radio_untuned
 import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 import org.jetbrains.compose.resources.stringResource
 import kotlin.math.PI
@@ -122,12 +124,22 @@ internal fun RadioPlayer(
     val duration = selected?.durationMs ?: 0L
     val status =
         when {
+            // Playback started elsewhere keeps its own status while no playlist exists. Until the
+            // groups are read, nothing has been cleared either.
+            selected == null && (state.untuned || !state.playlistsLoaded) -> Res.string.radio_untuned
+
             selected == null -> Res.string.radio_cleared
+
             state.phase == PlayerPhase.BUFFERING -> Res.string.radio_buffering
+
             state.phase == PlayerPhase.ENDED -> Res.string.radio_ended
+
             state.phase == PlayerPhase.ERROR -> Res.string.radio_error
+
             state.playing -> Res.string.radio_playing
+
             state.hasPlayed || state.elapsedMs > 0 -> Res.string.radio_paused
+
             else -> Res.string.radio_ready
         }
     val statusText = stringResource(status)
@@ -201,7 +213,14 @@ internal fun RadioPlayer(
                         ),
                 )
                 RadioText(
-                    selected?.podcast ?: stringResource(Res.string.radio_choose_other),
+                    // Like the dial, the hint claims nothing before the groups are read: a blank
+                    // line, not a first listener's hint or a cleared playlist's.
+                    selected?.podcast
+                        ?: when {
+                            !state.playlistsLoaded -> ""
+                            state.untuned -> stringResource(Res.string.radio_first_hint)
+                            else -> stringResource(Res.string.radio_choose_other)
+                        },
                     11,
                     mono = false,
                     maxLines = 1,

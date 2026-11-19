@@ -60,8 +60,10 @@ public data class RadioActions(
     val skipBack: () -> Unit = {},
     val skipForward: () -> Unit = {},
     val selectPlaylist: (Long) -> Unit = {},
+    /** The empty radio's keys, which fill it from Discover, an import or the Library. */
     val openDiscover: () -> Unit = {},
     val openLibrary: () -> Unit = {},
+    val openImport: () -> Unit = {},
     val menu: () -> Unit = {},
     val loadEpisode: (Int) -> Unit = {},
     val visibleEpisodes: (Set<Long>) -> Unit = {},
