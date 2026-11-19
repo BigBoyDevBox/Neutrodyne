@@ -2,6 +2,11 @@
 
 package ch.lkmc.neutrodyne.core.designsystem.radio
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -11,6 +16,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -19,6 +25,7 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
@@ -50,6 +57,7 @@ import ch.lkmc.neutrodyne.core.designsystem.resources.radio_metal
 import ch.lkmc.neutrodyne.core.designsystem.resources.radio_paper
 import ch.lkmc.neutrodyne.core.designsystem.resources.radio_valve_deck
 import ch.lkmc.neutrodyne.core.designsystem.resources.radio_wood
+import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
 import org.jetbrains.compose.resources.Font
 import org.jetbrains.compose.resources.imageResource
 import org.jetbrains.compose.resources.painterResource
@@ -318,22 +326,111 @@ public const val VALVE_DECK_ASPECT: Float = 1100f / 423f
  * than larger tubes: the plain stretches of plate beside the outer terminals repeat, mirrored so
  * their lighting meets without seams, until the plate spans the node. A narrower node fits the
  * whole deck to its width, resting on its lower edge.
+ *
+ * While [lit] (the radio is ON) the filaments warm up: an amber glow fades in over about two
+ * seconds and cools over one when the radio is switched off. Reduced motion switches it at once.
+ * Unlit, the deck is the artwork as rendered.
  */
 @Composable
-public fun ValveDeck(modifier: Modifier = Modifier) {
+public fun ValveDeck(
+    modifier: Modifier = Modifier,
+    lit: Boolean = false,
+) {
     val art = imageResource(Res.drawable.radio_valve_deck)
-    Box(modifier.drawBehind { drawValveDeck(art) })
+    val reducedMotion = LocalReducedMotion.current
+    val warmth = remember { Animatable(if (lit) 1f else 0f) }
+    // Keyed on reduced motion too: switching it on mid-warm-up finishes the change at once, which
+    // a spec change alone would not do to a tween in flight.
+    LaunchedEffect(lit, reducedMotion) {
+        warmth.animateTo(
+            if (lit) 1f else 0f,
+            when {
+                reducedMotion -> snap()
+                lit -> tween(VALVE_WARM_UP_MS, easing = LinearOutSlowInEasing)
+                else -> tween(VALVE_COOL_DOWN_MS, easing = FastOutLinearInEasing)
+            },
+        )
+    }
+    Box(
+        modifier.drawWithCache {
+            val fit = deckFit(art, size)
+            val glows = fit?.let { filamentGlows(it) }.orEmpty()
+            onDrawBehind {
+                if (fit == null) return@onDrawBehind
+                drawValveDeck(art, fit)
+                // Read in the draw phase only: warming up redraws the deck, never recomposes it.
+                val level = warmth.value
+                if (level > 0f) glows.forEach { it.draw(this, level) }
+            }
+        },
+    )
 }
 
-private fun DrawScope.drawValveDeck(art: ImageBitmap) {
-    if (size.width <= 0f || size.height <= 0f) return
+/** How the artwork sits in the node: its scale, the width the plain stretches grow by, its top. */
+private class DeckFit(
+    val scale: Float,
+    val extra: Float,
+    val top: Float,
+)
+
+private fun deckFit(
+    art: ImageBitmap,
+    size: Size,
+): DeckFit? {
+    if (size.width <= 0f || size.height <= 0f) return null
     // A node within half a pixel of the artwork's proportions (the home's full-width deck, sized
     // from VALVE_DECK_ASPECT) fits it whole rather than tiling a rounding error.
     val long = art.width * size.height / art.height < size.width - 0.5f
     val scale = if (long) size.height / art.height else size.width / art.width
     val extra = if (long) size.width - art.width * scale else 0f
     // A deck fitted to a narrow node rests on its lower edge, where the cabinet's roof is.
-    val top = size.height - art.height * scale
+    return DeckFit(scale, extra, size.height - art.height * scale)
+}
+
+/** One filament's light: a bright core on the filament and a soft halo filling its glass. */
+private class FilamentGlow(
+    private val core: Brush,
+    private val coreCentre: Offset,
+    private val coreRadius: Float,
+    private val halo: Brush,
+    private val haloCentre: Offset,
+    private val haloRadius: Float,
+) {
+    fun draw(
+        scope: DrawScope,
+        level: Float,
+    ) {
+        scope.drawCircle(halo, haloRadius, haloCentre, alpha = level, blendMode = BlendMode.Screen)
+        scope.drawCircle(core, coreRadius, coreCentre, alpha = level, blendMode = BlendMode.Screen)
+    }
+}
+
+private fun filamentGlows(fit: DeckFit): List<FilamentGlow> =
+    FILAMENTS.map { filament ->
+        // The tubes sit between the plain stretches, so a longer chassis moves them by half its
+        // extra width, as drawValveDeck draws them.
+        fun place(art: Offset) = Offset(art.x * fit.scale + fit.extra / 2f, fit.top + art.y * fit.scale)
+        val coreCentre = place(filament)
+        val haloCentre = place(filament + HALO_LIFT)
+        val coreRadius = FILAMENT_CORE_RADIUS * fit.scale
+        val haloRadius = FILAMENT_HALO_RADIUS * fit.scale
+        FilamentGlow(
+            Brush.radialGradient(listOf(FilamentCore, FilamentCore.copy(alpha = 0f)), coreCentre, coreRadius),
+            coreCentre,
+            coreRadius,
+            Brush.radialGradient(listOf(FilamentHalo, FilamentHalo.copy(alpha = 0f)), haloCentre, haloRadius),
+            haloCentre,
+            haloRadius,
+        )
+    }
+
+private fun DrawScope.drawValveDeck(
+    art: ImageBitmap,
+    fit: DeckFit,
+) {
+    val scale = fit.scale
+    val extra = fit.extra
+    val top = fit.top
     val height = art.height * scale
     // Source columns: the left end, a plain stretch, the tubes and circuit, a plain stretch, the
     // right end. Only the plain stretches grow, each by half of the extra width.
@@ -412,3 +509,14 @@ private fun DrawScope.drawPart(
 // end: only plate texture and its front edge, so they repeat without showing.
 private val DECK_PLAIN_LEFT = 86..100
 private val DECK_PLAIN_RIGHT = 998..1010
+
+// The two filaments in the deck artwork (pixels), where its rendered glow already sits, and the
+// halo's centre above each, inside the glass.
+private val FILAMENTS = listOf(Offset(270f, 214f), Offset(822f, 216f))
+private val HALO_LIFT = Offset(0f, -40f)
+private const val FILAMENT_CORE_RADIUS = 36f
+private const val FILAMENT_HALO_RADIUS = 78f
+private val FilamentCore = Color(0xF2FFB04A)
+private val FilamentHalo = Color(0x73FF8A2A)
+private const val VALVE_WARM_UP_MS = 1800
+private const val VALVE_COOL_DOWN_MS = 900

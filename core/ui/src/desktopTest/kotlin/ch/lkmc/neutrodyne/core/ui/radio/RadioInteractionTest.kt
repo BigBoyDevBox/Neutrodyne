@@ -58,24 +58,140 @@ import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
 import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
+import ch.lkmc.neutrodyne.core.ui.resources.radio_choose_other
+import ch.lkmc.neutrodyne.core.ui.resources.radio_cleared
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
 import ch.lkmc.neutrodyne.core.ui.resources.radio_ended
 import ch.lkmc.neutrodyne.core.ui.resources.radio_episodes
 import ch.lkmc.neutrodyne.core.ui.resources.radio_error
+import ch.lkmc.neutrodyne.core.ui.resources.radio_first_hint
 import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists
 import ch.lkmc.neutrodyne.core.ui.resources.radio_no_playlists_empty
 import ch.lkmc.neutrodyne.core.ui.resources.radio_paused
 import ch.lkmc.neutrodyne.core.ui.resources.radio_playing
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_back
 import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward
+import ch.lkmc.neutrodyne.core.ui.resources.radio_untuned
 import ch.lkmc.neutrodyne.playback.api.PlaybackIssue
 import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 import org.jetbrains.compose.resources.getString
+import java.util.Locale
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 @OptIn(ExperimentalTestApi::class)
 class RadioInteractionTest {
+    @Test
+    fun anEmptyRadioWaitsForItsPlaylistsAndOffersAnImport() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var state by mutableStateOf(RadioState())
+            var imports = 0
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(state, RadioActions(openImport = { imports++ }))
+                }
+            }
+            // Until the repository answers, an empty list is "not read yet", not "none".
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty)).assertDoesNotExist()
+            onNodeWithTag("radio_empty_import").assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_cleared)).assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_untuned)).assertIsDisplayed()
+            // The hint waits too: neither a first listener's nor a cleared playlist's words fit yet.
+            onNodeWithText(getString(Res.string.radio_first_hint)).assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_choose_other)).assertDoesNotExist()
+
+            state = RadioState(playlistsLoaded = true)
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty))
+                .assertIsDisplayed()
+                .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
+            onNodeWithText(getString(Res.string.radio_untuned)).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_first_hint)).assertIsDisplayed()
+            onNodeWithTag("radio_empty_import")
+                .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+                .performClick()
+            assertEquals(1, imports)
+
+            state = radioFixture().copy(episodes = emptyList(), playlistsLoaded = true)
+            onNodeWithTag("radio_empty_import").assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_choose_other)).assertIsDisplayed()
+        }
+
+    @Test
+    fun theEmptyRadiosKeysStayWholeOnSmallPhonesAndAtLargeText() {
+        // A sideways-scrolling bank pushed Library past the paper's edge from 320 x 800 dp, on
+        // most German phones, and at 130 % and 200 % text. The radio reads the window size and
+        // the resources read the default locale, so each case gets its own window and locale.
+        val papers =
+            listOf(
+                EmptyPaper(320, 568, 1f),
+                EmptyPaper(320, 800, 1f),
+                EmptyPaper(360, 800, 1.3f),
+                EmptyPaper(320, 640, 2f),
+                EmptyPaper(360, 640, 1f, Locale.GERMANY),
+                EmptyPaper(360, 640, 1.3f, Locale.GERMANY),
+                EmptyPaper(390, 800, 1f, Locale.GERMANY),
+            )
+        val saved = Locale.getDefault()
+        try {
+            for (paper in papers) {
+                Locale.setDefault(paper.locale)
+                runDesktopComposeUiTest(width = paper.width, height = paper.height) {
+                    setContent {
+                        CompositionLocalProvider(LocalDensity provides Density(1f, paper.fontScale)) {
+                            NeutrodyneTheme(SystemUiState.DEFAULT) {
+                                RadioScreen(RadioState(playlistsLoaded = true), RadioActions())
+                            }
+                        }
+                    }
+                    // boundsInRoot is clipped, so a key cut off by the paper reads smaller than it is.
+                    for (tag in listOf("radio_empty_discover", "radio_empty_import", "radio_empty_library")) {
+                        val key = onNodeWithTag(tag).fetchSemanticsNode()
+                        assertEquals(
+                            key.size.width.toFloat(),
+                            key.boundsInRoot.width,
+                            1f,
+                            "$tag is cut sideways at $paper",
+                        )
+                        assertEquals(
+                            key.size.height.toFloat(),
+                            key.boundsInRoot.height,
+                            1f,
+                            "$tag is cut off at $paper",
+                        )
+                    }
+                }
+            }
+        } finally {
+            Locale.setDefault(saved)
+        }
+    }
+
+    @Test
+    fun playbackFromElsewhereKeepsItsStatusWithoutAPlaylist() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val playing = radioFixture().episodes.first()
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(
+                        RadioState(
+                            playlistsLoaded = true,
+                            selectedId = playing.id,
+                            nowPlayingEpisode = playing,
+                            playing = true,
+                        ),
+                        RadioActions(),
+                    )
+                }
+            }
+            onNodeWithText(getString(Res.string.radio_no_playlists_empty)).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_untuned)).assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_playing)).assertIsDisplayed()
+            onNodeWithText(playing.podcast).assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
+        }
+
     @Test
     fun swipeCommitsOnlyOnReleaseAtExactThresholdAndUndoRestores() =
         runDesktopComposeUiTest(width = 390, height = 844) {
@@ -471,7 +587,7 @@ class RadioInteractionTest {
             setContent {
                 NeutrodyneTheme(SystemUiState.DEFAULT) {
                     RadioScreen(
-                        RadioState(),
+                        RadioState(playlistsLoaded = true),
                         RadioActions(openDiscover = { discover++ }, openLibrary = { library++ }),
                     )
                 }
@@ -493,6 +609,7 @@ class RadioInteractionTest {
             }
             onNodeWithTag("radio_empty_discover").assertDoesNotExist()
             onNodeWithTag("radio_empty_library").assertDoesNotExist()
+            onNodeWithTag("radio_empty_import").assertDoesNotExist()
         }
 
     @Test fun anEmptyRadioHidesRouteKeysWhenLoadFails() =
@@ -504,6 +621,7 @@ class RadioInteractionTest {
             }
             onNodeWithTag("radio_empty_discover").assertDoesNotExist()
             onNodeWithTag("radio_empty_library").assertDoesNotExist()
+            onNodeWithTag("radio_empty_import").assertDoesNotExist()
         }
 
     @Test fun aClearedPlaylistKeepsItsAllClearSignWithoutRouteKeys() =
@@ -513,6 +631,7 @@ class RadioInteractionTest {
                     RadioScreen(
                         RadioState(
                             playlists = listOf(RadioPlaylist(1, "Tech", 0)),
+                            playlistsLoaded = true,
                             playlistId = 1,
                         ),
                         RadioActions(),
@@ -706,3 +825,11 @@ class RadioInteractionTest {
             onNodeWithTag("radio_playlist").assertIsFocused()
         }
 }
+
+/** A window for the empty radio: its size in dp, its text scale and the listener's locale. */
+private data class EmptyPaper(
+    val width: Int,
+    val height: Int,
+    val fontScale: Float,
+    val locale: Locale = Locale.ENGLISH,
+)

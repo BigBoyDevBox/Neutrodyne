@@ -42,14 +42,29 @@ class RadioScreenshotTest {
 
     @Test fun playing() = capture("playing")
 
-    private fun capture(name: String) {
+    /** A first run: the repository has answered and there is no playlist to tune in. */
+    @Test fun firstTuning() = capture("first_tuning", RadioState(playlistsLoaded = true))
+
+    @Test
+    @Config(qualifiers = "en-rUS-w320dp-h568dp-mdpi")
+    fun firstTuningSmall() = capture("first_tuning_small", RadioState(playlistsLoaded = true))
+
+    /** A short landscape window, where the card scrolls rather than clipping its keys. */
+    @Test
+    @Config(qualifiers = "en-rUS-w700dp-h360dp-mdpi")
+    fun firstTuningLandscape() = capture("first_tuning_landscape", RadioState(playlistsLoaded = true))
+
+    private fun capture(
+        name: String,
+        state: RadioState = radioFixture(name == "playing"),
+    ) {
         rule.setContent {
             NeutrodyneTheme(SystemUiState.DEFAULT) {
                 val density = LocalDensity.current
                 CompositionLocalProvider(
                     LocalDensity provides Density(density.density, if (name == "large_text") 1.3f else 1f),
                 ) {
-                    RadioScreen(radioFixture(name == "playing"), RadioActions())
+                    RadioScreen(state, RadioActions())
                 }
             }
         }
