@@ -9,7 +9,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -33,8 +33,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -106,6 +108,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.radio_skip_forward_value
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_off
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_on
 import ch.lkmc.neutrodyne.core.ui.resources.radio_untuned
+import ch.lkmc.neutrodyne.core.ui.root.spokenPosition
 import ch.lkmc.neutrodyne.playback.api.PlayerPhase
 import org.jetbrains.compose.resources.stringResource
 import kotlin.math.PI
@@ -124,6 +127,9 @@ internal fun RadioPlayer(
     // Retain the reference cap through 1.3x text; larger type needs a larger physical key.
     val capScale = (LocalDensity.current.fontScale / FIXED_CAP_FONT_SCALE).coerceAtLeast(1f)
     val duration = remember(state.selectedId, state.nowPlayingEpisode, state.episodes) { state.selectedDurationMs }
+    // Match the needle's gesture keys so a stale drag cannot update a new episode's preview.
+    var previewMs by remember(selected?.id, duration) { mutableStateOf<Long?>(null) }
+    val displayedMs = previewMs ?: state.elapsedMs
     val status =
         when {
             // Playback started elsewhere keeps its own status while no playlist exists. Until the
@@ -228,7 +234,13 @@ internal fun RadioPlayer(
                     maxLines = 1,
                 )
                 if (duration != null) {
-                    Needle(state.elapsedMs, duration, actions.seek)
+                    Needle(
+                        selected?.id,
+                        displayedMs,
+                        duration,
+                        onPreview = { previewMs = it },
+                        onSeek = actions.seek,
+                    )
                     if (!compact) RadioText(radioTimeline(duration), 11, modifier = Modifier.align(Alignment.End))
                 } else if (selected != null) {
                     RadioText(
@@ -281,7 +293,12 @@ internal fun RadioPlayer(
                                 onClick = actions.skipBack,
                             )
                         }
-                        Nixie(state.elapsedMs, selected != null, compact, Modifier.weight(1f, fill = false))
+                        Nixie(
+                            displayedMs,
+                            selected != null,
+                            compact,
+                            Modifier.weight(1f, fill = false),
+                        )
                         if (skipKeys) {
                             SkipKey(
                                 legend =
@@ -380,12 +397,22 @@ private fun PlaySwitch(
 
 @Composable
 private fun Needle(
-    elapsedMs: Long,
+    episodeId: Long?,
+    displayedMs: Long,
     durationMs: Long,
+    onPreview: (Long?) -> Unit,
     onSeek: (Long) -> Unit,
 ) {
-    val progress = (elapsedMs.toFloat() / durationMs).coerceIn(0f, 1f)
-    val seekLabel = stringResource(Res.string.chapter_seek, radioTimeline(elapsedMs))
+    val seek by rememberUpdatedState(onSeek)
+    val enabled = durationMs > 0
+    val progress = if (enabled) (displayedMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+    val seekLabel = stringResource(Res.string.chapter_seek, radioTimeline(displayedMs))
+
+    fun positionAt(
+        x: Float,
+        width: Int,
+    ): Long = (x / width.coerceAtLeast(1) * durationMs).toLong().coerceIn(0, durationMs)
+
     Column(Modifier.padding(top = 8.dp)) {
         // The canvas and pointer both measure time from the physical left edge.
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Absolute.SpaceBetween) {
@@ -403,14 +430,34 @@ private fun Needle(
                         onSeek((it.coerceIn(0f, 1f) * durationMs).toLong())
                         true
                     }
-                }.pointerInput(durationMs) {
-                    detectTapGestures {
-                        onSeek((it.x / size.width * durationMs).toLong().coerceIn(0, durationMs))
+                }.pointerInput(episodeId, durationMs) {
+                    if (enabled) {
+                        detectTapGestures {
+                            // An unmeasured needle has no width to place a tap on.
+                            if (size.width == 0) return@detectTapGestures
+                            seek(positionAt(it.x, size.width))
+                        }
                     }
-                }.pointerInput(durationMs) {
-                    detectDragGestures { change, _ ->
-                        change.consume()
-                        onSeek((change.position.x / size.width * durationMs).toLong().coerceIn(0, durationMs))
+                }.pointerInput(episodeId, durationMs) {
+                    if (!enabled) return@pointerInput
+                    var target: Long? = null
+
+                    fun resetPreview() {
+                        target = null
+                        onPreview(null)
+                    }
+                    // Engine seeks and position writes belong to the commit, not pointer movement.
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (size.width > 0) target?.let(seek)
+                            resetPreview()
+                        },
+                        onDragCancel = ::resetPreview,
+                    ) { change, _ ->
+                        if (size.width <= 0) return@detectHorizontalDragGestures
+                        val position = positionAt(change.position.x, size.width)
+                        target = position
+                        onPreview(position)
                     }
                 },
         ) {
@@ -457,7 +504,8 @@ private fun Nixie(
     val scale = LocalDensity.current.fontScale.coerceAtLeast(1f)
     val glowBlur = with(LocalDensity.current) { 4.dp.toPx() }
     val elapsed = elapsedMs.coerceAtLeast(0) / 1000
-    val accessible = stringResource(Res.string.radio_elapsed_full, elapsed / 3600, (elapsed / 60) % 60, elapsed % 60)
+    // Spoken in full and in plural forms ("1 hour 1 minute"), beyond the four tubes' cap.
+    val accessible = stringResource(Res.string.radio_elapsed_full, spokenPosition(elapsed * 1000))
     Box(modifier, contentAlignment = Alignment.Center) {
         Column(
             Modifier.widthIn(max = (if (compact) 134.dp else 150.dp) * scale).fillMaxWidth().clearAndSetSemantics {

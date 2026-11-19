@@ -710,7 +710,7 @@
     <string name="radio_first_hint">Füge Podcasts hinzu, um zuzuhören.</string>
     <string name="radio_release">Loslassen</string>
     <string name="radio_discard">zum Verwerfen</string>
-    <string name="radio_elapsed_full">Verstrichen: %1$d Stunden, %2$d Minuten, %3$d Sekunden</string>
+    <string name="radio_elapsed_full">Verstrichen: %1$s</string>
     <string name="radio_meta">%1$d Podcasts · %2$d Folgen</string>
     <string name="download_auto">Automatische Downloads</string>
     <string name="download_keep">Neueste behalten</string>
