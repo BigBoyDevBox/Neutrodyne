@@ -962,14 +962,17 @@ class DesktopPlaybackController(
             EngineError.Network -> networkLost(failedId)
             EngineError.LocalFileMissing -> localFileMissing(failedId)
             is EngineError.Engine -> pauseWithPlayerError()
-            else -> skipUnplayable(failedId, requireNotNull(unplayableReason(state.error)))
+            else -> skipUnplayable(failedId, requireNotNull(unplayableReason(state.error, failedId)))
         }
     }
 
     /** The 06 reason for an engine error, or null when the error is not a skip. */
-    private fun unplayableReason(error: EngineError): UnplayableReason? =
+    private fun unplayableReason(
+        error: EngineError,
+        episodeId: Long,
+    ): UnplayableReason? =
         when (error) {
-            is EngineError.Http -> httpReason(error.status)
+            is EngineError.Http -> httpReason(error.status, runtime?.resolver?.streamKind(episodeId))
             EngineError.AuthRequired -> UnplayableReason.AuthRequired
             EngineError.UnsupportedFormat -> UnplayableReason.UnsupportedFormat
             EngineError.NoMedia -> UnplayableReason.NoMedia
@@ -978,9 +981,17 @@ class DesktopPlaybackController(
             EngineError.Network, EngineError.LocalFileMissing, is EngineError.Output, is EngineError.Engine -> null
         }
 
-    /** 06: a 401 or 403 on an enclosure asks for the feed's password, as on Android. */
-    private fun httpReason(status: Int): UnplayableReason =
-        if (status == HTTP_UNAUTHORIZED || status == HTTP_FORBIDDEN) {
+    /**
+     * 06: a 401 asks for the feed's password on either origin, and so does a 403
+     * from an RSS enclosure. A YouTube signed stream also answers 403 when its URL
+     * expires or its IP binding breaks, which is not authentication: it keeps the
+     * plain HTTP reason so the item is skipped, never offered a password.
+     */
+    private fun httpReason(
+        status: Int,
+        stream: StreamKind?,
+    ): UnplayableReason =
+        if (status == HTTP_UNAUTHORIZED || (status == HTTP_FORBIDDEN && stream != StreamKind.YOUTUBE)) {
             UnplayableReason.AuthRequired
         } else {
             UnplayableReason.Http(status)
@@ -1020,7 +1031,7 @@ class DesktopPlaybackController(
         // skip to record and no budget to spend for it.
         val failedIndex = projection.entries.indexOfFirst { it.item.episodeId == failedId }
         if (failedIndex < 0) return
-        val reason = unplayableReason(error)
+        val reason = unplayableReason(error, failedId)
         if (reason == null || !budget.trySkip()) {
             // A network or device failure preparing the successor is not a skip.
             pauseWithPlayerError()
