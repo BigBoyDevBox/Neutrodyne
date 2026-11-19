@@ -44,6 +44,7 @@ import ch.lkmc.neutrodyne.core.navigation.SettingsKey
 import ch.lkmc.neutrodyne.core.navigation.SettingsPage
 import ch.lkmc.neutrodyne.core.navigation.UpNextKey
 import ch.lkmc.neutrodyne.core.navigation.VerificationNoticeKey
+import ch.lkmc.neutrodyne.core.testing.FakeRefreshController
 import ch.lkmc.neutrodyne.core.testing.database.episodeEntity
 import ch.lkmc.neutrodyne.core.testing.database.podcastEntity
 import ch.lkmc.neutrodyne.desktop.buildinfo.BuildInfoLoader
@@ -52,6 +53,7 @@ import ch.lkmc.neutrodyne.desktop.log.RecentLogBuffer
 import ch.lkmc.neutrodyne.desktop.platform.DesktopClock
 import ch.lkmc.neutrodyne.desktop.shell.tempAppDirs
 import ch.lkmc.neutrodyne.desktop.system.LinuxMprisSession
+import ch.lkmc.neutrodyne.desktop.window.gatedRefresh
 import ch.lkmc.neutrodyne.feature.library.LibraryViewModel
 import ch.lkmc.neutrodyne.playback.api.PlayResult
 import ch.lkmc.neutrodyne.playback.desktop.DesktopChapterExtractor
@@ -807,6 +809,44 @@ class DesktopAppGraphTest {
             assertThat(graph.initializers).isNotEmpty()
         }
         assertThat(graph.databaseOpener.openState.value is DatabaseOpenState.Opened).isFalse()
+    }
+
+    /**
+     * The crash DesktopShell hit at launch (2026-11-18): the refresh controller is database-backed,
+     * so resolving it on the event thread before the start-up gate throws. The window therefore
+     * receives it as a thunk.
+     */
+    @Test
+    fun theRefreshControllerCannotResolveOnTheEventThreadBeforeTheOpen() {
+        // Each test builds its own graph, and the database opens only on awaitOpen().
+        assertThat(graph.databaseOpener.openState.value).isNotInstanceOf(DatabaseOpenState.Opened::class.java)
+        var failure: Throwable? = null
+        java.awt.EventQueue.invokeAndWait {
+            failure = runCatching { graph.refreshController }.exceptionOrNull()
+        }
+
+        assertThat(failure).isInstanceOf(IllegalStateException::class.java)
+        assertThat(failure).hasMessageThat().contains("before the start-up gate")
+    }
+
+    @Test
+    fun theWindowRefreshResolvesItsControllerOnlyAfterTheOpen() {
+        val controller = FakeRefreshController()
+        var resolved = 0
+        val refresh =
+            gatedRefresh(graph.databaseOpener) {
+                resolved++
+                controller
+            }
+
+        assertThat(graph.databaseOpener.openState.value).isNotInstanceOf(DatabaseOpenState.Opened::class.java)
+        java.awt.EventQueue.invokeAndWait { refresh() }
+        assertThat(resolved).isEqualTo(0)
+
+        runBlocking { graph.databaseOpener.awaitOpen() }
+        java.awt.EventQueue.invokeAndWait { refresh() }
+        assertThat(resolved).isEqualTo(1)
+        assertThat(controller.calls).containsExactly("refreshNow(All)")
     }
 
     @Test
