@@ -15,7 +15,6 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.Clip
 import javax.sound.sampled.LineUnavailableException
@@ -94,18 +93,16 @@ internal class ClipRadioSounds(
         }
     }
 
+    // Submit plays and the release task under the same lock. The last click can ring out,
+    // and no play can enter the FIFO queue behind the release task.
+    @Synchronized
     override fun play(sound: RadioSound) {
         if (closed) return
         val clip = clips[sound] ?: return
-        try {
-            worker.execute {
-                // Restarting the clip cuts a sound still ringing from the previous flick.
-                clip.stop()
-                clip.framePosition = 0
-                clip.start()
-            }
-        } catch (_: RejectedExecutionException) {
-            // Closed between the check and the hand-off.
+        worker.execute {
+            clip.stop()
+            clip.framePosition = 0
+            clip.start()
         }
     }
 
@@ -113,16 +110,14 @@ internal class ClipRadioSounds(
      * Ignores later plays at once but closes the clips only after [RELEASE_DELAY_MS], so the
      * sound that switched control sounds off (or any other still ringing) plays out.
      */
+    @Synchronized
     fun close() {
+        if (closed) return
         synchronized(clips) { closed = true }
-        try {
-            worker.execute {
-                Thread.sleep(RELEASE_DELAY_MS)
-                clips.values.forEach(Clip::close)
-                clips.clear()
-            }
-        } catch (_: RejectedExecutionException) {
-            // Already closed.
+        worker.execute {
+            Thread.sleep(RELEASE_DELAY_MS)
+            clips.values.forEach(Clip::close)
+            clips.clear()
         }
         worker.shutdown()
     }

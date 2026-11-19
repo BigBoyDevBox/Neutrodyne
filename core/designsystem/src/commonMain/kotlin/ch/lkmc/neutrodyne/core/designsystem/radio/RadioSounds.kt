@@ -61,14 +61,15 @@ public val LocalRadioSounds: ProvidableCompositionLocal<RadioSounds> = staticCom
 @Composable
 public expect fun rememberRadioSounds(enabled: Boolean): RadioSounds
 
-/** [onValueChange] for a switch that sounds its lever: [RadioSound.SWITCH_ON] or `SWITCH_OFF`. */
+/** [onValueChange] for a switch that gives haptic feedback and sounds its lever: [RadioSound.SWITCH_ON] or `SWITCH_OFF`. */
 @Composable
-public fun rememberSwitchSound(onValueChange: (Boolean) -> Unit): (Boolean) -> Unit {
+public fun rememberSwitchFeedback(onValueChange: (Boolean) -> Unit): (Boolean) -> Unit {
     val sounds = LocalRadioSounds.current
-    return remember(sounds, onValueChange) {
+    val toggle = withSwitchHaptics(onValueChange)
+    return remember(sounds, toggle) {
         { on ->
             sounds.play(if (on) RadioSound.SWITCH_ON else RadioSound.SWITCH_OFF)
-            onValueChange(on)
+            toggle(on)
         }
     }
 }

@@ -81,6 +81,7 @@ internal fun EpisodeSwipe(
     var width by remember { mutableIntStateOf(0) }
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     // Read through a state: the drag detector outlives recompositions.
+    val currentAction by rememberUpdatedState(onAction)
     val sounds by rememberUpdatedState(LocalRadioSounds.current)
 
     fun actionAt(displacement: Float): EpisodeAction.SetPlayed? {
@@ -99,7 +100,7 @@ internal fun EpisodeSwipe(
                             offset = 0f
                             if (committed != null) {
                                 sounds.play(RadioSound.SLIP_DISCARD)
-                                onAction(committed)
+                                currentAction(committed)
                             }
                         },
                         onDragCancel = { offset = 0f },

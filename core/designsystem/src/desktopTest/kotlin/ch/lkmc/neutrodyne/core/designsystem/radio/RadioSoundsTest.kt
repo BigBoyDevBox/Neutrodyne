@@ -93,7 +93,7 @@ class RadioSoundsTest {
                 Box(
                     Modifier
                         .testTag("row")
-                        .toggleable(on, role = Role.Switch, onValueChange = rememberSwitchSound { on = it }),
+                        .toggleable(on, role = Role.Switch, onValueChange = rememberSwitchFeedback { on = it }),
                 ) {
                     BatToggleFace(on, "ON", "OFF")
                 }

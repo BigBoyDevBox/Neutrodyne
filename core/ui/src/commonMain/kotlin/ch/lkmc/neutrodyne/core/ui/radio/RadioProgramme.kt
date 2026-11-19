@@ -60,6 +60,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -74,6 +75,7 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
@@ -462,6 +464,7 @@ private fun RadioSlip(
         }
     }
     val monogram = rememberMonogram(episode.podcast)
+    val haptics = LocalHapticFeedback.current
     BoxWithConstraints(Modifier.fillMaxWidth().clipToBounds().background(Color(0xFF38291B))) {
         val density = LocalDensity.current
         val threshold = with(density) { radioDiscardThreshold(maxWidth.value).dp.toPx() }
@@ -512,7 +515,12 @@ private fun RadioSlip(
                                         abs(delta.x) > viewConfiguration.touchSlop && abs(delta.x) > abs(delta.y)
                                 }
                                 if (horizontal) {
+                                    val armed = -drag >= threshold
                                     drag = delta.x.coerceIn(-size.width.toFloat(), 0f)
+                                    // A tick as the slip crosses into "release to discard".
+                                    if (!armed && -drag >= threshold) {
+                                        haptics.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                    }
                                     change.consume()
                                 }
                                 if (!change.pressed) {

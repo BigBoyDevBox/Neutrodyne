@@ -30,7 +30,7 @@ import ch.lkmc.neutrodyne.core.designsystem.components.NdButton
 import ch.lkmc.neutrodyne.core.designsystem.components.NdTextButton
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbar
 import ch.lkmc.neutrodyne.core.designsystem.components.ndScrollbarColor
-import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchSound
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchFeedback
 import ch.lkmc.neutrodyne.core.model.ExportFormat
 import ch.lkmc.neutrodyne.core.model.ExportLayout
 import ch.lkmc.neutrodyne.core.ui.LocalPlatformKind
@@ -278,7 +278,7 @@ private fun SwitchRow(
                 .fillMaxWidth()
                 .toggleable(
                     value = checked,
-                    onValueChange = rememberSwitchSound(onToggle),
+                    onValueChange = rememberSwitchFeedback(onToggle),
                     enabled = enabled,
                     role = Role.Switch,
                 ).padding(vertical = ROW_GAP),

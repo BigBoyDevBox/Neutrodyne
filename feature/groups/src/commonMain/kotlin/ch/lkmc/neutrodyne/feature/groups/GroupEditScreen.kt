@@ -75,7 +75,7 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.MomentaryKey
 import ch.lkmc.neutrodyne.core.designsystem.radio.PaperTextField
 import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKeys
 import ch.lkmc.neutrodyne.core.designsystem.radio.barlow
-import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchSound
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchFeedback
 import ch.lkmc.neutrodyne.core.designsystem.theme.groupTones
 import ch.lkmc.neutrodyne.core.domain.GroupError
 import ch.lkmc.neutrodyne.core.model.FeedOrder
@@ -268,7 +268,7 @@ internal fun GroupEditScreen(
                             draft.showAsTab,
                             enabled = enabled,
                             role = Role.Switch,
-                            onValueChange = rememberSwitchSound { onEdit(draft.copy(showAsTab = it)) },
+                            onValueChange = rememberSwitchFeedback { onEdit(draft.copy(showAsTab = it)) },
                         ),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),

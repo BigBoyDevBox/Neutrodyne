@@ -43,7 +43,7 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.Brass
 import ch.lkmc.neutrodyne.core.designsystem.radio.Ink
 import ch.lkmc.neutrodyne.core.designsystem.radio.PianoKeys
 import ch.lkmc.neutrodyne.core.designsystem.radio.StepCounter
-import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchSound
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchFeedback
 import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_off
 import ch.lkmc.neutrodyne.core.ui.resources.radio_switch_on
@@ -123,7 +123,7 @@ public fun SettingsSwitchRow(
             indication = null,
             enabled = enabled,
             role = Role.Switch,
-            onValueChange = rememberSwitchSound(onCheckedChange),
+            onValueChange = rememberSwitchFeedback(onCheckedChange),
         ),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(SLIP_GAP), verticalAlignment = Alignment.CenterVertically) {

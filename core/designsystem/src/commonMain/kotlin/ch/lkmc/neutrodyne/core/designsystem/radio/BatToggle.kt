@@ -21,7 +21,6 @@ import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,21 +65,13 @@ public fun BatToggle(
 ) {
     // Read through states: the flick detector below outlives recompositions.
     val currentOn by rememberUpdatedState(on)
-    val sounds by rememberUpdatedState(LocalRadioSounds.current)
-    val onToggleNow by rememberUpdatedState(onToggle)
-    val toggle =
-        remember {
-            {
-                sounds.play(if (currentOn) RadioSound.SWITCH_OFF else RadioSound.SWITCH_ON)
-                onToggleNow()
-            }
-        }
+    val toggle by rememberUpdatedState(rememberSwitchFeedback { onToggle() })
     BatToggleFace(
         on,
         onLabel,
         offLabel,
         modifier
-            .toggleable(on, enabled = enabled, role = Role.Switch) { toggle() }
+            .toggleable(on, enabled = enabled, role = Role.Switch) { toggle(!currentOn) }
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 var travel = 0f
@@ -94,7 +85,7 @@ public fun BatToggle(
                     // label toggles; a further threshold would swallow short flicks. On a scrolling
                     // (very short) radio, a drag that starts on the switch moves the lever, not the page.
                     onDragEnd = {
-                        if ((travel < 0f && !currentOn) || (travel > 0f && currentOn)) toggle()
+                        if ((travel < 0f && !currentOn) || (travel > 0f && currentOn)) toggle(!currentOn)
                     },
                 )
             },
@@ -105,7 +96,7 @@ public fun BatToggle(
 
 /**
  * [BatToggle]'s plate and lever as a picture of [on], for a row whose whole line is the toggle
- * and carries the switch semantics; that row sounds the lever with [rememberSwitchSound]. The
+ * and carries the switch semantics; that row sounds the lever with [rememberSwitchFeedback]. The
  * plate is a photographic render (owner-approved look, 2026-11-17) in two states, lever up and
  * lever down; the app prints [onLabel] and [offLabel] on its blank enamel so they follow the
  * user's language. The printed labels stay silent: the switch's state, not its plate, is what a

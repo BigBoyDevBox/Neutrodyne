@@ -47,7 +47,7 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.Faceplate
 import ch.lkmc.neutrodyne.core.designsystem.radio.NeedleWindow
 import ch.lkmc.neutrodyne.core.designsystem.radio.PanelLabel
 import ch.lkmc.neutrodyne.core.designsystem.radio.StepCounter
-import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchSound
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchFeedback
 import ch.lkmc.neutrodyne.core.model.settings.PlaybackSettingKeys
 import ch.lkmc.neutrodyne.core.model.settings.StreamOnMetered
 import ch.lkmc.neutrodyne.core.ui.SettingsChoiceRow
@@ -383,7 +383,7 @@ private fun PanelSwitch(
     Column(
         modifier
             .clip(RoundedCornerShape(6.dp))
-            .toggleable(on, role = Role.Switch, onValueChange = rememberSwitchSound(onChange))
+            .toggleable(on, role = Role.Switch, onValueChange = rememberSwitchFeedback(onChange))
             .padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),

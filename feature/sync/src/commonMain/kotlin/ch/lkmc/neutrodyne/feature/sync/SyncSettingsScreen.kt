@@ -46,7 +46,7 @@ import ch.lkmc.neutrodyne.core.designsystem.components.NdProgress
 import ch.lkmc.neutrodyne.core.designsystem.components.NdTextButton
 import ch.lkmc.neutrodyne.core.designsystem.icons.NdIcons
 import ch.lkmc.neutrodyne.core.designsystem.radio.PaperTextField
-import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchSound
+import ch.lkmc.neutrodyne.core.designsystem.radio.rememberSwitchFeedback
 import ch.lkmc.neutrodyne.core.domain.SyncServerAddress
 import ch.lkmc.neutrodyne.core.navigation.LocalAppNavigator
 import ch.lkmc.neutrodyne.core.navigation.SyncApproveKey
@@ -718,7 +718,7 @@ private fun SyncSwitchRow(
             modifier.toggleable(
                 value = checked,
                 role = Role.Switch,
-                onValueChange = rememberSwitchSound(onCheckedChange),
+                onValueChange = rememberSwitchFeedback(onCheckedChange),
             ),
     )
 }

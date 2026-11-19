@@ -926,6 +926,12 @@ import and export options, backup, podcast and group settings, Sync and the spee
 silence. No top bar carries a settings gear any more; Settings opens from the radio's Menu, whose Settings key carries D78's amber update dot and reads "Settings, update available" while an update waits. The
 retired `NdTopAppBarAppearance` header mode is gone, as the faceplate is opaque everywhere.
 
+**Haptics (2026-11-18).** On Android the bat lever lands with ToggleOn or ToggleOff
+when the listener throws it (a lever of its own or a row that is the switch, through
+`withSwitchHaptics`), never when the value changes underneath, such as playback stopping.
+A radio slip ticks (GestureThresholdActivate) each time a swipe arms "release to discard".
+Android's touch-feedback setting applies; the desktop has none.
+
 ### Manage groups
 
 `GroupsManageKey`, `:feature:groups`, M2.
