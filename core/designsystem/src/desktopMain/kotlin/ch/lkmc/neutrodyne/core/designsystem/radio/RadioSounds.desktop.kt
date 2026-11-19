@@ -45,12 +45,15 @@ internal class ClipRadioSounds(
     @Volatile
     private var closed = false
 
-    suspend fun load() {
+    suspend fun load(readBytes: suspend (String) -> ByteArray = { Res.readBytes(it) }) {
         withContext(Dispatchers.IO) {
             for (sound in RadioSound.entries) {
                 val bytes =
                     try {
-                        Res.readBytes(sound.file)
+                        readBytes(sound.file)
+                    } catch (_: IOException) {
+                        // An unreadable resource disables just this control sound.
+                        continue
                     } catch (_: MissingResourceException) {
                         // RadioSoundFilesTest guards the files; a broken package only loses its sound.
                         continue

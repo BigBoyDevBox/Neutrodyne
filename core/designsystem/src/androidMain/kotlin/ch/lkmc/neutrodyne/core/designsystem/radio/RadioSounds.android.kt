@@ -18,6 +18,8 @@ import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.MissingResourceException
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
 @Composable
@@ -61,17 +63,19 @@ internal class SoundPoolRadioSounds(
         withContext(Dispatchers.IO) {
             val dir = File(context.cacheDir, CACHE_DIR)
             for (sound in RadioSound.entries) {
-                val file = File(dir, "${sound.name.lowercase()}.wav")
-                try {
-                    dir.mkdirs()
-                    file.writeBytes(Res.readBytes(sound.file))
-                } catch (_: IOException) {
-                    // A full or unwritable cache: this sound stays silent.
-                    continue
-                } catch (_: MissingResourceException) {
-                    // RadioSoundFilesTest guards the files; a broken package only loses its sound.
-                    continue
-                }
+                val file =
+                    try {
+                        writeCachedSound(dir, sound, Res.readBytes(sound.file))
+                    } catch (_: IOException) {
+                        // A full or unwritable cache: this sound stays silent.
+                        continue
+                    } catch (_: SecurityException) {
+                        // Access to this cache or resource was denied.
+                        continue
+                    } catch (_: MissingResourceException) {
+                        // RadioSoundFilesTest guards the files; a broken package only loses its sound.
+                        continue
+                    }
                 synchronized(lock) {
                     if (released) return@withContext
                     val sample = pool.load(file.path, 1)
@@ -111,4 +115,23 @@ internal class SoundPoolRadioSounds(
         const val NO_LOOP = 0
         const val NORMAL_RATE = 1f
     }
+}
+
+internal fun writeCachedSound(
+    directory: File,
+    sound: RadioSound,
+    bytes: ByteArray,
+): File {
+    val dir = Files.createDirectories(directory.toPath())
+    val destination = dir.resolve("${sound.name.lowercase()}.wav")
+    // SoundPool may still be decoding the previous file after a quick off/on toggle.
+    // Replace the directory entry so an open decoder keeps reading its original bytes.
+    val staging = Files.createTempFile(dir, "radio-", ".wav")
+    try {
+        Files.write(staging, bytes)
+        Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    } finally {
+        Files.deleteIfExists(staging)
+    }
+    return destination.toFile()
 }

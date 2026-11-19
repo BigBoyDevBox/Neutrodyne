@@ -2,7 +2,9 @@
 
 package ch.lkmc.neutrodyne.core.designsystem.radio
 
+import ch.lkmc.neutrodyne.core.designsystem.resources.Res
 import kotlinx.coroutines.runBlocking
+import java.io.IOException
 import java.lang.reflect.Proxy
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -113,6 +115,23 @@ class ClipRadioSoundsTest {
             assertTrue(opened.all { it.isOpen }, "a clip refused its WAV")
         }
         player.close()
+    }
+
+    @Test
+    fun anUnreadableWaveDoesNotPreventLoadingOtherControls() {
+        val calls = CopyOnWriteArrayList<String>()
+        val player = ClipRadioSounds { FakeClip(calls).clip }
+        try {
+            runBlocking {
+                player.load { path ->
+                    if (path == RadioSound.entries.first().file) throw IOException("unreadable wave")
+                    Res.readBytes(path)
+                }
+            }
+            assertEquals(RadioSound.entries.size - 1, calls.count { it == "open" })
+        } finally {
+            player.close()
+        }
     }
 
     @Test
