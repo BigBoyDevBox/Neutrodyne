@@ -32,6 +32,8 @@ import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.radio_duration_unknown
 import ch.lkmc.neutrodyne.core.ui.resources.radio_elapsed_full
+import ch.lkmc.neutrodyne.core.ui.resources.remote_session_seconds
+import org.jetbrains.compose.resources.getPluralString
 import org.jetbrains.compose.resources.getString
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -68,7 +70,8 @@ class RadioTuningScaleTest {
                 onNodeWithText(unknown).assertIsDisplayed()
                 onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsActions.SetProgress)).assertCountEquals(0)
                 onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo)).assertCountEquals(0)
-                onNodeWithContentDescription(getString(Res.string.radio_elapsed_full, 0L, 0L, 12L)).assertIsDisplayed()
+                val elapsed = getPluralString(Res.plurals.remote_session_seconds, 12, 12L)
+                onNodeWithContentDescription(getString(Res.string.radio_elapsed_full, elapsed)).assertIsDisplayed()
             }
 
             runOnIdle { programme = listOf(episode.copy(durationMs = 120_000)) }
