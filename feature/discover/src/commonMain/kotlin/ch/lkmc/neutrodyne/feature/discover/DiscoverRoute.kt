@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -32,6 +33,10 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ch.lkmc.neutrodyne.core.designsystem.components.LocalScrollbars
@@ -64,6 +69,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.discovery_charts_unavailable
 import ch.lkmc.neutrodyne.core.ui.resources.discovery_import
 import ch.lkmc.neutrodyne.core.ui.resources.discovery_more
 import ch.lkmc.neutrodyne.core.ui.resources.discovery_popular
+import ch.lkmc.neutrodyne.core.ui.resources.discovery_retained_results
 import ch.lkmc.neutrodyne.core.ui.resources.discovery_search
 import ch.lkmc.neutrodyne.core.ui.resources.discovery_station_top
 import ch.lkmc.neutrodyne.core.ui.resources.discovery_top
@@ -122,6 +128,7 @@ internal fun DiscoverScreen(
     val barColor = ndScrollbarColor(bars)
     val settings = { navigator.pushDetail(SettingsKey(SettingsPage.DISCOVER)) }
     val linkInput = isLinkInput(state.input)
+    val inlineSearch = !linkInput && state.input.trim().length >= MIN_QUERY_LENGTH
 
     fun submit() {
         val query = state.input.trim()
@@ -154,6 +161,15 @@ internal fun DiscoverScreen(
                 MomentaryKey(stringResource(Res.string.discover_add_url), { navigator.push(AddPodcastKey(null)) })
                 MomentaryKey(stringResource(Res.string.discovery_import), { navigator.push(ImportFileKey) })
             }
+            if (inlineSearch && state.retainedResults != null) {
+                Text(
+                    stringResource(Res.string.discovery_retained_results, state.retainedResults.query),
+                    modifier = Modifier.padding(horizontal = 4.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         PageColumnInset(Modifier.weight(1f)) { inset ->
             LazyColumn(
@@ -161,15 +177,17 @@ internal fun DiscoverScreen(
                 modifier = Modifier.fillMaxSize().ndScrollbar(list, bars, barColor),
                 contentPadding = PaddingValues(start = inset, top = 8.dp, end = inset, bottom = 16.dp),
             ) {
-                if (state.input.isNotBlank() && !linkInput) {
+                if (inlineSearch) {
                     state.results?.let { results ->
-                        item { SearchStatus(results, retry, settings) }
+                        item(key = "search-status") { SearchStatus(results, retry, settings) }
+                    }
+                    (state.retainedResults ?: state.results)?.let { results ->
                         val inline = results.hits.take(INLINE_LIMIT)
                         val keys = hitKeys(inline)
                         itemsIndexed(inline, key = { index, _ -> keys[index] }) { _, hit ->
                             DirectoryRow(hit) { navigator.openHit(hit) }
                         }
-                        if (results.hits.size > INLINE_LIMIT) {
+                        if (state.retainedResults == null && results.hits.size > INLINE_LIMIT) {
                             item {
                                 KeyBank(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                                     MomentaryKey(stringResource(Res.string.discovery_more), ::submit)

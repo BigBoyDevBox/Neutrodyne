@@ -285,8 +285,13 @@ class ExternalYouTubeModeTest {
                             }
                         },
                 )
-                // A preview and sheet can expose multiple roots; keep the original failure.
-                runCatching { println(onRoot().printToString()) }
+                // The preview and its sheet can occupy separate roots.
+                runCatching {
+                    val roots = onAllNodes(isRoot(), useUnmergedTree = true)
+                    repeat(roots.fetchSemanticsNodes().size) { index ->
+                        println("E8 diagnostic root $index: " + roots[index].printToString())
+                    }
+                }
                 throw error
             } finally {
                 runOnIdle { showing = false }

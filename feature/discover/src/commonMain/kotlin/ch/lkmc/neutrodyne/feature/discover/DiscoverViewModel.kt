@@ -41,6 +41,8 @@ internal data class TunedChart(
 internal data class DiscoverState(
     val input: String = "",
     val results: SearchResults? = null,
+    /** Keeps the source query with the slips still on screen while a replacement is pending. */
+    val retainedResults: SearchResults? = null,
     val providers: List<ProviderInfo>? = null,
     /** Preset stations: the top chart, then each genre a group's name maps to (03), once. */
     val presets: List<ChartGenre?> = listOf(null),
@@ -161,8 +163,14 @@ internal class DiscoverViewModel(
         if (providers == null || disclosedProviders?.configuration() != providers.configuration() ||
             query.length < MIN_QUERY_LENGTH || isLinkInput(query)
         ) {
-            mutableState.update { it.copy(results = null) }
+            mutableState.update { it.copy(results = null, retainedResults = null) }
             return
+        }
+        mutableState.update { state ->
+            state.copy(
+                results = null,
+                retainedResults = state.results?.takeIf { it.hits.isNotEmpty() } ?: state.retainedResults,
+            )
         }
         searchJob =
             viewModelScope.launch {
@@ -171,14 +179,14 @@ internal class DiscoverViewModel(
                     ensureActive()
                     if (run == generation) {
                         mutableState.update { state ->
-                            // Keep the previous list while the new query has only Pending answers.
-                            val visible =
-                                if (!results.complete && results.hits.isEmpty()) {
-                                    results.copy(hits = state.results?.hits ?: results.hits)
-                                } else {
-                                    results
-                                }
-                            state.copy(results = visible)
+                            state.copy(
+                                results = results,
+                                retainedResults =
+                                    state.retainedResults.takeIf {
+                                        !results.complete &&
+                                            results.hits.isEmpty()
+                                    },
+                            )
                         }
                     }
                 }
