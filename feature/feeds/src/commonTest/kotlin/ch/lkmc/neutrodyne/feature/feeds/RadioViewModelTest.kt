@@ -21,6 +21,9 @@ import ch.lkmc.neutrodyne.core.testing.testNowPlaying
 import ch.lkmc.neutrodyne.core.testing.testPlatformInfo
 import ch.lkmc.neutrodyne.core.ui.radio.RadioEpisode
 import ch.lkmc.neutrodyne.playback.api.PlayResult
+import ch.lkmc.neutrodyne.playback.api.PlaybackIssue
+import ch.lkmc.neutrodyne.playback.api.PlayerPhase
+import ch.lkmc.neutrodyne.playback.api.PositionSnapshot
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
@@ -110,6 +113,45 @@ class RadioViewModelTest : MainDispatcherTest() {
             }
         }
 
+    /**
+     * A needle seek parked for an episode that is not loaded belongs to the radio's own start.
+     * When Up next or a notification loads that episode instead, the dial must follow its ticks,
+     * and resuming must not jump back to the parked position.
+     */
+    @Test fun aParkedSeekYieldsWhenTheEpisodeStartsElsewhere() =
+        runTest {
+            withRadio { model, _ ->
+                model.seek(25_000)
+                controller.state.nowPlaying.value = testNowPlaying(1)
+                runCurrent()
+                controller.state.positionTicks.emit(PositionSnapshot(1, 40_000, 50_000, 60_000, 1f, true, 0))
+                runCurrent()
+                assertEquals(40_000, model.state.value.elapsedMs)
+
+                controller.state.nowPlaying.value = testNowPlaying(1).copy(isPlaying = false, playWhenReady = false)
+                runCurrent()
+                val before = controller.calls.size
+                model.togglePlay()
+                runCurrent()
+                val after = controller.calls.drop(before)
+                assertTrue(after.none { it is FakePlaybackController.Call.Feed }, "resumes, not restarts: $after")
+                assertTrue(
+                    after.any {
+                        it is FakePlaybackController.Call.Transport &&
+                            it.action == FakePlaybackController.Action.PLAY
+                    },
+                    "resumes playback: $after",
+                )
+                assertTrue(
+                    after.none {
+                        it is FakePlaybackController.Call.Transport &&
+                            it.action == FakePlaybackController.Action.SEEK
+                    },
+                    "no stale seek: $after",
+                )
+            }
+        }
+
     @Test fun aSlipsPlayKeyPlaysThatEpisodeAndPausesItWhilePlaying() =
         runTest {
             withRadio { model, id ->
@@ -147,6 +189,22 @@ class RadioViewModelTest : MainDispatcherTest() {
             }
         }
 
+    @Test fun seekUsesTheSameDurationAsTheRadioScale() =
+        runTest {
+            withRadio { model, _ ->
+                val now = testNowPlaying(1)
+                controller.state.nowPlaying.value = now.copy(position = now.position.copy(durationMs = -1))
+                runCurrent()
+                model.seek(90_000)
+                assertEquals(60_000L, model.state.value.elapsedMs)
+
+                controller.state.nowPlaying.value = now.copy(position = now.position.copy(durationMs = 75_000))
+                runCurrent()
+                model.seek(90_000)
+                assertEquals(75_000L, model.state.value.elapsedMs)
+            }
+        }
+
     @Test fun skipKeysMoveByTheListenersIntervalsAndStopAtTheEnds() =
         runTest {
             settings.set(PlaybackSettingKeys.SKIP_BACK_MS, 15_000L)
@@ -172,6 +230,42 @@ class RadioViewModelTest : MainDispatcherTest() {
                     FakePlaybackController.Call.Transport(FakePlaybackController.Action.SEEK, 0),
                     controller.calls.last(),
                 )
+            }
+        }
+
+    @Test fun transportPhaseAndIssueReachTheRadioState() =
+        runTest {
+            withRadio { model, _ ->
+                controller.state.nowPlaying.value =
+                    testNowPlaying(1).copy(isPlaying = false, phase = PlayerPhase.BUFFERING)
+                runCurrent()
+                assertEquals(PlayerPhase.BUFFERING, model.state.value.phase)
+                controller.state.nowPlaying.value =
+                    testNowPlaying(1)
+                        .copy(isPlaying = false, phase = PlayerPhase.ERROR, issue = PlaybackIssue.NETWORK_LOST)
+                runCurrent()
+                assertEquals(PlayerPhase.ERROR, model.state.value.phase)
+                assertEquals(PlaybackIssue.NETWORK_LOST, model.state.value.issue)
+                controller.state.nowPlaying.value = null
+                runCurrent()
+                assertNull(model.state.value.phase)
+                assertNull(model.state.value.issue)
+            }
+        }
+
+    @Test fun aPagingSnapshotDoesNotKeepAStaleTransportPhase() =
+        runTest {
+            withRadio { model, id ->
+                controller.state.nowPlaying.value =
+                    testNowPlaying(1).copy(phase = PlayerPhase.ERROR, issue = PlaybackIssue.PLAYER_ERROR)
+                runCurrent()
+                assertEquals(PlayerPhase.ERROR, model.state.value.phase)
+                controller.state.nowPlaying.value = null
+                runCurrent()
+                model.onRows(id, rows)
+                runCurrent()
+                assertNull(model.state.value.phase)
+                assertNull(model.state.value.issue)
             }
         }
 
@@ -321,6 +415,17 @@ class RadioViewModelTest : MainDispatcherTest() {
                     FakePlaybackController.Call.Transport(FakePlaybackController.Action.PLAY),
                     controller.calls.last(),
                 )
+            }
+        }
+
+    @Test fun theRadioIsUntunedOnlyOnceTheRepositoryReportsNoPlaylist() =
+        runTest {
+            withRadio { model, id ->
+                assertTrue(model.state.value.playlistsLoaded)
+                assertFalse(model.state.value.untuned)
+                groups.delete(id)
+                runCurrent()
+                assertTrue(model.state.value.untuned)
             }
         }
 

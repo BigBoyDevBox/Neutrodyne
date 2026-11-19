@@ -15,6 +15,7 @@ class FakePlaySessionStore : PlaySessionStore {
     var queue = VirtualQueue(0, null, emptyList(), emptyList())
     var generation = 0L
     var failure: Throwable? = null
+    var afterGoBack: ((QueueItem, Long) -> Unit)? = null
     var afterVirtualQueueRead: (suspend (VirtualQueue) -> Unit)? = null
     val calls = mutableListOf<Call>()
     val requestedWindows = mutableListOf<Int>()
@@ -106,7 +107,7 @@ class FakePlaySessionStore : PlaySessionStore {
                 arrivalId = previous.episodeId,
                 origin = previous.origin,
             ),
-        )
+        ).also { generation -> afterGoBack?.invoke(previous, generation) }
 
     override suspend fun endSession(
         departure: Departure?,

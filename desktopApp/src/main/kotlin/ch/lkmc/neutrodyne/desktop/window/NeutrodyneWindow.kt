@@ -155,7 +155,9 @@ internal fun ApplicationScope.NeutrodyneWindow(
     updateNotices: UpdateNotices? = null,
     settings: SettingsRepository? = null,
     rowArt: YouTubeRowArt = YouTubeRowArt.VIDEO_THUMBNAIL,
-    refreshController: ch.lkmc.neutrodyne.core.domain.RefreshController? = null,
+    // Deferred like [syncController]: the controller is database-backed, and resolving it on
+    // the event thread before the start-up gate opens throws.
+    refreshController: (() -> ch.lkmc.neutrodyne.core.domain.RefreshController)? = null,
     desktopPlaybackController: ch.lkmc.neutrodyne.playback.desktop.DesktopPlaybackController? = null,
     repoUrl: String = "",
     crashOffer: DesktopCrashOffer? = null,
@@ -192,10 +194,7 @@ internal fun ApplicationScope.NeutrodyneWindow(
         }
     LaunchedEffect(userVolume) { userVolume?.restore() }
     // 11 Menus' Refresh and Ctrl/Cmd+R / F5: the window-level action both paths share.
-    val refreshAll = {
-        refreshController?.refreshNow(ch.lkmc.neutrodyne.core.domain.RefreshScope.All)
-        Unit
-    }
+    val refreshAll = remember(databaseOpener, refreshController) { gatedRefresh(databaseOpener, refreshController) }
     val playbackMenuActions =
         remember(playbackController, userVolume) {
             object : PlaybackMenuActions {
@@ -452,6 +451,23 @@ internal fun ApplicationScope.NeutrodyneWindow(
         }
     }
 }
+
+/**
+ * The window's Refresh action (11 Menus' Refresh, Ctrl/Cmd+R, F5). It resolves [controller] only
+ * once [opener] reports the database open: the refresh controller is database-backed, and
+ * resolving it on the event thread before the start-up gate throws. Before the gate the action
+ * does nothing: the menu item is disabled then anyway, and Ctrl/Cmd+R and F5 share this action,
+ * so they do nothing until the gate opens too.
+ */
+internal fun gatedRefresh(
+    opener: DatabaseOpener,
+    controller: (() -> ch.lkmc.neutrodyne.core.domain.RefreshController)?,
+): () -> Unit =
+    {
+        if (controller != null && opener.openState.value is DatabaseOpenState.Opened) {
+            controller().refreshNow(ch.lkmc.neutrodyne.core.domain.RefreshScope.All)
+        }
+    }
 
 /**
  * The initial window state (11 Window state): the default bounds of [defaultWindowBounds] when
