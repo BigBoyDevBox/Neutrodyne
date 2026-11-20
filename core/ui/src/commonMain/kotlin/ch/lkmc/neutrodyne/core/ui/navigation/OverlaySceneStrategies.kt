@@ -3,13 +3,10 @@
 package ch.lkmc.neutrodyne.core.ui.navigation
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.window.DialogProperties
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.compose.rememberLifecycleOwner
 import androidx.navigation3.runtime.NavEntry
 import androidx.navigation3.scene.DialogSceneStrategy
 import androidx.navigation3.scene.OverlayScene
@@ -37,7 +34,6 @@ private class NdSheetScene<T : Any>(
     override val entries: List<NavEntry<T>> = listOf(entry)
 
     override val content: @Composable (() -> Unit) = {
-        val lifecycleOwner = rememberLifecycleOwner()
         // The underlying pane can leave while an overlay enters. Its dispatcher is disposed
         // with that pane, so the window must register with the navigation host's stable owner.
         OverlayBackOwner {
@@ -54,9 +50,7 @@ private class NdSheetScene<T : Any>(
                         NdSheetExpansion.EXPANDED
                     },
             ) {
-                CompositionLocalProvider(LocalLifecycleOwner provides lifecycleOwner) {
-                    entry.Content()
-                }
+                OverlayEntryContent(entry)
             }
         }
     }
@@ -120,12 +114,9 @@ private class NdDialogScene<T : Any>(
     override val entries: List<NavEntry<T>> = listOf(entry)
 
     override val content: @Composable (() -> Unit) = {
-        val lifecycleOwner = rememberLifecycleOwner()
         OverlayBackOwner {
             androidx.compose.ui.window.Dialog(onDismissRequest = onBack) {
-                CompositionLocalProvider(LocalLifecycleOwner provides lifecycleOwner) {
-                    entry.Content()
-                }
+                OverlayEntryContent(entry)
             }
         }
     }

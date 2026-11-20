@@ -9,6 +9,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.rememberLifecycleOwner
 import androidx.navigation3.runtime.NavEntry
 import androidx.navigation3.runtime.NavKey
 import androidx.navigationevent.DirectNavigationEventInput
@@ -36,7 +39,8 @@ internal fun NavigationBackDispatch(
     val parent = LocalNavigationEventDispatcherOwner.current ?: rememberNavigationEventDispatcherOwner()
 
     val events = remember(parent, panes) { BackEventOwner(panes) }
-    val entries = remember(parent, panes) { EntryBackOwner(parent, panes, events) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val entries = remember(parent, panes, lifecycleOwner) { EntryBackOwner(parent, panes, events, lifecycleOwner) }
     DisposableEffect(events) {
         events.attach(parent.navigationEventDispatcher)
         onDispose { events.dispose() }
@@ -143,7 +147,17 @@ private class EntryBackOwner(
     val parent: NavigationEventDispatcherOwner,
     val panes: PaneSceneStrategy,
     val overlayOwner: NavigationEventDispatcherOwner,
+    val hostLifecycleOwner: LifecycleOwner,
 )
+
+@Composable
+internal fun OverlayEntryContent(entry: NavEntry<*>) {
+    // A redirected overlay can outlive the outgoing pane. Tie its updates to the host for
+    // the lifetime of this window, including while the host backgrounds and resumes.
+    val parent = LocalEntryBackDispatch.current?.hostLifecycleOwner ?: LocalLifecycleOwner.current
+    val owner = rememberLifecycleOwner(parent = parent)
+    CompositionLocalProvider(LocalLifecycleOwner provides owner) { entry.Content() }
+}
 
 @Composable
 internal fun OverlayBackOwner(content: @Composable () -> Unit) {

@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -38,6 +39,7 @@ import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -354,16 +356,22 @@ public fun ValveDeck(
     Box(
         modifier.drawWithCache {
             val fit = deckFit(art, size)
-            val glows = fit?.let { filamentGlows(it) }.orEmpty()
             onDrawBehind {
-                if (fit == null) return@onDrawBehind
-                drawValveDeck(art, fit)
-                // Read in the draw phase only: warming up redraws the deck, never recomposes it.
-                val level = warmth.value
-                if (level > 0f) glows.forEach { it.draw(this, level) }
+                if (fit != null) drawValveDeck(art, fit)
             }
         },
-    )
+    ) {
+        // Isolate animation invalidations while drawing the translucent chassis onto its background.
+        Spacer(
+            Modifier.matchParentSize().graphicsLayer().drawWithCache {
+                val glows = deckFit(art, size)?.let { filamentGlows(it) }.orEmpty()
+                onDrawBehind {
+                    val level = warmth.value
+                    if (level > 0f) glows.forEach { it.draw(this, level) }
+                }
+            },
+        )
+    }
 }
 
 /** How the artwork sits in the node: its scale, the width the plain stretches grow by, its top. */
