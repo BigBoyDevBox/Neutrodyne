@@ -42,3 +42,10 @@ Thumbs.db
 
 # Local Claude Code approvals can contain secrets.
 **/.claude/settings.local.json
+
+# Local server deployment
+/.env
+/compose.override.yaml
+/compose.override.yml
+/docker-compose.override.yaml
+/docker-compose.override.yml
