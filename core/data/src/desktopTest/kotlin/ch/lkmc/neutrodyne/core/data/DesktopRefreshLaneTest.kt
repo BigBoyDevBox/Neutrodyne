@@ -16,6 +16,8 @@ import ch.lkmc.neutrodyne.core.database.PodcastGroupSettingsEntity
 import ch.lkmc.neutrodyne.core.database.PodcastSettingsEntity
 import ch.lkmc.neutrodyne.core.database.ScopeOverrides
 import ch.lkmc.neutrodyne.core.domain.RefreshScope
+import ch.lkmc.neutrodyne.core.domain.ServerFeedCache
+import ch.lkmc.neutrodyne.core.domain.ServerFeedSnapshot
 import ch.lkmc.neutrodyne.core.model.SourceType
 import ch.lkmc.neutrodyne.core.model.settings.FeedsSettingKeys
 import ch.lkmc.neutrodyne.core.testing.FakeNetworkMonitor
@@ -118,6 +120,75 @@ class DesktopRefreshLaneTest {
             lane.run(Instant.fromEpochMilliseconds(NOW))
 
             assertEquals(listOf(a, b), adapter.calls.map { it.first })
+        }
+
+    @Test
+    fun aLinkedAppChecksAllScheduledFeedsOnOpeningAndOnlyRefreshesNewSnapshots() =
+        laneTest {
+            val changed = "https://a.example.com/feed"
+            val missing = "https://b.example.com/feed"
+            val id = seedPodcast(db, changed, nextRefreshAt = NOW + DAY)
+            seedPodcast(db, missing, nextRefreshAt = NOW + DAY)
+            seedPodcast(db, "https://manual.example.com/feed", nextRefreshAt = RefreshPolicy.NEVER)
+            val requests = mutableListOf<Set<String>>()
+            val cache =
+                object : ServerFeedCache {
+                    override suspend fun isLinked() = true
+
+                    override suspend fun lookup(feeds: Map<String, String?>): Map<String, ServerFeedSnapshot> {
+                        requests += feeds.keys
+                        return mapOf(changed to ServerFeedSnapshot(changed, "abc", NOW, byteArrayOf(1)))
+                    }
+                }
+            val adapter = stubAdapter(onFetch = { _, _ -> AdapterResult.NotModified(null) })
+            val scheduler = queue(this)
+            val lane = lane(adapter, scheduler, cache)
+
+            repeat(2) { lane.run(Instant.fromEpochMilliseconds(NOW)) }
+
+            assertEquals(listOf(setOf(changed, missing)), requests)
+            assertEquals(
+                setOf(changed),
+                adapter.cachedCalls
+                    .single()
+                    .second.keys,
+            )
+            assertEquals(listOf(id), adapter.calls.map { it.first })
+
+            scheduler.onWindowFocus(clock.elapsedRealtime())
+            lane.run(Instant.fromEpochMilliseconds(NOW))
+            assertEquals(1, requests.size)
+
+            clock.elapsedMs += 10 * 60_000L
+            scheduler.onWindowFocus(clock.elapsedRealtime())
+            lane.run(Instant.fromEpochMilliseconds(NOW))
+            assertEquals(2, requests.size)
+        }
+
+    @Test
+    fun openingOnMeteredWifiOnlyRetainsTheRequestUntilUnmetered() =
+        laneTest {
+            settings.set(FeedsSettingKeys.REFRESH_WIFI_ONLY, true)
+            val url = "https://publisher.example/show"
+            seedPodcast(db, url, nextRefreshAt = NOW + DAY)
+            val requests = mutableListOf<Set<String>>()
+            val cache =
+                object : ServerFeedCache {
+                    override suspend fun isLinked() = true
+
+                    override suspend fun lookup(feeds: Map<String, String?>): Map<String, ServerFeedSnapshot> {
+                        requests += feeds.keys
+                        return emptyMap()
+                    }
+                }
+            val lane = lane(stubAdapter(), queue(this), cache)
+            network.setStatus(FakeNetworkMonitor.ONLINE.copy(isMetered = true))
+            lane.run(Instant.fromEpochMilliseconds(NOW))
+            assertTrue(requests.isEmpty())
+
+            network.setStatus(FakeNetworkMonitor.ONLINE)
+            lane.run(Instant.fromEpochMilliseconds(NOW))
+            assertEquals(listOf(setOf(url)), requests)
         }
 
     @Test
@@ -448,6 +519,7 @@ class DesktopRefreshLaneTest {
     private fun TestScope.lane(
         adapter: StubSourceAdapter,
         queue: DesktopRefreshScheduler,
+        cache: ServerFeedCache = ServerFeedCache { emptyMap() },
     ): DesktopRefreshLane =
         DesktopRefreshLane(
             refresher =
@@ -456,6 +528,7 @@ class DesktopRefreshLaneTest {
                     mapOf(SourceType.RSS to adapter),
                     clock,
                     settings,
+                    serverFeedCache = cache,
                     ingestor =
                         newIngestor(
                             db,

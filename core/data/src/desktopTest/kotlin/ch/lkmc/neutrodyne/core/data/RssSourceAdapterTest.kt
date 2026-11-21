@@ -4,6 +4,12 @@ package ch.lkmc.neutrodyne.core.data
 
 import ch.lkmc.neutrodyne.core.data.refresh.AdapterResult
 import ch.lkmc.neutrodyne.core.data.refresh.FetchMode
+import ch.lkmc.neutrodyne.core.data.refresh.RefreshOrigin
+import ch.lkmc.neutrodyne.core.data.refresh.RefreshRequest
+import ch.lkmc.neutrodyne.core.domain.RefreshScope
+import ch.lkmc.neutrodyne.core.domain.ServerFeedCache
+import ch.lkmc.neutrodyne.core.domain.ServerFeedSnapshot
+import ch.lkmc.neutrodyne.core.model.SourceType
 import ch.lkmc.neutrodyne.core.testing.TestClock
 import ch.lkmc.neutrodyne.feeds.parse.FeedParser
 import kotlinx.coroutines.test.runTest
@@ -155,6 +161,76 @@ class RssSourceAdapterTest {
             } finally {
                 bundle.close()
             }
+        }
+
+    @Test
+    fun unusableServerDocumentOnlyFallsBackToPublisherWhenDue() =
+        runTest {
+            setUpRoot()
+            val url = server.url("/subscription").toString()
+            val next = NOW + 24 * 60 * 60_000L
+            val id = seedPodcast(db, url, nextRefreshAt = next)
+            val broken = "<html><title>Sign in</title></html>".encodeUtf8()
+            val cache =
+                object : ServerFeedCache {
+                    override suspend fun isLinked() = true
+
+                    override suspend fun lookup(feeds: Map<String, String?>) =
+                        mapOf(url to ServerFeedSnapshot(url, broken.sha256().hex(), NOW, broken.toByteArray()))
+                }
+            server.enqueue(mockResponse(body = rssBody(items = arrayOf(rssItem("live")))))
+            newRssAdapter(root, clock).use { bundle ->
+                val refresher =
+                    newRefresher(db, mapOf(SourceType.RSS to bundle.adapter), clock, serverFeedCache = cache)
+                val opening =
+                    RefreshRequest(
+                        RefreshScope.All,
+                        force = false,
+                        pagesOnly = false,
+                        origin = RefreshOrigin.FOREGROUND,
+                    )
+                refresher.run(opening)
+                assertEquals(0, server.requestCount)
+                val untouched = db.podcastDao().byId(id)!!
+                assertEquals(next, untouched.nextRefreshAt)
+                assertEquals(null, untouched.lastAttemptAt)
+                assertEquals(0, untouched.failureCount)
+
+                refresher.run(opening.copy(force = true, origin = RefreshOrigin.MANUAL))
+                assertEquals(1, server.requestCount)
+                assertEquals(1, db.ingestDao().existing(id).size)
+            }
+        }
+
+    @Test
+    fun serverDocumentAndMatchingDigestNeedNoPublisherRequests() =
+        runTest {
+            setUpRoot()
+            val body = rssBody(items = arrayOf(rssItem("server-episode")))
+            val url = server.url("/feed?token=test").toString()
+            val hash = body.encodeUtf8().sha256().hex()
+            val id = seedPodcast(db, url)
+            val snapshot = ServerFeedSnapshot(url, hash, NOW, body.encodeToByteArray())
+            newRssAdapter(root, clock).use { bundle ->
+                val feed = dueFeedOf(db, id)
+                val parsed = bundle.adapter.fetchAndParse(feed, FetchMode.REFRESH, mapOf(url to snapshot))
+                assertEquals(1, assertIs<AdapterResult.Parsed>(parsed).feed.items.size)
+                val current =
+                    feed.copy(
+                        contentSha256 = hash,
+                        parserVersion = FeedParser.VERSION,
+                        lastParseOk = true,
+                        lastFullFetchAt = NOW,
+                    )
+                val unchanged =
+                    bundle.adapter.fetchAndParse(
+                        current,
+                        FetchMode.REFRESH,
+                        mapOf(url to snapshot.copy(body = null)),
+                    )
+                assertIs<AdapterResult.NotModified>(unchanged)
+            }
+            assertEquals(0, server.requestCount)
         }
 
     @Test

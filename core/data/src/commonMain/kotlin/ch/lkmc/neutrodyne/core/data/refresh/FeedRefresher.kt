@@ -29,6 +29,8 @@ import ch.lkmc.neutrodyne.core.domain.EffectiveSettingsResolver
 import ch.lkmc.neutrodyne.core.domain.RefreshScope
 import ch.lkmc.neutrodyne.core.domain.RefreshStatus
 import ch.lkmc.neutrodyne.core.domain.SecretStore
+import ch.lkmc.neutrodyne.core.domain.ServerFeedCache
+import ch.lkmc.neutrodyne.core.domain.ServerFeedSnapshot
 import ch.lkmc.neutrodyne.core.domain.SettingsRepository
 import ch.lkmc.neutrodyne.core.domain.SyncIngestHook
 import ch.lkmc.neutrodyne.core.model.AliasReason
@@ -37,12 +39,14 @@ import ch.lkmc.neutrodyne.core.model.FeedErrorKind
 import ch.lkmc.neutrodyne.core.model.NewEpisodes
 import ch.lkmc.neutrodyne.core.model.PodcastStatus
 import ch.lkmc.neutrodyne.core.model.SourceType
+import ch.lkmc.neutrodyne.core.model.YouTubeVariantBits
 import ch.lkmc.neutrodyne.core.model.settings.FeedsSettingKeys
 import ch.lkmc.neutrodyne.feeds.identity.PodcastGuid
 import ch.lkmc.neutrodyne.feeds.identity.UrlNormalizer
 import ch.lkmc.neutrodyne.feeds.model.ParseWarning
 import ch.lkmc.neutrodyne.feeds.model.isPartialWindow
 import ch.lkmc.neutrodyne.youtube.api.YouTubeFeedOutageMonitor
+import ch.lkmc.neutrodyne.youtube.api.YouTubeFeedUrls
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.Provider
 import dev.zacsweers.metro.SingleIn
@@ -97,6 +101,7 @@ internal class FeedRefresher(
     private val coordinator: CredentialCommitCoordinator,
     private val notifier: NewEpisodeNotifier,
     private val youTubeMonitor: YouTubeFeedOutageMonitor,
+    private val serverFeedCache: ServerFeedCache,
 ) {
     // Lock order, outermost first: the run [mutex] → [commitMutex] →
     // CredentialCommitCoordinator → the Room writer ([batcherLock] is a leaf guard).
@@ -343,6 +348,11 @@ internal class FeedRefresher(
         }
     }
 
+    internal suspend fun canCatchUpOnOpen(metered: Boolean): Boolean =
+        settings.get(FeedsSettingKeys.REFRESH_ON_APP_OPEN) &&
+            (!settings.get(FeedsSettingKeys.REFRESH_WIFI_ONLY) || !metered) &&
+            serverFeedCache.isLinked()
+
     private suspend fun runLocked(request: RefreshRequest): RefreshReport {
         mergedThisRun = false
         probedThisRun.clear()
@@ -355,7 +365,7 @@ internal class FeedRefresher(
                 .getOrNull()
                 ?.takeIf { it > 0 }
         tempFiles.sweep(clock.now())
-        val due = selectDue(request).filter { adapters.containsKey(it.sourceType) }
+        val scheduled = selectDue(request).filter { adapters.containsKey(it.sourceType) }
         val pendingPages =
             if (request.pagesOnly) {
                 emptyList()
@@ -364,6 +374,50 @@ internal class FeedRefresher(
             }
         // Resolve after selection so concurrently subscribed feeds cannot enter without an interval.
         intervals = effectiveSettings.refreshIntervals().mapValues { it.value.value }
+        // Opening a linked app can discover an episode before its local refresh interval expires.
+        // A cache miss only makes a publisher request if that subscription was already due.
+        val useServer = !request.pagesOnly && serverFeedCache.isLinked()
+        val candidates =
+            if (useServer && request.scope == RefreshScope.All && request.origin == RefreshOrigin.FOREGROUND) {
+                // The upper bound includes every finite local schedule and excludes Manual only.
+                db
+                    .podcastDao()
+                    .dueForRefresh(RefreshPolicy.NEVER - 1, scopeAll = true)
+                    .filter { adapters.containsKey(it.sourceType) }
+            } else {
+                scheduled
+            }
+        val serverFeeds =
+            if (!useServer) {
+                emptyMap()
+            } else {
+                val budget =
+                    if (request.deadlineElapsedMs == RefreshRequest.NO_DEADLINE) {
+                        SERVER_LOOKUP_TIMEOUT_MS
+                    } else {
+                        minOf(
+                            SERVER_LOOKUP_TIMEOUT_MS,
+                            request.deadlineElapsedMs - clock.elapsedRealtime() - DEADLINE_MARGIN_MS,
+                        )
+                    }
+                withTimeoutOrNull(budget) { lookupServerFeeds(candidates) }.orEmpty()
+            }
+        val due =
+            if (scheduled === candidates) {
+                scheduled
+            } else {
+                val dueIds = scheduled.mapTo(mutableSetOf()) { it.id }
+                scheduled +
+                    candidates.filter { feed ->
+                        val hits = serverFeeds[feed.id]
+                        feed.id !in dueIds && feed.failureCount == 0 && intervals[feed.id] != null &&
+                            !hits.isNullOrEmpty() &&
+                            cacheUrls(feed, includeFallback = false).all { url ->
+                                val snapshot = hits[url]
+                                snapshot?.body != null && snapshot.checkedAt > (feed.lastSuccessAt ?: 0L)
+                            }
+                    }
+            }
         val slots = arrayOfNulls<FeedOutcome>(due.size)
         announcementsLock.withLock { announcements.clear() }
         _status.value =
@@ -419,6 +473,14 @@ internal class FeedRefresher(
                                                         adapter,
                                                         request,
                                                         hostPermits,
+                                                        if (index <
+                                                            scheduled.size
+                                                        ) {
+                                                            FetchMode.REFRESH
+                                                        } else {
+                                                            FetchMode.CACHED_ONLY
+                                                        },
+                                                        serverFeeds[feed.id].orEmpty(),
                                                     ) { slots[index] = it }
                                                 }
                                             }
@@ -556,15 +618,18 @@ internal class FeedRefresher(
         adapter: SourceAdapter,
         request: RefreshRequest,
         hostPermits: HostPermits,
+        mode: FetchMode,
+        cached: Map<String, ServerFeedSnapshot>,
         committed: (FeedOutcome) -> Unit,
     ): FeedOutcome {
         val result =
             suspendRunCatching {
                 hostPermits.semaphore(adapter.hostKey(feed, feed.feedUrl)).withPermit {
-                    adapter.fetchAndParse(feed, FetchMode.REFRESH)
+                    adapter.fetchAndParse(feed, mode, cached)
                 }
             }.getOrElse { e ->
                 if (e is CancellationException) throw e
+                if (mode == FetchMode.CACHED_ONLY) return FeedOutcome.Deferred(currentNextAt(feed.id))
                 Log.w(TAG, e) { "fetchAndParse threw for podcast ${feed.id}" }
                 // An eager batch flush can fault here too; isolate it just like an
                 // outcome-handling failure so siblings finish before finalisation retries.
@@ -573,6 +638,10 @@ internal class FeedRefresher(
                 }.onFailure { Log.w(TAG, it) { "failure-state write failed for podcast ${feed.id}" } }
                 return FeedOutcome.Failed(FeedErrorKind.UNKNOWN, null)
             }
+        if (mode == FetchMode.CACHED_ONLY && (result is AdapterResult.Failed || result is AdapterResult.Deferred)) {
+            // An unusable early snapshot leaves the existing publisher schedule and backoff intact.
+            return FeedOutcome.Deferred(currentNextAt(feed.id))
+        }
         // Outcome handling (ingest, fetch-state rows, pending moves, hooks) is guarded per feed:
         // one feed's unexpected DAO fault records a STORAGE failure instead of cancelling the
         // run and every sibling feed with it (03's per-feed isolation).
@@ -594,7 +663,7 @@ internal class FeedRefresher(
                 }
             // Preserve the committed current-body outcome if cancellation interrupts a probe.
             committed(outcome)
-            if (feed.sourceType != SourceType.RSS || result !is AdapterResult.Parsed ||
+            if (mode == FetchMode.CACHED_ONLY || feed.sourceType != SourceType.RSS || result !is AdapterResult.Parsed ||
                 result.purpose == ParsePurpose.REDIRECT_CONFIRMATION ||
                 (outcome !is FeedOutcome.Ingested && outcome !is FeedOutcome.Merged)
             ) {
@@ -1441,6 +1510,68 @@ internal class FeedRefresher(
             is RefreshScope.Podcasts -> db.podcastDao().pagingPending(scopeAll = false, ids = scope.ids)
         }
 
+    /**
+     * The run's one batched server lookup (10 feed cache): every due RSS feed's URL with its known
+     * SHA-256, and every YouTube variant URL. YouTube sends no hash because the stored digest is
+     * the merged variant digest, not a document hash. A failure, a miss or a stale entry leaves
+     * the feed to its own fetch; the adapter only sees the fresh entries for its feed.
+     */
+    private suspend fun lookupServerFeeds(due: List<DueFeed>): Map<Long, Map<String, ServerFeedSnapshot>> {
+        val query = mutableMapOf<String, String?>()
+        for (feed in due) {
+            val knownSha = adapters[feed.sourceType]?.knownServerHash(feed)
+            for (url in cacheUrls(feed)) if (url !in query || knownSha == null) query[url] = knownSha
+        }
+        if (query.isEmpty()) return emptyMap()
+        val snapshots =
+            suspendRunCatching { serverFeedCache.lookup(query) }
+                .onFailure { Log.w(TAG) { "Server feed cache lookup failed" } }
+                .getOrElse { emptyMap() }
+        if (snapshots.isEmpty()) return emptyMap()
+        val now = clock.now()
+        val byFeed = mutableMapOf<Long, Map<String, ServerFeedSnapshot>>()
+        for (feed in due) {
+            val entries =
+                cacheUrls(feed).mapNotNull { url ->
+                    val snapshot = snapshots[url] ?: return@mapNotNull null
+                    // Mirrors the server's cache TTL; an older entry is stale and fetches directly.
+                    if (snapshot.checkedAt < now - SERVER_FEED_MAX_AGE_MS ||
+                        snapshot.checkedAt < (feed.lastSuccessAt ?: 0L)
+                    ) {
+                        return@mapNotNull null
+                    }
+                    url to snapshot
+                }
+            if (entries.isNotEmpty()) byFeed[feed.id] = entries.toMap()
+        }
+        return byFeed
+    }
+
+    /** The URLs the server's cache can hold for [feed]; empty for a source it does not poll. */
+    private fun cacheUrls(
+        feed: DueFeed,
+        includeFallback: Boolean = true,
+    ): List<String> =
+        when (feed.sourceType) {
+            SourceType.RSS -> {
+                listOf(feed.feedUrl)
+            }
+
+            SourceType.YOUTUBE_CHANNEL -> {
+                val id = feed.youtubeChannelId
+                if (id != null && YouTubeVariantBits.isValid(feed.youtubeVariants)) {
+                    val variants = YouTubeFeedUrls.pollUrls(id, feed.youtubeVariants).map { it.url }
+                    if (includeFallback) variants + YouTubeFeedUrls.canonical(id) else variants
+                } else {
+                    emptyList()
+                }
+            }
+
+            else -> {
+                emptyList()
+            }
+        }
+
     /** 03's persisted force step: `nextRefreshAt = 0` for the scope's unblocked podcasts. */
     private suspend fun forceDue(scope: RefreshScope) {
         when (scope) {
@@ -1667,5 +1798,9 @@ internal class FeedRefresher(
 
         const val WARNINGS_LRU_SIZE = 50
         const val EVENT_BUFFER_CAPACITY = 64
+
+        /** Mirrors the server's feed-cache TTL; a snapshot older than this is stale. */
+        const val SERVER_LOOKUP_TIMEOUT_MS = 30_000L
+        const val SERVER_FEED_MAX_AGE_MS = 30 * 60_000L
     }
 }
