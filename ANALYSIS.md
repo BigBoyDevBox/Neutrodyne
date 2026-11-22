@@ -45,6 +45,17 @@ earlier passes had not recorded them.
   the spinner and a failed page keeps its retry row;
   [#612](https://github.com/L-K-M/Neutrodyne/pull/612) the chooser saver keeps
   the focus hand-off and reads old state defensively.
+- **Three more small fixes from the independent pass are in review:**
+  [#619](https://github.com/L-K-M/Neutrodyne/pull/619) binds the macOS Window
+  menu's Minimise and Zoom to Cmd+M and Ctrl+Cmd+F;
+  [#622](https://github.com/L-K-M/Neutrodyne/pull/622) chunks
+  `DownloadDao.downloadedEpisodeIds` at the 500-row download bind size;
+  [#627](https://github.com/L-K-M/Neutrodyne/pull/627) prefers the programme
+  row's metadata over a stale player snapshot for the selected episode.
+- **The chooser marks the tuned playlist and focuses it** (`cec78f017`), and
+  **Settings slip values yield to the title's longest word** (#562). The older
+  "Mark the tuned playlist in the chooser" and mid-word title sections are
+  done.
 
 ## Playback and programme correctness
 
@@ -231,18 +242,16 @@ and segmented button, the Up next and Downloads text buttons, the Menu plate's
 flat tan Close key, and the light drag-and-drop overlay on the charcoal stage.
 The podcast page header has no enamel title, and Subscribed is a dot and text
 where the mockup shows a toggle. In the group editor the member check badge
-overlaps cover lettering. Settings slip titles break mid-word at about 290 px
-("Playb/ack") because the trailing value is unconstrained (`SettingsSlips`);
-give the title priority and ellipsize the value. Replace each with the existing
-keys, switches and signs, and compare goldens at 390 and 1200 dp.
+overlaps cover lettering. Replace each with the existing keys, switches and
+signs, and compare goldens at 390 and 1200 dp.
 
 ### Close the remaining accessibility and localisation gaps
 
-Radio slips and chooser rows expose no role (`RadioSlip` still defaults to
-`Role.Tab`). The Sync link-method selector has no selected or radio-button
-semantics. German lacks the crash-dialog strings
-(`app/src/main/res/values-de`). `downloadSize` hard-codes the decimal point and
-unit words, and the queue position "01 / 12" is assembled in code. On Android,
+Radio slips expose no role (`RadioSlip` still defaults to `Role.Tab`); the
+chooser rows and the Sync link-method selector are fixed. German lacks the
+crash-dialog strings (`app/src/main/res/values-de`). `downloadSize` hard-codes
+the decimal point and unit words, and the queue position "01 / 12" is assembled
+in code. On Android,
 edge-to-edge with `adjustResize` leaves `WindowInsets.ime` unconsumed (no
 `imePadding` anywhere), so the keyboard covers paper fields low on the page
 (sync setup, credentials, group editor) although design 08 asks for
@@ -289,12 +298,15 @@ title bar over the charcoal stage. `java.awt.Taskbar` offers a Dock menu (Play
 or Pause, skip back and forward, the current title) and an opt-in icon badge
 (unplayed in the tuned playlist); the app uses neither. Guard each with
 `Taskbar.isSupported`: the Dock menu and text badge are macOS features, and
-Windows offers neither. Window > Minimise lacks Cmd+M and Zoom lacks
-Ctrl+Cmd+F. The window title drops the episode as soon as playback pauses
-(`NeutrodyneWindow.kt:304`); macOS convention keeps the current title while the
-episode is loaded, so record the decision. Navigation state is lost on
-relaunch; restoring the last playlist already works through settings. Check
-each in full-screen Spaces and with VoiceOver.
+Windows offers neither. Window > Minimise lacked Cmd+M and Zoom lacked
+Ctrl+Cmd+F; #619 binds them and stands them down with the other accelerators
+while a text field is focused. The window title drops the episode as soon as
+playback pauses (`NeutrodyneWindow.kt:304`); macOS convention keeps the current
+title while the episode is loaded, so record the decision. Window bounds are
+not persisted (MD4): `desktop.window_bounds` should be written one second after
+the last move or resize and at quit, and restored with the 50% overlap rule.
+Navigation state is lost on relaunch; restoring the last playlist already works
+through settings. Check each in full-screen Spaces and with VoiceOver.
 
 ### Preserve veneer proportions during live resize
 
@@ -304,6 +316,17 @@ ultrawide sizes at both display scales. Compare the existing veneer with an
 aspect-preserving crop anchored at the same corner, keeping the bezel, lighting
 and screws fixed. Select a treatment only if the grain holds its proportions
 without an obvious seam or a distracting jump during live resize.
+
+### Check the dial end labels and slip row geometry
+
+A vision pass over the committed desktop goldens (which pass on HEAD) flagged
+three things to confirm in a render: the rightmost waveform time label appears
+clipped by the panel edge in the phone, small, landscape and tablet presets;
+slip row heights vary when a title wraps to two lines while its neighbours stay
+on one; and the group editor's dark cabinet reads inconsistently with the light
+pages, although the code sets `dark = false` (confirm whether that is the radio
+stage or a theme bug). Confirm before changing the dial's `SpaceBetween` labels,
+the row minimum height or the editor theme.
 
 ## Confirmed small defects
 
@@ -328,11 +351,12 @@ without an obvious seam or a distracting jump during live resize.
 - **The deck constants are duplicated.** `DECK_MIN_HEIGHT`, `DECK_HEIGHT_SHARE`
   and `DECK_OVERHANG` exist in both `RadioScreen` and `RadioCabinetPage`; move
   them to `RadioMaterials` beside `VALVE_DECK_ASPECT`.
-- **The player can show stale metadata for the selected episode.**
-  `RadioState.selected` prefers `nowPlayingEpisode` over the row from the
-  programme list, so a title or podcast changed by a refresh shows the old value
-  on the player while the slip shows the new one. The `NowPlaying.loadId`
-  occurrence token can distinguish a reload; low impact today.
+- **The player could show stale metadata for the selected episode.**
+  `RadioState.selected` preferred `nowPlayingEpisode` over the row from the
+  programme list, so a title or podcast changed by a refresh showed the old
+  value on the player while the slip showed the new one. #627 prefers the row
+  and keeps the player snapshot as the fallback; the measured duration still
+  wins.
 - **The printed needle scale always uses `MM:SS`; above 99 minutes the
   rightmost quarter label ("900:00") is wider than the others and nudges the
   row.** Either accept it deliberately or use a compact hours form there too.
@@ -352,6 +376,19 @@ without an obvious seam or a distracting jump during live resize.
 - **`NdTopAppBar.FaceplateRow` falls back to the "between" position even when
   `betweenRoom < signWidth`**, so at very narrow widths the sign can run under a
   key.
+- **The visible Nixie counter caps at `9H:59`** (`RadioState.kt:70-78`).
+  `radioElapsed` coerces minutes to `9*60+59`, so a ten hour episode reads
+  `9H:59` forever while the spoken description is unbounded. Accept the
+  four-tube cap deliberately or print a compact two-digit-hours form.
+- **`RadioText` sets a tight line height** (`RadioProgramme.kt:650`):
+  `lineHeight = size * 1.2` sp can clip descenders at small sizes.
+- **`SignLettering` mishandles a trailing space** (`RadioParts.kt:160-175`):
+  it compares `getLineEnd(0, visibleEnd = true)`, which excludes trailing
+  whitespace, with the full length, so a name ending in a space always letters
+  at its minimum size.
+- **The programme's empty and error states are footnotes.** When a playlist is
+  empty or fails to load, the tray shows only a small strip at its foot; give
+  that state the paper's full height.
 
 ## Performance
 
@@ -498,15 +535,6 @@ circular dependency; raw `OutlinedTextField`s elsewhere would still need
 explicit treatment. Do this as its own pass over every text field rather than
 halfway, or move the tracker down to the design system first.
 
-### Mark the tuned playlist in the chooser
-
-`RadioInsertDialog` lists groups as plain clickable text rows: nothing marks
-the playlist the radio is tuned to, and focus starts on row 0 even when the
-active group is elsewhere. Give the active row the selected treatment (a lit
-key or lamp beside its name), start keyboard focus on it, and let the screen
-reader announce it as selected. Compare a long group name, a non-first active
-group, Escape, and returning to the chooser.
-
 ### Explain short searches and episode counts
 
 For a one- or two-character search, show a localised hint that three characters
@@ -556,12 +584,14 @@ creates one channel in the selected group.
 
 ### Fix download storage limits and notices
 
-`DownloadDao.downloadedEpisodeIds` is not chunked at SQLite's bind limit, so a
-large library can throw (`DownloadDao.kt:29`). The storage cap applies only to
-automatic downloads; manual downloads ignore it (`DownloadQuota.kt:24-33`).
-Android's "SD card is not available" notice has no action, so the setting that
-fixes it is unreachable (`DownloadNotices.kt`). Test with 1,500 downloaded
-episodes, a cap reached by a manual download, and an ejected card.
+`DownloadDao.downloadedEpisodeIds` was not chunked at SQLite's bind limit, so a
+large library could throw (`DownloadDao.kt:29`); #622 chunks it at the existing
+500-row download bind size. The storage cap applies only to automatic
+downloads; `DownloadQuota`'s own contract says admission is AUTO-only, so the
+manual case is an owner decision rather than a clear defect. Android's "SD card
+is not available" notice has no action, so the setting that fixes it is
+unreachable (`DownloadNotices.kt`). Test with 1,500 downloaded episodes, a cap
+reached by a manual download, and an ejected card.
 
 ### Keep sync and settings drafts and copy intact
 
