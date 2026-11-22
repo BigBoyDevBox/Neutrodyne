@@ -665,7 +665,11 @@ class RadioViewModelTest : MainDispatcherTest() {
                 runCurrent()
                 model.discard(2)
                 runCurrent()
-                assertEquals(listOf(1L, 3L), model.state.value.episodes.map { it.id })
+                assertEquals(
+                    listOf(1L, 3L),
+                    model.state.value.episodes
+                        .map { it.id },
+                )
 
                 model.undoDiscard()
                 runCurrent()
