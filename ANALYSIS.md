@@ -53,7 +53,7 @@ consolidated here without losing the earlier passes' detail.
   partial page keeps the spinner, a failed page keeps its retry row); the
   follow-up branch [#611](https://github.com/L-K-M/Neutrodyne/pull/611) was
   closed as superseded.
-- **Three more small fixes from the independent pass are in review:**
+- **Three more small fixes from the independent pass are merged:**
   [#619](https://github.com/L-K-M/Neutrodyne/pull/619) binds the macOS Window
   menu's Minimise and Zoom to Cmd+M and Ctrl+Cmd+F;
   [#622](https://github.com/L-K-M/Neutrodyne/pull/622) chunks
