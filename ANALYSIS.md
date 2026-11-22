@@ -14,7 +14,10 @@ native-verification pass on 2026-11-18, a fourth source pass on `ad8dc5399`, and
 an independent pass on `c542b073e` (2026-11-22) which is the current head. The
 2026-11-22 pass re-read the radio, feeds adapter, desktop shell, sync server and
 download data layer; its findings are folded in below and marked **new** where
-earlier passes had not recorded them.
+earlier passes had not recorded them. A further independent pass on the same
+head verified which earlier items were already fixed and added the feed-cache
+batching, DNS-pinning, credential-clock and unaddressable-key items, also
+marked **new** below.
 
 ## Done since the last consolidation
 
@@ -56,6 +59,15 @@ earlier passes had not recorded them.
   **Settings slip values yield to the title's longest word** (#562). The older
   "Mark the tuned playlist in the chooser" and mid-word title sections are
   done.
+- **Three small fixes from a further pass are in review:**
+  [#623](https://github.com/L-K-M/Neutrodyne/pull/623) a VERIFYING download's
+  row key cancels like RESOLVING instead of being a dead tap;
+  [#624](https://github.com/L-K-M/Neutrodyne/pull/624) the podcast
+  filtered-empty action reads "Clear filters" unless the sole active filter is
+  the unplayed one, matching Feeds;
+  [#625](https://github.com/L-K-M/Neutrodyne/pull/625) link-code polling stops
+  at the code lifetime instead of polling forever when the server keeps
+  answering `authorization_pending`.
 
 ## Playback and programme correctness
 
@@ -247,11 +259,13 @@ signs, and compare goldens at 390 and 1200 dp.
 
 ### Close the remaining accessibility and localisation gaps
 
-Radio slips expose no role (`RadioSlip` still defaults to `Role.Tab`); the
-chooser rows and the Sync link-method selector are fixed. German lacks the
-crash-dialog strings (`app/src/main/res/values-de`). `downloadSize` hard-codes
-the decimal point and unit words, and the queue position "01 / 12" is assembled
-in code. On Android,
+Radio slips expose no explicit role. `Modifier.selectable` does not default to
+`Role.Tab` (its role parameter is null), so the earlier claim that the tree
+reads a list of tabs is false; pick `Role.Button` or `Role.Row` deliberately
+and verify with TalkBack. The chooser rows and the Sync link-method selector
+are fixed. German lacks the crash-dialog strings (`app/src/main/res/values-de`).
+`downloadSize` hard-codes the decimal point and unit words, and the queue
+position "01 / 12" is assembled in code. On Android,
 edge-to-edge with `adjustResize` leaves `WindowInsets.ime` unconsumed (no
 `imePadding` anywhere), so the keyboard covers paper fields low on the page
 (sync setup, credentials, group editor) although design 08 asks for
@@ -565,6 +579,66 @@ journey in the same Linux suite. Determine whether the handoff lost the route
 or the title assertion missed the active sheet. Verify that one Subscribe action
 creates one channel in the selected group.
 
+## Sync server and client
+
+### Batch the feed-cache reads and eviction (new)
+
+`FeedCacheService.batch` loops the (up to 1,000) requested URLs and calls
+`feedCacheHead(url)` then `feedCache(listOf(url))` for each, inside one read
+transaction: about 2,000 point queries per full batch. A single `IN` query for
+the heads plus one for the selected bodies would be cheaper. `MAX_FEED_BATCH`
+is 1,000, above the old SQLite default of 999 variables, so chunk at 500 like
+the download planner's `BIND_CHUNK`. Separately, `JdbcWrite.putFeedCache`
+calls `evictFeedCacheOverflow()`, which runs `SUM(body_bytes)` for the account
+after every insert; maintain a running total or check the cap only when the
+just-written entry crosses it.
+
+### Pin the feed fetch to its checked DNS answers (new, security)
+
+`HttpServerFeedFetcher` rejects literal local URLs (`allowed`) and local
+resolutions (`FeedDns`), but `FeedDns.lookup` checks the addresses and returns
+them, after which OkHttp connects; a publisher that answers the lookup with a
+public address and the connection with a local one (DNS rebinding) is not
+prevented. Pin the connection to the checked addresses, or document the
+residual risk. This is hardening, not a demonstrated bypass.
+
+### Reconsider the credential clock check in the server poll (new)
+
+`FeedCacheService.basicAuthorization` sends the stored Basic header only when
+`auth.c == credentialOrigin.c`. The client stamps the pair together, but the
+server merges fields independently: a device with password sharing off can push
+a newer `credentialOrigin` without `auth` (`SourceReader` writes the origin
+whenever a credential exists, and `auth` only while sharing is on). After that
+merge the stored auth is older than the origin, the check fails and the server
+polls the private feed without its stored credential until something rewrites
+`auth`. The final origin comparison already protects against sending the
+credential to the wrong host; decide whether to relax the clock equality or
+re-stamp the pair on the server when the origin changes.
+
+### Fix the cause of unaddressable episode keys (new)
+
+`SyncEngine.retireUnaddressable` deletes outbox rows whose `rid` cannot be
+parsed by `RecordId.fromRid`. That happens when a feed GUID or enclosure URL
+makes `EpisodeKeys` exceed `MAX_IDENTITY_KEY` (2,048 bytes) or contain a
+control character. The episode keeps working locally, but its played state
+and position silently stop syncing, and a log line is the only trace. A
+content-hash fallback for over-long keys, or a bounded key at ingest, would fix
+the cause rather than retiring the row.
+
+### Wire up "Check again" (new, missing feature)
+
+`EpisodeRow` offers `EpisodeAction.CheckAvailability` for greyed YouTube rows
+when `RowCaps.recheck` is set, and `YouTubeChannelRepository.recheckAvailability`
+is implemented (`YouTubeChannelRepositoryImpl.kt:92`). Every view model's
+`onRowAction` ends in `else -> Unit` and none handles it
+(`PodcastViewModel.kt`, `FeedsViewModel.kt`, `EpisodeViewModel.kt`), so the
+action is a no-op. `PodcastViewModel` already injects
+`YouTubeChannelRepository`; add it to the other two, call
+`recheckAvailability`, and post a localized "Couldn't check — try again later"
+message when it returns null (design 04). Add the string EN and DE, bind the
+row's availability update through the existing episode flow, and test success,
+a new reason and a transient failure.
+
 ## Library, downloads, and sync defects
 
 ### Make listening-page actions do what they show
@@ -572,11 +646,11 @@ creates one channel in the selected group.
 - "Check again" is offered on unavailable YouTube rows, but every view model
   drops `EpisodeAction.CheckAvailability` (`PodcastViewModel.kt:320`,
   `FeedsViewModel.kt:564`, `EpisodeViewModel.kt:312`).
-- A VERIFYING download key looks tappable but does nothing, while RESOLVING
-  cancels (`DownloadRequestHandler.toggle`).
-- The podcast page's filtered-empty action says "Show played episodes" but
-  clears every filter. The page has no episode search, and its filter bank
-  scrolls away.
+- A VERIFYING download key looked tappable but did nothing; #623 cancels it
+  like RESOLVING.
+- The podcast page's filtered-empty action said "Show played episodes" but
+  cleared every filter; #624 labels it accurately. The page still has no
+  episode search, and its filter bank scrolls away.
 - Downloads rows document swipe to delete; there is none.
 - The group editor's "Show as a tab in Feeds" switch reads `showAsTab`, which
   only the legacy feed browser uses now that the home has no tabs. Retire it or
@@ -766,6 +840,10 @@ Each needs a decision: build it, or correct the document.
 - **Stock touch-target expansion.** `Modifier.minimumInteractiveComponentSize()`
   did not widen the pointer region in a desktop probe, so do not assume it
   satisfies the 48 dp rule here.
+- **The storage cap and manual downloads.** `DownloadQuota` is AUTO-only by
+  design; a manual download ignoring the cap is intended, not a defect.
+- **The radio slip role.** `Modifier.selectable` does not default to
+  `Role.Tab`; the earlier claim that the tree reads a list of tabs is false.
 - **`rememberClickSound` staleness.** The helper's `remember(sounds, sound,
   onClick)` keys include `onClick`, so a new callback is tracked; the reviewer's
   stale-lambda concern does not apply.
@@ -857,3 +935,12 @@ claim it from a host test alone.
 - With a group whose first page is empty and later pages exist, confirm the
   programme keeps the spinner instead of flashing All clear; fail the load and
   confirm the retry row remains. [PR #611](https://github.com/L-K-M/Neutrodyne/pull/611)
+- Tap a download in VERIFYING and confirm it cancels like RESOLVING; check the
+  row at 1x and 2x. [PR #623](https://github.com/L-K-M/Neutrodyne/pull/623)
+- With a downloaded or in-progress filter active and no episodes, confirm the
+  podcast page offers "Clear filters" and clears every filter; with only the
+  unplayed filter, confirm it still reads "Show played episodes".
+  [PR #624](https://github.com/L-K-M/Neutrodyne/pull/624)
+- With a server that keeps answering `authorization_pending` past the code
+  lifetime, confirm the link flow fails with InvalidCode instead of polling
+  forever. [PR #625](https://github.com/L-K-M/Neutrodyne/pull/625)
