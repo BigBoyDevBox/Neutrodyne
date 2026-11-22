@@ -58,6 +58,9 @@ import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.test.withKeyDown
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import ch.lkmc.neutrodyne.core.designsystem.radio.LocalRadioSounds
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSound
+import ch.lkmc.neutrodyne.core.designsystem.radio.RadioSounds
 import ch.lkmc.neutrodyne.core.designsystem.theme.NeutrodyneTheme
 import ch.lkmc.neutrodyne.core.designsystem.theme.SystemUiState
 import ch.lkmc.neutrodyne.core.ui.resources.Res
@@ -900,6 +903,23 @@ class RadioInteractionTest {
             onNodeWithTag("radio_menu").assert(
                 SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button),
             )
+        }
+
+    @Test fun theHomeMenuKeyPlaysKeyPressWhenWorked() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            val played = mutableListOf<RadioSound>()
+            val recorder = RadioSounds { sound -> played += sound }
+            var menuClicks = 0
+            setContent {
+                CompositionLocalProvider(LocalRadioSounds provides recorder) {
+                    NeutrodyneTheme(SystemUiState.DEFAULT) {
+                        RadioScreen(radioFixture(), RadioActions(menu = { menuClicks++ }))
+                    }
+                }
+            }
+            onNodeWithTag("radio_menu").performClick()
+            assertEquals(1, menuClicks)
+            assertEquals(listOf(RadioSound.KEY_PRESS), played)
         }
 
     @Test fun doubleTextScaleKeepsHeaderAndTransportReachable() =

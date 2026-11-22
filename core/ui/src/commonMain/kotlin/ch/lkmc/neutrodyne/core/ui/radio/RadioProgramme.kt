@@ -670,7 +670,8 @@ internal fun SmallRadioKey(
             .width(radioKeyWidth())
             .heightIn(min = 48.dp)
             .focusProperties { canFocus = true }
-            .clickable(role = Role.Button, onClick = onClick)
+            // PO-56: the Menu key is a key and plays KEY_PRESS like the radio's other keys.
+            .clickable(role = Role.Button, onClick = rememberClickSound(RadioSound.KEY_PRESS, onClick))
             .testTag(tag)
             .padding(vertical = 3.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
