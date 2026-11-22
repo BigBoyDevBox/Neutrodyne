@@ -380,10 +380,10 @@ the row minimum height or the editor theme.
   faceplate's `boundsInWindow` and a hand-computed dialog inset; re-check it on
   a wide pane row and with different dialog insets.
 - **The Menu key label can wrap and un-centre the sign**; #610 caps it at one
-  line and plays the key press.
-- **The home's Menu key has no click feedback**; #610 adds `KEY_PRESS`. Its
-  hand-drawn radial cap could become the shared `IvoryKeyCap`, but that is a
-  visual change to the golden-covered radio home, so record the goldens first.
+  line.
+- **The home's Menu key click sound landed on main**; its hand-drawn radial cap
+  could become the shared `IvoryKeyCap`, but that is a visual change to the
+  golden-covered radio home, so record the goldens first.
 - **`ninePatch` could draw overlapping slices on a very narrow node**; the
   `ninePatchStops` clamp fixed it. `ValveDeck`'s tiling still has no unit test:
   extract the slice plan into a pure function and test the mirrored-tile, forced
