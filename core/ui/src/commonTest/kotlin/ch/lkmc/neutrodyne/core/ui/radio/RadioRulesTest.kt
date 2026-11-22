@@ -82,4 +82,34 @@ class RadioRulesTest {
         assertEquals(1L, radioSelectionAfterRemoval(ids, 1, 3))
         assertNull(radioSelectionAfterRemoval(listOf(1L), 1, 1))
     }
+
+    @Test fun selectedPrefersTheProgrammeRowOverStalePlayerMetadata() {
+        val row = RadioEpisode(id = 7, title = "Fresh title", podcast = "Fresh podcast", durationMs = 1_000)
+        val state =
+            RadioState(
+                episodes = listOf(row),
+                selectedId = 7,
+                nowPlayingEpisode =
+                    RadioEpisode(
+                        id = 7,
+                        title = "Stale title",
+                        podcast = "Stale podcast",
+                        durationMs = 2_000,
+                    ),
+            )
+
+        assertEquals("Fresh title", state.selected?.title)
+        assertEquals("Fresh podcast", state.selected?.podcast)
+        assertEquals(2_000, state.selectedDurationMs)
+    }
+
+    @Test fun selectedFallsBackToThePlayerOutsideTheProgramme() {
+        val state =
+            RadioState(
+                selectedId = 9,
+                nowPlayingEpisode = RadioEpisode(id = 9, title = "Up next", podcast = "Other"),
+            )
+
+        assertEquals("Up next", state.selected?.title)
+    }
 }
