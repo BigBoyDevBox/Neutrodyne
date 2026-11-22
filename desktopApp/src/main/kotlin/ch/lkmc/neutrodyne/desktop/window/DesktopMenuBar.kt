@@ -275,10 +275,16 @@ internal fun FrameWindowScope.DesktopMenuBar(
 
         if (os == AppDirs.DesktopOs.MACOS) {
             Menu(stringResource(Res.string.menu_window)) {
-                Item(stringResource(Res.string.menu_minimise)) {
+                Item(
+                    stringResource(Res.string.menu_minimise),
+                    shortcut = if (textFieldFocused) null else KeyShortcut(Key.M, meta = true),
+                ) {
                     window.extendedState = window.extendedState or Frame.ICONIFIED
                 }
-                Item(stringResource(Res.string.menu_zoom)) {
+                Item(
+                    stringResource(Res.string.menu_zoom),
+                    shortcut = if (textFieldFocused) null else KeyShortcut(Key.F, ctrl = true, meta = true),
+                ) {
                     window.extendedState =
                         if (window.extendedState and Frame.MAXIMIZED_BOTH == Frame.MAXIMIZED_BOTH) {
                             window.extendedState and Frame.MAXIMIZED_BOTH.inv()
