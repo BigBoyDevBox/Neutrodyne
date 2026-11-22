@@ -17,7 +17,10 @@ download data layer; its findings are folded in below and marked **new** where
 earlier passes had not recorded them. A further independent pass on the same
 head verified which earlier items were already fixed and added the feed-cache
 batching, DNS-pinning, credential-clock and unaddressable-key items, also
-marked **new** below.
+marked **new** below. A second independent pass on the same head confirmed the
+window-placement AWT values and the Compose desktop-density source, and opened
+the five fixes listed under Done since the last consolidation; its review is
+consolidated here without losing the earlier passes' detail.
 
 ## Done since the last consolidation
 
@@ -68,16 +71,28 @@ marked **new** below.
   [#625](https://github.com/L-K-M/Neutrodyne/pull/625) link-code polling stops
   at the code lifetime instead of polling forever when the server keeps
   answering `authorization_pending`.
+- **Five more small fixes from a second independent pass are in review:**
+  [#615](https://github.com/L-K-M/Neutrodyne/pull/615) Escape goes back from a
+  focused text field instead of being consumed with no action;
+  [#618](https://github.com/L-K-M/Neutrodyne/pull/618) applies a paging
+  snapshot that arrives during Undo;
+  [#628](https://github.com/L-K-M/Neutrodyne/pull/628) keeps a swipe that
+  starts on a slip's play key from discarding it;
+  [#629](https://github.com/L-K-M/Neutrodyne/pull/629) gives a programme slip a
+  button role;
+  [#630](https://github.com/L-K-M/Neutrodyne/pull/630) letters a sign whose name
+  ends in a space at its full size.
 
 ## Playback and programme correctness
 
 ### Reconcile paging during Undo and clarify repeated discards
 
 The discard race has a tested fix in (#564, merged). During Undo, `onRows` still
-defers a paging snapshot and the Undo path drops it
-(`feature/feeds/.../RadioViewModel.kt:604-610`). Suspend a fake repository write,
-deliver a newer same-playlist page, then complete the write with success and
-failure; reconcile the page in both cases. Give rapid repeated discards explicit
+defers a paging snapshot;
+[#618](https://github.com/L-K-M/Neutrodyne/pull/618) applies it after a
+successful un-play write and re-inserts the restored row when the newer page does
+not carry it. Complete the failure path too: a failed un-play write must keep the
+removal and must not restore the row. Give rapid repeated discards explicit
 feedback while the first write is pending: `discard` returns early while
 `writing`, so a second swipe is dropped with no acknowledgement.
 
@@ -261,15 +276,17 @@ signs, and compare goldens at 390 and 1200 dp.
 
 Radio slips expose no explicit role. `Modifier.selectable` does not default to
 `Role.Tab` (its role parameter is null), so the earlier claim that the tree
-reads a list of tabs is false; pick `Role.Button` or `Role.Row` deliberately
-and verify with TalkBack. The chooser rows and the Sync link-method selector
-are fixed. German lacks the crash-dialog strings (`app/src/main/res/values-de`).
-`downloadSize` hard-codes the decimal point and unit words, and the queue
-position "01 / 12" is assembled in code. On Android,
-edge-to-edge with `adjustResize` leaves `WindowInsets.ime` unconsumed (no
-`imePadding` anywhere), so the keyboard covers paper fields low on the page
-(sync setup, credentials, group editor) although design 08 asks for
-`imePadding()`. Test each with TalkBack, VoiceOver and the German locale.
+reads a list of tabs is false;
+[#629](https://github.com/L-K-M/Neutrodyne/pull/629) picks `Role.Button`
+deliberately; verify with TalkBack. The chooser rows and the Sync link-method
+selector are fixed. German lacks the crash-dialog strings
+(`app/src/main/res/values-de`). `downloadSize` hard-codes the decimal point and
+unit words, and the queue position "01 / 12" is assembled in code. On Android,
+`RadioCabinetPage` already ends a page at the keyboard with
+`aboveKeyboard(..., WindowInsets.ime)`, so the earlier "no `imePadding`
+anywhere" claim is stale; verify the Sync, credentials and group-editor fields
+with the keyboard up rather than assuming no IME handling. Test each with
+TalkBack, VoiceOver and the German locale.
 
 ### Measure switch hit areas in dense panels
 
@@ -299,8 +316,12 @@ Verify the Compose-to-AWT position on a clean launch at 1x and Retina 2x, with
 the Dock on two edges. Convert from the native usable coordinate space exactly
 once. Verify the 600 x 480 minimum and a secondary display with a negative
 origin. Check Windows fractional scaling and Linux scaling before sharing the
-conversion across platforms. A branch (`fix/mac-window-placement`) is exploring
-the user-space conversion.
+conversion across platforms. A second pass reproduced the same AWT values and
+confirmed that Compose's desktop density is
+`GraphicsConfiguration.getDefaultTransform().getScaleX()` and that Compose's own
+`WindowLocationTracker` places windows directly in `getBounds()`'s space, so the
+conversion should treat the bounds as user-space units. A branch
+(`fix/mac-window-placement`) is exploring it.
 
 ### Make the Mac window feel native
 
@@ -348,6 +369,9 @@ the row minimum height or the editor theme.
   drag detector is attached to the whole `MaterialPlate`, including the 48 dp
   play key, the most tapped target on the slip. Restrict the gesture to the
   cover and text, or ignore drags that begin on the key.
+  [#628](https://github.com/L-K-M/Neutrodyne/pull/628) makes the play key
+  consume horizontal drags; the swipe tests start on the text and a regression
+  test swipes the key.
 - **`RadioInsert` restores no focus target after process death** when the
   chooser was closed but the hand-off had not completed; #612 persists the flag.
 - **`RadioInsert` positioning is inset-sensitive.** It places the paper from the
@@ -399,7 +423,8 @@ the row minimum height or the editor theme.
 - **`SignLettering` mishandles a trailing space** (`RadioParts.kt:160-175`):
   it compares `getLineEnd(0, visibleEnd = true)`, which excludes trailing
   whitespace, with the full length, so a name ending in a space always letters
-  at its minimum size.
+  at its minimum size. [#630](https://github.com/L-K-M/Neutrodyne/pull/630)
+  compares against the trimmed name.
 - **The programme's empty and error states are footnotes.** When a playlist is
   empty or fails to load, the tray shows only a small strip at its foot; give
   that state the paper's full height.
@@ -532,10 +557,13 @@ platform clipboard rather than a new editing abstraction.
 
 In the programme, each Up or Down press now changes the selection and reveals
 the slip at the nearest edge (#609); verify a press inside the view, at its
-bottom edge and at the end of the list. Escape is swallowed in text fields:
-`isRootShortcut` marks it as a root shortcut and the text-field branch consumes
+bottom edge and at the end of the list. Escape was swallowed in text fields:
+`isRootShortcut` marked it as a root shortcut and the text-field branch consumed
 it with no action (`NeutrodyneRoot.kt:394,659-673`), so in Discover search
-Escape neither clears the field nor goes back. The window's Cmd+Q fallback
+Escape neither cleared the field nor went back.
+[#615](https://github.com/L-K-M/Neutrodyne/pull/615) removes it from
+`isRootShortcut`, so the root's existing back path runs; verify it in Discover
+search, Sync setup and a modal. The window's Cmd+Q fallback
 routes through `onCloseRequest`, which hides to the tray, instead of quitting
 (`NeutrodyneWindow.kt:555`). Cmd+, may be registered twice on macOS.
 
@@ -844,6 +872,9 @@ Each needs a decision: build it, or correct the document.
   design; a manual download ignoring the cap is intended, not a defect.
 - **The radio slip role.** `Modifier.selectable` does not default to
   `Role.Tab`; the earlier claim that the tree reads a list of tabs is false.
+- **Android IME.** `RadioCabinetPage` applies `aboveKeyboard(...,
+  WindowInsets.ime)` to every cabinet page, so the earlier "no `imePadding`
+  anywhere" claim was stale.
 - **`rememberClickSound` staleness.** The helper's `remember(sounds, sound,
   onClick)` keys include `onClick`, so a new callback is tracked; the reviewer's
   stale-lambda concern does not apply.
