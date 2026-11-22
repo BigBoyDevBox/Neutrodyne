@@ -65,6 +65,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.action_mark_played
 import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
 import ch.lkmc.neutrodyne.core.ui.resources.dismiss
+import ch.lkmc.neutrodyne.core.ui.resources.feeds_load_error
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
 import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
 import ch.lkmc.neutrodyne.core.ui.resources.radio_choose_other
@@ -173,6 +174,38 @@ class RadioInteractionTest {
             onNodeWithTag("radio_empty_import").assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_all_clear)).assertIsDisplayed()
             onNodeWithText(getString(Res.string.radio_choose_other)).assertIsDisplayed()
+        }
+
+    @Test
+    fun anIncompleteEmptyPageWaitsForPagingInsteadOfClaimingAllClear() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var state by mutableStateOf(
+                radioFixture().copy(episodes = emptyList(), playlistsLoaded = true, complete = false),
+            )
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(state, RadioActions())
+                }
+            }
+            // Paging has not finished and the count is unknown: an empty first window is not "all clear".
+            onNodeWithTag("radio_loading").assertIsDisplayed()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
+
+            // The repository count says zero before paging finished: the station really is clear.
+            state = state.copy(episodeCount = 0)
+            onNodeWithTag("radio_loading").assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertIsDisplayed()
+
+            // Paging finished empty: all clear as before.
+            state = state.copy(complete = true, episodeCount = null)
+            onNodeWithTag("radio_loading").assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertIsDisplayed()
+
+            // A load error on an empty, incomplete page shows the error row, not the spinner or the sign.
+            state = state.copy(complete = false, loadError = true)
+            onNodeWithTag("radio_loading").assertDoesNotExist()
+            onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
+            onNodeWithText(getString(Res.string.feeds_load_error)).assertIsDisplayed()
         }
 
     @Test
