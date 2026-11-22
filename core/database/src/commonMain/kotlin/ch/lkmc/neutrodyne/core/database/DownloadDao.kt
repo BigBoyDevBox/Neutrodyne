@@ -30,7 +30,11 @@ abstract class DownloadDao : DownloadQueries {
 
     /** Chunked at [DOWNLOAD_BIND_CHUNK] bound variables, like the other `IN (:podcastIds)` reads. */
     suspend fun downloadedEpisodeIds(podcastIds: List<Long>): List<Long> =
-        podcastIds.distinct().chunked(DOWNLOAD_BIND_CHUNK).flatMap { downloadedEpisodeIdsChunk(it) }.distinct()
+        podcastIds
+            .distinct()
+            .chunked(DOWNLOAD_BIND_CHUNK)
+            .flatMap { downloadedEpisodeIdsChunk(it) }
+            .distinct()
 
     @Query(
         "SELECT episodeId, state, waitReason, downloadedBytes, totalBytes, estimatedBytes," +
