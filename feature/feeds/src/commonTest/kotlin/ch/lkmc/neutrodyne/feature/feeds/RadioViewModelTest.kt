@@ -22,7 +22,10 @@ import ch.lkmc.neutrodyne.core.testing.MainDispatcherTest
 import ch.lkmc.neutrodyne.core.testing.testLibraryTile
 import ch.lkmc.neutrodyne.core.testing.testNowPlaying
 import ch.lkmc.neutrodyne.core.testing.testPlatformInfo
+import ch.lkmc.neutrodyne.core.ui.UiText
 import ch.lkmc.neutrodyne.core.ui.radio.RadioEpisode
+import ch.lkmc.neutrodyne.core.ui.resources.Res
+import ch.lkmc.neutrodyne.core.ui.resources.write_failed
 import ch.lkmc.neutrodyne.playback.api.PlayResult
 import ch.lkmc.neutrodyne.playback.api.PlaybackController
 import ch.lkmc.neutrodyne.playback.api.PlaybackIssue
@@ -31,6 +34,7 @@ import ch.lkmc.neutrodyne.playback.api.PositionSnapshot
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -643,6 +647,28 @@ class RadioViewModelTest : MainDispatcherTest() {
                     model.state.value.episodes
                         .map { it.id },
                 )
+            }
+        }
+
+    @Test fun aFailedCountKeepsThePreviousTotalAndPostsNoWriteError() =
+        runTest {
+            withRadio { model, id ->
+                // withRadio's complete page set the total to the row count; a later incomplete
+                // page re-asks the repository, and that read failing must change nothing.
+                val before = model.state.value.episodeCount
+                assertEquals(rows.size, before)
+                feeds.countUnplayedErrors[FeedSource.Group(id) to null] = RuntimeException("db down")
+                val texts = mutableListOf<UiText>()
+                val job = launch { model.userMessages.collect { pending -> texts += pending.map { it.text } } }
+                model.onRows(id, rows, complete = false)
+                runCurrent()
+                assertEquals(before, model.state.value.episodeCount)
+                assertFalse(model.state.value.complete)
+                assertTrue(
+                    texts.none { it is UiText.Res && it.id == Res.string.write_failed },
+                    "a failed count reported a write error: $texts",
+                )
+                job.cancel()
             }
         }
 
