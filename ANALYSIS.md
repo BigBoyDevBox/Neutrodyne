@@ -396,7 +396,8 @@ the row minimum height or the editor theme.
   programme list, so a title or podcast changed by a refresh showed the old
   value on the player while the slip showed the new one. #627 prefers the row
   and keeps the player snapshot as the fallback; the measured duration still
-  wins.
+  wins. Its fallback test asserts only the title; tighten it to full data-class
+  equality so a dropped id or podcast cannot slip through.
 - **The printed needle scale always uses `MM:SS`; above 99 minutes the
   rightmost quarter label ("900:00") is wider than the others and nudges the
   row.** Either accept it deliberately or use a compact hours form there too.
