@@ -561,6 +561,26 @@ class DownloadDaoTest {
             }
         }
 
+    @Test fun downloadedEpisodeIdsChunksLargePodcastLists() =
+        runTest {
+            val podcastIds =
+                db.withWriteTransaction {
+                    (1..1200).map { db.podcastDao().insertPodcast(podcastEntity()) }
+                }
+            val episodeIds =
+                db.withWriteTransaction {
+                    podcastIds.mapIndexed { index, podcastId ->
+                        db.episodeDao().insertStub(
+                            episodeEntity(podcastId = podcastId) {
+                                copy(enclosureUrl = "https://origin/chunk-$index.mp3")
+                            },
+                        )
+                    }
+                }
+            db.withWriteTransaction { episodeIds.forEach { dao.insert(row(it)) } }
+            assertEquals(episodeIds.toSet(), dao.downloadedEpisodeIds(podcastIds).toSet())
+        }
+
     private fun row(id: Long) =
         ch.lkmc.neutrodyne.core.testing.database
             .downloadEntity(id, State.QUEUED)

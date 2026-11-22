@@ -26,7 +26,15 @@ abstract class DownloadDao : DownloadQueries {
     abstract suspend fun byEpisode(episodeId: Long): DownloadEntity?
 
     @Query("SELECT d.episodeId FROM download d JOIN episode e ON e.id = d.episodeId WHERE e.podcastId IN (:podcastIds)")
-    abstract suspend fun downloadedEpisodeIds(podcastIds: List<Long>): List<Long>
+    protected abstract suspend fun downloadedEpisodeIdsChunk(podcastIds: List<Long>): List<Long>
+
+    /** Chunked at [DOWNLOAD_BIND_CHUNK] bound variables, like the other `IN (:podcastIds)` reads. */
+    suspend fun downloadedEpisodeIds(podcastIds: List<Long>): List<Long> =
+        podcastIds
+            .distinct()
+            .chunked(DOWNLOAD_BIND_CHUNK)
+            .flatMap { downloadedEpisodeIdsChunk(it) }
+            .distinct()
 
     @Query(
         "SELECT episodeId, state, waitReason, downloadedBytes, totalBytes, estimatedBytes," +
