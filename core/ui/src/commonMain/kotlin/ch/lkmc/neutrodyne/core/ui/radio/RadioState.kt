@@ -67,9 +67,15 @@ public data class RadioState(
 
     /** The listener has no playlist yet: a first run, or every group deleted. */
     public val untuned: Boolean get() = playlistsLoaded && playlists.isEmpty()
+    /**
+     * The selected episode as the programme knows it, so a refresh that renames a title or
+     * podcast reaches the player without waiting for the next player emission. The player's
+     * snapshot is the fallback for an episode playing outside the tuned programme; its measured
+     * duration still wins in [selectedDurationMs].
+     */
     public val selected: RadioEpisode? get() =
-        nowPlayingEpisode?.takeIf { it.id == selectedId }
-            ?: episodes.find { it.id == selectedId }
+        episodes.find { it.id == selectedId }
+            ?: nowPlayingEpisode?.takeIf { it.id == selectedId }
 
     /** Prefer the player's measurement while allowing its metadata to arrive after the programme. */
     public val selectedDurationMs: Long?
