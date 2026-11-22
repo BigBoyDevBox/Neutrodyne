@@ -41,16 +41,18 @@ consolidated here without losing the earlier passes' detail.
   parked seeks, valve warm-up, sync and update copy, spoken elapsed time, new-start
   played marks, retained Discover results, the unknown-duration dial and desktop
   Previous. The earlier "awaiting merge" note is stale.
-- **Four small fixes from the 2026-11-22 pass are in review:**
+- **Three small fixes from the 2026-11-22 pass are in review:**
   [#609](https://github.com/L-K-M/Neutrodyne/pull/609) arrow-key tuning no longer
   jumps the list for a slip that is already visible and reveals a half-visible
   slip at the nearest edge;
-  [#610](https://github.com/L-K-M/Neutrodyne/pull/610) the Menu key sounds its
-  press and its label is capped at one line;
-  [#611](https://github.com/L-K-M/Neutrodyne/pull/611) a partial first page keeps
-  the spinner and a failed page keeps its retry row;
+  [#610](https://github.com/L-K-M/Neutrodyne/pull/610) the Menu key label is
+  capped at one line (the key-press sound itself landed on main);
   [#612](https://github.com/L-K-M/Neutrodyne/pull/612) the chooser saver keeps
   the focus hand-off and reads old state defensively.
+- **The empty-programme spinner gate from the same pass landed on main** (a
+  partial page keeps the spinner, a failed page keeps its retry row); the
+  follow-up branch [#611](https://github.com/L-K-M/Neutrodyne/pull/611) was
+  closed as superseded.
 - **Three more small fixes from the independent pass are in review:**
   [#619](https://github.com/L-K-M/Neutrodyne/pull/619) binds the macOS Window
   menu's Minimise and Zoom to Cmd+M and Ctrl+Cmd+F;
