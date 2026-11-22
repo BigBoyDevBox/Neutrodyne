@@ -21,6 +21,9 @@ marked **new** below. A second independent pass on the same head confirmed the
 window-placement AWT values and the Compose desktop-density source, and opened
 the five fixes listed under Done since the last consolidation; its review is
 consolidated here without losing the earlier passes' detail.
+A third pass on the same head verified the placement live (the first window was
+clamped into the bottom-right of the usable area) and opened the window-placement
+and window-bounds PRs listed under Done since the last consolidation.
 
 ## Done since the last consolidation
 
@@ -84,6 +87,21 @@ consolidated here without losing the earlier passes' detail.
   button role;
   [#630](https://github.com/L-K-M/Neutrodyne/pull/630) letters a sign whose name
   ends in a space at its full size.
+- **The first desktop window is centred on the display (in review).**
+  [#614](https://github.com/L-K-M/Neutrodyne/pull/614) converts
+  `GraphicsConfiguration.bounds` from device space with the inverse default
+  transform and drops the `96 / physical DPI` multiplication. Verified live on a
+  1920 x 1080 Mac with 30/90 insets: the window is now at `(360, 140)` instead of
+  the clamped `(720, 190)`. A noninvertible transform returns null (the default
+  placement) and logs at warn.
+- **The desktop window's last bounds are restored (in review).**
+  [#633](https://github.com/L-K-M/Neutrodyne/pull/633) adds
+  `desktop.window_bounds`, a validated codec, the 50% overlap restore rule, a
+  one-second debounced writer and a clean-shutdown write. Verified live: a window
+  moved to `(200, 120, 1000, 700)` reopened there.
+- **The sign trailing-space fix is duplicated.** [#630](https://github.com/L-K-M/Neutrodyne/pull/630)
+  already compares against the trimmed name; #634 was opened from the same pass
+  and closed as a duplicate.
 
 ## Playback and programme correctness
 
@@ -322,8 +340,13 @@ conversion across platforms. A second pass reproduced the same AWT values and
 confirmed that Compose's desktop density is
 `GraphicsConfiguration.getDefaultTransform().getScaleX()` and that Compose's own
 `WindowLocationTracker` places windows directly in `getBounds()`'s space, so the
-conversion should treat the bounds as user-space units. A branch
-(`fix/mac-window-placement`) is exploring it.
+bounds are user-space units. [#614](https://github.com/L-K-M/Neutrodyne/pull/614)
+(in review) converts the device-space bounds with the inverse default transform
+and drops the `96 / physical DPI` multiplication; verified live at `(360, 140)`
+instead of the clamped `(720, 190)`. A noninvertible transform returns null (the
+default placement) and logs at warn. Still to verify: Retina 2x, the Dock on two
+edges, a secondary display with a negative origin, the 600 x 480 minimum, and
+Windows/Linux fractional scaling.
 
 ### Make the Mac window feel native
 
@@ -340,8 +363,11 @@ Ctrl+Cmd+F; #619 binds them and stands them down with the other accelerators
 while a text field is focused. The window title drops the episode as soon as
 playback pauses (`NeutrodyneWindow.kt:304`); macOS convention keeps the current
 title while the episode is loaded, so record the decision. Window bounds are
-not persisted (MD4): `desktop.window_bounds` should be written one second after
-the last move or resize and at quit, and restored with the 50% overlap rule.
+persisted by [#633](https://github.com/L-K-M/Neutrodyne/pull/633) (in review):
+`desktop.window_bounds` is written one second after the last move or resize and
+at quit, and restored when the rectangle still overlaps its screen's usable
+bounds by at least half. Verify a screen that disappeared, a display
+re-arrangement and the maximised flag.
 Navigation state is lost on relaunch; restoring the last playlist already works
 through settings. Check each in full-screen Spaces and with VoiceOver.
 
@@ -493,6 +519,9 @@ Two more cheap wins to measure first:
   including the small slices of every key on every slip. A fling composes
   hundreds of slips; try `FilterQuality.Low` for slices under a few pixels and
   measure the difference at Retina.
+- `RadioProgramme` keys its paging load with `LaunchedEffect(index)`; a discard
+  shifts indices and re-fires the load for a row whose episode key is stable.
+  Key it by episode id if profiling shows it matters.
 
 ### Make desktop screenshot failures reproducible
 
@@ -623,6 +652,15 @@ the download planner's `BIND_CHUNK`. Separately, `JdbcWrite.putFeedCache`
 calls `evictFeedCacheOverflow()`, which runs `SUM(body_bytes)` for the account
 after every insert; maintain a running total or check the cap only when the
 just-written entry crosses it.
+
+### Harden the login buckets and body budget (new)
+
+`LoginAttempts` refuses new usernames once 10,000 failure buckets exist, so a
+distributed caller could in principle exhaust the map; the 10-per-15-minutes
+login limit makes it impractical. `RequestGuards` reserves `MAX_REQUEST_BYTES`
+for a body with no `Content-Length`, so many concurrent chunked uploads can hit
+the 24 MiB budget even though each body is small; reserve a smaller amount and
+charge the actual read.
 
 ### Pin the feed fetch to its checked DNS answers (new, security)
 
@@ -813,17 +851,33 @@ At 1200 x 800 a grille the size of the slip tray holds nothing. Tuck a paper
 episode's show-notes summary. Compare against the plain grille at 700 and
 1200 dp, and keep the card out of the layout when the grille is too small.
 
+### Keep a broadcast log
+
+A paper ticker-tape in the speaker grille on wide windows (see "Fill the speaker
+grille on wide windows") that prints what played, with a share action. Listening
+history is a v1.x non-goal, so make it an opt-in artifact and do not sync it.
+
+### Show the time when idle
+
+When no episode is loaded, the Nixie tubes can show the time; when an episode
+loads they become the counter. Quiet, and it gives the receiver a reason to sit
+on a desk. Honour reduced motion and do not animate the tubes when idle.
+
 ### Try small mechanical responses
 
 Each must respect reduced motion and add no per-frame work while idle.
 
 - The needle travels to a newly selected episode's position with a short
   spring instead of jumping.
+- A flick of the tuning knob sweeps the needle with a short ease and settles on
+  the nearest chapter or minute mark.
 - Haptics beyond the switches and the discard threshold (#586): a `SegmentTick`
   on the ivory keys, and light ticks when scrubbing across chapter marks or
   whole minutes.
 - A short burst of tuning static while the station changes, once control sounds
   exist, with the needle sweeping the scale.
+- A station-identification chime when a group is first tuned, off by default,
+  honouring control sounds and reduced motion.
 - A sign-off when the last slip of a playlist is discarded: the Nixie reads
   `--:--`, the valves cool, and the paper says the station has closed for the
   night, with keys to another station or Discover.
@@ -894,6 +948,10 @@ Each needs a decision: build it, or correct the document.
   arrow-key focus request on a slip removed mid-scroll crashes (Compose UI
   1.12.1's `requestFocus()` on a detached requester prints a warning and returns
   false).
+- **Window placement and restore.** A live launch on a 1920 x 1080 Mac with
+  30/90 insets showed the window clamped to `(720, 190)`; after the
+  inverse-transform conversion it is centred at `(360, 140)`, and a window moved
+  to `(200, 120, 1000, 700)` reopened there.
 
 ## Native verification on proposed fixes
 
@@ -978,3 +1036,8 @@ claim it from a host test alone.
 - With a server that keeps answering `authorization_pending` past the code
   lifetime, confirm the link flow fails with InvalidCode instead of polling
   forever. [PR #625](https://github.com/L-K-M/Neutrodyne/pull/625)
+- Launch the desktop app on a 1920 x 1080 Mac and confirm the first window is
+  centred; move it, quit, relaunch and confirm it returns to the same rectangle.
+  Repeat on a second display, after a display re-arrangement, and with the window
+  maximised. [PR #614](https://github.com/L-K-M/Neutrodyne/pull/614),
+  [PR #633](https://github.com/L-K-M/Neutrodyne/pull/633)
