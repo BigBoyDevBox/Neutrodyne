@@ -273,8 +273,16 @@ internal fun RadioProgramme(
                             Arrangement.Center,
                             Alignment.CenterHorizontally,
                         ) {
-                            if (state.loading) {
-                                CircularProgressIndicator(color = Brass, modifier = Modifier.size(24.dp))
+                            // An empty paper is "all clear" only once paging has finished (or the
+                            // repository's count says zero); until then an append may still land.
+                            val waiting =
+                                state.loading ||
+                                    (!state.complete && state.episodeCount != 0 && !state.loadError)
+                            if (waiting) {
+                                CircularProgressIndicator(
+                                    color = Brass,
+                                    modifier = Modifier.size(24.dp).testTag("radio_loading"),
+                                )
                             } else if (!state.loadError && state.playlistsLoaded) {
                                 // Until the groups are read, an empty paper is neither "none" nor "all clear".
                                 if (state.untuned) {
