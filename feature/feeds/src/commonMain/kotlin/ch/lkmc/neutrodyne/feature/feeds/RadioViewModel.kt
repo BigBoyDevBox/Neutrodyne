@@ -319,7 +319,10 @@ public class RadioViewModel(
                         if (state.value.playlistId == playlistId && rowsRevision == revision) {
                             mutableState.value = state.value.copy(episodeCount = count)
                         }
-                    }.onFailure { writeFailed() }
+                    }.onFailure {
+                        // A failed count is a read failure: leave the total unknown instead of
+                        // reporting a write error the user cannot act on.
+                    }
             }
         }
     }

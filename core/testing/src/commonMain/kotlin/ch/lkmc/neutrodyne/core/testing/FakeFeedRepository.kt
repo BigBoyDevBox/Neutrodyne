@@ -40,6 +40,7 @@ class FakeFeedRepository(
     val groupCountsSinceMs = mutableListOf<Long>()
     val virtualCounts = MutableStateFlow(VirtualCounts())
     val unplayedCounts = mutableMapOf<Pair<FeedSource, Long?>, Int>()
+    val countUnplayedErrors = mutableMapOf<Pair<FeedSource, Long?>, Throwable>()
     val downloadAllEstimates = mutableMapOf<FeedSource, DownloadAllEstimate>()
     val downloadAllRequests = mutableListOf<FeedSource>()
 
@@ -58,7 +59,10 @@ class FakeFeedRepository(
     override suspend fun countUnplayed(
         source: FeedSource,
         sortDateBefore: Long?,
-    ): Int = unplayedCounts[source to sortDateBefore] ?: 0
+    ): Int {
+        countUnplayedErrors[source to sortDateBefore]?.let { throw it }
+        return unplayedCounts[source to sortDateBefore] ?: 0
+    }
 
     override fun observeTabs(): Flow<List<FeedTab>> = tabs
 

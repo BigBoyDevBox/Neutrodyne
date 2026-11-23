@@ -69,6 +69,7 @@ import ch.lkmc.neutrodyne.core.ui.resources.action_pause
 import ch.lkmc.neutrodyne.core.ui.resources.action_play
 import ch.lkmc.neutrodyne.core.ui.resources.dismiss
 import ch.lkmc.neutrodyne.core.ui.resources.feeds_load_error
+import ch.lkmc.neutrodyne.core.ui.resources.group_unplayed_fmt
 import ch.lkmc.neutrodyne.core.ui.resources.radio_all_clear
 import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
 import ch.lkmc.neutrodyne.core.ui.resources.radio_choose_other
@@ -209,6 +210,24 @@ class RadioInteractionTest {
             onNodeWithTag("radio_loading").assertDoesNotExist()
             onNodeWithText(getString(Res.string.radio_all_clear)).assertDoesNotExist()
             onNodeWithText(getString(Res.string.feeds_load_error)).assertIsDisplayed()
+        }
+
+    @Test
+    fun theDialShowsTheUnplayedCountWhilePagingIsIncomplete() =
+        runDesktopComposeUiTest(width = 390, height = 844) {
+            var state by mutableStateOf(radioFixture().copy(complete = false, episodeCount = 42))
+            setContent {
+                NeutrodyneTheme(SystemUiState.DEFAULT) {
+                    RadioScreen(state, RadioActions())
+                }
+            }
+            // Paging is still streaming in: the repository count is shown, not a window ordinal.
+            onNodeWithText(getString(Res.string.group_unplayed_fmt, 42)).assertIsDisplayed()
+            onNodeWithText("01 / 04").assertDoesNotExist()
+
+            state = state.copy(complete = true, episodeCount = null)
+            onNodeWithText(getString(Res.string.group_unplayed_fmt, 42)).assertDoesNotExist()
+            onNodeWithText("01 / 04").assertIsDisplayed()
         }
 
     @Test

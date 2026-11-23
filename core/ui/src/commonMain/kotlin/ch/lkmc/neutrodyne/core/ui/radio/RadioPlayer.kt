@@ -89,6 +89,7 @@ import ch.lkmc.neutrodyne.core.designsystem.radio.rememberClickSound
 import ch.lkmc.neutrodyne.core.designsystem.theme.LocalReducedMotion
 import ch.lkmc.neutrodyne.core.ui.resources.Res
 import ch.lkmc.neutrodyne.core.ui.resources.chapter_seek
+import ch.lkmc.neutrodyne.core.ui.resources.group_unplayed_fmt
 import ch.lkmc.neutrodyne.core.ui.resources.radio_buffering
 import ch.lkmc.neutrodyne.core.ui.resources.radio_choose_other
 import ch.lkmc.neutrodyne.core.ui.resources.radio_cleared
@@ -208,6 +209,10 @@ internal fun RadioPlayer(
                                 '0',
                             )} / ${state.episodes.size.toString().padStart(2, '0')}"
                             RadioText(queuePosition, 11)
+                        } else if (!state.complete && state.episodeCount != null) {
+                            // While paging streams in, the repository's unplayed count is the
+                            // honest total; the loaded window's ordinal is not known yet.
+                            RadioText(stringResource(Res.string.group_unplayed_fmt, state.episodeCount), 11)
                         }
                     }
                 }
