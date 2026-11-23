@@ -32,7 +32,11 @@ class RadioSwitchTest {
             var checked by mutableStateOf(false)
             setContent {
                 NeutrodyneTheme(SystemUiState.DEFAULT) {
-                    RadioSwitch(checked = checked, onCheckedChange = { checked = it }, modifier = Modifier.testTag("switch"))
+                    RadioSwitch(
+                        checked = checked,
+                        onCheckedChange = { checked = it },
+                        modifier = Modifier.testTag("switch"),
+                    )
                 }
             }
             val node =
