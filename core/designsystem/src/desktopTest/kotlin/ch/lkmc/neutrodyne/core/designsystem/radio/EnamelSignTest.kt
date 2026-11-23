@@ -105,7 +105,9 @@ class EnamelSignTest {
     // first letter's advance scales with the lettering.
     private fun TextLayoutResult.lettering(): Float = getHorizontalPosition(1, true) - getHorizontalPosition(0, true)
 
-    private fun androidx.compose.ui.test.SemanticsNodeInteractionsProvider.layout(name: String = NAME): TextLayoutResult {
+    private fun androidx.compose.ui.test.SemanticsNodeInteractionsProvider.layout(
+        name: String = NAME,
+    ): TextLayoutResult {
         val layouts = mutableListOf<TextLayoutResult>()
         onNodeWithText(name, useUnmergedTree = true)
             .fetchSemanticsNode()
