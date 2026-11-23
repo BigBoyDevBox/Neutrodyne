@@ -24,6 +24,15 @@ consolidated here without losing the earlier passes' detail.
 A third pass on the same head verified the placement live (the first window was
 clamped into the bottom-right of the usable area) and opened the window-placement
 and window-bounds PRs listed under Done since the last consolidation.
+An Opus 5.5 pass
+on the same head (2026-11-22) ran the desktop app from source against an
+isolated home with eight generated podcasts on loopback, at 600 x 480 to
+1600 x 900 and at 1x and Retina scale, read the radio, window, playback and sync
+code by hand, and verified helper audits of every subsystem against the code.
+Its findings are folded in below with their working ids in brackets (L-, V-, M-,
+Q-, A-, DP-, SY-, DA-, DL-, LU-, AS-, DI-, SE-, P-, SERVER-); it opened the fixes
+listed under Done. **REPORTED** marks a helper's trace that nobody has re-read;
+re-read or reproduce those first.
 
 ## Done since the last consolidation
 
@@ -103,6 +112,36 @@ and window-bounds PRs listed under Done since the last consolidation.
   already compares against the trimmed name; #634 was opened from the same pass
   and closed as a duplicate.
 
+- **Fixes from the Opus 5.5 pass are in review** (each test-first, red then
+  green locally, reviewed by an independent model before the PR; links below).
+  Main fails `spotlessKotlinCheck` since b2e7215c8, which dropped the blank line
+  before `RadioState`'s selected-episode KDoc, so every PR's `static` job fails
+  on that file. Each of these PRs carries the identical one-line fix as its own
+  commit, which merges cleanly however many land.
+  - [#632](https://github.com/L-K-M/Neutrodyne/pull/632) Show the saved position of a restored session.
+  - [#635](https://github.com/L-K-M/Neutrodyne/pull/635) Seek a restored desktop session before Play.
+  - [#636](https://github.com/L-K-M/Neutrodyne/pull/636) Make the Mac delete key remove list items.
+  - [#637](https://github.com/L-K-M/Neutrodyne/pull/637) Stop feed refreshes waiting out the batch deadline.
+  - [#638](https://github.com/L-K-M/Neutrodyne/pull/638) Count each shortened import group name once.
+  - [#639](https://github.com/L-K-M/Neutrodyne/pull/639) Inset show notes to the episode page's margin.
+  - [#640](https://github.com/L-K-M/Neutrodyne/pull/640) Keep the radio's playlist pagers across visits.
+  - [#641](https://github.com/L-K-M/Neutrodyne/pull/641) Add Backup and restore to Library's More menu.
+  - [#642](https://github.com/L-K-M/Neutrodyne/pull/642) Toggle playback with Space on slips and the bar.
+  - [#643](https://github.com/L-K-M/Neutrodyne/pull/643) Keep the valves lit while the radio's switch is on.
+  - [#644](https://github.com/L-K-M/Neutrodyne/pull/644) Show the keyboard shortcuts card instead of crashing.
+  - [#645](https://github.com/L-K-M/Neutrodyne/pull/645) Quit on Ctrl/Cmd+Q instead of closing the window.
+  - [#646](https://github.com/L-K-M/Neutrodyne/pull/646) Retry a desktop advance that committed nothing.
+  - [#647](https://github.com/L-K-M/Neutrodyne/pull/647) Hide the mini player under sheets on the radio home.
+  - [#648](https://github.com/L-K-M/Neutrodyne/pull/648) Screen NAT64 addresses by their embedded IPv4.
+  - [#649](https://github.com/L-K-M/Neutrodyne/pull/649) Keep the desktop window's minimum at 600 x 480.
+  - [#650](https://github.com/L-K-M/Neutrodyne/pull/650) Apply a remote member reorder to an existing member.
+  - [#651](https://github.com/L-K-M/Neutrodyne/pull/651) Show the needle in the mini radio's dial window.
+  - [#652](https://github.com/L-K-M/Neutrodyne/pull/652) Open YouTube settings from the breaker notification.
+  - [#653](https://github.com/L-K-M/Neutrodyne/pull/653) Translate the Android playback actions into German.
+  - [#654](https://github.com/L-K-M/Neutrodyne/pull/654) Take up a synced position on a headset resume.
+  - [#655](https://github.com/L-K-M/Neutrodyne/pull/655) Push an undone group delete as the restored group.
+  - [#656](https://github.com/L-K-M/Neutrodyne/pull/656) Stop at the end of the episode on the desktop.
+
 ## Playback and programme correctness
 
 ### Reconcile paging during Undo and clarify repeated discards
@@ -152,6 +191,9 @@ Show the total as a localised unplayed count for partial pages, and show a
 position only when the episode's ordinal is known. The loaded window index is
 not the ordinal once `placeholdersBefore > 0`, so either carry the leading
 placeholder count in `RadioState` or print the count without a position.
+The count is fetched per snapshot and can land after a discard, leaving a stale
+value that nothing draws today: draw it and bump the state's revision when it
+changes, or delete it [R-04, REPORTED].
 `RadioPlaylist` already carries `podcastCount` and `radio_meta`
 ("%1$d podcasts - %2$d episodes") is defined in EN and DE, but neither is drawn.
 A failed count currently reports a write error for a read; a failed count should
@@ -189,12 +231,17 @@ the rest against the code before fixing each with a regression test in
 `playback/impl` (Robolectric harness in `LifecycleHarness.kt`) or
 `playback/desktop` (`DesktopPlaybackTimingTest`).
 
-- Android does not re-prepare an errored current item. After an untyped
-  ExoPlayer error, an exhausted audio retry or an unplayable last item, Play
-  reaches `StartOutcome.AlreadyCurrent` and calls `play()` in `STATE_IDLE`, so
-  nothing resumes. The desktop re-prepares
-  (`DesktopPlaybackController.startLocked`). See `AndroidServiceBridge.kt:296-309`
-  and `ErrorRecovery.kt:306-330`.
+- Android does not re-prepare an errored current item: partly refuted. A
+  Robolectric test (`PrePlayControllerTest`: `player.stop()`, then
+  `controller.play(UI)`) passes on main, because Media3's session play handling
+  prepares an idle player before playing [A-02]. The variant with a real
+  `playerError` set (an untyped ExoPlayer error, an exhausted audio retry or an
+  unplayable last item) was not exercised; check it on a device before changing
+  `AndroidServiceBridge.startLocked`'s AlreadyCurrent branch
+  (`AndroidServiceBridge.kt:296-309`, `ErrorRecovery.kt:306-330`), where
+  `QueueProjector`'s `if (playerError != null || playbackState == STATE_IDLE)
+  prepare()` would go. The desktop re-prepares
+  (`DesktopPlaybackController.startLocked`).
 - The desktop persists a user seek before the engine confirms it
   (`DesktopPlaybackController.kt:745`). A seek during a network drop stores a
   position that was never heard.
@@ -211,13 +258,75 @@ the rest against the code before fixing each with a regression test in
   (`QueueProjector.kt:629`; the desktop records it).
 - A failed commit in the desktop's `advance` leaves `engineEndedHandled`
   latched, so playback stops and never advances
-  (`DesktopPlaybackController.kt:846-906`).
+  (`DesktopPlaybackController.kt:846-906`) [DP-02]. In review: [#646](https://github.com/L-K-M/Neutrodyne/pull/646).
+- At "End of episode" the desktop sleep timer never stops: the engine rolls into
+  the successor without `Ended`, `engineItemTransition` re-arms the timer for the
+  next item and `Effect.ArmEndOfItem` was a no-op, so a playlist plays all night
+  [DP-01]. In review: [#656](https://github.com/L-K-M/Neutrodyne/pull/656) (an engine item-end mode, so arming never
+  re-prepares, plus a stop at the arrival when the timer was armed late).
+- After a relaunch the radio showed 00:00 and READY TO PLAY for a restored
+  episode stored at 03:58, and skips counted from zero: `RadioViewModel`'s
+  live-row collector skips the loaded item and `position()` ignored the engine's
+  paused snapshot, so the first flow to arrive won [R-03]. In review:
+  [#632](https://github.com/L-K-M/Neutrodyne/pull/632) (a parked seek, else the loaded item's own snapshot, else its
+  stored row; `RadioViewModelTest.aRestoredSessionShowsItsSavedPosition`).
+- After a relaunch the desktop session is restored but not prepared, and
+  `seek` returned at once, so skip keys, the needle and the OS controls did
+  nothing until Play, which then snapped back [L-16]. In review: [#635](https://github.com/L-K-M/Neutrodyne/pull/635).
+- A headset button, the notification or Android Auto resumed through
+  `beforePlay` without the paused-row pickup the app's Play applies, so a newer
+  synced position was overwritten five seconds later [A-01]. In review:
+  [#654](https://github.com/L-K-M/Neutrodyne/pull/654). Every start is also followed by a Play through `beforePlay`, so
+  the change marks the position a start just chose (a timestamp, a restart, a
+  smart-resume rewind) and keeps it; a first version without that mark dragged
+  timestamp starts back to the stored row.
+- An automatic arrival plays its first moments from 0:00, then jumps to the
+  saved position: the engine window has no per-item start [DP-04]. Needs a start
+  position in the window entries; same plumbing as smart resume.
+- A failed successor prepare can override a Pause: a stale error event from the
+  failed prepare races a Pause that already ran [DP-05, partly confirmed]. Drop
+  error events whose item is no longer current and keep `wantPlaying`.
+- A failed chapter or settings observation lights PLAYBACK ERROR on working
+  audio [DP-06, REPORTED].
+- The desktop opens output at 44.1 kHz, so 48 kHz audio is resampled twice
+  [DP-08, REPORTED]; the buffered position always equals the position [DP-09,
+  REPORTED].
+- Android: a late item-change echo may save the outgoing position into the new
+  episode. `PositionTracker.onPositionDiscontinuity` lacks the projector's echo
+  guard (`QueueProjector.kt:594`) [A-04, PLAUSIBLE]; write a failing Media3
+  adapter test first. The sleep ticker wakes the main looper twice a second
+  even when Off [A-07, REPORTED].
 - `EffectivePlaybackSettings.prepareWindow` issues one scope query and two
   global reads per podcast on every projection and clears its cache each time.
   Add a batch resolver like `notifications()`.
 - `QueueProjector.onPositionDiscontinuity` mints a new `loadId` before its
   late-echo guard, so a "Marked played on ..." notice for the first occurrence
   can be dropped (`QueueProjector.kt:583-590`).
+
+### Settle arrow-key tuning before loading while playing
+
+Selection preserves play or pause, so holding Down while audio plays opens a
+stream for every slip it passes [L-17]. Either settle for about 300 ms before
+loading the newly selected episode, or separate keyboard focus from the tuned
+selection while playing. Product-sensitive: decide which, then test a held key,
+a single press and a press during buffering.
+
+### Give the tuned playlist its own refresh and bulk actions
+
+Refresh, Mark all played and Download all for a group exist only in the legacy
+feed browser, which no in-app control opens [G-01]. The radio cannot refresh the
+tuned playlist at all, and on Android the root refresh is a no-op. Put the three
+on the radio's Menu (or the chooser row), reusing the feed browser's use cases,
+and test a group refresh, an offline refresh and Undo of Mark all played.
+
+### Draw the time-remaining preference
+
+`appearance` PLAYER_TIME is stored, backed up and toggled in Settings, and drawn
+nowhere [G-02]. Pressing the Nixie could flip between ELAPSED and REMAINING,
+accounting for speed, with the caption saying which [Q-02]; the stored setting
+then picks the default. No time remaining, speed or sleep state is visible on
+the player today [M-06]; "Ends at 14:32" under the dial is a related idea. Test
+the flip at 1x and 1.5x, with an unknown duration and with TalkBack.
 
 ## Cabinet, layout, and accessibility
 
@@ -250,7 +359,8 @@ same prefix, and 320 dp plus 600 dp widths.
 
 The home list in `RadioProgramme` lacks the scrollbar drawn by `FeedsScreen` and
 other scrolling destinations. In a short window a full row can fill the paper
-tray with little indication of more material below. The shared `NdScrollbar`
+tray with little indication of more material below, and nothing hints at the
+position in a long programme [M-04]. The shared `NdScrollbar`
 overlay draws a thumb without drag support and hides it when all rows are even
 partly visible. PRs #569/#570 cover the draw exception and the minimum thumb
 bounds. Address the partial-row case before wiring the overlay into the radio,
@@ -285,9 +395,11 @@ pointer before a stronger tint.
 These still use Material shapes on the radio's materials: the Library's "No
 groups yet" icon and pill, Discover preview's Subscribe and + New group pills,
 the podcast page's + Group chip and More link, the speed sheet's chips, slider
-and segmented button, the Up next and Downloads text buttons, the Menu plate's
-flat tan Close key, and the light drag-and-drop overlay on the charcoal stage.
-The podcast page header has no enamel title, and Subscribed is a dot and text
+and segmented button, the sleep sheet's chips, outlined minutes field and text
+button (`SleepTimerSheet.kt`; both sheets open full height and mostly empty,
+and read poorly on the stage [V-04]), the Up next and Downloads text buttons,
+the Menu plate's flat tan Close key, and the light drag-and-drop overlay on the
+charcoal stage. The podcast page header has no enamel title, and Subscribed is a dot and text
 where the mockup shows a toggle. In the group editor the member check badge
 overlaps cover lettering. Replace each with the existing keys, switches and
 signs, and compare goldens at 390 and 1200 dp.
@@ -299,9 +411,15 @@ Radio slips expose no explicit role. `Modifier.selectable` does not default to
 reads a list of tabs is false;
 [#629](https://github.com/L-K-M/Neutrodyne/pull/629) picks `Role.Button`
 deliberately; verify with TalkBack. The chooser rows and the Sync link-method
-selector are fixed. German lacks the crash-dialog strings
-(`app/src/main/res/values-de`). `downloadSize` hard-codes the decimal point and
-unit words, and the queue position "01 / 12" is assembled in code. On Android,
+selector are fixed. German lacked the crash-dialog and crash-mail strings (the
+only five missing keys in a repo-wide diff)
+(`app/src/main/res/values-de`), and the media notification and lock-screen
+actions were English literals (`MediaButtons.kt`); [#653](https://github.com/L-K-M/Neutrodyne/pull/653) translates both
+and adds a resource parity test [A-03, AX-03]. The first-link choices in sync
+setup may not be a radio group (mirror `MethodOption`'s `selectableGroup()` and
+`Role.RadioButton`) [AX-01, REPORTED]. `downloadSize` hard-codes the decimal point and
+unit words, and the queue position "01 / 12" is assembled in code and spoken as
+digits; give it a localized description [AX-02]. On Android,
 `RadioCabinetPage` already ends a page at the keyboard with
 `aboveKeyboard(..., WindowInsets.ime)`, so the earlier "no `imePadding`
 anywhere" claim is stale; verify the Sync, credentials and group-editor fields
@@ -348,6 +466,16 @@ default placement) and logs at warn. Still to verify: Retina 2x, the Dock on two
 edges, a secondary display with a negative origin, the 600 x 480 minimum, and
 Windows/Linux fractional scaling.
 
+The same double conversion breaks the minimum size on every Retina Mac [L-22]:
+`minimumWindowDimension` multiplied 600 x 480 dp by the density and handed the
+result to `window.minimumSize`, which AWT reads in user-space points. At
+`-Dsun.java2d.uiScale=2` the 1200 x 800 default opened as 1200 x 960 and
+refused a resize to 700 x 560; a 13-inch MacBook has fewer than 960 usable
+points of height. [#649](https://github.com/L-K-M/Neutrodyne/pull/649) returns 600 x 480 at every scale (verified live at
+2x: 700 x 560 is accepted) and deliberately leaves the first window's placement
+[L-04] to the placement change above. Windows fractional scaling and Linux
+scaling are still unverified.
+
 ### Make the Mac window feel native
 
 Use `apple.awt.fullWindowContent` and `apple.awt.transparentTitleBar` on the
@@ -369,7 +497,10 @@ at quit, and restored when the rectangle still overlaps its screen's usable
 bounds by at least half. Verify a screen that disappeared, a display
 re-arrangement and the maximised flag.
 Navigation state is lost on relaunch; restoring the last playlist already works
-through settings. Check each in full-screen Spaces and with VoiceOver.
+through settings. Check each in full-screen Spaces and with VoiceOver. A second
+launch with an unusable working directory loses every argument [MS-02,
+REPORTED]. A grey title bar sits on the charcoal stage [V-13], which the unified
+title bar would fix.
 
 ### Preserve veneer proportions during live resize
 
@@ -390,6 +521,56 @@ on one; and the group editor's dark cabinet reads inconsistently with the light
 pages, although the code sets `dark = false` (confirm whether that is the radio
 stage or a theme bug). Confirm before changing the dial's `SpaceBetween` labels,
 the row minimum height or the editor theme.
+
+### Fix the layout faults seen running the Mac app
+
+Each was seen live on the desktop app [V-, L- ids]; compare goldens at 390,
+700 and 1200 dp before and after.
+
+- The status line is cut by the dial's arch: `DialOpening`'s lip is 10% of the
+  height, so the lamp and "NOW PLAYING" sit under the bezel [L-10].
+- Tall layouts print the episode total twice, as the scale's end label and as
+  the `radioTimeline(duration)` line under it when not compact [L-19].
+- The transport is off-centre: skip, counter and skip are centred in what the
+  switch leaves, not under the dial [V-01].
+- The speaker takes a third of the window and holds nothing; at 1200 and
+  1600 dp it floats between two bands of bare wood [V-02]. See "Fill the speaker
+  grille on wide windows".
+- The playlist chooser is a blank full-pane sheet with text touching its edge,
+  no padding, counts or covers [V-03].
+- Single keys get a heavy machined housing taller than the faceplate (Cancel,
+  More, Download settings), and the Import faceplate is 14 dp taller than its
+  neighbour [V-05]. Key banks stretch across the whole window (two 560 dp keys
+  for Podcasts and Groups) [V-06]; a short bank leaves a long black slot
+  (podcast filters) or clips "IN PROGRESS" in a narrow pane [V-07].
+- Import rows misalign Rename and the switch, "Done" is an outlined chip that
+  reads as a button, and every row's subtitle is the feed host [V-08];
+  "GROUPS" in the import preview is clipped at the pane edge [L-09].
+- The empty Library shows the app icon, a second giant glyph and a navy
+  Material pill [V-09]. Library covers have no names by default, so look-alike
+  covers are unidentifiable, there is no tooltip, and badges cover a quarter of
+  a small tile [V-10].
+- Every pane in a row has its own Back key, three at once on the episode page
+  [V-11]. A "Back" tooltip pops up without hover on every page that opens,
+  over the valve deck, because the Back key takes focus and the tooltip follows
+  focus [L-03; root cause unproven].
+- Downloads tells a listener "0 B partial - 0 B untracked" [V-16]. Up next
+  offers playlists as outlined chips under a blank glyph, below the fold
+  [V-19]. The mini radio's label is a 900 dp empty paper strip with no times
+  [V-20].
+- The plinth feet are two tiny flat rectangles in the window's corners [V-14];
+  see the `MaterialPlate(METAL)` item under Confirmed small defects, which
+  covers the plain `Chassis` rectangles.
+- Keep the two deck-stow paths in agreement: `DECK_MIN_HEIGHT` is compared
+  against the home's and `RadioCabinetPage`'s own heights, which can disagree on
+  the same window (with the duplicated-constants item below).
+
+The mini radio's needle was invisible (a 14 dp window left a 5 dp face, and the
+needle was drawn from y=2 to y=3 dp), so no page but the home showed progress
+[L-01]; [#651](https://github.com/L-K-M/Neutrodyne/pull/651) scales the marks to the face and gives the mini player and
+download rows 18 dp windows. The mini radio also drew on top of the home under
+the Speed and Sleep sheets, because a pushed sheet counted as leaving home
+[L-06]; [#647](https://github.com/L-K-M/Neutrodyne/pull/647) reads the entries' overlay metadata instead.
 
 ## Confirmed small defects
 
@@ -457,6 +638,22 @@ the row minimum height or the editor theme.
 - **The programme's empty and error states are footnotes.** When a playlist is
   empty or fails to load, the tray shows only a small strip at its foot; give
   that state the paper's full height.
+- **Slips print "0 min" for an episode under a minute and "180 min" for three
+  hours** (`RadioSlip` uses integer minutes) where other rows use hours and
+  minutes [L-26]. Share the rows' duration formatter.
+- **Show notes' nested lists indent twice, and long notes have no reading
+  width** [L-25]: `NoteList` adds `24 * level` inside a parent column that is
+  already past the marker gutter, and paragraphs run over 1,000 dp at 1600 wide.
+  The notes also touched the pane's left edge [L-08]; [#639](https://github.com/L-K-M/Neutrodyne/pull/639) insets the
+  text blocks to the page's 16 dp.
+- **An engine-update 404 logs ERROR with two stack traces every few minutes**
+  [L-15]. Log a missing manifest once at INFO and back off.
+- **The playlist chooser does not refocus when playlists arrive after it
+  opens** [R-05, REPORTED].
+- **An import ends with no way to the radio** [L-21]: add a "Go to the radio"
+  step to the finished import.
+- **The podcast detail still has a settings gear**, against PO-55 [LU-08,
+  REPORTED].
 
 ## Performance
 
@@ -523,6 +720,30 @@ Two more cheap wins to measure first:
   shifts indices and re-fires the load for a row whose episode key is stable.
   Key it by episode id if profiling shows it matters.
 
+### Remove the remaining per-draw and per-tick allocations
+
+Measured on an M4 Max: 1.5% CPU idle, 5.4% playing, 110 to 160 MB RSS, so these
+matter for slower machines and low-end Android first. Measure each before
+changing it.
+
+- `MaterialPlate` costs a Canvas, an image shader and a fresh gradient brush
+  per slip [P-02].
+- `barlow()` and `courier()` create a `FontFamily` per call [P-03].
+- `radioStage` allocates brushes and paths in every draw, beside the
+  `cabinetEdges`, `radioGlass`, `dialPaper` and `recess` already listed [P-04].
+- The live-state flow re-emits on each position tick for all visible ids [P-05].
+- `FeedDao.page` is invalidated by any write to six observed tables, position
+  saves included [P-06].
+- `MonogramPainter` measures text in every draw [P-09, REPORTED]; `slipFocus`
+  keeps one `FocusRequester` for every episode ever composed [P-11, REPORTED];
+  date labels are formatted twice per row per composition [P-13, REPORTED];
+  `FeedsScreen` flat-maps every loaded page for selection even with nothing
+  selected [P-14, REPORTED].
+- Every refresh ran at least five seconds, because `FetchStateBatcher`
+  launched its 5 s deadline into the scope `FeedRefresher` waits on, so the run
+  stayed `running` and held its lock until the timer fired [DA-02];
+  [#637](https://github.com/L-K-M/Neutrodyne/pull/637) cancels the deadline when the run's work ends.
+
 ### Make desktop screenshot failures reproducible
 
 On this Mac the focused Roborazzi verification of `RadioScreenshotTest.presets`
@@ -545,7 +766,9 @@ secondary click, Shift+F10 and a touch interaction. Check that Open notes
 preserves the selected station, scroll anchor and active transport on return.
 Chapter next and previous are unreachable from the radio, the only full player:
 the handlers in `PlayerRoute.kt:134` are dead code. Offer them in the same menu
-or on the keyboard when the episode has chapters.
+or on the keyboard when the episode has chapters. The same audit found Next
+episode unreachable from the radio too [G-05, REPORTED], and no route from the
+radio to show notes [G-03]. Secondary click on a slip does nothing [M-02].
 
 ### Preserve the station and scroll position when browsing
 
@@ -554,7 +777,10 @@ Consider a bounded per-station anchor keyed by stable episode ID and offset.
 Select the nearest surviving episode after refresh, discard or data removal.
 Keep the playing episode independent of the browsed station. Test A -> B -> A,
 paging behind the anchor, removals, restart and Back. Defer a migration until a
-session-only prototype feels right.
+session-only prototype feels right. Returning to the radio also rebuilt the
+pager and lost the place, because `RadioViewModel.pagingFor` returned a new
+`Pager` flow with no `cachedIn`, against `FeedRepository.kt:73` [L-11];
+[#640](https://github.com/L-K-M/Neutrodyne/pull/640) caches the last three tuned pagers.
 
 ### Make first tuning a short, recoverable journey
 
@@ -576,6 +802,9 @@ decides what to keep: print the age like a rubber stamp beside the duration
 browser had baselines (`FeedsViewModel.kt:451`, `markVisited`, `lastViewedAt`).
 A red NEW stamp on episodes that arrived since the playlist was last tuned would
 reuse them. Check both against German dates, 1.3x text and the compact row.
+The rubber stamp could read TODAY, YESTERDAY or 18 NOV [M-05, Q-10]; a RESUME
+stamp and a thin progress groove on a started slip would say where listening
+stopped.
 
 ### Make editing and finding work naturally with a Mac keyboard
 
@@ -596,8 +825,39 @@ Escape neither cleared the field nor went back.
 [#615](https://github.com/L-K-M/Neutrodyne/pull/615) removes it from
 `isRootShortcut`, so the root's existing back path runs; verify it in Discover
 search, Sync setup and a modal. The window's Cmd+Q fallback
-routes through `onCloseRequest`, which hides to the tray, instead of quitting
-(`NeutrodyneWindow.kt:555`). Cmd+, may be registered twice on macOS.
+routed through `onCloseRequest`, which hides to the tray, instead of quitting
+(`NeutrodyneWindow.kt:555`); the fallback runs whenever the accelerators stand
+down, as in a focused field [L-23]. [#645](https://github.com/L-K-M/Neutrodyne/pull/645) maps Q to `onQuitRequest` and
+unit-tests the chord map. Cmd+, may be registered twice on macOS [MS-04,
+PLAUSIBLE].
+
+More Mac keyboard and pointer gaps found live:
+
+- Space did not pause after clicking a slip: a focused slip's `selectable` and
+  the mini player bar's `clickable` take Space as a click before the root's
+  play/pause sees it, against 08's Space row [L-02]. [#642](https://github.com/L-K-M/Neutrodyne/pull/642) adds a shared
+  `Modifier.spaceTogglesPlayback` after both; episode rows on other pages have
+  not been checked.
+- The Mac's Delete key discarded nothing: every list handler matched only
+  `Key.Delete`, which is forward delete; the key labelled Delete arrives as
+  `Key.Backspace` [L-24]. [#636](https://github.com/L-K-M/Neutrodyne/pull/636) adds one shared `isDeleteKey` for the
+  programme, Up next, Library and Downloads; text fields keep Backspace.
+- Help > Keyboard shortcuts crashed the app with "Unknown screen
+  KeyboardShortcutsKey": no installer registered the key [L-27]. [#644](https://github.com/L-K-M/Neutrodyne/pull/644)
+  registers the dialog with 11's chords in each platform's notation and adds a
+  test that every menu and serialised key resolves. A paper service-manual
+  card raised by "?" would make it a delight [Q-11].
+- Cmd+V outside a field does nothing. Pasting a feed or OPML link anywhere in
+  the window should open Add podcast with it filled in, as dropping one already
+  does [M-09].
+- No hover state on slips, keys or covers, so nothing says what is clickable
+  [M-01]. The dial has no hover preview, scroll-wheel tuning or keyboard focus
+  [M-03]; a wheel over the dial could scrub with detents and the tick sound
+  [Q-09], but only if it does not steal the scroll from a cabinet that scrolls
+  when short. A trackpad's horizontal swipe cannot discard a slip; only a
+  click-drag can [M-07].
+- There is no Library search, and Cmd+F works only in Discover while the menu
+  item is always enabled [G-04, REPORTED].
 
 ### Centralize text-field focus reporting
 
@@ -653,23 +913,68 @@ calls `evictFeedCacheOverflow()`, which runs `SUM(body_bytes)` for the account
 after every insert; maintain a running total or check the cap only when the
 just-written entry crosses it.
 
+### Stop decoding the whole library on every push and GC (new, REPORTED)
+
+`JdbcRead.records()` loads and JSON-decodes every record of the account.
+`RecordChanges.records()` calls it, and `PodcastDeduper.lifecycle`/`merge` and
+`GroupNameMerger` call that inside per-change loops, on the single writer
+shared by all accounts; `StoredRecordWriter.push` also reloads `redirects()`
+for each change [SERVER-01]. A hundred unsubscribes on a 50,000-record account
+is five million decodes and can exceed the documented `-Xmx96m`, stalling every
+account's sync meanwhile. Design 10's write path expects a prefix scan
+(`substr(rid, 37)`). Fetch children by `rid` prefix in SQL and load redirects
+once per push; test with a counting `SyncRead` proxy that rows read scale with
+the touched podcasts, not the library. `GcJob` has the same shape
+(`GcJob.kt:33,71-103`): it loads each account, rescans all rows per candidate
+parent and runs every account in one transaction, so one crash rolls back every
+account's purge [SERVER-02]. Find candidates with the `record_gc` index, use the
+same prefix lookups, purge per account and chunk deletes. Effort M each; share
+the prefix helper.
+
+### Smaller server fixes (new, REPORTED)
+
+- `/library` pages every record and filters podcast and group titles in
+  memory, so on a listening-heavy account most pages are empty [SERVER-03].
+  Query `coll IN ('podcast','group')` with keyset paging on `seq`.
+- Setting only `NEUTRODYNE_SERVER_PUBLIC_URL` keeps `--insecure-lan`, because
+  the compose default drops the flag only when the transport variable is set
+  and empty: cookies lose `Secure` and the red banner shows behind an HTTPS
+  proxy [SERVER-05]. Warn at startup and key banner and cookie on
+  `!publicUrlIsHttps && insecureLan`.
+- The CLI has `user disable` but no `user enable`, and disabling the only
+  admin locks out web administration; `admin create` is an undocumented way
+  out [SERVER-06].
+- The feed cache is bounded per account (512 MiB) but not globally
+  [SERVER-07]; add a global budget to `evictFeedCacheOverflow`.
+- `sse.max_per_account` above 10 is silently clamped (`EventBus.kt:40`)
+  [SERVER-08]. Decide whether 10 is a ceiling (then reject larger values at
+  load) or only a default (then drop the `minOf`).
+- NAT64-wrapped addresses (`64:ff9b::/96`) passed the poller's local-destination
+  check, so on a DNS64 host a feed could reach a local IPv4 service
+  [SERVER-09]; [#648](https://github.com/L-K-M/Neutrodyne/pull/648) classifies them by their embedded IPv4, in the
+  server's `LocalDestination` and in the app's pre-confirmation peer guard
+  (`LocalNetworkGuard.isLocalPeerV6`), which had the same gap.
+- The admin web is unbranded, answers a signed-out page visit with problem
+  JSON, and always shows "Set up the first administrator" [SERVER-10, S-01]:
+  redirect web routes to sign-in, hide the setup link once an admin exists, and
+  give `admin.css` the navy and amber palette with CSS alone.
+- A feed pass (two permits, 30 s per feed, 15 min interval) can outrun the
+  30 min TTL on a large library [S-02, PLAUSIBLE].
+
 ### Harden the login buckets and body budget (new)
 
-`LoginAttempts` refuses new usernames once 10,000 failure buckets exist, so a
-distributed caller could in principle exhaust the map; the 10-per-15-minutes
-login limit makes it impractical. `RequestGuards` reserves `MAX_REQUEST_BYTES`
-for a body with no `Content-Length`, so many concurrent chunked uploads can hit
-the 24 MiB budget even though each body is small; reserve a smaller amount and
-charge the actual read.
+`LoginAttempts` refuses new usernames once 10,000 failure buckets exist, so
+every unseen username is throttled for up to 24 h [SERVER-04] and a distributed
+caller could in principle exhaust the map; the 10-per-15-minutes login limit
+makes it impractical. Evicting the oldest bucket would keep innocent logins
+working, but a spray could then evict a victim's lockout and resume guessing;
+pick the trade-off (or key the cap per source network) before changing it.
+`RequestGuards` reserves `MAX_REQUEST_BYTES` (2 MiB) for a body with no
+`Content-Length` until its read finishes (`RequestGuards.kt:79-85`), so about a
+dozen concurrent undeclared or chunked requests hit the 24 MiB pre-auth budget
+and draw 429 even though each body is small [S-03]; reserve a smaller amount
+and charge the actual read.
 
-### Pin the feed fetch to its checked DNS answers (new, security)
-
-`HttpServerFeedFetcher` rejects literal local URLs (`allowed`) and local
-resolutions (`FeedDns`), but `FeedDns.lookup` checks the addresses and returns
-them, after which OkHttp connects; a publisher that answers the lookup with a
-public address and the connection with a local one (DNS rebinding) is not
-prevented. Pin the connection to the checked addresses, or document the
-residual risk. This is hardening, not a demonstrated bypass.
 
 ### Reconsider the credential clock check in the server poll (new)
 
@@ -700,7 +1005,8 @@ the cause rather than retiring the row.
 when `RowCaps.recheck` is set, and `YouTubeChannelRepository.recheckAvailability`
 is implemented (`YouTubeChannelRepositoryImpl.kt:92`). Every view model's
 `onRowAction` ends in `else -> Unit` and none handles it
-(`PodcastViewModel.kt`, `FeedsViewModel.kt`, `EpisodeViewModel.kt`), so the
+(`PodcastViewModel.kt:320`, `FeedsViewModel.kt:564`, `EpisodeViewModel.kt:312`),
+so the
 action is a no-op. `PodcastViewModel` already injects
 `YouTubeChannelRepository`; add it to the other two, call
 `recheckAvailability`, and post a localized "Couldn't check — try again later"
@@ -708,15 +1014,49 @@ message when it returns null (design 04). Add the string EN and DE, bind the
 row's availability update through the existing episode flow, and test success,
 a new reason and a transient failure.
 
+### Sync client defects (new)
+
+- A group created on two devices with the same name stalls sync on the
+  receiver for good [SY-01, critical, traced]: `SyncApplier.applyGroup` inserts
+  the remote uuid without looking up `nameKey`, which is unique
+  (`PodcastEntities.kt:215`), so the page's transaction fails on every retry.
+  Design 10:333 and :1010 require `SurvivorRule.group` there. Needs a designed
+  merge and a two-device test.
+- Undo of a group delete was pushed as the delete: the delete left a
+  `deleted=true` outbox row, the Undo's insert a newer `*` row beside it
+  (triggers coalesce per field only), and
+  `ChangeBuilder` and `SyncApplier.pendingState` applied `*` first and named
+  rows over it without comparing clocks [SY-02]. [#655](https://github.com/L-K-M/Neutrodyne/pull/655) applies a record's
+  rows in clock order, `*` first on a tie, also in
+  `SessionAdopter.pendingSession`.
+- A reordered group never reordered on the other device: `applyMember` wrote
+  the new order through `insertMember`, which is `OnConflictStrategy.IGNORE`
+  [SY-07]. [#650](https://github.com/L-K-M/Neutrodyne/pull/650) adds a member update that also lands a lower merged
+  `addedAt` when the order key is unchanged.
+- The client never follows `mergedInto`, redirects or aliases [SY-03,
+  REPORTED]. A first link with Merge seeds only a few fields, so local settings
+  are lost (`FirstLinkMerger.seedLocalRows`) [SY-04, REPORTED]. Keep mine
+  restores the podcast and group but not their memberships and Up next
+  removals from the same batch (`MassChangeGuard.keepMine`) [SY-05, traced in
+  part]. Each needs a designed merge and multi-device tests, one PR each.
+- A position pushed by `ChangeBuilder` drops `dur` and `src`, which the
+  trigger stores (`SyncTriggers.kt:244`) [SY-12, traced].
+- Responses skip `ProtocolCodec`'s caps and validation in `KtorSyncClient`
+  [SY-06]; `invalid` and `quota` rejections are never acted on [SY-09]; an
+  auth outbox row stays stuck while password sharing is off [SY-10]; the
+  desktop installation fingerprint is never written, so a cloned profile is not
+  noticed [SY-11]; `matchClocks` is ignored on HLC receive and a first-link
+  pull is held in memory [SY-13] (all REPORTED). An episode played elsewhere
+  may re-enter Up next [SY-08, PLAUSIBLE].
+
 ## Library, downloads, and sync defects
 
 ### Make listening-page actions do what they show
 
-- "Check again" is offered on unavailable YouTube rows, but every view model
-  drops `EpisodeAction.CheckAvailability` (`PodcastViewModel.kt:320`,
-  `FeedsViewModel.kt:564`, `EpisodeViewModel.kt:312`).
-- A VERIFYING download key looked tappable but did nothing; #623 cancels it
-  like RESOLVING.
+- "Check again" is offered on unavailable YouTube rows and dropped by every
+  view model [LU-04]; see the section 'Wire up "Check again"'.
+- A VERIFYING download key said Cancel but did nothing [LU-05]; #623 cancels
+  it like RESOLVING.
 - The podcast page's filtered-empty action said "Show played episodes" but
   cleared every filter; #624 labels it accurately. The page still has no
   episode search, and its filter bank scrolls away.
@@ -724,6 +1064,18 @@ a new reason and a transient failure.
 - The group editor's "Show as a tab in Feeds" switch reads `showAsTab`, which
   only the legacy feed browser uses now that the home has no tabs. Retire it or
   give it a meaning on the radio.
+- Library's More lacked Backup and restore [LU-03]; [#641](https://github.com/L-K-M/Neutrodyne/pull/641) adds it.
+- Up next has no selection mode: its rows emit Select and nothing handles it
+  [LU-01]; selection has no Download or Delete download [LU-02]; the episode
+  page's More lacks Check again, Show in folder and Delete download [LU-07]
+  (all REPORTED).
+- Editing a group saves in five transactions, so a failure leaves it half
+  changed; use one repository transaction [LB-01, REPORTED]. "Watch on YouTube"
+  does nothing when the link cannot be resolved, on five screens; reuse the
+  player route's failure message through one helper [LB-02, REPORTED].
+- An OPML import with one over-long folder said "2 group names were
+  shortened", because the classifier's per-entry count was added to the
+  adapter's per-group one [L-14]; [#638](https://github.com/L-K-M/Neutrodyne/pull/638) counts distinct names.
 
 ### Fix download storage limits and notices
 
@@ -735,6 +1087,21 @@ manual case is an owner decision rather than a clear defect. Android's "SD card
 is not available" notice has no action, so the setting that fixes it is
 unreachable (`DownloadNotices.kt`). Test with 1,500 downloaded episodes, a cap
 reached by a manual download, and an ejected card.
+
+Also in downloads: engine removals bypass `claimMutex`; `Attempt.finish` drains
+deferred deletes without the mutex the contract names [DL-01, PLAUSIBLE; write a
+race test first]. A changed enclosure URL never revives a failed download,
+because `requeueChangedEnclosures` has no production caller although design 07
+wires it to refresh [DL-02, traced]. The YOUTUBE_PAUSED banner is never emitted
+[DL-03, REPORTED].
+
+In the data layer: a restore while linked calls `UnsubscribeUseCase`, which
+pauses and flushes the position, from inside the write transaction, so it can
+wait on its own writer (`RestoreMerger.kt:182-190,506-511`) [DA-01, PLAUSIBLE;
+needs an Android test with a playing episode]. One IOException ends settings
+observation until the next collection, which on the desktop means until
+relaunch (`SettingStore.kt:109-114`) [DA-03, traced]. Files are deleted inside
+write transactions, against design 02 [DA-04, REPORTED].
 
 ### Keep sync and settings drafts and copy intact
 
@@ -751,6 +1118,29 @@ Android has no app shortcuts and no Quick Settings tile;
 media notification is the unbranded Media3 default, and new-episode
 notifications carry no artwork. Start with a Play or Pause tile and a shortcut
 to the last playlist.
+
+Android shell defects: tapping the "YouTube is broken" notification went
+nowhere, because it targeted `MainActivity` and `IntentRouter` dropped the route
+as external [AS-01]; [#652](https://github.com/L-K-M/Neutrodyne/pull/652) routes it through the internal alias. An
+import that finishes in the background posts no notification, because
+"visible" follows the ViewModel's life, not the screen's [AS-02]; the startup
+failure screen has no Send report [AS-03]; the keyboard covers low fields in
+sync setup [AS-04]; "Ready to review" stays in the shade after the import is
+done [AS-05] (all REPORTED). A `SecurityException` from `notify` may kill the
+breaker notifier's collector [AS-06, PLAUSIBLE]. R8 may drop the ACRA
+redactor, which is found only through `META-INF/services`; check the release
+APK, since a redactor lost in release would matter [AS-07, PLAUSIBLE].
+
+Discover, import, settings and sync screens (all REPORTED, none re-read):
+sharing several files opens the first only [DI-01]; shared text over 4 KB is
+ignored without a word [DI-02]; a dropped `.txt` gives the wrong error [DI-03];
+YouTube search clears its hits when the capability flag flips [DI-04]; a
+failed restore check of the server library has no Retry [DI-05]; Import from
+URL is absent [DI-06]. Forget server is several writes, so a failure
+half-forgets it [SE-01]; "What syncs" is static text whatever is switched on
+[SE-02]; the home sync summary drops the last-sync time on an error [SE-03];
+the exported diagnostics file always suggests the same name [SE-04]; the
+YouTube engine's diagnostics section is thin [SE-05].
 
 ## More ideas from the polish pass
 
@@ -773,7 +1163,19 @@ count semantics from "Give long playlists a reliable count".
 
 The Menu dialog's Sleep key never reflects state. When a timer runs, a small
 counter on or beside the key (remaining minutes) would save opening the sheet.
-Keep it quiet when off and honour the existing timer controls.
+Keep it quiet when off and honour the existing timer controls. A running sleep
+timer is invisible everywhere else too [G-06].
+
+### More small ideas from the product audit
+
+Each is a short prototype; keep the ones that read as this radio and no other.
+An ON AIR slip for an episode playing from outside the tuned playlist; a
+PLEASE STAND BY card while a stream buffers; a paper clip that files a slip
+under Up next; a speed key on the faceplate; a "Wireless bulletin" refresh card
+that lists what arrived; an inbox-pressure gauge for unplayed hours. The
+now-playing episode has no artwork on the only full player [G-07]: the tuned
+episode's cover could sit behind the grille cloth, barely visible through the
+louvres, and show fully on hover [Q-03].
 
 ## Prototypes
 
@@ -793,7 +1195,8 @@ or keypress. Use actual groups and retain the existing chooser for the full
 list. Show active state and unplayed count only when useful. Reordering should
 be deliberate, with no accidental membership changes. Prototype three presets
 on wide screens and evaluate whether they save time. Leave keybindings unset
-until they can coexist with desktop menu accelerators.
+until they can coexist with desktop menu accelerators; Cmd+Option+1 to 6, like
+car-radio presets, is a candidate [Q-05].
 
 ### Use the valves for small, useful moments
 
@@ -803,7 +1206,11 @@ Keep normal playback static and never introduce button sounds into the audio.
 The warm-up is merged (#592): the filaments brighten over 1.8 s when the radio is
 switched on and cool over 0.9 s when it is switched off, static while playing
 and instant with reduced motion. The dial paper's backlight (`dialPaper`
-gradient) could warm with it for one gradient parameter.
+gradient) could warm with it for one gradient parameter. In the sleep timer's
+last minute the tubes could cool with the volume fade, so the radio visibly
+winds down [Q-07]. The valves followed `playing`, so they went out on every
+stall and stayed dark while starting, against 08's "warm while the switch is
+ON" [R-01]; [#643](https://github.com/L-K-M/Neutrodyne/pull/643) lights them from the switch.
 
 ### Give the signal meter a buffering job
 
@@ -880,7 +1287,9 @@ Each must respect reduced motion and add no per-frame work while idle.
   honouring control sounds and reduced motion.
 - A sign-off when the last slip of a playlist is discarded: the Nixie reads
   `--:--`, the valves cool, and the paper says the station has closed for the
-  night, with keys to another station or Discover.
+  night, with keys to another station or Discover; a hand-lettered "Off the
+  air" card gives the time and the next thing to do, another station with
+  unplayed episodes [Q-08].
 - A paper spike in the tray corner that stacks discarded slips; tapping it
   recalls the last one, as Undo does.
 
@@ -898,8 +1307,8 @@ Each needs a decision: build it, or correct the document.
 - Podcast and group settings document a Playback section (speed, skip silence)
   that is not rendered.
 - Settings > Feeds documents "Show Ungrouped tab" and "Manage groups". The
-  Library overflow lacks "Backup and restore". About and Privacy lack a
-  "Privacy policy" row. 05's "Import from URL" is missing.
+  Library overflow lacks "Backup and restore" (in review: [#641](https://github.com/L-K-M/Neutrodyne/pull/641)).
+  About and Privacy lack a "Privacy policy" row. 05's "Import from URL" is missing.
 - `CHANGELOG.md` still reads `[Unreleased]` with only M0a.1 at version 1.0.0.
 - Transcripts are parsed and stored but never shown; the documents defer them.
 - Not documented anywhere, an idea: OPML auto-sync from a remote list.
@@ -911,7 +1320,17 @@ Each needs a decision: build it, or correct the document.
   and tested.
 - The desktop window title rule says "while playing" but macOS convention keeps
   the current title while an episode is loaded; decide before changing
-  `NeutrodyneWindow.kt:304`.
+  `NeutrodyneWindow.kt:304` [MS-01].
+- The tubes go dark on every cabinet page while audio plays [V-17]; 08 documents
+  that the pages' decks stay unlit. Lighting them while audio plays ("it is one
+  radio", [Q-06]) would reverse that, so it is the owner's call.
+- External play under ASK grants one item, while design 06 describes a standing
+  grant; the code's comment says the single grant is deliberate [A-08]. Correct
+  06 or the code.
+- Arrow keys during playback load every slip they pass [L-17]; see "Settle
+  arrow-key tuning before loading while playing" for the two options.
+- The `LoginAttempts` cap trade-off [SERVER-04]: see "Harden the login buckets
+  and body budget".
 
 ## Checked and cleared
 
@@ -952,6 +1371,38 @@ Each needs a decision: build it, or correct the document.
   30/90 insets showed the window clamped to `(720, 190)`; after the
   inverse-transform conversion it is centred at `(360, 140)`, and a window moved
   to `(200, 120, 1000, 700)` reopened there.
+
+- **Feed fetch DNS pinning.** The earlier item asked to pin the server's feed
+  fetch to its checked DNS answers. `HttpServerFeedFetcher.kt:29-30` sets
+  `Proxy.NO_PROXY` and `FeedDns`, and OkHttp connects only to the addresses
+  `Dns.lookup` returned, which `FeedDns` has checked; every redirect hop resolves
+  through it again. Rebinding between check and connect is not possible; the
+  remaining edge was the NAT64 form (see "Smaller server fixes").
+- **Android Play on an idle player after a stop.** Media3's session play
+  handling prepares it; see the parity list for the untested error variant.
+- **Claims refuted in the Opus 5.5 pass.** Paging "never appends past 80"
+  (`LazyPagingItems.itemSnapshotList` is replaced on each presenter event in
+  paging-compose 3.5, so `remember(snapshot)` follows it). Discover runs an
+  IMMEDIATE search against undisclosed providers (`restartSearch` returns while
+  the disclosed and current configurations differ). Both settings sentinels
+  belong in one file (they live in different files by design, and a test pins
+  that). The diagnostics cursor prefix leaks (eight characters of an opaque
+  cursor, documented). `AC/DC` searching instead of opening a link (a
+  documented trade-off with a test). Sync diagnostics leak account and device
+  names (design 10:1257 specifies both). The import fix-up accepts an empty URL
+  (the repository validates and the screen shows its typed error). The verbose
+  log switch sticks on after a failed write (it is bound to the stored value).
+  Turning off password sharing needs a confirmation (turning a disclosure off is
+  the safe side). Show-note, banner and chapter images decode at full size
+  (Coil 3's `AsyncImage` installs a constraints size resolver when the request
+  has no size). The sleep sheet preselects 30 min while Off (08:2148 preselects
+  the last choice; its readability belongs to the Material-surfaces item [V-04]).
+  A short query plus Enter does nothing [DI-06]: `DiscoverRoute.submit` opens
+  the directory search for any non-empty query that is not a link.
+  `downloadedEpisodeIds` fails above 999 ids (the app ships
+  the bundled SQLite driver, whose variable limit is 32,766; #622 chunks it
+  anyway). The paging and Coil items are argued from how those libraries
+  behave, without opening their sources.
 
 ## Native verification on proposed fixes
 
@@ -1026,7 +1477,8 @@ claim it from a host test alone.
   [PR #610](https://github.com/L-K-M/Neutrodyne/pull/610)
 - With a group whose first page is empty and later pages exist, confirm the
   programme keeps the spinner instead of flashing All clear; fail the load and
-  confirm the retry row remains. [PR #611](https://github.com/L-K-M/Neutrodyne/pull/611)
+  confirm the retry row remains. This landed on main; the closed
+  [PR #611](https://github.com/L-K-M/Neutrodyne/pull/611) has the test notes.
 - Tap a download in VERIFYING and confirm it cancels like RESOLVING; check the
   row at 1x and 2x. [PR #623](https://github.com/L-K-M/Neutrodyne/pull/623)
 - With a downloaded or in-progress filter active and no episodes, confirm the
@@ -1036,6 +1488,24 @@ claim it from a host test alone.
 - With a server that keeps answering `authorization_pending` past the code
   lifetime, confirm the link flow fails with InvalidCode instead of polling
   forever. [PR #625](https://github.com/L-K-M/Neutrodyne/pull/625)
+- On a phone, pause an episode, let another device sync a newer position, then
+  resume from a headset button, the media notification and Android Auto;
+  confirm each resumes at the synced position. [#654](https://github.com/L-K-M/Neutrodyne/pull/654)
+- On a German phone, read the media notification, lock screen and Android Auto
+  actions ("30 Sekunden zurück", "Tempo 1,5×") and force a crash to read the
+  crash dialog. [#653](https://github.com/L-K-M/Neutrodyne/pull/653)
+- With the YouTube engine broken, tap its notification and confirm it opens
+  Settings > YouTube. [#652](https://github.com/L-K-M/Neutrodyne/pull/652)
+- On Windows with 125% and 150% scaling and on a Linux HiDPI desktop, launch
+  from a clean home and confirm the window can shrink to 600 x 480. [#649](https://github.com/L-K-M/Neutrodyne/pull/649)
+- On the desktop, play a two-episode playlist with the sleep timer at End of
+  episode, armed before and after the first episode's last minute; confirm
+  audio stops at the boundary both times. [#656](https://github.com/L-K-M/Neutrodyne/pull/656)
+- On a Mac compact keyboard, press delete on a focused slip, Up next row,
+  Library tile and finished download; with VoiceOver on, confirm VO+Space on a
+  slip still selects it while plain Space toggles playback. [#636](https://github.com/L-K-M/Neutrodyne/pull/636) [#642](https://github.com/L-K-M/Neutrodyne/pull/642)
+- Open Help > Keyboard shortcuts on macOS and Windows and compare each chord
+  with the menus. [#644](https://github.com/L-K-M/Neutrodyne/pull/644)
 - Launch the desktop app on a 1920 x 1080 Mac and confirm the first window is
   centred; move it, quit, relaunch and confirm it returns to the same rectangle.
   Repeat on a second display, after a display re-arrangement, and with the window
